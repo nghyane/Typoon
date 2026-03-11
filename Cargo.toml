@@ -1,0 +1,50 @@
+[package]
+name = "comic-scan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Web server
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ONNX Runtime
+ort = "2.0.0-rc.12"
+
+# Image processing
+image = "0.25"
+imageproc = "0.25"
+ndarray = "0.17"
+
+# Geometry (polygon operations)
+geo = "0.29"
+
+# OpenAI SDK
+async-openai = { version = "0.33", features = ["chat-completion", "byot"], default-features = false }
+futures = "0.3"
+
+# Cache
+redb = "2"
+
+# Font metrics (text fitting)
+ab_glyph = "0.2"
+
+# Config
+toml = "0.8"
+
+# Utilities
+base64 = "0.22"
+sha2 = "0.10"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+http-body-util = "0.1"
