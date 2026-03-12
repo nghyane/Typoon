@@ -8,7 +8,7 @@ use ndarray::Array4;
 use ort::session::Session;
 use ort::value::TensorRef;
 
-use super::{OcrProvider, OcrResult};
+use super::OcrResult;
 use crate::detection::TextRegion;
 
 // ── Recognition constants ──
@@ -51,40 +51,32 @@ pub struct PpOcrAdapter {
 }
 
 impl PpOcrAdapter {
-    pub fn new(models_dir: &str) -> Result<Self> {
-        let base = Path::new(models_dir);
-        let rec_path = base.join("ppocr_rec.onnx");
-        let dict_path = base.join("ppocr_keys.txt");
-
-        anyhow::ensure!(rec_path.exists(), "ppocr_rec.onnx not found at {}", rec_path.display());
-        anyhow::ensure!(dict_path.exists(), "ppocr_keys.txt not found at {}", dict_path.display());
-
+    pub fn new(
+        rec_path: &Path,
+        dict_path: &Path,
+        det_path: Option<&Path>,
+    ) -> Result<Self> {
         let rec_session = Session::builder()?
-            .commit_from_file(&rec_path)
+            .commit_from_file(rec_path)
             .with_context(|| format!("Failed to load PP-OCR rec model: {}", rec_path.display()))?;
 
-        let dict_text = std::fs::read_to_string(&dict_path)
+        let dict_text = std::fs::read_to_string(dict_path)
             .with_context(|| format!("Failed to read dictionary: {}", dict_path.display()))?;
-        // CTC blank at index 0, then dictionary characters starting at index 1
-        let mut dictionary = vec!["".to_string()]; // blank token
+        let mut dictionary = vec!["".to_string()]; // CTC blank at index 0
         for line in dict_text.lines() {
             if !line.is_empty() {
                 dictionary.push(line.to_string());
             }
         }
-        // Add space character at the end (use_space_char=true in PaddleOCR)
-        dictionary.push(" ".to_string());
+        dictionary.push(" ".to_string()); // use_space_char=true
 
-        // Detection model is optional
-        let det_path = base.join("ppocr_det.onnx");
-        let det_session = if det_path.exists() {
+        let det_session = if let Some(dp) = det_path {
             let session = Session::builder()?
-                .commit_from_file(&det_path)
-                .with_context(|| format!("Failed to load PP-OCR det model: {}", det_path.display()))?;
-            tracing::info!("PP-OCR det loaded: {}", det_path.display());
+                .commit_from_file(dp)
+                .with_context(|| format!("Failed to load PP-OCR det model: {}", dp.display()))?;
+            tracing::info!("PP-OCR det loaded: {}", dp.display());
             Some(Mutex::new(session))
         } else {
-            tracing::warn!("ppocr_det.onnx not found, PP-OCR detection disabled");
             None
         };
 
@@ -101,6 +93,7 @@ impl PpOcrAdapter {
             dictionary,
         })
     }
+
 
     pub fn can_detect(&self) -> bool {
         self.det_session.is_some()
@@ -350,8 +343,8 @@ impl PpOcrAdapter {
     }
 }
 
-impl OcrProvider for PpOcrAdapter {
-    fn recognize(&self, image: &DynamicImage) -> Result<OcrResult> {
+impl PpOcrAdapter {
+    pub fn recognize(&self, image: &DynamicImage) -> Result<OcrResult> {
         let input_tensor = self.rec_preprocess(image);
 
         let input_ref = TensorRef::from_array_view(&input_tensor)?;
@@ -373,9 +366,6 @@ impl OcrProvider for PpOcrAdapter {
         Ok(OcrResult { text, confidence })
     }
 
-    fn name(&self) -> &str {
-        "ppocr_v5"
-    }
 }
 
 // ── DB post-processing helpers ──

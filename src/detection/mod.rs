@@ -33,16 +33,9 @@ pub struct TextDetector {
 }
 
 impl TextDetector {
-    pub fn new(models_dir: &str) -> Result<Self> {
-        let model_path = Path::new(models_dir).join("comic-text-detector.onnx");
-        anyhow::ensure!(
-            model_path.exists(),
-            "comic-text-detector model not found at {}",
-            model_path.display()
-        );
-
+    pub fn new(model_path: &Path) -> Result<Self> {
         let session = Session::builder()?
-            .commit_from_file(&model_path)
+            .commit_from_file(model_path)
             .with_context(|| format!("Failed to load ONNX model: {}", model_path.display()))?;
 
         tracing::info!("TextDetector loaded from {}", model_path.display());

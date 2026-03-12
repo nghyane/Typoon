@@ -34,6 +34,12 @@ ab_glyph = "0.2"
 # Config
 toml = "0.8"
 
+# Model hub (HuggingFace)
+hf-hub = { version = "0.4", features = ["tokio"] }
+
+# SQLite (glossary FTS5)
+rusqlite = { version = "0.34", features = ["bundled"] }
+
 # Utilities
 base64 = "0.22"
 anyhow = "1"
@@ -44,3 +50,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
+tokio = { version = "1", features = ["rt", "macros"] }

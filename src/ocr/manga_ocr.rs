@@ -7,7 +7,7 @@ use ndarray::{Array2, Array4};
 use ort::session::Session;
 use ort::value::TensorRef;
 
-use super::{OcrProvider, OcrResult};
+use super::OcrResult;
 
 const INPUT_SIZE: usize = 224;
 const BOS_TOKEN: i64 = 2;
@@ -22,25 +22,16 @@ pub struct MangaOcrAdapter {
 }
 
 impl MangaOcrAdapter {
-    pub fn new(models_dir: &str) -> Result<Self> {
-        let base = Path::new(models_dir);
-        let encoder_path = base.join("encoder_model.onnx");
-        let decoder_path = base.join("decoder_model.onnx");
-        let vocab_path = base.join("vocab.txt");
-
-        anyhow::ensure!(encoder_path.exists(), "encoder_model.onnx not found at {}", encoder_path.display());
-        anyhow::ensure!(decoder_path.exists(), "decoder_model.onnx not found at {}", decoder_path.display());
-        anyhow::ensure!(vocab_path.exists(), "vocab.txt not found at {}", vocab_path.display());
-
+    pub fn new(encoder_path: &Path, decoder_path: &Path, vocab_path: &Path) -> Result<Self> {
         let encoder = Session::builder()?
-            .commit_from_file(&encoder_path)
+            .commit_from_file(encoder_path)
             .with_context(|| format!("Failed to load encoder: {}", encoder_path.display()))?;
 
         let decoder = Session::builder()?
-            .commit_from_file(&decoder_path)
+            .commit_from_file(decoder_path)
             .with_context(|| format!("Failed to load decoder: {}", decoder_path.display()))?;
 
-        let vocab_text = std::fs::read_to_string(&vocab_path)
+        let vocab_text = std::fs::read_to_string(vocab_path)
             .with_context(|| format!("Failed to read vocab: {}", vocab_path.display()))?;
         let vocab: Vec<String> = vocab_text.lines().map(|l| l.to_string()).collect();
 
@@ -177,8 +168,8 @@ impl MangaOcrAdapter {
     }
 }
 
-impl OcrProvider for MangaOcrAdapter {
-    fn recognize(&self, image: &DynamicImage) -> Result<OcrResult> {
+impl MangaOcrAdapter {
+    pub fn recognize(&self, image: &DynamicImage) -> Result<OcrResult> {
         let pixel_values = self.preprocess(image);
         let token_ids = self.generate(&pixel_values)?;
         let raw_text = self.decode_tokens(&token_ids);
@@ -192,9 +183,6 @@ impl OcrProvider for MangaOcrAdapter {
         })
     }
 
-    fn name(&self) -> &str {
-        "manga_ocr"
-    }
 }
 
 /// Convert halfwidth ASCII letters, digits, and common punctuation to fullwidth equivalents.

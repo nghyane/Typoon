@@ -1,5 +1,8 @@
+pub mod chapter;
 pub mod common;
 pub mod merge;
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use base64::Engine;
@@ -9,7 +12,7 @@ use image::{DynamicImage, RgbaImage};
 use crate::api::{AppState, BubbleResult, TranslateImageRequest, TranslateImageResponse};
 use crate::border_detect;
 use crate::text_layout::DrawableArea;
-use crate::translation::{BubbleInput, BubbleTranslated};
+use crate::translation::{BubbleInput, BubbleTranslated, TranslateContext};
 
 /// Internal pipeline output: bubbles + optional rendered image from canvas agent.
 pub struct PipelineOutput {
@@ -19,7 +22,7 @@ pub struct PipelineOutput {
 
 /// Main entry point: decode → detect → OCR → translate → fit → render
 pub async fn process_image(
-    state: &AppState,
+    state: &Arc<AppState>,
     req: &TranslateImageRequest,
 ) -> Result<TranslateImageResponse> {
     let image_bytes = STANDARD.decode(&req.image_blob_b64)?;
@@ -49,14 +52,14 @@ pub async fn process_image(
 ///   "ja" → comic-text-detector + manga-ocr
 ///   _    → PP-OCR det (line merge) + PP-OCR rec
 async fn run_pipeline(
-    state: &AppState,
+    state: &Arc<AppState>,
     req: &TranslateImageRequest,
     img: &DynamicImage,
     source_lang: &str,
     context: &[BubbleTranslated],
 ) -> Result<PipelineOutput> {
     // 1. Detect + OCR (lang-specific)
-    let (inputs, polygons) = detect_and_ocr(state, img, source_lang)?;
+    let (inputs, polygons) = detect_and_ocr(Arc::clone(state), img.clone(), source_lang.to_string()).await?;
 
     if inputs.is_empty() {
         return Ok(PipelineOutput { bubbles: Vec::new(), rendered_image: None });
@@ -72,11 +75,16 @@ async fn run_pipeline(
         .collect();
 
     let engine = common::resolve_engine(state, req)?;
+    let page_images = [img.clone()];
+    let translate_ctx = TranslateContext {
+        page_images: &page_images,
+        glossary: state.glossary.as_ref(),
+    };
 
     // 3. Try canvas agent path (optional)
     if let Some(agent) = &state.canvas_agent {
         let canvas_bubbles = common::translate_only(
-            &engine, inputs.clone(), &polygons, &req.target_lang, context.to_vec(), &areas,
+            &engine, inputs.clone(), &polygons, source_lang, &req.target_lang, context.to_vec(), &areas, &translate_ctx,
         ).await?;
         match agent.run(img, &canvas_bubbles).await {
             Ok(output) => {
@@ -94,25 +102,25 @@ async fn run_pipeline(
 
     // 4. Translate + fit (default path)
     let bubbles = common::translate_and_fit(
-        &engine, inputs, &polygons, &req.target_lang, context.to_vec(), img.width(), &areas,
+        &engine, inputs, &polygons, source_lang, &req.target_lang, context.to_vec(), img.width(), &areas, &translate_ctx,
     ).await?;
     Ok(PipelineOutput { bubbles, rendered_image: None })
 }
 
 /// Detect text regions and OCR them. Strategy based on source_lang.
-fn detect_and_ocr(
-    state: &AppState,
-    img: &DynamicImage,
-    source_lang: &str,
+/// Runs synchronous ONNX inference inside spawn_blocking to avoid blocking the tokio runtime.
+async fn detect_and_ocr(
+    state: Arc<AppState>,
+    img: DynamicImage,
+    source_lang: String,
 ) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>)> {
-    match source_lang {
-        // Japanese manga: comic-text-detector → manga-ocr
-        "ja" => detect_ocr_manga(state, img, source_lang),
-        // Others: PP-OCR det → merge lines → PP-OCR rec
-        _ if state.ocr.can_detect() => detect_ocr_ppocr(state, img, source_lang),
-        // Fallback: comic-text-detector + PP-OCR rec
-        _ => detect_ocr_manga(state, img, source_lang),
-    }
+    tokio::task::spawn_blocking(move || {
+        match source_lang.as_str() {
+            "ja" => detect_ocr_manga(&state, &img, &source_lang),
+            _ if state.ocr.can_detect() => detect_ocr_ppocr(&state, &img, &source_lang),
+            _ => detect_ocr_manga(&state, &img, &source_lang),
+        }
+    }).await?
 }
 
 /// comic-text-detector: detects whole bubble polygons, OCR each region

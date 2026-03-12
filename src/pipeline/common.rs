@@ -5,7 +5,7 @@ use crate::config::TranslationConfig;
 use crate::fit_engine::FitEngine;
 use crate::text_layout::DrawableArea;
 
-use crate::translation::{BubbleInput, BubbleTranslated, TranslateRequest, TranslationEngine};
+use crate::translation::{BubbleInput, BubbleTranslated, TranslateContext, TranslateRequest, TranslationEngine};
 
 /// Resolve the translation engine: use provider_config override if present, else default.
 pub fn resolve_engine<'a>(
@@ -45,12 +45,48 @@ pub enum ResolvedEngine<'a> {
 }
 
 impl ResolvedEngine<'_> {
-    pub async fn translate(&self, req: &TranslateRequest) -> Result<Vec<BubbleTranslated>> {
+    pub async fn translate(
+        &self,
+        req: &TranslateRequest,
+        ctx: &TranslateContext<'_>,
+    ) -> Result<Vec<BubbleTranslated>> {
         match self {
-            ResolvedEngine::Borrowed(e) => e.translate(req).await,
-            ResolvedEngine::Owned(e) => e.translate(req).await,
+            ResolvedEngine::Borrowed(e) => e.translate(req, ctx).await,
+            ResolvedEngine::Owned(e) => e.translate(req, ctx).await,
         }
     }
+}
+
+/// Shared translation output: translated bubbles + index mapping back to input order.
+struct TranslateOutput {
+    translated: Vec<BubbleTranslated>,
+    id_to_idx: std::collections::HashMap<String, usize>,
+}
+
+/// Translate a single page of bubbles. Shared by translate_and_fit() and translate_only().
+async fn translate_bubbles(
+    engine: &ResolvedEngine<'_>,
+    inputs: Vec<BubbleInput>,
+    source_lang: &str,
+    target_lang: &str,
+    context: Vec<BubbleTranslated>,
+    ctx: &TranslateContext<'_>,
+) -> Result<TranslateOutput> {
+    let id_to_idx: std::collections::HashMap<String, usize> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.id.clone(), i))
+        .collect();
+
+    let translate_req = TranslateRequest::single_page(
+        inputs,
+        source_lang.to_string(),
+        target_lang.to_string(),
+        context,
+    );
+    let translated = engine.translate(&translate_req, ctx).await?;
+
+    Ok(TranslateOutput { translated, id_to_idx })
 }
 
 /// Batch translate bubbles and fit into polygons using precomputed DrawableAreas.
@@ -58,28 +94,18 @@ pub async fn translate_and_fit(
     engine: &ResolvedEngine<'_>,
     inputs: Vec<BubbleInput>,
     polygons: &[Vec<[f64; 2]>],
+    source_lang: &str,
     target_lang: &str,
     context: Vec<BubbleTranslated>,
     page_width: u32,
     areas: &[DrawableArea],
+    ctx: &TranslateContext<'_>,
 ) -> Result<Vec<BubbleResult>> {
-    let id_to_idx: std::collections::HashMap<String, usize> = inputs
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.id.clone(), i))
-        .collect();
+    let output = translate_bubbles(engine, inputs, source_lang, target_lang, context, ctx).await?;
 
-    let translate_req = TranslateRequest {
-        bubbles: inputs,
-        target_lang: target_lang.to_string(),
-        context,
-    };
-    let translated = engine.translate(&translate_req).await?;
-
-    // Build matched pairs for page-level fitting
     let mut fit_meta: Vec<(&BubbleTranslated, usize)> = Vec::new();
-    for t in &translated {
-        if let Some(&idx) = id_to_idx.get(&t.id) {
+    for t in &output.translated {
+        if let Some(&idx) = output.id_to_idx.get(&t.id) {
             fit_meta.push((t, idx));
         }
     }
@@ -104,7 +130,6 @@ pub async fn translate_and_fit(
                 line_height: fit.line_height,
                 overflow: fit.overflow,
                 align: "center".to_string(),
-                inset: area.insets.left, // legacy field
                 drawable_area: Some(area.clone()),
             }
         })
@@ -117,27 +142,18 @@ pub async fn translate_only(
     engine: &ResolvedEngine<'_>,
     inputs: Vec<BubbleInput>,
     polygons: &[Vec<[f64; 2]>],
+    source_lang: &str,
     target_lang: &str,
     context: Vec<BubbleTranslated>,
     areas: &[DrawableArea],
+    ctx: &TranslateContext<'_>,
 ) -> Result<Vec<crate::canvas_agent::CanvasBubble>> {
-    let id_to_idx: std::collections::HashMap<String, usize> = inputs
-        .iter()
-        .enumerate()
-        .map(|(i, b)| (b.id.clone(), i))
-        .collect();
+    let output = translate_bubbles(engine, inputs, source_lang, target_lang, context, ctx).await?;
 
-    let translate_req = TranslateRequest {
-        bubbles: inputs,
-        target_lang: target_lang.to_string(),
-        context,
-    };
-    let translated = engine.translate(&translate_req).await?;
-
-    let canvas_bubbles = translated
+    let canvas_bubbles = output.translated
         .into_iter()
         .filter_map(|t| {
-            id_to_idx.get(&t.id).map(|&idx| crate::canvas_agent::CanvasBubble {
+            output.id_to_idx.get(&t.id).map(|&idx| crate::canvas_agent::CanvasBubble {
                 id: t.id,
                 polygon: polygons[idx].clone(),
                 source_text: t.source_text,
@@ -182,7 +198,6 @@ pub fn bubbles_from_canvas(
             line_height: crate::text_layout::LINE_HEIGHT_MULTIPLIER,
             overflow: total_h > safe_h,
             align: align.clone(),
-            inset: drawable_area.insets.left, // legacy field
             drawable_area: Some(drawable_area.clone()),
         });
     }
@@ -206,16 +221,11 @@ pub fn build_context(req: &TranslateImageRequest) -> Vec<BubbleTranslated> {
         .collect()
 }
 
+const KNOWN_LANGS: &[&str] = &["ja", "ko", "zh", "en", "vi"];
+
 pub fn detect_source_lang(explicit: Option<&str>, target_lang: &str) -> &'static str {
     if let Some(lang) = explicit {
-        return match lang {
-            "ja" => "ja",
-            "ko" => "ko",
-            "zh" => "zh",
-            "en" => "en",
-            "vi" => "vi",
-            _ => "en",
-        };
+        return KNOWN_LANGS.iter().find(|&&k| k == lang).copied().unwrap_or("en");
     }
     match target_lang {
         "en" | "vi" => "ja",

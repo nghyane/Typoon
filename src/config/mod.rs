@@ -15,6 +15,16 @@ pub struct AppConfig {
     pub translation: TranslationConfig,
     #[serde(default)]
     pub canvas_agent: CanvasAgentConfig,
+    #[serde(default)]
+    pub glossary: GlossaryConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GlossaryConfig {
+    /// Path to SQLite glossary database (created if missing).
+    pub db_path: Option<String>,
+    /// Path to TOML file to import terms from on startup.
+    pub import_toml: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +93,7 @@ impl AppConfig {
                 default_target_lang: default_target_lang(),
                 translation: TranslationConfig::default(),
                 canvas_agent: CanvasAgentConfig::default(),
+                glossary: GlossaryConfig::default(),
             })
         }
     }

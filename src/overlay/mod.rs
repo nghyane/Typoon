@@ -28,21 +28,14 @@ pub fn render(img: &DynamicImage, bubbles: &[BubbleResult]) -> RgbaImage {
             continue;
         }
 
-        // Use canonical DrawableArea if available, otherwise fall back to polygon + inset
-        let (draw_x1, draw_y1, draw_w, draw_h) = if let Some(area) = &bubble.drawable_area {
-            area.rect()
-        } else {
-            let (bx1, by1, bx2, by2) = text_layout::polygon_bbox(&bubble.polygon);
-            let inset = bubble.inset;
-            (bx1 + inset, by1 + inset,
-             (bx2 - bx1 - 2.0 * inset).max(0.0),
-             (by2 - by1 - 2.0 * inset).max(0.0))
-        };
+        let area = bubble.drawable_area.as_ref().unwrap_or_else(|| {
+            panic!("BubbleResult.drawable_area must be set by pipeline")
+        });
+        let (draw_x1, draw_y1, draw_w, draw_h) = area.rect();
 
         // 1. Erase: fill the actual polygon with white (tight fill for rotated quads)
         if bubble.polygon.len() >= 3 {
-            let inset = bubble.inset;
-            let poly_points = shrink_polygon(&bubble.polygon, inset);
+            let poly_points = shrink_polygon(&bubble.polygon, area.insets.left);
             if poly_points.len() >= 3 {
                 draw_polygon_mut(&mut canvas, &poly_points, white);
             }
@@ -124,9 +117,20 @@ pub fn encode_png(img: &RgbaImage) -> Vec<u8> {
     buf.into_inner()
 }
 
+/// Encode a DynamicImage as a JPEG data URI (base64) at the given quality (0–100).
+pub fn encode_jpeg_data_uri(img: &DynamicImage, quality: u8) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    img.write_with_encoder(encoder).expect("JPEG encoding failed");
+    let b64 = STANDARD.encode(buf.into_inner());
+    format!("data:image/jpeg;base64,{b64}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_layout::DrawableArea;
 
     #[test]
     fn test_render_empty_bubbles() {
@@ -148,8 +152,10 @@ mod tests {
             line_height: 1.18,
             overflow: false,
             align: "center".into(),
-            inset: 3.0,
-            drawable_area: None,
+            drawable_area: Some(DrawableArea::from_polygon(
+                &[[50.0, 50.0], [350.0, 50.0], [350.0, 250.0], [50.0, 250.0]],
+                3.0,
+            )),
         };
         let result = render(&img, &[bubble]);
         assert_eq!(result.width(), 400);

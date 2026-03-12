@@ -11,6 +11,8 @@ use tower_http::cors::{CorsLayer, AllowOrigin};
 
 use crate::config::AppConfig;
 use crate::detection::TextDetector;
+use crate::glossary::Glossary;
+use crate::model_hub::{self, Model};
 use crate::ocr::OcrEngine;
 use crate::canvas_agent::CanvasAgent;
 use crate::translation::TranslationEngine;
@@ -20,13 +22,15 @@ pub struct AppState {
     pub ocr: OcrEngine,
     pub translation: TranslationEngine,
     pub canvas_agent: Option<CanvasAgent>,
+    pub glossary: Option<Glossary>,
     pub config: AppConfig,
 }
 
 impl AppState {
     pub async fn new(config: &AppConfig) -> Result<Arc<Self>> {
-        let detector = TextDetector::new(&config.models_dir)?;
-        let ocr = OcrEngine::new(&config.models_dir)?;
+        let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
+        let detector = TextDetector::new(&ctd_path)?;
+        let ocr = OcrEngine::new(&config.models_dir).await?;
         let translation = TranslationEngine::new(&config.translation)?;
 
         let canvas_agent = if config.canvas_agent.enabled {
@@ -45,11 +49,32 @@ impl AppState {
             None
         };
 
+        let glossary = if let Some(db_path) = &config.glossary.db_path {
+            match Glossary::open(std::path::Path::new(db_path)) {
+                Ok(g) => {
+                    if let Some(toml_path) = &config.glossary.import_toml {
+                        if let Err(e) = g.import_toml(std::path::Path::new(toml_path)) {
+                            tracing::warn!("Glossary TOML import failed: {e}");
+                        }
+                    }
+                    tracing::info!("Glossary loaded from {db_path}");
+                    Some(g)
+                }
+                Err(e) => {
+                    tracing::warn!("Glossary init failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Arc::new(Self {
             detector: Mutex::new(detector),
             ocr,
             translation,
             canvas_agent,
+            glossary,
             config: config.clone(),
         }))
     }

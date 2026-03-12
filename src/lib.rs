@@ -4,6 +4,8 @@ pub mod canvas_agent;
 pub mod config;
 pub mod detection;
 pub mod fit_engine;
+pub mod glossary;
+pub mod model_hub;
 pub mod ocr;
 pub mod overlay;
 pub mod pipeline;

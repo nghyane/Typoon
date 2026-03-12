@@ -14,23 +14,24 @@ fn test_ctd_loads() {
         eprintln!("Skipping: comic-text-detector.onnx not found");
         return;
     }
-    let detector = comic_scan::detection::TextDetector::new(MODELS);
+    let model_path = Path::new(MODELS).join("comic-text-detector.onnx");
+    let detector = comic_scan::detection::TextDetector::new(&model_path);
     assert!(detector.is_ok(), "Failed to load: {:?}", detector.err());
 }
 
-#[test]
-fn test_manga_ocr_loads() {
+#[tokio::test]
+async fn test_manga_ocr_loads() {
     if !Path::new(MODELS).join("encoder_model.onnx").exists() {
         eprintln!("Skipping: manga-ocr models not found");
         return;
     }
-    let adapter = comic_scan::ocr::manga_ocr_adapter(MODELS);
-    assert!(adapter.is_ok(), "Failed to load: {:?}", adapter.err());
+    let engine = comic_scan::ocr::OcrEngine::new(MODELS).await;
+    assert!(engine.is_ok(), "Failed to load: {:?}", engine.err());
 }
 
 /// Full JA pipeline: comic-text-detector → manga-ocr
-#[test]
-fn test_ja_pipeline() {
+#[tokio::test]
+async fn test_ja_pipeline() {
     if !has_models() || !Path::new(FIXTURE).exists() {
         eprintln!("Skipping: models or fixture not found");
         return;
@@ -40,19 +41,19 @@ fn test_ja_pipeline() {
     println!("Image: {} ({}x{})", FIXTURE, img.width(), img.height());
 
     // Detect
-    let mut detector = comic_scan::detection::TextDetector::new(MODELS).unwrap();
+    let model_path = Path::new(MODELS).join("comic-text-detector.onnx");
+    let mut detector = comic_scan::detection::TextDetector::new(&model_path).unwrap();
     let regions = detector.detect(&img).expect("Detection failed");
     println!("Detected {} regions", regions.len());
     assert!(!regions.is_empty(), "Expected at least one region");
 
     // OCR
-    let ocr = comic_scan::ocr::manga_ocr_adapter(MODELS).unwrap();
-    use comic_scan::ocr::OcrProvider;
+    let ocr = comic_scan::ocr::OcrEngine::new(MODELS).await.unwrap();
 
     println!("=== JA Pipeline: CTD → manga-ocr ===");
     let mut recognized = 0;
     for (i, region) in regions.iter().enumerate() {
-        match ocr.recognize(&region.crop) {
+        match ocr.recognize(&region.crop, "ja") {
             Ok(r) => {
                 println!("  Region {i}: crop={}x{}, conf={:.3}, text={:?}",
                     region.crop.width(), region.crop.height(), region.confidence, r.text);

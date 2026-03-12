@@ -27,7 +27,8 @@ const BBOX_COLORS: [Rgba<u8>; 6] = [
     Rgba([255, 255, 0, 255]),
 ];
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -79,10 +80,12 @@ fn main() -> anyhow::Result<()> {
     let bubbles = match lang.as_str() {
         "ja" => {
             // Manga: comic-text-detector (whole bubble polygons)
-            let mut detector = comic_scan::detection::TextDetector::new(&config.models_dir)?;
+            let ctd_path = comic_scan::model_hub::resolve(
+                &config.models_dir, comic_scan::model_hub::Model::ComicTextDetector,
+            ).await?;
+            let mut detector = comic_scan::detection::TextDetector::new(&ctd_path)?;
             let regions = detector.detect(&img)?;
             println!("comic-text-detector: {} raw regions", regions.len());
-            // Each region is already a bubble, wrap into MergedBubble-like tuples
             regions
                 .into_iter()
                 .map(|r| (r.polygon, r.confidence, 1usize))
@@ -90,9 +93,9 @@ fn main() -> anyhow::Result<()> {
         }
         _ => {
             // Manhwa/webtoon: PP-OCR det → line merge
-            let ocr = comic_scan::ocr::OcrEngine::new(&config.models_dir)?;
+            let ocr = comic_scan::ocr::OcrEngine::new(&config.models_dir).await?;
             if !ocr.can_detect() {
-                anyhow::bail!("PP-OCR detection model not loaded — check models/ dir");
+                anyhow::bail!("PP-OCR detection model not loaded");
             }
             let lines = ocr.detect(&img)?;
             println!("PP-OCR det: {} raw lines", lines.len());

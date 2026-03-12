@@ -1,11 +1,10 @@
-use std::io::Cursor;
 use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use async_openai::types::chat::ChatCompletionMessageToolCalls;
 use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_rect_mut, draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
@@ -210,10 +209,7 @@ impl CanvasAgent {
         };
 
         for call in tool_calls {
-            let tc = match call {
-                async_openai::types::chat::ChatCompletionMessageToolCalls::Function(f) => f,
-                _ => continue,
-            };
+            let ChatCompletionMessageToolCalls::Function(tc) = call else { continue };
 
             match tc.function.name.as_str() {
                 "typeset" => {
@@ -467,13 +463,7 @@ fn execute_typeset(
 // ── Encoding ──
 
 fn encode_canvas_jpeg(canvas: &RgbaImage) -> String {
-    let mut jpeg_buf = Cursor::new(Vec::new());
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 85);
-    DynamicImage::ImageRgba8(canvas.clone())
-        .write_with_encoder(encoder)
-        .expect("JPEG encoding failed");
-    let b64 = STANDARD.encode(jpeg_buf.into_inner());
-    format!("data:image/jpeg;base64,{b64}")
+    crate::overlay::encode_jpeg_data_uri(&DynamicImage::ImageRgba8(canvas.clone()), 85)
 }
 
 

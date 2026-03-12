@@ -4,21 +4,11 @@ mod manga_ocr;
 use anyhow::Result;
 
 use crate::detection::TextRegion;
-
-/// Create a standalone MangaOcrAdapter (for testing)
-pub fn manga_ocr_adapter(models_dir: &str) -> Result<impl OcrProvider> {
-    manga_ocr::MangaOcrAdapter::new(models_dir)
-}
+use crate::model_hub::{self, Model};
 
 pub struct OcrResult {
     pub text: String,
     pub confidence: f64,
-}
-
-/// Abstract OCR provider trait
-pub trait OcrProvider: Send + Sync {
-    fn recognize(&self, image: &image::DynamicImage) -> Result<OcrResult>;
-    fn name(&self) -> &str;
 }
 
 pub struct OcrEngine {
@@ -27,10 +17,36 @@ pub struct OcrEngine {
 }
 
 impl OcrEngine {
-    pub fn new(models_dir: &str) -> Result<Self> {
-        let ppocr = ppocr::PpOcrAdapter::new(models_dir).ok();
-        let manga_ocr = manga_ocr::MangaOcrAdapter::new(models_dir).ok();
+    pub async fn new(models_dir: &str) -> Result<Self> {
+        let ppocr = match Self::load_ppocr(models_dir).await {
+            Ok(adapter) => Some(adapter),
+            Err(e) => {
+                tracing::warn!("PP-OCR not loaded: {e}");
+                None
+            }
+        };
+        let manga_ocr = match Self::load_manga_ocr(models_dir).await {
+            Ok(adapter) => Some(adapter),
+            Err(e) => {
+                tracing::warn!("manga-ocr not loaded: {e}");
+                None
+            }
+        };
         Ok(Self { ppocr, manga_ocr })
+    }
+
+    async fn load_ppocr(models_dir: &str) -> Result<ppocr::PpOcrAdapter> {
+        let rec_path = model_hub::resolve(models_dir, Model::PpocrRec).await?;
+        let dict_path = model_hub::resolve(models_dir, Model::PpocrKeys).await?;
+        let det_path = model_hub::resolve_optional(models_dir, Model::PpocrDet).await;
+        ppocr::PpOcrAdapter::new(&rec_path, &dict_path, det_path.as_deref())
+    }
+
+    async fn load_manga_ocr(models_dir: &str) -> Result<manga_ocr::MangaOcrAdapter> {
+        let encoder = model_hub::resolve(models_dir, Model::MangaOcrEncoder).await?;
+        let decoder = model_hub::resolve(models_dir, Model::MangaOcrDecoder).await?;
+        let vocab = model_hub::resolve(models_dir, Model::MangaOcrVocab).await?;
+        manga_ocr::MangaOcrAdapter::new(&encoder, &decoder, &vocab)
     }
 
     pub fn is_loaded(&self) -> bool {

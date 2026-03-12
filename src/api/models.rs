@@ -64,15 +64,12 @@ pub struct BubbleResult {
     pub overflow: bool,
     #[serde(default = "default_align")]
     pub align: String,
-    #[serde(default = "default_inset")]
-    pub inset: f64,
     /// Canonical drawable area (computed once, used by fit + render).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drawable_area: Option<DrawableArea>,
 }
 
 fn default_align() -> String { "center".into() }
-fn default_inset() -> f64 { crate::text_layout::DEFAULT_INSET }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {

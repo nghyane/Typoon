@@ -73,8 +73,8 @@ async fn main() -> anyhow::Result<()> {
     println!("── Bubbles ({}) ──", response.bubbles.len());
     for b in &response.bubbles {
         println!(
-            "  [{}] font={}px inset={:.1} overflow={} align={}",
-            b.bubble_id, b.font_size_px, b.inset, b.overflow, b.align
+            "  [{}] font={}px overflow={} align={}",
+            b.bubble_id, b.font_size_px, b.overflow, b.align
         );
         println!("        src: {:?}", b.source_text);
         println!("        out: {:?}", b.translated_text);
