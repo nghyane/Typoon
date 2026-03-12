@@ -24,6 +24,10 @@ impl MergedBubble {
 /// Prevents merging lines from separate bubbles that happen to be aligned.
 const MAX_VERTICAL_GAP_PX: f64 = 40.0;
 
+/// Maximum absolute horizontal gap (px) between two lines to allow merging.
+/// Prevents merging lines from side-by-side bubbles that share similar Y ranges.
+const MAX_HORIZONTAL_GAP_PX: f64 = 30.0;
+
 /// Group PP-OCR text lines into bubble groups by spatial proximity.
 ///
 /// Two lines are grouped if:
@@ -50,19 +54,32 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
                 continue;
             }
 
-            let (_, iy1, _, iy2) = bbox(&lines[i].polygon);
-            let (_, jy1, _, jy2) = bbox(&lines[j].polygon);
+            let (ix1, iy1, ix2, iy2) = bbox(&lines[i].polygon);
+            let (jx1, jy1, jx2, jy2) = bbox(&lines[j].polygon);
             let max_h = (iy2 - iy1).max(jy2 - jy1);
 
-            // Vertical gap: must be within both relative and absolute limits
+            let h_gap = if ix2 < jx1 { jx1 - ix2 } else if jx2 < ix1 { ix1 - jx2 } else { 0.0 };
             let v_gap = if iy2 < jy1 { jy1 - iy2 } else if jy2 < iy1 { iy1 - jy2 } else { 0.0 };
-            if v_gap > max_h * 1.5 || v_gap > MAX_VERTICAL_GAP_PX {
-                continue;
-            }
 
-            // Horizontal overlap
-            if horizontal_overlap_ratio(&lines[i].polygon, &lines[j].polygon) < 0.4 {
-                continue;
+            // Bboxes intersect (overlap in both X and Y) → always merge.
+            // Two separate bubbles never have overlapping bboxes.
+            let bboxes_intersect = h_gap == 0.0 && v_gap == 0.0;
+
+            if !bboxes_intersect {
+                // Horizontal gap: reject side-by-side lines from different bubbles
+                if h_gap > MAX_HORIZONTAL_GAP_PX {
+                    continue;
+                }
+
+                // Vertical gap: must be within both relative and absolute limits
+                if v_gap > max_h * 1.5 || v_gap > MAX_VERTICAL_GAP_PX {
+                    continue;
+                }
+
+                // Horizontal overlap
+                if horizontal_overlap_ratio(&lines[i].polygon, &lines[j].polygon) < 0.4 {
+                    continue;
+                }
             }
 
             union(&mut parent, i, j);
@@ -187,6 +204,11 @@ fn horizontal_overlap_ratio(a: &[[f64; 2]], b: &[[f64; 2]]) -> f64 {
     if min_w > 0.0 { overlap / min_w } else { 0.0 }
 }
 
+/// Expand margin as fraction of average line height.
+/// PP-OCR line bboxes are tight around text — expand so FitEngine has room for
+/// translated text without the internal padding eating into usable space.
+const EXPAND_RATIO: f64 = 0.35;
+
 fn bounding_polygon(regions: &[TextRegion]) -> Vec<[f64; 2]> {
     let (mut x1, mut y1) = (f64::INFINITY, f64::INFINITY);
     let (mut x2, mut y2) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -198,6 +220,23 @@ fn bounding_polygon(regions: &[TextRegion]) -> Vec<[f64; 2]> {
             y2 = y2.max(p[1]);
         }
     }
+
+    // Expand: average line height × EXPAND_RATIO on each side
+    let avg_line_h = if regions.is_empty() {
+        0.0
+    } else {
+        let total: f64 = regions.iter().map(|r| {
+            let (_, ry1, _, ry2) = bbox(&r.polygon);
+            ry2 - ry1
+        }).sum();
+        total / regions.len() as f64
+    };
+    let margin = avg_line_h * EXPAND_RATIO;
+    x1 -= margin;
+    y1 -= margin;
+    x2 += margin;
+    y2 += margin;
+
     vec![[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
 }
 

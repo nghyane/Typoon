@@ -1,9 +1,11 @@
 pub mod api;
-pub mod cache;
+pub mod border_detect;
+pub mod canvas_agent;
 pub mod config;
 pub mod detection;
 pub mod fit_engine;
 pub mod ocr;
 pub mod overlay;
 pub mod pipeline;
+pub mod text_layout;
 pub mod translation;

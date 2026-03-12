@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
-use futures::StreamExt;
 
 use super::{BubbleTranslated, TranslateRequest, TranslationProvider};
 use crate::config::TranslationConfig;
@@ -9,6 +8,7 @@ use crate::config::TranslationConfig;
 pub struct OpenAICompatibleAdapter {
     client: Client<OpenAIConfig>,
     model: String,
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAICompatibleAdapter {
@@ -20,23 +20,15 @@ impl OpenAICompatibleAdapter {
         Ok(Self {
             client: Client::with_config(openai_config),
             model: config.model.clone(),
+            reasoning_effort: config.reasoning_effort.clone(),
         })
     }
 
     fn build_prompt(&self, req: &TranslateRequest) -> String {
         let mut prompt = format!(
-            "You are processing OCR results from a manga/manhwa page. The text was extracted by OCR and may contain errors.\n\
-             \n\
-             Your tasks:\n\
-             1. SKIP watermarks, scan group names, URLs, and non-dialogue text (do NOT include them)\n\
-             2. FIX OCR errors (misspellings, garbled characters)\n\
-             3. MERGE bubbles that are fragments of the same sentence (same Y position = same row, adjacent bubbles)\n\
-             4. TRANSLATE the cleaned dialogue to {}\n\
-             \n\
-             Output JSON: {{\"bubbles\": [{{\"id\": \"b0\", \"source_text\": \"cleaned original\", \"translated_text\": \"translation\"}}]}}\n\
-             - For merged bubbles, use the first bubble's id\n\
-             - Omit skipped bubbles entirely\n\
-             - Keep translations natural and conversational. Preserve tone and emotion.\n",
+            "Translate each bubble to {}. \
+             Call translate() once for EVERY bubble. Preserve tone and emotion. \
+             Fix obvious OCR errors in source_text.\n",
             req.target_lang
         );
 
@@ -47,64 +39,109 @@ impl OpenAICompatibleAdapter {
             }
         }
 
-        prompt.push_str("\nOCR bubbles (id, position, text):\n");
+        prompt.push_str("\nBubbles:\n");
         for bubble in &req.bubbles {
-            if let Some((x, y)) = bubble.position {
-                prompt.push_str(&format!("  [{}] pos=({},{}) \"{}\"\n", bubble.id, x, y, bubble.source_text));
-            } else {
-                prompt.push_str(&format!("  [{}] \"{}\"\n", bubble.id, bubble.source_text));
-            }
+            prompt.push_str(&format!("  [{}] \"{}\"\n", bubble.id, bubble.source_text));
         }
 
         prompt
     }
 }
 
+fn translate_tool_def() -> serde_json::Value {
+    serde_json::json!([{
+        "type": "function",
+        "function": {
+            "name": "translate",
+            "description": "Submit the translation for one bubble.",
+            "strict": true,
+            "parameters": {
+                "type": "object",
+                "required": ["id", "source_text", "translated_text"],
+                "additionalProperties": false,
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Bubble ID (e.g. b0)"
+                    },
+                    "source_text": {
+                        "type": "string",
+                        "description": "Cleaned/corrected source text"
+                    },
+                    "translated_text": {
+                        "type": "string",
+                        "description": "Translated text"
+                    }
+                }
+            }
+        }
+    }])
+}
+
+#[derive(serde::Deserialize)]
+struct TranslateArgs {
+    id: String,
+    source_text: String,
+    translated_text: String,
+}
+
 impl TranslationProvider for OpenAICompatibleAdapter {
     async fn translate(&self, req: &TranslateRequest) -> Result<Vec<BubbleTranslated>> {
         let prompt = self.build_prompt(req);
 
-        // Stream with json_object response format
-        let mut stream = self.client.chat().create_stream_byot(serde_json::json!({
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": "You are a professional manga/manhwa translator. Output valid JSON only."},
-                {"role": "user", "content": prompt}
-            ],
-            "response_format": {"type": "json_object"},
-            "stream": true
-        })).await.context("LLM stream request failed")?;
-
-        let mut content = String::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk: async_openai::types::chat::CreateChatCompletionStreamResponse =
-                chunk.context("Stream chunk error")?;
-            for choice in &chunk.choices {
-                if let Some(c) = &choice.delta.content {
-                    content.push_str(c);
+        let resp: async_openai::types::chat::CreateChatCompletionResponse = self
+            .client
+            .chat()
+            .create_byot({
+                let mut body = serde_json::json!({
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "You are a professional manga/manhwa translator."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "tools": translate_tool_def(),
+                    "parallel_tool_calls": true
+                });
+                if let Some(effort) = &self.reasoning_effort {
+                    body["reasoning_effort"] = serde_json::json!(effort);
                 }
+                body
+            })
+            .await
+            .context("Translation request failed")?;
+
+        let choice = resp
+            .choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No choices returned"))?;
+
+        let tool_calls = match &choice.message.tool_calls {
+            Some(calls) => calls,
+            None => anyhow::bail!("LLM returned no tool calls"),
+        };
+
+        let mut results = Vec::new();
+        for call in tool_calls {
+            let tc = match call {
+                async_openai::types::chat::ChatCompletionMessageToolCalls::Function(f) => f,
+                _ => continue,
+            };
+            if tc.function.name != "translate" {
+                continue;
             }
+            let args: TranslateArgs = serde_json::from_str(&tc.function.arguments)
+                .with_context(|| format!("Bad translate args: {}", tc.function.arguments))?;
+            results.push(BubbleTranslated {
+                id: args.id,
+                source_text: args.source_text,
+                translated_text: args.translated_text,
+            });
         }
 
-        if content.is_empty() {
-            anyhow::bail!("LLM stream returned no content");
-        }
-
-        // Try {"bubbles": [...]} wrapper first, then bare array
-        if let Ok(wrapper) = serde_json::from_str::<BubblesWrapper>(&content) {
-            return Ok(wrapper.bubbles);
-        }
-
-        serde_json::from_str::<Vec<BubbleTranslated>>(&content)
-            .with_context(|| format!("Failed to parse LLM JSON: {content}"))
+        Ok(results)
     }
 
     fn name(&self) -> &str {
         "openai_compatible"
     }
-}
-
-#[derive(serde::Deserialize)]
-struct BubblesWrapper {
-    bubbles: Vec<BubbleTranslated>,
 }

@@ -47,6 +47,8 @@ pub struct TranslateImageResponse {
     pub image_id: String,
     pub status: String,
     pub bubbles: Vec<BubbleResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered_image_png_b64: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,7 +60,14 @@ pub struct BubbleResult {
     pub font_size_px: u32,
     pub line_height: f64,
     pub overflow: bool,
+    #[serde(default = "default_align")]
+    pub align: String,
+    #[serde(default = "default_inset")]
+    pub inset: f64,
 }
+
+fn default_align() -> String { "center".into() }
+fn default_inset() -> f64 { 3.0 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {

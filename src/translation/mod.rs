@@ -12,7 +12,7 @@ pub struct TranslateRequest {
     pub context: Vec<BubbleTranslated>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BubbleInput {
     pub id: String,
     pub source_text: String,

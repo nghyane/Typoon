@@ -1,9 +1,13 @@
 port = 4319
 models_dir = "models"
-cache_dir = "cache"
 default_target_lang = "vi"
 
 [translation]
-endpoint = "http://5.223.45.83:7860/api/provider/openai/v1"
+endpoint = "http://localhost:7860/api/provider/openai/v1"
 # api_key not needed — proxy handles auth
 model = "gpt-5.4"
+reasoning_effort = "low"
+
+[canvas_agent]
+enabled = false  # fit engine + border_detect đủ tốt, agent thêm ~70s latency
+model = "gpt-5-codex"

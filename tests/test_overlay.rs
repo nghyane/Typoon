@@ -1,5 +1,8 @@
 use std::path::Path;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+
 const MODELS: &str = "models";
 
 const FIXTURES: &[(&str, &str)] = &[
@@ -14,7 +17,11 @@ fn has_ppocr() -> bool {
         && Path::new(MODELS).join("ppocr_rec.onnx").exists()
 }
 
-/// Full pipeline → overlay render → save PNG for visual inspection.
+/// Full pipeline → canvas agent render → save PNG for visual inspection.
+///
+/// Uses the actual webtoon/manga pipeline (including Canvas Agent) via
+/// `pipeline::process_image`. If canvas agent produced a rendered image,
+/// saves that directly; otherwise falls back to overlay::render.
 ///
 /// Output: .amp/in/artifacts/overlay_{name}.png
 #[tokio::test]
@@ -27,11 +34,8 @@ async fn test_overlay_render() {
     let out_dir = Path::new(".amp/in/artifacts");
     std::fs::create_dir_all(out_dir).unwrap();
 
-    let ocr = comic_scan::ocr::OcrEngine::new(MODELS).unwrap();
-    assert!(ocr.can_detect());
-
     let config = comic_scan::config::AppConfig::load().unwrap();
-    let translation = comic_scan::translation::TranslationEngine::new(&config.translation).unwrap();
+    let state = comic_scan::api::AppState::new(&config).await.unwrap();
 
     for (name, fixture) in FIXTURES {
         if !Path::new(fixture).exists() {
@@ -40,72 +44,47 @@ async fn test_overlay_render() {
         }
 
         println!("\n=== {name} ===");
-        let img = image::open(fixture).expect("Failed to load");
+        let image_bytes = std::fs::read(fixture).expect("Failed to read fixture");
+        let img = image::load_from_memory(&image_bytes).expect("Failed to decode image");
         println!("  Image: {}x{}", img.width(), img.height());
 
-        // Detect + OCR
-        let lines = ocr.detect(&img).expect("Detection failed");
-        let merged = comic_scan::pipeline::merge::group_lines(lines);
-        let (inputs, polygons) = comic_scan::pipeline::ocr_merged_bubbles(&ocr, &merged, "en")
-            .expect("OCR failed");
-        println!("  {} bubbles detected", inputs.len());
-
-        if inputs.is_empty() {
-            println!("  No bubbles, skipping");
-            continue;
-        }
-
-        // Translate
-        let translate_req = comic_scan::translation::TranslateRequest {
-            bubbles: inputs,
+        let req = comic_scan::api::TranslateImageRequest {
+            image_id: name.to_string(),
+            image_blob_b64: STANDARD.encode(&image_bytes),
+            source_lang: Some("en".into()),
             target_lang: "vi".into(),
-            context: vec![],
+            ocr_provider: None,
+            translation_provider: None,
+            provider_config: None,
+            context_hint: None,
         };
-        let translated = match translation.translate(&translate_req).await {
-            Ok(t) => t,
+
+        let response = match comic_scan::pipeline::process_image(&state, &req).await {
+            Ok(r) => r,
             Err(e) => {
-                eprintln!("  Translation failed (LLM may be unavailable): {e:#}");
+                eprintln!("  Pipeline failed (LLM may be unavailable): {e:#}");
                 continue;
             }
         };
-        println!("  {} bubbles translated", translated.len());
 
-        // Fit
-        let id_to_polygon: std::collections::HashMap<String, usize> = translate_req.bubbles
-            .iter()
-            .enumerate()
-            .map(|(i, b)| (b.id.clone(), i))
-            .collect();
-
-        let mut bubble_results = Vec::new();
-        for t in &translated {
-            let poly_idx = match id_to_polygon.get(&t.id) {
-                Some(&idx) => idx,
-                None => continue,
-            };
-            let polygon = &polygons[poly_idx];
-            let fit = comic_scan::fit_engine::FitEngine::fit(&t.translated_text, polygon).unwrap();
+        println!("  {} bubbles", response.bubbles.len());
+        for b in &response.bubbles {
             println!(
                 "  [{}] font={}px overflow={} text={:?}",
-                t.id, fit.font_size_px, fit.overflow, fit.text
+                b.bubble_id, b.font_size_px, b.overflow, b.translated_text
             );
-            bubble_results.push(comic_scan::api::BubbleResult {
-                bubble_id: t.id.clone(),
-                polygon: polygon.clone(),
-                source_text: t.source_text.clone(),
-                translated_text: fit.text,
-                font_size_px: fit.font_size_px,
-                line_height: fit.line_height,
-                overflow: fit.overflow,
-            });
         }
 
-        // Render overlay
-        let overlay = comic_scan::overlay::render(&img, &bubble_results);
-
-        // Save
+        // Save rendered image: prefer canvas agent output, fall back to overlay::render
         let out_path = out_dir.join(format!("overlay_{name}.png"));
-        overlay.save(&out_path).expect("Failed to save overlay");
-        println!("  Saved: {}", out_path.display());
+        if let Some(rendered_b64) = &response.rendered_image_png_b64 {
+            let png_bytes = STANDARD.decode(rendered_b64).expect("Failed to decode rendered PNG");
+            std::fs::write(&out_path, &png_bytes).expect("Failed to write rendered PNG");
+            println!("  Saved (canvas agent): {}", out_path.display());
+        } else {
+            let overlay = comic_scan::overlay::render(&img, &response.bubbles);
+            overlay.save(&out_path).expect("Failed to save overlay");
+            println!("  Saved (fit fallback): {}", out_path.display());
+        }
     }
 }

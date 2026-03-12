@@ -9,17 +9,17 @@ use anyhow::Result;
 use axum::{Router, routing::{get, post}};
 use tower_http::cors::{CorsLayer, AllowOrigin};
 
-use crate::cache::DiskCache;
 use crate::config::AppConfig;
 use crate::detection::TextDetector;
 use crate::ocr::OcrEngine;
+use crate::canvas_agent::CanvasAgent;
 use crate::translation::TranslationEngine;
 
 pub struct AppState {
     pub detector: Mutex<TextDetector>,
     pub ocr: OcrEngine,
     pub translation: TranslationEngine,
-    pub cache: DiskCache,
+    pub canvas_agent: Option<CanvasAgent>,
     pub config: AppConfig,
 }
 
@@ -28,13 +28,28 @@ impl AppState {
         let detector = TextDetector::new(&config.models_dir)?;
         let ocr = OcrEngine::new(&config.models_dir)?;
         let translation = TranslationEngine::new(&config.translation)?;
-        let cache = DiskCache::new(&config.cache_dir)?;
+
+        let canvas_agent = if config.canvas_agent.enabled {
+            let agent_translation = config.canvas_agent.resolved_translation(&config.translation);
+            match CanvasAgent::new(&agent_translation) {
+                Ok(agent) => {
+                    tracing::info!("CanvasAgent enabled");
+                    Some(agent)
+                }
+                Err(e) => {
+                    tracing::warn!("CanvasAgent init failed, disabled: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         Ok(Arc::new(Self {
             detector: Mutex::new(detector),
             ocr,
             translation,
-            cache,
+            canvas_agent,
             config: config.clone(),
         }))
     }

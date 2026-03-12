@@ -30,6 +30,7 @@ pub async fn translate_image(
                 image_id: req.image_id,
                 status: format!("error: {e}"),
                 bubbles: vec![],
+                rendered_image_png_b64: None,
             }))
         }
     }
