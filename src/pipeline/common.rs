@@ -3,6 +3,7 @@ use anyhow::Result;
 use crate::api::{AppState, BubbleResult, TranslateImageRequest};
 use crate::config::TranslationConfig;
 use crate::fit_engine::FitEngine;
+use crate::text_layout::DrawableArea;
 
 use crate::translation::{BubbleInput, BubbleTranslated, TranslateRequest, TranslationEngine};
 
@@ -52,7 +53,7 @@ impl ResolvedEngine<'_> {
     }
 }
 
-/// Batch translate bubbles and fit into polygons.
+/// Batch translate bubbles and fit into polygons using precomputed DrawableAreas.
 pub async fn translate_and_fit(
     engine: &ResolvedEngine<'_>,
     inputs: Vec<BubbleInput>,
@@ -60,7 +61,7 @@ pub async fn translate_and_fit(
     target_lang: &str,
     context: Vec<BubbleTranslated>,
     page_width: u32,
-    insets: &[f64],
+    areas: &[DrawableArea],
 ) -> Result<Vec<BubbleResult>> {
     let id_to_idx: std::collections::HashMap<String, usize> = inputs
         .iter()
@@ -76,35 +77,35 @@ pub async fn translate_and_fit(
     let translated = engine.translate(&translate_req).await?;
 
     // Build matched pairs for page-level fitting
-    let mut fit_meta: Vec<(&BubbleTranslated, &Vec<[f64; 2]>)> = Vec::new();
+    let mut fit_meta: Vec<(&BubbleTranslated, usize)> = Vec::new();
     for t in &translated {
         if let Some(&idx) = id_to_idx.get(&t.id) {
-            fit_meta.push((t, &polygons[idx]));
+            fit_meta.push((t, idx));
         }
     }
 
-    let page_items: Vec<(&str, &[[f64; 2]])> = fit_meta
+    let page_items: Vec<(&str, &DrawableArea)> = fit_meta
         .iter()
-        .map(|(t, poly)| (t.translated_text.as_str(), poly.as_slice()))
+        .map(|(t, idx)| (t.translated_text.as_str(), &areas[*idx]))
         .collect();
-    let fits = FitEngine::fit_page(&page_items, page_width)?;
+    let fits = FitEngine::fit_page_areas(&page_items, page_width)?;
 
     let results = fit_meta
         .iter()
         .zip(fits.into_iter())
-        .map(|((t, polygon), fit)| {
-            let idx = id_to_idx.get(&t.id).copied().unwrap_or(0);
-            let inset = insets.get(idx).copied().unwrap_or(3.0);
+        .map(|((t, idx), fit)| {
+            let area = &areas[*idx];
             BubbleResult {
                 bubble_id: t.id.clone(),
-                polygon: (*polygon).clone(),
+                polygon: polygons[*idx].clone(),
                 source_text: t.source_text.clone(),
                 translated_text: fit.text,
                 font_size_px: fit.font_size_px,
                 line_height: fit.line_height,
                 overflow: fit.overflow,
                 align: "center".to_string(),
-                inset,
+                inset: area.insets.left, // legacy field
+                drawable_area: Some(area.clone()),
             }
         })
         .collect();
@@ -118,6 +119,7 @@ pub async fn translate_only(
     polygons: &[Vec<[f64; 2]>],
     target_lang: &str,
     context: Vec<BubbleTranslated>,
+    areas: &[DrawableArea],
 ) -> Result<Vec<crate::canvas_agent::CanvasBubble>> {
     let id_to_idx: std::collections::HashMap<String, usize> = inputs
         .iter()
@@ -140,6 +142,7 @@ pub async fn translate_only(
                 polygon: polygons[idx].clone(),
                 source_text: t.source_text,
                 translated_text: t.translated_text,
+                drawable_area: areas[idx].clone(),
             })
         })
         .collect();
@@ -148,31 +151,27 @@ pub async fn translate_only(
 }
 
 /// Convert canvas agent output to BubbleResult for API response.
-/// Wraps translated text to fit polygon so overlay rendering works correctly.
+/// Uses the final DrawableArea from each command so wrapping matches the rendered image.
 pub fn bubbles_from_canvas(
     canvas_bubbles: &[crate::canvas_agent::CanvasBubble],
     commands: &[crate::canvas_agent::CanvasCommand],
-    _polygons: &[Vec<[f64; 2]>],
-    insets: &[f64],
 ) -> Vec<BubbleResult> {
     let font = crate::text_layout::get_font();
-    let bubble_map: std::collections::HashMap<&str, (&crate::canvas_agent::CanvasBubble, usize)> =
-        canvas_bubbles.iter().enumerate().map(|(i, b)| (b.id.as_str(), (b, i))).collect();
+    let bubble_map: std::collections::HashMap<&str, &crate::canvas_agent::CanvasBubble> =
+        canvas_bubbles.iter().map(|b| (b.id.as_str(), b)).collect();
 
     let mut results = Vec::new();
     for cmd in commands {
         let crate::canvas_agent::CanvasCommand::Typeset {
-            bubble_id, text, font_size, align, crop: _,
+            bubble_id, text, font_size, align, crop: _, drawable_area,
         } = cmd;
-        let Some(&(bubble, idx)) = bubble_map.get(bubble_id.as_str()) else {
+        let Some(&bubble) = bubble_map.get(bubble_id.as_str()) else {
             continue;
         };
-        let inset = insets.get(idx).copied().unwrap_or(3.0);
 
-        // Wrap text to fit within the polygon bbox (matching overlay render logic)
-        let (bx1, _, bx2, _) = crate::text_layout::polygon_bbox(&bubble.polygon);
-        let safe_w = (bx2 - bx1 - 2.0 * inset).max(1.0);
+        let (safe_w, safe_h) = drawable_area.size();
         let wrapped = crate::text_layout::wrap_text(text, safe_w, *font_size, font);
+        let total_h = wrapped.len() as f64 * *font_size as f64 * crate::text_layout::LINE_HEIGHT_MULTIPLIER;
 
         results.push(BubbleResult {
             bubble_id: bubble_id.clone(),
@@ -181,9 +180,10 @@ pub fn bubbles_from_canvas(
             translated_text: wrapped.join("\n"),
             font_size_px: *font_size,
             line_height: crate::text_layout::LINE_HEIGHT_MULTIPLIER,
-            overflow: false,
+            overflow: total_h > safe_h,
             align: align.clone(),
-            inset,
+            inset: drawable_area.insets.left, // legacy field
+            drawable_area: Some(drawable_area.clone()),
         });
     }
     results

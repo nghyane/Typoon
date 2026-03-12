@@ -8,6 +8,7 @@ use image::{DynamicImage, RgbaImage};
 
 use crate::api::{AppState, BubbleResult, TranslateImageRequest, TranslateImageResponse};
 use crate::border_detect;
+use crate::text_layout::DrawableArea;
 use crate::translation::{BubbleInput, BubbleTranslated};
 
 /// Internal pipeline output: bubbles + optional rendered image from canvas agent.
@@ -61,10 +62,13 @@ async fn run_pipeline(
         return Ok(PipelineOutput { bubbles: Vec::new(), rendered_image: None });
     }
 
-    // 2. Detect border thickness per bubble → auto inset
-    let insets: Vec<f64> = polygons
+    // 2. Detect border thickness per bubble → compute DrawableAreas once
+    let areas: Vec<DrawableArea> = polygons
         .iter()
-        .map(|poly| border_detect::detect_inset(img, poly))
+        .map(|poly| {
+            let inset = border_detect::detect_inset(img, poly);
+            DrawableArea::from_polygon(poly, inset)
+        })
         .collect();
 
     let engine = common::resolve_engine(state, req)?;
@@ -72,11 +76,11 @@ async fn run_pipeline(
     // 3. Try canvas agent path (optional)
     if let Some(agent) = &state.canvas_agent {
         let canvas_bubbles = common::translate_only(
-            &engine, inputs.clone(), &polygons, &req.target_lang, context.to_vec(),
+            &engine, inputs.clone(), &polygons, &req.target_lang, context.to_vec(), &areas,
         ).await?;
-        match agent.run(img, &canvas_bubbles, &insets).await {
+        match agent.run(img, &canvas_bubbles).await {
             Ok(output) => {
-                let bubbles = common::bubbles_from_canvas(&canvas_bubbles, &output.commands, &polygons, &insets);
+                let bubbles = common::bubbles_from_canvas(&canvas_bubbles, &output.commands);
                 return Ok(PipelineOutput {
                     bubbles,
                     rendered_image: Some(output.image),
@@ -90,7 +94,7 @@ async fn run_pipeline(
 
     // 4. Translate + fit (default path)
     let bubbles = common::translate_and_fit(
-        &engine, inputs, &polygons, &req.target_lang, context.to_vec(), img.width(), &insets,
+        &engine, inputs, &polygons, &req.target_lang, context.to_vec(), img.width(), &areas,
     ).await?;
     Ok(PipelineOutput { bubbles, rendered_image: None })
 }

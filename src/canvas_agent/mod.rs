@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::config::TranslationConfig;
 use crate::text_layout;
+use crate::text_layout::DrawableArea;
 
 const SYSTEM_PROMPT: &str = r#"You are a professional manga/manhwa typesetter. You receive a comic page with detected text bubbles annotated (colored rectangles with ID labels).
 
@@ -55,6 +56,8 @@ pub struct CanvasBubble {
     pub polygon: Vec<[f64; 2]>,
     pub source_text: String,
     pub translated_text: String,
+    /// Base drawable area from border detection.
+    pub drawable_area: DrawableArea,
 }
 
 /// A single command from the canvas agent.
@@ -65,6 +68,8 @@ pub enum CanvasCommand {
         font_size: u32,
         align: String,
         crop: [f64; 4], // [left, right, top, bottom]
+        /// Final drawable area after applying agent crop.
+        drawable_area: DrawableArea,
     },
 }
 
@@ -129,7 +134,6 @@ impl CanvasAgent {
         &self,
         img: &DynamicImage,
         bubbles: &[CanvasBubble],
-        insets: &[f64],
     ) -> Result<CanvasAgentOutput> {
         if bubbles.is_empty() {
             return Ok(CanvasAgentOutput {
@@ -213,22 +217,20 @@ impl CanvasAgent {
 
             match tc.function.name.as_str() {
                 "typeset" => {
-                    let mut args: TypesetArgs =
+                    let args: TypesetArgs =
                         serde_json::from_str(&tc.function.arguments).with_context(|| {
                             format!("Bad typeset args: {}", tc.function.arguments)
                         })?;
 
-                    let Some(&(idx, bubble)) = bubble_map.get(args.bubble_id.as_str()) else {
+                    let Some(&(_idx, bubble)) = bubble_map.get(args.bubble_id.as_str()) else {
                         tracing::warn!("Canvas agent: unknown bubble_id: {}", args.bubble_id);
                         continue;
                     };
 
-                    // Enforce minimum crop = detected border inset
-                    let min_inset = insets.get(idx).copied().unwrap_or(2.0);
-                    args.crop_left = args.crop_left.max(min_inset);
-                    args.crop_right = args.crop_right.max(min_inset);
-                    args.crop_top = args.crop_top.max(min_inset);
-                    args.crop_bottom = args.crop_bottom.max(min_inset);
+                    // Derive final drawable area: base insets clamped to at least agent crop
+                    let final_area = bubble.drawable_area.with_crop_min([
+                        args.crop_left, args.crop_right, args.crop_top, args.crop_bottom,
+                    ]);
 
                     tracing::info!(
                         "Canvas agent: typeset [{}] size={} align={} crop=[{},{},{},{}]",
@@ -236,13 +238,14 @@ impl CanvasAgent {
                         args.crop_left, args.crop_right, args.crop_top, args.crop_bottom
                     );
 
-                    execute_typeset(&mut canvas, bubble, &args, font);
+                    execute_typeset(&mut canvas, &final_area, &args, font);
                     all_commands.push(CanvasCommand::Typeset {
                         bubble_id: args.bubble_id,
                         text: args.text,
                         font_size: args.font_size,
                         align: args.align,
                         crop: [args.crop_left, args.crop_right, args.crop_top, args.crop_bottom],
+                        drawable_area: final_area,
                     });
                 }
                 "skip" => {
@@ -385,15 +388,15 @@ fn build_user_text(bubbles: &[CanvasBubble], img_w: u32, img_h: u32) -> String {
         img_h
     );
 
-    // Compute suggested font sizes via FitEngine page-level normalization
-    let fit_items: Vec<(&str, &[[f64; 2]])> = bubbles
+    // Compute suggested font sizes via FitEngine using canonical DrawableAreas
+    let fit_items: Vec<(&str, &DrawableArea)> = bubbles
         .iter()
-        .map(|b| (b.translated_text.as_str(), b.polygon.as_slice()))
+        .map(|b| (b.translated_text.as_str(), &b.drawable_area))
         .collect();
-    let fits = FitEngine::fit_page(&fit_items, img_w).unwrap_or_default();
+    let fits = FitEngine::fit_page_areas(&fit_items, img_w).unwrap_or_default();
 
     for (i, bubble) in bubbles.iter().enumerate() {
-        let (x1, y1, x2, y2) = text_layout::polygon_bbox(&bubble.polygon);
+        let [x1, y1, x2, y2] = bubble.drawable_area.bbox;
         let suggested = fits.get(i).map(|f| f.font_size_px).unwrap_or(16);
         msg.push_str(&format!(
             "[{}] bbox=({:.0},{:.0})-({:.0},{:.0}) suggested_font={}px source=\"{}\" translated=\"{}\"\n",
@@ -414,67 +417,46 @@ fn build_user_text(bubbles: &[CanvasBubble], img_w: u32, img_h: u32) -> String {
 
 // ── Command execution ──
 
-/// Apply crop offsets to a detected bbox, returning adjusted (x1, y1, x2, y2).
-fn adjusted_bbox(polygon: &[[f64; 2]], args: &TypesetArgs) -> (f64, f64, f64, f64) {
-    let (x1, y1, x2, y2) = text_layout::polygon_bbox(polygon);
-    (
-        x1 + args.crop_left,
-        y1 + args.crop_top,
-        x2 - args.crop_right,
-        y2 - args.crop_bottom,
-    )
-}
-
-/// Erase original text and render translated text using adjusted bbox.
+/// Erase original text and render translated text using the canonical DrawableArea.
 fn execute_typeset(
     canvas: &mut RgbaImage,
-    bubble: &CanvasBubble,
+    area: &DrawableArea,
     args: &TypesetArgs,
     font: &FontRef<'_>,
 ) {
-    let (x1, y1, x2, y2) = adjusted_bbox(&bubble.polygon, args);
-    let w = (x2 - x1).max(0.0);
-    let h = (y2 - y1).max(0.0);
+    let (draw_x, draw_y, draw_w, draw_h) = area.rect();
 
     let img_w = canvas.width() as i32;
     let img_h = canvas.height() as i32;
 
-    // 1. Erase: fill adjusted bbox with white
-    let rx = (x1 as i32).max(0);
-    let ry = (y1 as i32).max(0);
-    let rw = (w as i32).max(0).min(img_w - rx) as u32;
-    let rh = (h as i32).max(0).min(img_h - ry) as u32;
+    // 1. Erase: fill drawable rect with white
+    let rx = (draw_x as i32).max(0);
+    let ry = (draw_y as i32).max(0);
+    let rw = (draw_w as i32).max(0).min(img_w - rx) as u32;
+    let rh = (draw_h as i32).max(0).min(img_h - ry) as u32;
     if rw > 0 && rh > 0 {
         let white = Rgba([255u8, 255, 255, 255]);
         draw_filled_rect_mut(canvas, Rect::at(rx, ry).of_size(rw, rh), white);
     }
 
-    // 2. Draw text with internal padding (match FitEngine: 8%/10%)
-    let pad_x = (w * 0.08).clamp(4.0, 24.0);
-    let pad_y = (h * 0.10).clamp(4.0, 24.0);
-    let safe_x = x1 + pad_x;
-    let safe_y = y1 + pad_y;
-    let safe_w = (w - 2.0 * pad_x).max(0.0);
-    let safe_h = (h - 2.0 * pad_y).max(0.0);
-
+    // 2. Draw text within the same drawable area (no additional padding)
     let black = Rgba([0u8, 0, 0, 255]);
     let scale = PxScale::from(args.font_size as f32);
     let line_spacing = args.font_size as f64 * text_layout::LINE_HEIGHT_MULTIPLIER;
 
-    let lines = text_layout::wrap_text(&args.text, safe_w, args.font_size, font);
+    let lines = text_layout::wrap_text(&args.text, draw_w, args.font_size, font);
     let total_text_h = lines.len() as f64 * line_spacing;
-    let start_y = (safe_y + (safe_h - total_text_h) / 2.0).max(safe_y);
+    let start_y = (draw_y + (draw_h - total_text_h) / 2.0).max(draw_y);
 
     for (i, line) in lines.iter().enumerate() {
         let line_w = text_layout::measure_text_width(line, args.font_size, font);
         let x = match args.align.as_str() {
-            "left" => safe_x,
-            "right" => safe_x + safe_w - line_w,
-            _ => safe_x + (safe_w - line_w) / 2.0,
+            "left" => draw_x,
+            "right" => draw_x + draw_w - line_w,
+            _ => draw_x + (draw_w - line_w) / 2.0,
         };
         let y = start_y + i as f64 * line_spacing;
         if args.font_size <= 16 {
-            // Multi-pass for readability at small sizes
             draw_text_mut(canvas, black, x as i32 + 1, y as i32, scale, font, line);
             draw_text_mut(canvas, black, x as i32, y as i32 + 1, scale, font, line);
         }

@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, ScaleFont};
+use serde::{Deserialize, Serialize};
 
 /// Embedded font for text measurement (SamaritanTall TB — comic style + Vietnamese coverage)
 static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
@@ -9,6 +10,74 @@ pub const FONT_BYTES: &[u8] = include_bytes!("../../assets/SamaritanTall-TB.ttf"
 /// Line height multiplier (line spacing relative to font size).
 /// 1.22 balances Vietnamese diacritics clearance with compact typesetting.
 pub const LINE_HEIGHT_MULTIPLIER: f64 = 1.22;
+
+/// Default inset from bbox edge when border detection is unavailable.
+pub const DEFAULT_INSET: f64 = 2.0;
+
+/// Per-side insets from bbox edge.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct EdgeInsets {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+impl EdgeInsets {
+    pub fn uniform(v: f64) -> Self {
+        Self { left: v, right: v, top: v, bottom: v }
+    }
+}
+
+/// Canonical drawable rectangle inside a bubble.
+/// Computed once from polygon bbox + insets, then shared by FitEngine, overlay, and canvas_agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrawableArea {
+    /// Polygon bounding box [x1, y1, x2, y2]
+    pub bbox: [f64; 4],
+    /// Insets from each bbox edge
+    pub insets: EdgeInsets,
+}
+
+impl DrawableArea {
+    /// Create from polygon with uniform inset on all sides.
+    pub fn from_polygon(polygon: &[[f64; 2]], inset: f64) -> Self {
+        let (x1, y1, x2, y2) = polygon_bbox(polygon);
+        Self {
+            bbox: [x1, y1, x2, y2],
+            insets: EdgeInsets::uniform(inset),
+        }
+    }
+
+    /// Derive a new area with per-side crop values clamped to at least the current insets.
+    pub fn with_crop_min(&self, crop: [f64; 4]) -> Self {
+        Self {
+            bbox: self.bbox,
+            insets: EdgeInsets {
+                left: self.insets.left.max(crop[0]),
+                right: self.insets.right.max(crop[1]),
+                top: self.insets.top.max(crop[2]),
+                bottom: self.insets.bottom.max(crop[3]),
+            },
+        }
+    }
+
+    /// Inner drawable rectangle: (x, y, width, height).
+    pub fn rect(&self) -> (f64, f64, f64, f64) {
+        let [x1, y1, x2, y2] = self.bbox;
+        let x = x1 + self.insets.left;
+        let y = y1 + self.insets.top;
+        let w = (x2 - x1 - self.insets.left - self.insets.right).max(0.0);
+        let h = (y2 - y1 - self.insets.top - self.insets.bottom).max(0.0);
+        (x, y, w, h)
+    }
+
+    /// Inner drawable size: (width, height).
+    pub fn size(&self) -> (f64, f64) {
+        let (_, _, w, h) = self.rect();
+        (w, h)
+    }
+}
 
 /// Get or initialize the embedded font.
 pub fn get_font() -> &'static FontRef<'static> {

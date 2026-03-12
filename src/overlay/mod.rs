@@ -1,6 +1,7 @@
 use ab_glyph::PxScale;
 use image::{DynamicImage, Rgba, RgbaImage};
-use imageproc::drawing::{draw_filled_rect_mut, draw_text_mut};
+use imageproc::drawing::{draw_filled_rect_mut, draw_polygon_mut, draw_text_mut};
+use imageproc::point::Point;
 use imageproc::rect::Rect;
 
 use crate::api::BubbleResult;
@@ -27,35 +28,50 @@ pub fn render(img: &DynamicImage, bubbles: &[BubbleResult]) -> RgbaImage {
             continue;
         }
 
-        let (bx1, by1, bx2, by2) = text_layout::polygon_bbox(&bubble.polygon);
-        let bbox_w = bx2 - bx1;
-        let bbox_h = by2 - by1;
-        let inset = bubble.inset;
+        // Use canonical DrawableArea if available, otherwise fall back to polygon + inset
+        let (draw_x1, draw_y1, draw_w, draw_h) = if let Some(area) = &bubble.drawable_area {
+            area.rect()
+        } else {
+            let (bx1, by1, bx2, by2) = text_layout::polygon_bbox(&bubble.polygon);
+            let inset = bubble.inset;
+            (bx1 + inset, by1 + inset,
+             (bx2 - bx1 - 2.0 * inset).max(0.0),
+             (by2 - by1 - 2.0 * inset).max(0.0))
+        };
 
-        // 1. Erase: fill inset bbox with white (preserves bubble border)
-        let rx = (bx1 as i32 + inset as i32).max(0);
-        let ry = (by1 as i32 + inset as i32).max(0);
-        let rw = ((bbox_w - 2.0 * inset) as i32).max(0).min(img_w - rx) as u32;
-        let rh = ((bbox_h - 2.0 * inset) as i32).max(0).min(img_h - ry) as u32;
-        if rw > 0 && rh > 0 {
-            draw_filled_rect_mut(&mut canvas, Rect::at(rx, ry).of_size(rw, rh), white);
+        // 1. Erase: fill the actual polygon with white (tight fill for rotated quads)
+        if bubble.polygon.len() >= 3 {
+            let inset = bubble.inset;
+            let poly_points = shrink_polygon(&bubble.polygon, inset);
+            if poly_points.len() >= 3 {
+                draw_polygon_mut(&mut canvas, &poly_points, white);
+            }
+        } else {
+            // Fallback: fill drawable rect
+            let rx = (draw_x1 as i32).max(0);
+            let ry = (draw_y1 as i32).max(0);
+            let rw = (draw_w as i32).max(0).min(img_w - rx) as u32;
+            let rh = (draw_h as i32).max(0).min(img_h - ry) as u32;
+            if rw > 0 && rh > 0 {
+                draw_filled_rect_mut(&mut canvas, Rect::at(rx, ry).of_size(rw, rh), white);
+            }
         }
 
-        // 2. Draw translated text centered in bbox
+        // 2. Draw translated text within the erased area
         let scale = PxScale::from(bubble.font_size_px as f32);
         let line_spacing = bubble.font_size_px as f64 * bubble.line_height;
 
         let lines: Vec<&str> = bubble.translated_text.lines().collect();
         let total_text_h = lines.len() as f64 * line_spacing;
 
-        let start_y = (by1 + (bbox_h - total_text_h) / 2.0).max(by1);
+        let start_y = (draw_y1 + (draw_h - total_text_h) / 2.0).max(draw_y1);
 
         for (i, line) in lines.iter().enumerate() {
             let line_w = text_layout::measure_text_width(line, bubble.font_size_px, font);
             let x = match bubble.align.as_str() {
-                "left" => bx1 + inset,
-                "right" => bx1 + bbox_w - inset - line_w,
-                _ => bx1 + (bbox_w - line_w) / 2.0,
+                "left" => draw_x1,
+                "right" => draw_x1 + draw_w - line_w,
+                _ => draw_x1 + (draw_w - line_w) / 2.0,
             };
             let y = start_y + i as f64 * line_spacing;
             if bubble.font_size_px <= 16 {
@@ -67,6 +83,37 @@ pub fn render(img: &DynamicImage, bubbles: &[BubbleResult]) -> RgbaImage {
     }
 
     canvas
+}
+
+/// Shrink a polygon inward by `inset` pixels (move each vertex toward the centroid).
+/// Returns points suitable for `draw_polygon_mut`.
+fn shrink_polygon(polygon: &[[f64; 2]], inset: f64) -> Vec<Point<i32>> {
+    if polygon.is_empty() || inset <= 0.0 {
+        return polygon.iter()
+            .map(|p| Point::new(p[0] as i32, p[1] as i32))
+            .collect();
+    }
+
+    // Compute centroid
+    let n = polygon.len() as f64;
+    let cx: f64 = polygon.iter().map(|p| p[0]).sum::<f64>() / n;
+    let cy: f64 = polygon.iter().map(|p| p[1]).sum::<f64>() / n;
+
+    // Move each vertex toward centroid by `inset` pixels
+    polygon.iter().map(|p| {
+        let dx = p[0] - cx;
+        let dy = p[1] - cy;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist < 1e-6 {
+            Point::new(p[0] as i32, p[1] as i32)
+        } else {
+            let shrink = (inset / dist).min(0.9); // never collapse past 90%
+            Point::new(
+                (p[0] - dx * shrink) as i32,
+                (p[1] - dy * shrink) as i32,
+            )
+        }
+    }).collect()
 }
 
 /// Encode an RGBA image as PNG bytes.
@@ -102,6 +149,7 @@ mod tests {
             overflow: false,
             align: "center".into(),
             inset: 3.0,
+            drawable_area: None,
         };
         let result = render(&img, &[bubble]);
         assert_eq!(result.width(), 400);

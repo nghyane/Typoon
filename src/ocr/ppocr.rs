@@ -2,7 +2,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use image::DynamicImage;
+use geo::{ConvexHull, Coord, LineString, Polygon};
+use image::{DynamicImage, Rgb, RgbImage};
 use ndarray::Array4;
 use ort::session::Session;
 use ort::value::TensorRef;
@@ -37,6 +38,8 @@ const DET_BOX_THRESH: f32 = 0.6;
 const DET_UNCLIP_RATIO: f64 = 1.5;
 /// Minimum side length of a detected box (in model space)
 const DET_MIN_SIZE: f64 = 3.0;
+/// Maximum number of contour candidates to process (like PaddleOCR's max_candidates)
+const DET_MAX_CANDIDATES: usize = 1000;
 /// ImageNet normalization for detection
 const DET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const DET_STD: [f32; 3] = [0.229, 0.224, 0.225];
@@ -180,7 +183,8 @@ impl PpOcrAdapter {
     }
 
     /// DB post-processing: binarize probability map, find connected components,
-    /// compute bounding boxes, filter, unclip, and crop from original image.
+    /// compute convex hulls + min-area rotated rects, unclip, and perspective-warp
+    /// crop from original image (matching PaddleOCR's official approach).
     #[allow(clippy::too_many_arguments)]
     fn db_postprocess(
         &self,
@@ -201,66 +205,50 @@ impl PpOcrAdapter {
             }
         }
 
-        // Find connected components using simple flood-fill
-        let boxes = find_boxes(&binary, prob_data, map_w, map_h);
+        // Find rotated quads via contour → convex hull → min-area rotated rect
+        let quads = find_rotated_quads(&binary, prob_data, map_w, map_h);
 
         // Scale using actual content size, not padded size, to avoid shrinking crops
         let scale_x = orig_w as f64 / content_w as f64;
         let scale_y = orig_h as f64 / content_h as f64;
 
         let mut regions = Vec::new();
-        for (bbox, score) in &boxes {
+        for RotatedQuad { corners, width, height, score } in &quads {
             if *score < DET_BOX_THRESH as f64 {
                 continue;
             }
-
-            let (bx, by, bw, bh) = *bbox;
-            if (bw as f64) < DET_MIN_SIZE || (bh as f64) < DET_MIN_SIZE {
+            if *width < DET_MIN_SIZE || *height < DET_MIN_SIZE {
                 continue;
             }
 
-            // Unclip: expand box by unclip_ratio
-            let area = bw as f64 * bh as f64;
-            let perimeter = 2.0 * (bw as f64 + bh as f64);
-            let distance = area * DET_UNCLIP_RATIO / perimeter;
-            let ex = distance.ceil() as u32;
-            let ey = distance.ceil() as u32;
+            // Unclip: expand rotated rect by distance = area * unclip_ratio / perimeter
+            let area = width * height;
+            let perimeter = 2.0 * (width + height);
+            let d = area * DET_UNCLIP_RATIO / perimeter;
 
-            let ux = bx.saturating_sub(ex);
-            let uy = by.saturating_sub(ey);
-            let uw = (bw + 2 * ex).min(map_w as u32 - ux);
-            let uh = (bh + 2 * ey).min(map_h as u32 - uy);
+            let expanded = unclip_rotated_rect(corners, *width, *height, d);
 
-            if (uw as f64) < DET_MIN_SIZE + 2.0 || (uh as f64) < DET_MIN_SIZE + 2.0 {
+            // Scale corners to original image coordinates
+            let orig_corners: Vec<[f64; 2]> = expanded
+                .iter()
+                .map(|[x, y]| [
+                    (x * scale_x).clamp(0.0, orig_w as f64 - 1.0),
+                    (y * scale_y).clamp(0.0, orig_h as f64 - 1.0),
+                ])
+                .collect();
+
+            // Perspective warp crop from original image
+            let crop = match warp_quad(img, &orig_corners) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            if crop.width() < 5 || crop.height() < 5 {
                 continue;
             }
 
-            // Scale to original image coordinates
-            let crop_x = (ux as f64 * scale_x).floor().max(0.0) as u32;
-            let crop_y = (uy as f64 * scale_y).floor().max(0.0) as u32;
-            let crop_x = crop_x.min(orig_w.saturating_sub(1));
-            let crop_y = crop_y.min(orig_h.saturating_sub(1));
-            let crop_w = ((uw as f64 * scale_x).ceil() as u32)
-                .min(orig_w - crop_x)
-                .max(1);
-            let crop_h = ((uh as f64 * scale_y).ceil() as u32)
-                .min(orig_h - crop_y)
-                .max(1);
-
-            if crop_w < 5 || crop_h < 5 {
-                continue;
-            }
-
-            let polygon = vec![
-                [crop_x as f64, crop_y as f64],
-                [(crop_x + crop_w) as f64, crop_y as f64],
-                [(crop_x + crop_w) as f64, (crop_y + crop_h) as f64],
-                [crop_x as f64, (crop_y + crop_h) as f64],
-            ];
-
-            let crop = img.crop_imm(crop_x, crop_y, crop_w, crop_h);
             regions.push(TextRegion {
-                polygon,
+                polygon: orig_corners,
                 crop,
                 confidence: *score,
             });
@@ -346,10 +334,8 @@ impl PpOcrAdapter {
 
             if let Some(ch) = self.dictionary.get(best_idx) {
                 text.push_str(ch);
-                let max_val = *best_logit;
-                let sum_exp: f32 = step_logits.iter().map(|&v| (v - max_val).exp()).sum();
-                let prob = 1.0 / sum_exp;
-                total_prob += prob as f64;
+                // Model output is already softmax probabilities, use directly
+                total_prob += *best_logit as f64;
                 char_count += 1;
             }
         }
@@ -394,46 +380,52 @@ impl OcrProvider for PpOcrAdapter {
 
 // ── DB post-processing helpers ──
 
-/// Find bounding boxes from a binary mask using connected-component flood fill.
-/// Returns Vec<((x, y, w, h), mean_score)>.
-fn find_boxes(
+/// Result of contour analysis: a rotated quad with metadata.
+struct RotatedQuad {
+    /// Four corner points ordered [TL, TR, BR, BL].
+    corners: [[f64; 2]; 4],
+    /// Width of the min-area rotated rect.
+    width: f64,
+    /// Height of the min-area rotated rect.
+    height: f64,
+    /// Mean probability score inside the contour.
+    score: f64,
+}
+
+/// Find rotated quads from a binary mask using connected-component labeling,
+/// convex hull, and minimum-area rotated rectangle.
+fn find_rotated_quads(
     binary: &[u8],
     prob_map: &[f32],
     width: usize,
     height: usize,
-) -> Vec<((u32, u32, u32, u32), f64)> {
-    let mut visited = vec![false; height * width];
-    let mut results = Vec::new();
+) -> Vec<RotatedQuad> {
+    // 1. Connected-component labeling via flood fill
+    let mut labels = vec![0u32; height * width];
+    let mut label_id: u32 = 0;
+    let mut components: Vec<Vec<(usize, usize)>> = Vec::new();
 
     for start_y in 0..height {
         for start_x in 0..width {
             let idx = start_y * width + start_x;
-            if visited[idx] || binary[idx] == 0 {
+            if labels[idx] != 0 || binary[idx] == 0 {
                 continue;
             }
 
-            // Flood fill to find connected component
-            let mut stack = vec![(start_x, start_y)];
-            let mut min_x = start_x;
-            let mut min_y = start_y;
-            let mut max_x = start_x;
-            let mut max_y = start_y;
-            let mut score_sum: f64 = 0.0;
-            let mut pixel_count: usize = 0;
+            label_id += 1;
+            if components.len() >= DET_MAX_CANDIDATES {
+                break;
+            }
 
+            let mut stack = vec![(start_x, start_y)];
+            let mut component = Vec::new();
             while let Some((x, y)) = stack.pop() {
                 let i = y * width + x;
-                if visited[i] || binary[i] == 0 {
+                if labels[i] != 0 || binary[i] == 0 {
                     continue;
                 }
-                visited[i] = true;
-
-                min_x = min_x.min(x);
-                min_y = min_y.min(y);
-                max_x = max_x.max(x);
-                max_y = max_y.max(y);
-                score_sum += prob_map[i] as f64;
-                pixel_count += 1;
+                labels[i] = label_id;
+                component.push((x, y));
 
                 if x > 0 { stack.push((x - 1, y)); }
                 if x + 1 < width { stack.push((x + 1, y)); }
@@ -441,19 +433,382 @@ fn find_boxes(
                 if y + 1 < height { stack.push((x, y + 1)); }
             }
 
-            if pixel_count == 0 {
-                continue;
+            if !component.is_empty() {
+                components.push(component);
             }
-
-            let bx = min_x as u32;
-            let by = min_y as u32;
-            let bw = (max_x - min_x + 1) as u32;
-            let bh = (max_y - min_y + 1) as u32;
-            let mean_score = score_sum / pixel_count as f64;
-
-            results.push(((bx, by, bw, bh), mean_score));
+        }
+        if components.len() >= DET_MAX_CANDIDATES {
+            break;
         }
     }
 
+    // 2. For each component: compute mean score, extract boundary, convex hull, min-area rect
+    let mut results = Vec::new();
+    for component in &components {
+        if component.len() < 3 {
+            continue;
+        }
+
+        // Mean probability score inside contour
+        let score_sum: f64 = component.iter()
+            .map(|&(x, y)| prob_map[y * width + x] as f64)
+            .sum();
+        let score = score_sum / component.len() as f64;
+
+        // Extract boundary pixels (pixels with at least one 4-neighbor outside the component)
+        let boundary: Vec<Coord<f64>> = component
+            .iter()
+            .filter(|&&(x, y)| {
+                (x == 0 || binary[y * width + (x - 1)] == 0)
+                    || (x + 1 >= width || binary[y * width + (x + 1)] == 0)
+                    || (y == 0 || binary[(y - 1) * width + x] == 0)
+                    || (y + 1 >= height || binary[(y + 1) * width + x] == 0)
+            })
+            .map(|&(x, y)| Coord { x: x as f64, y: y as f64 })
+            .collect();
+
+        if boundary.len() < 3 {
+            continue;
+        }
+
+        // Convex hull via geo crate
+        let line_string = LineString::new(boundary);
+        let poly = Polygon::new(line_string, vec![]);
+        let hull = poly.convex_hull();
+        let hull_points: Vec<[f64; 2]> = hull
+            .exterior()
+            .points()
+            .map(|p| [p.x(), p.y()])
+            .collect();
+
+        if hull_points.len() < 3 {
+            continue;
+        }
+
+        // Min-area rotated rectangle
+        let (corners, w, h) = min_area_rect(&hull_points);
+        if w < DET_MIN_SIZE || h < DET_MIN_SIZE {
+            continue;
+        }
+
+        results.push(RotatedQuad { corners, width: w, height: h, score });
+    }
+
     results
+}
+
+/// Compute the minimum-area rotated bounding rectangle for a convex hull.
+/// Returns (corners [TL, TR, BR, BL], width, height).
+fn min_area_rect(hull: &[[f64; 2]]) -> ([[f64; 2]; 4], f64, f64) {
+    let n = hull.len();
+    let mut best_area = f64::MAX;
+    let mut best_corners = [[0.0; 2]; 4];
+    let mut best_w = 0.0;
+    let mut best_h = 0.0;
+
+    // Test each edge angle of the hull
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let dx = hull[j][0] - hull[i][0];
+        let dy = hull[j][1] - hull[i][1];
+        let angle = dy.atan2(dx);
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+
+        // Rotate all hull points by -angle
+        let mut min_rx = f64::MAX;
+        let mut max_rx = f64::MIN;
+        let mut min_ry = f64::MAX;
+        let mut max_ry = f64::MIN;
+
+        for pt in hull {
+            let rx = pt[0] * cos_a + pt[1] * sin_a;
+            let ry = -pt[0] * sin_a + pt[1] * cos_a;
+            min_rx = min_rx.min(rx);
+            max_rx = max_rx.max(rx);
+            min_ry = min_ry.min(ry);
+            max_ry = max_ry.max(ry);
+        }
+
+        let w = max_rx - min_rx;
+        let h = max_ry - min_ry;
+        let area = w * h;
+
+        if area < best_area {
+            best_area = area;
+            best_w = w;
+            best_h = h;
+
+            // Corners in rotated space: TL, TR, BR, BL
+            let rotated_corners = [
+                [min_rx, min_ry],
+                [max_rx, min_ry],
+                [max_rx, max_ry],
+                [min_rx, max_ry],
+            ];
+            // Rotate back to original space
+            for (k, rc) in rotated_corners.iter().enumerate() {
+                best_corners[k] = [
+                    rc[0] * cos_a - rc[1] * sin_a,
+                    rc[0] * sin_a + rc[1] * cos_a,
+                ];
+            }
+        }
+    }
+
+    (order_quad_tl_tr_br_bl(best_corners), best_w, best_h)
+}
+
+/// Reorder 4 corners to canonical [TL, TR, BR, BL] in image space.
+/// Uses centroid-angle sorting + TL anchor + clockwise winding enforcement.
+fn order_quad_tl_tr_br_bl(corners: [[f64; 2]; 4]) -> [[f64; 2]; 4] {
+    let cx = corners.iter().map(|p| p[0]).sum::<f64>() / 4.0;
+    let cy = corners.iter().map(|p| p[1]).sum::<f64>() / 4.0;
+
+    // Sort around centroid so adjacent points stay adjacent
+    let mut pts = corners.to_vec();
+    pts.sort_by(|a, b| {
+        let aa = (a[1] - cy).atan2(a[0] - cx);
+        let bb = (b[1] - cy).atan2(b[0] - cx);
+        aa.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Rotate so smallest x+y (top-left-ish) comes first
+    let start = (0..4)
+        .min_by(|&i, &j| {
+            let si = pts[i][0] + pts[i][1];
+            let sj = pts[j][0] + pts[j][1];
+            si.partial_cmp(&sj).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap();
+    pts.rotate_left(start);
+
+    // Ensure clockwise winding: TL→TR→BR→BL (not TL→BL→BR→TR)
+    let cross = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1])
+              - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0]);
+    if cross < 0.0 {
+        pts = vec![pts[0], pts[3], pts[2], pts[1]];
+    }
+
+    [pts[0], pts[1], pts[2], pts[3]]
+}
+
+/// Expand a rotated rect by distance `d` along both width and height directions.
+/// Returns 4 expanded corners in the same order [TL, TR, BR, BL].
+fn unclip_rotated_rect(
+    corners: &[[f64; 2]; 4],
+    _width: f64,
+    _height: f64,
+    d: f64,
+) -> [[f64; 2]; 4] {
+    // Compute edge unit normals pointing outward, then offset each corner
+    // along the two adjacent edge normals by distance d.
+
+    // Edge vectors: TL→TR (top), TR→BR (right), BR→BL (bottom), BL→TL (left)
+    let edge_vec = |a: usize, b: usize| -> [f64; 2] {
+        [corners[b][0] - corners[a][0], corners[b][1] - corners[a][1]]
+    };
+
+    // Outward normal for edge a→b (rotate 90° CW for a clockwise polygon)
+    let outward_normal = |a: usize, b: usize| -> [f64; 2] {
+        let [dx, dy] = edge_vec(a, b);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-10 {
+            return [0.0, 0.0];
+        }
+        [dy / len, -dx / len]
+    };
+
+    // For each corner, move it along the two outward normals of its adjacent edges
+    // TL: top edge (0→1) and left edge (3→0)
+    // TR: top edge (0→1) and right edge (1→2)
+    // BR: right edge (1→2) and bottom edge (2→3)
+    // BL: bottom edge (2→3) and left edge (3→0)
+    let n_top = outward_normal(0, 1);
+    let n_right = outward_normal(1, 2);
+    let n_bottom = outward_normal(2, 3);
+    let n_left = outward_normal(3, 0);
+
+    let offset = |corner: [f64; 2], n1: [f64; 2], n2: [f64; 2]| -> [f64; 2] {
+        [
+            corner[0] + d * (n1[0] + n2[0]),
+            corner[1] + d * (n1[1] + n2[1]),
+        ]
+    };
+
+    [
+        offset(corners[0], n_top, n_left),   // TL
+        offset(corners[1], n_top, n_right),  // TR
+        offset(corners[2], n_bottom, n_right), // BR
+        offset(corners[3], n_bottom, n_left),  // BL
+    ]
+}
+
+/// Perspective warp: extract a deskewed crop from `img` given 4 source corners [TL, TR, BR, BL].
+/// Returns None if output dimensions are too small.
+fn warp_quad(img: &DynamicImage, corners: &[[f64; 2]]) -> Option<DynamicImage> {
+    if corners.len() != 4 {
+        return None;
+    }
+
+    let [tl, tr, br, bl] = [corners[0], corners[1], corners[2], corners[3]];
+
+    // Output size
+    let dist = |a: [f64; 2], b: [f64; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    let out_w = dist(tl, tr).max(dist(bl, br)).round() as u32;
+    let out_h = dist(tl, bl).max(dist(tr, br)).round() as u32;
+
+    if out_w < 2 || out_h < 2 {
+        return None;
+    }
+
+    // Destination corners
+    let dst: [[f64; 2]; 4] = [
+        [0.0, 0.0],
+        [out_w as f64 - 1.0, 0.0],
+        [out_w as f64 - 1.0, out_h as f64 - 1.0],
+        [0.0, out_h as f64 - 1.0],
+    ];
+
+    // Compute inverse perspective transform (dst → src) so we can sample src for each dst pixel
+    let inv_matrix = match perspective_transform_matrix(&dst, &[tl, tr, br, bl]) {
+        Some(m) => m,
+        None => return None,
+    };
+
+    let rgb = img.to_rgb8();
+    let (img_w, img_h) = (rgb.width(), rgb.height());
+    let mut output = RgbImage::new(out_w, out_h);
+
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let (sx, sy) = apply_perspective(&inv_matrix, ox as f64, oy as f64);
+            let pixel = bilinear_sample(&rgb, sx, sy, img_w, img_h);
+            output.put_pixel(ox, oy, pixel);
+        }
+    }
+
+    let result = DynamicImage::ImageRgb8(output);
+
+    // If height/width ratio >= 1.5, rotate 90° (vertical text)
+    if out_h as f64 / out_w as f64 >= 1.5 {
+        Some(result.rotate270())
+    } else {
+        Some(result)
+    }
+}
+
+/// Solve for the 3×3 perspective transform matrix that maps src[i] → dst[i].
+/// Returns the 8 coefficients [a,b,c, d,e,f, g,h] of:
+///   x' = (a*x + b*y + c) / (g*x + h*y + 1)
+///   y' = (d*x + e*y + f) / (g*x + h*y + 1)
+fn perspective_transform_matrix(
+    src: &[[f64; 2]; 4],
+    dst: &[[f64; 2]; 4],
+) -> Option<[f64; 8]> {
+    // Set up 8×8 linear system: A * coeffs = b
+    // For each point pair (x,y) → (x',y'):
+    //   a*x + b*y + c - g*x*x' - h*y*x' = x'
+    //   d*x + e*y + f - g*x*y' - h*y*y' = y'
+    let mut a_mat = [[0.0f64; 8]; 8];
+    let mut b_vec = [0.0f64; 8];
+
+    for i in 0..4 {
+        let (x, y) = (src[i][0], src[i][1]);
+        let (xp, yp) = (dst[i][0], dst[i][1]);
+        let row1 = i * 2;
+        let row2 = row1 + 1;
+
+        a_mat[row1] = [x, y, 1.0, 0.0, 0.0, 0.0, -x * xp, -y * xp];
+        b_vec[row1] = xp;
+
+        a_mat[row2] = [0.0, 0.0, 0.0, x, y, 1.0, -x * yp, -y * yp];
+        b_vec[row2] = yp;
+    }
+
+    // Gaussian elimination with partial pivoting
+    let n = 8;
+    let mut aug = [[0.0f64; 9]; 8];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i][j] = a_mat[i][j];
+        }
+        aug[i][n] = b_vec[i];
+    }
+
+    for col in 0..n {
+        // Find pivot
+        let mut max_row = col;
+        let mut max_val = aug[col][col].abs();
+        for row in (col + 1)..n {
+            let v = aug[row][col].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = row;
+            }
+        }
+        if max_val < 1e-12 {
+            return None; // Singular
+        }
+        aug.swap(col, max_row);
+
+        let pivot = aug[col][col];
+        for j in col..=n {
+            aug[col][j] /= pivot;
+        }
+        for row in 0..n {
+            if row == col {
+                continue;
+            }
+            let factor = aug[row][col];
+            for j in col..=n {
+                aug[row][j] -= factor * aug[col][j];
+            }
+        }
+    }
+
+    Some([
+        aug[0][n], aug[1][n], aug[2][n], aug[3][n],
+        aug[4][n], aug[5][n], aug[6][n], aug[7][n],
+    ])
+}
+
+/// Apply perspective transform to a point.
+fn apply_perspective(coeffs: &[f64; 8], x: f64, y: f64) -> (f64, f64) {
+    let denom = coeffs[6] * x + coeffs[7] * y + 1.0;
+    let sx = (coeffs[0] * x + coeffs[1] * y + coeffs[2]) / denom;
+    let sy = (coeffs[3] * x + coeffs[4] * y + coeffs[5]) / denom;
+    (sx, sy)
+}
+
+/// Bilinear interpolation sampling from an RGB image.
+fn bilinear_sample(img: &RgbImage, x: f64, y: f64, w: u32, h: u32) -> Rgb<u8> {
+    let x0 = x.floor() as i64;
+    let y0 = y.floor() as i64;
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
+    let fx = x - x0 as f64;
+    let fy = y - y0 as f64;
+
+    let get = |px: i64, py: i64| -> [f64; 3] {
+        let cx = px.clamp(0, w as i64 - 1) as u32;
+        let cy = py.clamp(0, h as i64 - 1) as u32;
+        let p = img.get_pixel(cx, cy);
+        [p[0] as f64, p[1] as f64, p[2] as f64]
+    };
+
+    let p00 = get(x0, y0);
+    let p10 = get(x1, y0);
+    let p01 = get(x0, y1);
+    let p11 = get(x1, y1);
+
+    let mut out = [0u8; 3];
+    for c in 0..3 {
+        let v = p00[c] * (1.0 - fx) * (1.0 - fy)
+            + p10[c] * fx * (1.0 - fy)
+            + p01[c] * (1.0 - fx) * fy
+            + p11[c] * fx * fy;
+        out[c] = v.round().clamp(0.0, 255.0) as u8;
+    }
+    Rgb(out)
 }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use crate::text_layout;
+use crate::text_layout::DrawableArea;
 
 /// Minimum font size (px) before declaring overflow
 const MIN_FONT_SIZE: u32 = 8;
@@ -8,13 +9,6 @@ const MIN_FONT_SIZE: u32 = 8;
 const MAX_FONT_SIZE: u32 = 48;
 /// Font size cap as fraction of page width (~4.5%)
 const MAX_FONT_RATIO: f64 = 0.045;
-
-/// Horizontal padding as fraction of bubble width, clamped to [4, 24] px
-const PAD_X_RATIO: f64 = 0.08;
-/// Vertical padding as fraction of bubble height, clamped to [4, 24] px
-const PAD_Y_RATIO: f64 = 0.10;
-const PAD_MIN: f64 = 4.0;
-const PAD_MAX: f64 = 24.0;
 
 #[derive(Clone)]
 pub struct FitResult {
@@ -29,24 +23,23 @@ pub struct FitResult {
 pub struct FitEngine;
 
 impl FitEngine {
-    /// Fit a page of bubbles with normalized font sizes.
+    /// Fit a page of bubbles using precomputed DrawableAreas.
     ///
     /// 1. Binary search max fitting size per bubble (capped by page width)
-    /// 2. Compute page-level cap = median × 1.15
+    /// 2. Compute page-level cap = median × 1.35
     /// 3. Re-wrap only outlier bubbles exceeding the cap
-    pub fn fit_page(items: &[(&str, &[[f64; 2]])], page_width: u32) -> Result<Vec<FitResult>> {
+    pub fn fit_page_areas(items: &[(&str, &DrawableArea)], page_width: u32) -> Result<Vec<FitResult>> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Hard cap: page_width × 2% (800px→16, 1200px→24, 1442px→28)
         let width_cap = ((page_width as f64) * MAX_FONT_RATIO) as u32;
         let abs_cap = width_cap.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
 
         // Pass 1: compute max fitting font size per bubble
         let individual: Vec<FitResult> = items
             .iter()
-            .map(|(text, poly)| Self::fit_capped(text, poly, abs_cap))
+            .map(|(text, area)| Self::fit_capped(text, area, abs_cap))
             .collect::<Result<Vec<_>>>()?;
 
         // Collect non-overflow sizes for normalization
@@ -61,30 +54,29 @@ impl FitEngine {
         }
 
         sizes.sort_unstable();
-        // Median × 1.35 cap — preserves natural size variation while capping extreme outliers
         let median = sizes[sizes.len() / 2];
         let page_target = ((median as f64 * 1.35) as u32).min(abs_cap);
 
-        // Pass 2: re-fit each bubble capped at page_target
+        // Pass 2: re-fit outliers
         items
             .iter()
             .zip(individual.iter())
-            .map(|((text, poly), orig)| {
+            .map(|((text, area), orig)| {
                 if orig.text.is_empty() || orig.overflow {
                     return Ok(orig.clone());
                 }
                 if orig.font_size_px <= page_target {
                     return Ok(orig.clone());
                 }
-                Self::fit_at(text, poly, page_target)
+                Self::fit_at(text, area, page_target)
             })
             .collect()
     }
 
     /// Fit text at a specific (capped) font size.
-    fn fit_at(translated_text: &str, polygon: &[[f64; 2]], max_size: u32) -> Result<FitResult> {
+    fn fit_at(translated_text: &str, area: &DrawableArea, max_size: u32) -> Result<FitResult> {
         let text = normalize_text(translated_text);
-        let (safe_w, safe_h) = safe_rect(polygon);
+        let (safe_w, safe_h) = area.size();
         if safe_w < 1.0 || safe_h < 1.0 {
             return Ok(FitResult {
                 text,
@@ -131,7 +123,7 @@ impl FitEngine {
     }
 
     /// Fit with a custom max font size cap.
-    fn fit_capped(translated_text: &str, polygon: &[[f64; 2]], max_size: u32) -> Result<FitResult> {
+    fn fit_capped(translated_text: &str, area: &DrawableArea, max_size: u32) -> Result<FitResult> {
         let text = normalize_text(translated_text);
         if text.is_empty() {
             return Ok(FitResult {
@@ -142,7 +134,7 @@ impl FitEngine {
             });
         }
 
-        let (safe_w, safe_h) = safe_rect(polygon);
+        let (safe_w, safe_h) = area.size();
         if safe_w < 1.0 || safe_h < 1.0 {
             return Ok(FitResult {
                 text,
@@ -191,21 +183,9 @@ impl FitEngine {
 
     /// Fit translated text into a bubble polygon (single bubble, no normalization).
     pub fn fit(translated_text: &str, polygon: &[[f64; 2]]) -> Result<FitResult> {
-        Self::fit_capped(translated_text, polygon, MAX_FONT_SIZE)
+        let area = DrawableArea::from_polygon(polygon, text_layout::DEFAULT_INSET);
+        Self::fit_capped(translated_text, &area, MAX_FONT_SIZE)
     }
-}
-
-/// Compute safe inner rect from a 4-point axis-aligned polygon.
-fn safe_rect(polygon: &[[f64; 2]]) -> (f64, f64) {
-    if polygon.len() < 2 {
-        return (0.0, 0.0);
-    }
-    let (x1, y1, x2, y2) = text_layout::polygon_bbox(polygon);
-    let w = x2 - x1;
-    let h = y2 - y1;
-    let pad_x = (w * PAD_X_RATIO).clamp(PAD_MIN, PAD_MAX);
-    let pad_y = (h * PAD_Y_RATIO).clamp(PAD_MIN, PAD_MAX);
-    ((w - 2.0 * pad_x).max(0.0), (h - 2.0 * pad_y).max(0.0))
 }
 
 /// Normalize text: trim, collapse whitespace, remove internal newlines.
@@ -259,19 +239,19 @@ mod tests {
 
     #[test]
     fn test_fit_page_normalizes() {
-        let big = vec![[0.0, 0.0], [400.0, 0.0], [400.0, 300.0], [0.0, 300.0]];
-        let med = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
-        let items: Vec<(&str, &[[f64; 2]])> = vec![
-            ("Hi", &big),                              // short text, big bubble → big font
-            ("Hello world", &med),                     // more text, smaller bubble → smaller font
-            ("Some longer dialogue here", &med),       // longest text → smallest font
+        use crate::text_layout::DrawableArea;
+        let big = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [400.0, 0.0], [400.0, 300.0], [0.0, 300.0]], 2.0);
+        let med = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]], 2.0);
+        let items: Vec<(&str, &DrawableArea)> = vec![
+            ("Hi", &big),
+            ("Hello world", &med),
+            ("Some longer dialogue here", &med),
         ];
-        let results = FitEngine::fit_page(&items, 800).unwrap();
+        let results = FitEngine::fit_page_areas(&items, 800).unwrap();
         assert_eq!(results.len(), 3);
-        // First bubble (short text, big bubble) should be capped down to page target
-        // instead of being much larger than the others
         let sizes: Vec<u32> = results.iter().map(|r| r.font_size_px).collect();
-        // With median×1.15 cap, the big bubble is capped but variation is preserved
         let max_size = *sizes.iter().max().unwrap();
         let median = {
             let mut s = sizes.clone();
@@ -283,11 +263,13 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_rect() {
-        let poly = vec![[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]];
-        let (w, h) = safe_rect(&poly);
-        // 200px wide, 100px tall → pad_x = clamp(16, 4, 24) = 16, pad_y = clamp(10, 4, 24) = 10
-        assert!((w - 168.0).abs() < 0.1, "w={w}");
-        assert!((h - 80.0).abs() < 0.1, "h={h}");
+    fn test_drawable_area_size() {
+        use crate::text_layout::DrawableArea;
+        let area = DrawableArea::from_polygon(
+            &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]], 5.0);
+        // 200px wide, 100px tall, inset=5 → 190×90
+        let (w, h) = area.size();
+        assert!((w - 190.0).abs() < 0.1, "w={w}");
+        assert!((h - 90.0).abs() < 0.1, "h={h}");
     }
 }
