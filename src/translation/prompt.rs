@@ -68,8 +68,9 @@ impl<'a> PromptBuilder<'a> {
    - translated_text = final localized text only.
    - Never skip a bubble — translate best-effort even if short, unclear, or SFX.
    - To revise: call translate() again for the same ID (latest wins).
-6. Completion: call done() only after every required ID has a translate() call.
-   - Prefer sending final translate() calls and done() in the same message.\n\n"
+6. Notes: call add_note() for key events, new characters, or relationship changes worth remembering.
+7. Completion: call done() after all IDs are translated.
+   - Batch translate() + add_note() + done() in one message when possible.\n\n"
             .to_string()
     }
 

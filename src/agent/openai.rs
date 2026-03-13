@@ -15,6 +15,14 @@ use super::tool::ToolDef;
 
 const LLM_TIMEOUT_SECS: u64 = 180;
 
+fn uuid_v4() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let a = t.as_nanos() as u64;
+    let b = (t.as_secs() ^ 0xDEAD_BEEF) * 6364136223846793005;
+    format!("{a:016x}-{b:016x}")
+}
+
 pub struct OpenAIProvider {
     client: Client<OpenAIConfig>,
     model: String,
@@ -23,9 +31,12 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     pub fn new(endpoint: &str, api_key: Option<&str>, model: &str) -> Result<Self> {
+        let session_id = uuid_v4();
         let config = OpenAIConfig::new()
             .with_api_base(endpoint)
-            .with_api_key(api_key.unwrap_or("not-needed"));
+            .with_api_key(api_key.unwrap_or("not-needed"))
+            .with_header("x-session-id", &session_id)
+            .map_err(|e| anyhow::anyhow!("Failed to set session header: {e}"))?;
 
         Ok(Self {
             client: Client::with_config(config),

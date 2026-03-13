@@ -13,7 +13,7 @@ use super::tool::ToolDef;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const DEFAULT_MAX_TOKENS: u32 = 1024;
+const DEFAULT_MAX_TOKENS: u32 = 64000;
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -52,9 +52,13 @@ impl Provider for AnthropicProvider {
         tools: &'a [ToolDef],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<ToolCallMsg>>> + Send + 'a>> {
         Box::pin(async move {
-            // Extract system message (Anthropic uses a separate `system` field)
+            // Extract system message as cached block (Anthropic prompt caching)
             let system = messages.iter().find_map(|m| match m {
-                Message::System(text) => Some(text.clone()),
+                Message::System(text) => Some(serde_json::json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"}
+                }])),
                 _ => None,
             });
 
@@ -128,7 +132,7 @@ struct ApiRequest {
     model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<serde_json::Value>,
     messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<serde_json::Value>,
@@ -255,14 +259,21 @@ fn serialize_content_parts(parts: &[ContentPart]) -> serde_json::Value {
 }
 
 fn serialize_tools(tools: &[ToolDef]) -> Vec<serde_json::Value> {
+    let len = tools.len();
     tools
         .iter()
-        .map(|t| {
-            serde_json::json!({
+        .enumerate()
+        .map(|(i, t)| {
+            let mut tool = serde_json::json!({
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.parameters,
-            })
+            });
+            // Cache breakpoint on last tool — caches system + all tools prefix
+            if i == len - 1 {
+                tool["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            tool
         })
         .collect()
 }
