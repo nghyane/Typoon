@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod api;
 pub mod border_detect;
+pub mod cli;
 pub mod context;
 pub mod config;
 pub mod detection;

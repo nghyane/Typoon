@@ -31,6 +31,9 @@ futures = "0.3"
 # Font metrics (text fitting)
 ab_glyph = "0.2"
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
 # Config
 toml = "0.8"
 
