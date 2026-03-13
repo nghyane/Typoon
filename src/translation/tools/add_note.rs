@@ -1,0 +1,61 @@
+use crate::agent::{self, ToolResponse};
+use crate::translation::TranslateContext;
+
+#[derive(serde::Deserialize)]
+pub struct Args {
+    pub note_type: String,
+    pub content: String,
+}
+
+pub fn def() -> agent::ToolDef {
+    agent::ToolDef::new(
+        "add_note",
+        "Record a chapter observation for future reference.\n\n\
+            Behavior:\n\
+            - Save important observations about this chapter: key events, character introductions,\n\
+              relationship changes, setting descriptions.\n\
+            - These notes are searchable by the context agent in future chapters.\n\
+            - Multiple notes per chapter are fine — one per distinct observation.\n\n\
+            When to use: significant plot events, new characters, relationship reveals, setting changes.\n\
+            When NOT to use: trivial dialogue or routine scene descriptions.",
+        serde_json::json!({
+            "type": "object",
+            "required": ["note_type", "content"],
+            "additionalProperties": false,
+            "properties": {
+                "note_type": {
+                    "type": "string",
+                    "enum": ["event", "character", "relationship", "setting"],
+                    "description": "event=plot points, character=introductions/descriptions, relationship=who knows whom, setting=locations"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Concise observation in the target language"
+                }
+            }
+        }),
+    )
+    .strict()
+}
+
+pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
+    let response = if let (Some(store), Some(project_id), Some(chapter_idx)) =
+        (ctx.context_store, ctx.project_id, ctx.chapter_index)
+    {
+        match store.add_note(project_id, chapter_idx, &args.note_type, &args.content) {
+            Ok(()) => {
+                tracing::info!(
+                    "Note added [{}]: {}",
+                    args.note_type,
+                    &args.content[..80.min(args.content.len())]
+                );
+                "ok".to_string()
+            }
+            Err(e) => format!("Failed to save note: {e}"),
+        }
+    } else {
+        "Context store not available.".to_string()
+    };
+
+    ToolResponse::Text(response)
+}

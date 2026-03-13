@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::detection::LocalTextMask;
 use crate::text_layout::DrawableArea;
 
 // --- Request ---
@@ -67,6 +68,9 @@ pub struct BubbleResult {
     /// Canonical drawable area (computed once, used by fit + render).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drawable_area: Option<DrawableArea>,
+    /// ML-generated text mask for erasing (render-only, not serialized).
+    #[serde(skip, default)]
+    pub text_mask: Option<LocalTextMask>,
 }
 
 fn default_align() -> String { "center".into() }

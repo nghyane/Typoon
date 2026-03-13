@@ -1,10 +1,13 @@
-mod openai_compatible;
+mod agent;
+mod prompt;
+mod tools;
 
 use anyhow::Result;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
-use crate::config::TranslationConfig;
+use crate::agent::Provider;
+use crate::context::ContextStore;
 use crate::glossary::{Glossary, GlossaryEntry};
 
 // ── Page-grouped input ──
@@ -31,6 +34,13 @@ pub struct BubbleTranslated {
     pub translated_text: String,
 }
 
+/// A continuity note from a previous chapter (proactively injected).
+#[derive(Debug, Clone)]
+pub struct ContextNote {
+    pub note_type: String,
+    pub content: String,
+}
+
 // ── Request ──
 
 /// Translation request supporting both single-page and chapter mode.
@@ -40,6 +50,8 @@ pub struct TranslateRequest {
     pub target_lang: String,
     pub context: Vec<BubbleTranslated>,
     pub glossary: Vec<GlossaryEntry>,
+    /// Proactive continuity notes from previous chapters.
+    pub notes: Vec<ContextNote>,
 }
 
 impl TranslateRequest {
@@ -56,6 +68,7 @@ impl TranslateRequest {
             target_lang,
             context,
             glossary: vec![],
+            notes: vec![],
         }
     }
 
@@ -71,24 +84,34 @@ impl TranslateRequest {
 pub struct TranslateContext<'a> {
     pub page_images: &'a [DynamicImage],
     pub glossary: Option<&'a Glossary>,
+    pub context_store: Option<&'a ContextStore>,
+    pub context_agent: Option<&'a dyn Provider>,
+    pub project_id: Option<&'a str>,
+    pub chapter_index: Option<usize>,
 }
 
 impl Default for TranslateContext<'_> {
     fn default() -> Self {
-        Self { page_images: &[], glossary: None }
+        Self {
+            page_images: &[],
+            glossary: None,
+            context_store: None,
+            context_agent: None,
+            project_id: None,
+            chapter_index: None,
+        }
     }
 }
 
 // ── Engine ──
 
 pub struct TranslationEngine {
-    provider: openai_compatible::OpenAICompatibleAdapter,
+    provider: Box<dyn Provider>,
 }
 
 impl TranslationEngine {
-    pub fn new(config: &TranslationConfig) -> Result<Self> {
-        let provider = openai_compatible::OpenAICompatibleAdapter::new(config)?;
-        Ok(Self { provider })
+    pub fn new(provider: Box<dyn Provider>) -> Self {
+        Self { provider }
     }
 
     pub async fn translate(
@@ -96,6 +119,6 @@ impl TranslationEngine {
         req: &TranslateRequest,
         ctx: &TranslateContext<'_>,
     ) -> Result<Vec<BubbleTranslated>> {
-        self.provider.translate(req, ctx).await
+        agent::run(&*self.provider, req, ctx).await
     }
 }

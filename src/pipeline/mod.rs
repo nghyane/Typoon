@@ -1,26 +1,21 @@
 pub mod chapter;
-pub mod common;
 pub mod merge;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use image::{DynamicImage, RgbaImage};
+use image::DynamicImage;
 
-use crate::api::{AppState, BubbleResult, TranslateImageRequest, TranslateImageResponse};
-use crate::border_detect;
-use crate::text_layout::DrawableArea;
-use crate::translation::{BubbleInput, BubbleTranslated, TranslateContext};
+use crate::api::{AppState, TranslateImageRequest, TranslateImageResponse};
+use crate::detection::{LocalTextMask, TextDetector};
+use crate::ocr::OcrEngine;
+use crate::translation::{BubbleInput, BubbleTranslated};
 
-/// Internal pipeline output: bubbles + optional rendered image from canvas agent.
-pub struct PipelineOutput {
-    pub bubbles: Vec<BubbleResult>,
-    pub rendered_image: Option<RgbaImage>,
-}
-
-/// Main entry point: decode → detect → OCR → translate → fit → render
+/// Main HTTP entry point: decode → detect → OCR → translate → fit → render.
+///
+/// Delegates to the chapter pipeline, treating a single image as a 1-page chapter.
 pub async fn process_image(
     state: &Arc<AppState>,
     req: &TranslateImageRequest,
@@ -28,143 +23,123 @@ pub async fn process_image(
     let image_bytes = STANDARD.decode(&req.image_blob_b64)?;
     let img = image::load_from_memory(&image_bytes)?;
 
-    let source_lang = common::detect_source_lang(req.source_lang.as_deref(), &req.target_lang);
-    let context = common::build_context(req);
+    let source_lang = detect_source_lang(req.source_lang.as_deref(), &req.target_lang);
 
-    let output = run_pipeline(state, req, &img, source_lang, &context).await?;
+    // Resolve translation engine (handles per-request provider override)
+    let engine = crate::api::resolve_engine(state, req)?;
 
-    let rendered_image_png_b64 = output.rendered_image.as_ref().map(|rgba| {
-        let png_bytes = crate::overlay::encode_png(rgba);
-        STANDARD.encode(&png_bytes)
-    });
+    // Detect + OCR as a 1-page chapter
+    let runner = &state.runner;
+    let det = Arc::clone(&runner.detector);
+    let ocr = Arc::clone(&runner.ocr);
+    let images = vec![img];
+
+    let detections = tokio::task::spawn_blocking({
+        let images = images.clone();
+        let lang = source_lang.to_string();
+        move || chapter::detect_chapter(&det, &ocr, &images, &lang)
+    }).await??;
+
+    // Build context from request hints
+    let context = build_context(req);
+
+    // Translate + fit + render using chapter pipeline
+    let output = chapter::translate_and_render_with_engine(
+        runner,
+        engine.as_ref(),
+        detections,
+        &images,
+        &req.target_lang,
+        source_lang,
+        context,
+    ).await?;
+
+    // Build response
+    let mut bubbles = Vec::new();
+    let mut rendered_image_png_b64 = None;
+
+    for page in output.pages {
+        bubbles.extend(page.bubbles);
+        if let Some(rgba) = page.rendered_image {
+            let png_bytes = crate::overlay::encode_png(&rgba);
+            rendered_image_png_b64 = Some(STANDARD.encode(&png_bytes));
+        }
+    }
 
     Ok(TranslateImageResponse {
         image_id: req.image_id.clone(),
         status: "ok".into(),
-        bubbles: output.bubbles,
+        bubbles,
         rendered_image_png_b64,
     })
 }
 
-/// Unified pipeline: detect → OCR → translate → fit → render
-///
-/// source_lang drives component selection:
+// ═══════════════════════════════════════════════════════════════════════
+// Shared detect + OCR (used by both single-page HTTP and chapter CLI)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Synchronous detect + OCR dispatch. Strategy based on source_lang:
 ///   "ja" → comic-text-detector + manga-ocr
 ///   _    → PP-OCR det (line merge) + PP-OCR rec
-async fn run_pipeline(
-    state: &Arc<AppState>,
-    req: &TranslateImageRequest,
+pub(crate) fn detect_and_ocr(
+    detector: &Mutex<TextDetector>,
+    ocr: &OcrEngine,
     img: &DynamicImage,
     source_lang: &str,
-    context: &[BubbleTranslated],
-) -> Result<PipelineOutput> {
-    // 1. Detect + OCR (lang-specific)
-    let (inputs, polygons) = detect_and_ocr(Arc::clone(state), img.clone(), source_lang.to_string()).await?;
-
-    if inputs.is_empty() {
-        return Ok(PipelineOutput { bubbles: Vec::new(), rendered_image: None });
+) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
+    match source_lang {
+        "ja" => detect_and_ocr_manga(detector, ocr, img, source_lang),
+        _ if ocr.can_detect() => detect_and_ocr_ppocr(ocr, img, source_lang),
+        _ => detect_and_ocr_manga(detector, ocr, img, source_lang),
     }
-
-    // 2. Detect border thickness per bubble → compute DrawableAreas once
-    let areas: Vec<DrawableArea> = polygons
-        .iter()
-        .map(|poly| {
-            let inset = border_detect::detect_inset(img, poly);
-            DrawableArea::from_polygon(poly, inset)
-        })
-        .collect();
-
-    let engine = common::resolve_engine(state, req)?;
-    let page_images = [img.clone()];
-    let translate_ctx = TranslateContext {
-        page_images: &page_images,
-        glossary: state.glossary.as_ref(),
-    };
-
-    // 3. Try canvas agent path (optional)
-    if let Some(agent) = &state.canvas_agent {
-        let canvas_bubbles = common::translate_only(
-            &engine, inputs.clone(), &polygons, source_lang, &req.target_lang, context.to_vec(), &areas, &translate_ctx,
-        ).await?;
-        match agent.run(img, &canvas_bubbles).await {
-            Ok(output) => {
-                let bubbles = common::bubbles_from_canvas(&canvas_bubbles, &output.commands);
-                return Ok(PipelineOutput {
-                    bubbles,
-                    rendered_image: Some(output.image),
-                });
-            }
-            Err(e) => {
-                tracing::warn!("Canvas agent failed, falling back to fit_engine: {e}");
-            }
-        }
-    }
-
-    // 4. Translate + fit (default path)
-    let bubbles = common::translate_and_fit(
-        &engine, inputs, &polygons, source_lang, &req.target_lang, context.to_vec(), img.width(), &areas, &translate_ctx,
-    ).await?;
-    Ok(PipelineOutput { bubbles, rendered_image: None })
-}
-
-/// Detect text regions and OCR them. Strategy based on source_lang.
-/// Runs synchronous ONNX inference inside spawn_blocking to avoid blocking the tokio runtime.
-async fn detect_and_ocr(
-    state: Arc<AppState>,
-    img: DynamicImage,
-    source_lang: String,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>)> {
-    tokio::task::spawn_blocking(move || {
-        match source_lang.as_str() {
-            "ja" => detect_ocr_manga(&state, &img, &source_lang),
-            _ if state.ocr.can_detect() => detect_ocr_ppocr(&state, &img, &source_lang),
-            _ => detect_ocr_manga(&state, &img, &source_lang),
-        }
-    }).await?
 }
 
 /// comic-text-detector: detects whole bubble polygons, OCR each region
-fn detect_ocr_manga(
-    state: &AppState,
+fn detect_and_ocr_manga(
+    detector: &Mutex<TextDetector>,
+    ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>)> {
-    let regions = state.detector.lock().unwrap().detect(img)?;
+) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
+    let regions = detector.lock().unwrap().detect(img)?;
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();
+    let mut masks = Vec::new();
 
-    for (i, region) in regions.iter().enumerate() {
-        let result = state.ocr.recognize(&region.crop, lang)?;
+    for region in &regions {
+        let result = ocr.recognize(&region.crop, lang)?;
         if !result.text.trim().is_empty() {
             let pos = region.polygon.first().map(|p| (p[0] as i32, p[1] as i32));
             inputs.push(BubbleInput {
-                id: format!("b{i}"),
+                id: format!("b{}", inputs.len()),
                 source_text: result.text,
                 position: pos,
             });
             polygons.push(region.polygon.clone());
+            masks.push(region.mask.clone());
         }
     }
 
-    Ok((inputs, polygons))
+    Ok((inputs, polygons, masks))
 }
 
 /// PP-OCR: detect text lines → merge into bubbles → OCR each line → concat
-fn detect_ocr_ppocr(
-    state: &AppState,
+fn detect_and_ocr_ppocr(
+    ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>)> {
-    let lines = state.ocr.detect(img)?;
+) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
+    let lines = ocr.detect(img)?;
     let merged = merge::group_lines(lines);
 
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();
+    let mut masks = Vec::new();
 
-    for (i, bubble) in merged.iter().enumerate() {
+    for bubble in &merged {
         let mut texts = Vec::new();
         for line in &bubble.lines {
-            let result = state.ocr.recognize(&line.crop, lang)?;
+            let result = ocr.recognize(&line.crop, lang)?;
             let text = result.text.trim().to_string();
             if text.is_empty() || (text.chars().count() <= 2 && result.confidence < 0.5) {
                 continue;
@@ -184,12 +159,47 @@ fn detect_ocr_ppocr(
 
         let pos = bubble.polygon.first().map(|p| (p[0] as i32, p[1] as i32));
         inputs.push(BubbleInput {
-            id: format!("b{i}"),
+            id: format!("b{}", inputs.len()),
             source_text: joined,
             position: pos,
         });
         polygons.push(bubble.polygon.clone());
+        masks.push(bubble.mask.clone());
     }
 
-    Ok((inputs, polygons))
+    Ok((inputs, polygons, masks))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Shared helpers (used by process_image and examples)
+// ═══════════════════════════════════════════════════════════════════════
+
+pub fn build_context(req: &TranslateImageRequest) -> Vec<BubbleTranslated> {
+    let Some(hint) = &req.context_hint else {
+        return vec![];
+    };
+
+    hint.previous_translations
+        .iter()
+        .flat_map(|pt| {
+            pt.bubbles.iter().map(|b| BubbleTranslated {
+                id: String::new(),
+                source_text: b.source_text.clone(),
+                translated_text: b.translated_text.clone(),
+            })
+        })
+        .collect()
+}
+
+const KNOWN_LANGS: &[&str] = &["ja", "ko", "zh", "en", "vi"];
+
+pub fn detect_source_lang(explicit: Option<&str>, target_lang: &str) -> &'static str {
+    if let Some(lang) = explicit {
+        return KNOWN_LANGS.iter().find(|&&k| k == lang).copied().unwrap_or("en");
+    }
+    match target_lang {
+        "en" | "vi" => "ja",
+        "ja" => "en",
+        _ => "en",
+    }
 }

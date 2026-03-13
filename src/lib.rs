@@ -1,13 +1,16 @@
+pub mod agent;
 pub mod api;
 pub mod border_detect;
-pub mod canvas_agent;
+pub mod context;
 pub mod config;
 pub mod detection;
 pub mod fit_engine;
 pub mod glossary;
+pub mod inpaint;
 pub mod model_hub;
 pub mod ocr;
 pub mod overlay;
 pub mod pipeline;
+pub mod runner;
 pub mod text_layout;
 pub mod translation;

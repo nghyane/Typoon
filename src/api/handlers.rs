@@ -12,8 +12,8 @@ pub async fn health(
 ) -> Json<HealthResponse> {
     Json(HealthResponse {
         ready: true,
-        detection_model_loaded: state.detector.lock().unwrap().is_loaded(),
-        ocr_model_loaded: state.ocr.is_loaded(),
+        detection_model_loaded: state.runner.detector.lock().unwrap().is_loaded(),
+        ocr_model_loaded: state.runner.ocr.is_loaded(),
         translation_configured: true,
     })
 }

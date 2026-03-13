@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -11,12 +12,71 @@ pub struct AppConfig {
     pub models_dir: String,
     #[serde(default = "default_target_lang")]
     pub default_target_lang: String,
+
+    /// Named provider configurations (e.g., "openai", "anthropic", "local")
     #[serde(default)]
-    pub translation: TranslationConfig,
+    pub providers: HashMap<String, ProviderConfig>,
+
+    /// Main translation agent config
     #[serde(default)]
-    pub canvas_agent: CanvasAgentConfig,
+    pub translation: RoleConfig,
+
+    /// Context sub-agent config (cheap model for DB search + summarize)
+    pub context_agent: Option<RoleConfig>,
+
+    /// Context DB settings
+    #[serde(default)]
+    pub context: ContextConfig,
+
     #[serde(default)]
     pub glossary: GlossaryConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderConfig {
+    #[serde(rename = "type", default = "default_provider_type")]
+    pub provider_type: ProviderType,
+    pub endpoint: String,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    OpenAI,
+    Anthropic,
+}
+
+impl Default for ProviderType {
+    fn default() -> Self {
+        Self::OpenAI
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoleConfig {
+    /// References a key in `providers` map
+    #[serde(default = "default_provider_name")]
+    pub provider: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+}
+
+impl Default for RoleConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_provider_name(),
+            model: default_model(),
+            reasoning_effort: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ContextConfig {
+    /// Path to SQLite context database (created if missing).
+    pub db_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -27,55 +87,22 @@ pub struct GlossaryConfig {
     pub import_toml: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct TranslationConfig {
-    #[serde(default = "default_endpoint")]
+/// Fully resolved provider + model settings for a role.
+#[derive(Debug, Clone)]
+pub struct ResolvedProvider {
+    pub provider_type: ProviderType,
     pub endpoint: String,
     pub api_key: Option<String>,
-    #[serde(default = "default_model")]
     pub model: String,
     pub reasoning_effort: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CanvasAgentConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    pub endpoint: Option<String>,
-    pub api_key: Option<String>,
-    pub model: Option<String>,
-    pub reasoning_effort: Option<String>,
-}
-
-impl CanvasAgentConfig {
-    /// Build a TranslationConfig for the canvas agent, falling back to the
-    /// translation config for any fields not explicitly set.
-    pub fn resolved_translation(&self, fallback: &TranslationConfig) -> TranslationConfig {
-        TranslationConfig {
-            endpoint: self.endpoint.clone().unwrap_or_else(|| fallback.endpoint.clone()),
-            api_key: self.api_key.clone().or_else(|| fallback.api_key.clone()),
-            model: self.model.clone().unwrap_or_else(|| fallback.model.clone()),
-            reasoning_effort: self.reasoning_effort.clone().or_else(|| fallback.reasoning_effort.clone()),
-        }
-    }
-}
-
-impl Default for TranslationConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: default_endpoint(),
-            api_key: None,
-            model: default_model(),
-            reasoning_effort: None,
-        }
-    }
 }
 
 fn default_port() -> u16 { 4319 }
 fn default_models_dir() -> String { "models".into() }
 fn default_target_lang() -> String { "vi".into() }
-fn default_endpoint() -> String { "http://localhost:7860/api/provider/openai/v1".into() }
 fn default_model() -> String { "gpt-5.4".into() }
+fn default_provider_name() -> String { "default".into() }
+fn default_provider_type() -> ProviderType { ProviderType::OpenAI }
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
@@ -91,10 +118,28 @@ impl AppConfig {
                 port: default_port(),
                 models_dir: default_models_dir(),
                 default_target_lang: default_target_lang(),
-                translation: TranslationConfig::default(),
-                canvas_agent: CanvasAgentConfig::default(),
+                providers: HashMap::new(),
+                translation: RoleConfig::default(),
+                context_agent: None,
+                context: ContextConfig::default(),
                 glossary: GlossaryConfig::default(),
             })
         }
+    }
+
+    /// Resolve a RoleConfig into its full provider details by looking up
+    /// `role.provider` in the `[providers]` map.
+    pub fn resolve_provider(&self, role: &RoleConfig) -> Result<ResolvedProvider> {
+        let provider = self.providers.get(&role.provider).ok_or_else(|| {
+            anyhow::anyhow!("Provider {:?} not found in [providers] map", role.provider)
+        })?;
+
+        Ok(ResolvedProvider {
+            provider_type: provider.provider_type.clone(),
+            endpoint: provider.endpoint.clone(),
+            api_key: provider.api_key.clone(),
+            model: role.model.clone(),
+            reasoning_effort: role.reasoning_effort.clone(),
+        })
     }
 }

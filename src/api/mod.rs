@@ -3,80 +3,69 @@ mod models;
 
 pub use models::*;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{Router, routing::{get, post}};
 use tower_http::cors::{CorsLayer, AllowOrigin};
 
 use crate::config::AppConfig;
-use crate::detection::TextDetector;
-use crate::glossary::Glossary;
-use crate::model_hub::{self, Model};
-use crate::ocr::OcrEngine;
-use crate::canvas_agent::CanvasAgent;
+use crate::runner::TranslationRunner;
 use crate::translation::TranslationEngine;
 
 pub struct AppState {
-    pub detector: Mutex<TextDetector>,
-    pub ocr: OcrEngine,
-    pub translation: TranslationEngine,
-    pub canvas_agent: Option<CanvasAgent>,
-    pub glossary: Option<Glossary>,
+    pub runner: TranslationRunner,
     pub config: AppConfig,
 }
 
 impl AppState {
     pub async fn new(config: &AppConfig) -> Result<Arc<Self>> {
-        let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
-        let detector = TextDetector::new(&ctd_path)?;
-        let ocr = OcrEngine::new(&config.models_dir).await?;
-        let translation = TranslationEngine::new(&config.translation)?;
-
-        let canvas_agent = if config.canvas_agent.enabled {
-            let agent_translation = config.canvas_agent.resolved_translation(&config.translation);
-            match CanvasAgent::new(&agent_translation) {
-                Ok(agent) => {
-                    tracing::info!("CanvasAgent enabled");
-                    Some(agent)
-                }
-                Err(e) => {
-                    tracing::warn!("CanvasAgent init failed, disabled: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let glossary = if let Some(db_path) = &config.glossary.db_path {
-            match Glossary::open(std::path::Path::new(db_path)) {
-                Ok(g) => {
-                    if let Some(toml_path) = &config.glossary.import_toml {
-                        if let Err(e) = g.import_toml(std::path::Path::new(toml_path)) {
-                            tracing::warn!("Glossary TOML import failed: {e}");
-                        }
-                    }
-                    tracing::info!("Glossary loaded from {db_path}");
-                    Some(g)
-                }
-                Err(e) => {
-                    tracing::warn!("Glossary init failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
+        let runner = TranslationRunner::new(config).await?;
         Ok(Arc::new(Self {
-            detector: Mutex::new(detector),
-            ocr,
-            translation,
-            canvas_agent,
-            glossary,
+            runner,
             config: config.clone(),
         }))
+    }
+}
+
+/// Resolve the translation engine: use provider_config override if present, else default.
+pub fn resolve_engine<'a>(
+    state: &'a AppState,
+    req: &TranslateImageRequest,
+) -> Result<ResolvedEngine<'a>> {
+    let has_override = req.provider_config.as_ref().is_some_and(|c| {
+        c.endpoint.is_some() || c.api_key.is_some() || c.model.is_some()
+    });
+
+    if has_override {
+        let pc = req.provider_config.as_ref().unwrap();
+        let mut base = state.config.resolve_provider(&state.config.translation)?;
+        if let Some(endpoint) = &pc.endpoint {
+            base.endpoint = endpoint.clone();
+        }
+        if let Some(api_key) = &pc.api_key {
+            base.api_key = Some(api_key.clone());
+        }
+        if let Some(model) = &pc.model {
+            base.model = model.clone();
+        }
+        Ok(ResolvedEngine::Owned(crate::runner::build_translation_engine(&base)?))
+    } else {
+        Ok(ResolvedEngine::Borrowed(&state.runner.translation))
+    }
+}
+
+pub enum ResolvedEngine<'a> {
+    Borrowed(&'a TranslationEngine),
+    Owned(TranslationEngine),
+}
+
+impl ResolvedEngine<'_> {
+    pub fn as_ref(&self) -> &TranslationEngine {
+        match self {
+            ResolvedEngine::Borrowed(e) => e,
+            ResolvedEngine::Owned(e) => e,
+        }
     }
 }
 
