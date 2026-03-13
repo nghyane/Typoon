@@ -82,7 +82,7 @@ async fn test_overlay_render() {
             std::fs::write(&out_path, &png_bytes).expect("Failed to write rendered PNG");
             println!("  Saved (canvas agent): {}", out_path.display());
         } else {
-            let overlay = comic_scan::overlay::render(&img, &response.bubbles);
+            let overlay = comic_scan::overlay::render(&img, &response.bubbles, None);
             overlay.save(&out_path).expect("Failed to save overlay");
             println!("  Saved (fit fallback): {}", out_path.display());
         }

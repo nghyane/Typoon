@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 use ort::session::Session;
 use ort::value::TensorRef;
 
@@ -18,6 +18,18 @@ const MIN_REGION_AREA: u32 = 500;
 /// cls1 = speech bubble class
 const BLK_COLS: usize = 7;
 
+/// Binary mask of text pixels in original page coordinates.
+/// Used by overlay to erase original text before drawing translation.
+#[derive(Debug, Clone)]
+pub struct LocalTextMask {
+    /// Page-space X of the mask's top-left corner
+    pub x: u32,
+    /// Page-space Y of the mask's top-left corner
+    pub y: u32,
+    /// Binary mask (255 = text pixel, 0 = background)
+    pub image: GrayImage,
+}
+
 /// Text region detected by comic-text-detector
 pub struct TextRegion {
     /// Polygon vertices defining the bubble boundary
@@ -26,6 +38,8 @@ pub struct TextRegion {
     pub crop: DynamicImage,
     /// Detection confidence
     pub confidence: f64,
+    /// Per-pixel text mask in page coordinates (from UNet segmentation or PP-OCR prob map)
+    pub mask: Option<LocalTextMask>,
 }
 
 pub struct TextDetector {
@@ -61,6 +75,26 @@ impl TextDetector {
         // 3. Extract blk output [1, N, 7]: [cx, cy, w, h, obj, cls0, cls1]
         let (blk_shape, blk_data) = outputs["blk"].try_extract_tensor::<f32>()?;
         let n_boxes = blk_shape[1] as usize;
+
+        // Extract text masks from model outputs:
+        //   "det" [1, 2, 1024, 1024] — DBNet shrink map (channel 0), tight per-character
+        //   "seg" [1, 1, 1024, 1024] — UNet segmentation, covers whole text region
+        // Strategy: dilate "det" for stroke coverage, intersect with "seg" for boundary
+        let det_map: Option<Vec<f32>> = outputs
+            .get("det")
+            .and_then(|v| v.try_extract_tensor::<f32>().ok())
+            .map(|(shape, data)| {
+                let plane = MODEL_SIZE * MODEL_SIZE;
+                if shape.len() == 4 && shape[1] >= 2 {
+                    data[..plane].to_vec()
+                } else {
+                    data.to_vec()
+                }
+            });
+        let seg_map: Option<Vec<f32>> = outputs
+            .get("seg")
+            .and_then(|v| v.try_extract_tensor::<f32>().ok())
+            .map(|(_, data)| data.to_vec());
 
         // 4. Filter by confidence and convert to [x1, y1, x2, y2, conf]
         //    Use max(cls0, cls1) so both free text (cls0) and speech bubbles (cls1) are detected
@@ -111,10 +145,19 @@ impl TextDetector {
             }
 
             let crop = img.crop_imm(crop_x, crop_y, crop_w, crop_h);
+
+            // Build text mask: combine det (tight strokes) + seg (region boundary)
+            let mask = build_combined_mask(
+                det_map.as_deref(), seg_map.as_deref(),
+                *x1, *y1, *x2, *y2,
+                crop_x, crop_y, crop_w, crop_h,
+            );
+
             regions.push(TextRegion {
                 polygon,
                 crop,
                 confidence: *conf,
+                mask,
             });
         }
 
@@ -144,6 +187,72 @@ impl TextDetector {
     }
 }
 
+/// Build a per-region text mask from the UNet segmentation map.
+///
+/// The seg map (UNet output) is a soft probability mask [0.0, 1.0] where higher values
+/// indicate text pixels. Sigmoid is already baked into the model. We scale to [0..255],
+/// resize to crop dimensions via bilinear interpolation, then threshold.
+///
+/// The det map (DBNet shrink map) represents *shrunken* text cores for line detection,
+/// NOT pixel-accurate text masks. It is intentionally undersized and meant for contour
+/// extraction → unclip expansion. We do NOT use it for mask building.
+///
+/// Coordinates: (bx1,by1,bx2,by2) are model-space bbox, (crop_x,crop_y,crop_w,crop_h) are
+/// original-image crop rect.
+///
+/// Reference: dmMaze/comic-text-detector postprocess_mask() scales seg to uint8 without
+/// binary thresholding. Koharu refines with Otsu + colour analysis. We use seg with a
+/// moderate threshold for clean erasure.
+#[allow(clippy::too_many_arguments)]
+fn build_combined_mask(
+    _det_map: Option<&[f32]>,
+    seg_map: Option<&[f32]>,
+    bx1: f64, by1: f64, bx2: f64, by2: f64,
+    crop_x: u32, crop_y: u32, crop_w: u32, crop_h: u32,
+) -> Option<LocalTextMask> {
+    let seg = seg_map?;
+
+    let mx1 = (bx1.max(0.0) as u32).min(MODEL_INPUT_SIZE - 1);
+    let my1 = (by1.max(0.0) as u32).min(MODEL_INPUT_SIZE - 1);
+    let mx2 = (bx2.ceil() as u32).min(MODEL_INPUT_SIZE);
+    let my2 = (by2.ceil() as u32).min(MODEL_INPUT_SIZE);
+    let mw = (mx2 - mx1).max(1);
+    let mh = (my2 - my1).max(1);
+
+    // Extract seg crop in model space as soft grayscale (scale [0,1] → [0,255])
+    let mut seg_crop = GrayImage::new(mw, mh);
+    for ly in 0..mh {
+        for lx in 0..mw {
+            let idx = (my1 + ly) as usize * MODEL_SIZE + (mx1 + lx) as usize;
+            if idx < seg.len() {
+                let v = (seg[idx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                seg_crop.put_pixel(lx, ly, Luma([v]));
+            }
+        }
+    }
+
+    // Bilinear resize to original crop dimensions (preserves soft gradients)
+    let resized = image::imageops::resize(
+        &seg_crop, crop_w, crop_h, image::imageops::FilterType::Triangle,
+    );
+
+    // Threshold: seg values > ~0.30 (77 in uint8) are text pixels.
+    // The UNet seg output is sigmoid-activated and tends to produce high-confidence
+    // values (>0.7) on text cores and softer values (0.3–0.5) on stroke edges.
+    // A lower threshold captures these edges; the 2px dilation below fills remaining gaps.
+    let mut mask = GrayImage::new(crop_w, crop_h);
+    for (px, py, pixel) in resized.enumerate_pixels() {
+        if pixel.0[0] > 77 {
+            mask.put_pixel(px, py, Luma([255]));
+        }
+    }
+
+    // Dilate by 2px to ensure full stroke coverage after resize interpolation
+    let mask = dilate_mask(&mask, 3);
+
+    Some(LocalTextMask { x: crop_x, y: crop_y, image: mask })
+}
+
 /// Non-Maximum Suppression: keep boxes that don't overlap too much with higher-confidence ones.
 fn nms(detections: &[[f64; 5]], iou_threshold: f64) -> Vec<[f64; 5]> {
     let mut keep = Vec::new();
@@ -164,4 +273,47 @@ fn nms(detections: &[[f64; 5]], iou_threshold: f64) -> Vec<[f64; 5]> {
         }
     }
     keep
+}
+
+/// Fast L1-norm dilation of a binary mask by `radius` pixels.
+pub(crate) fn dilate_mask(img: &GrayImage, radius: u32) -> GrayImage {
+    let (w, h) = img.dimensions();
+    let r = radius as i32;
+
+    // Horizontal pass
+    let mut horiz = img.clone();
+    for y in 0..h {
+        for x in 0..w {
+            if img.get_pixel(x, y).0[0] == 255 {
+                continue;
+            }
+            let x0 = (x as i32 - r).max(0) as u32;
+            let x1 = (x as i32 + r).min(w as i32 - 1) as u32;
+            for nx in x0..=x1 {
+                if img.get_pixel(nx, y).0[0] == 255 {
+                    horiz.put_pixel(x, y, Luma([255]));
+                    break;
+                }
+            }
+        }
+    }
+
+    // Vertical pass
+    let mut out = horiz.clone();
+    for y in 0..h {
+        for x in 0..w {
+            if horiz.get_pixel(x, y).0[0] == 255 {
+                continue;
+            }
+            let y0 = (y as i32 - r).max(0) as u32;
+            let y1 = (y as i32 + r).min(h as i32 - 1) as u32;
+            for ny in y0..=y1 {
+                if horiz.get_pixel(x, ny).0[0] == 255 {
+                    out.put_pixel(x, y, Luma([255]));
+                    break;
+                }
+            }
+        }
+    }
+    out
 }

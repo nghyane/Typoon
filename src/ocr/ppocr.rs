@@ -9,7 +9,7 @@ use ort::session::Session;
 use ort::value::TensorRef;
 
 use super::OcrResult;
-use crate::detection::TextRegion;
+use crate::detection::{LocalTextMask, TextRegion, dilate_mask};
 
 // ── Recognition constants ──
 /// Fixed input height for PP-OCR recognition models (v5 uses 48)
@@ -240,10 +240,80 @@ impl PpOcrAdapter {
                 continue;
             }
 
+            // Build text mask from prob_data in original page coordinates.
+            // The DB prob map represents shrunken text cores (similar to DBNet shrink map).
+            // We treat it as a soft probability mask: scale to [0..255], then threshold
+            // at a low value and dilate to recover full stroke width.
+            let mask = {
+                // Axis-aligned bbox of the expanded quad in original image space
+                let mut ax1 = f64::INFINITY;
+                let mut ay1 = f64::INFINITY;
+                let mut ax2 = f64::NEG_INFINITY;
+                let mut ay2 = f64::NEG_INFINITY;
+                for [px, py] in &orig_corners {
+                    ax1 = ax1.min(*px);
+                    ay1 = ay1.min(*py);
+                    ax2 = ax2.max(*px);
+                    ay2 = ay2.max(*py);
+                }
+                let mask_x = ax1.floor().max(0.0) as u32;
+                let mask_y = ay1.floor().max(0.0) as u32;
+                let mask_w = ((ax2.ceil() as u32).saturating_sub(mask_x)).min(orig_w - mask_x).max(1);
+                let mask_h = ((ay2.ceil() as u32).saturating_sub(mask_y)).min(orig_h - mask_y).max(1);
+
+                // Sample prob_data at detection map resolution as soft grayscale,
+                // then bilinear resize to original image resolution. This avoids
+                // nearest-neighbor staircase artifacts from the resolution mismatch.
+                let inv_sx = content_w as f64 / orig_w as f64;
+                let inv_sy = content_h as f64 / orig_h as f64;
+
+                // Compute detection-map-space bbox for this region
+                let dm_x1 = (mask_x as f64 * inv_sx).floor() as usize;
+                let dm_y1 = (mask_y as f64 * inv_sy).floor() as usize;
+                let dm_x2 = (((mask_x + mask_w) as f64 * inv_sx).ceil() as usize).min(map_w);
+                let dm_y2 = (((mask_y + mask_h) as f64 * inv_sy).ceil() as usize).min(map_h);
+                let dm_w = (dm_x2 - dm_x1).max(1) as u32;
+                let dm_h = (dm_y2 - dm_y1).max(1) as u32;
+
+                // Extract soft grayscale crop at detection map resolution
+                let mut dm_crop = image::GrayImage::new(dm_w, dm_h);
+                for ly in 0..dm_h {
+                    for lx in 0..dm_w {
+                        let mx = dm_x1 + lx as usize;
+                        let my = dm_y1 + ly as usize;
+                        if mx < map_w && my < map_h {
+                            let v = (prob_data[my * map_w + mx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                            dm_crop.put_pixel(lx, ly, image::Luma([v]));
+                        }
+                    }
+                }
+
+                // Bilinear resize to original image mask dimensions (smooth edges)
+                let resized = image::imageops::resize(
+                    &dm_crop, mask_w, mask_h, image::imageops::FilterType::Triangle,
+                );
+
+                // Threshold at ~0.10 (25/255) to capture soft edges from
+                // bilinear interpolation, then dilate to cover anti-aliased
+                // stroke boundaries. Dilation scales with line height: larger
+                // text has thicker strokes needing more coverage.
+                let mut mask_img = image::GrayImage::new(mask_w, mask_h);
+                for (px, py, pixel) in resized.enumerate_pixels() {
+                    if pixel.0[0] > 25 {
+                        mask_img.put_pixel(px, py, image::Luma([255]));
+                    }
+                }
+                let dilate_r = (mask_h.min(mask_w) / 4).max(12);
+                let mask_img = dilate_mask(&mask_img, dilate_r);
+
+                Some(LocalTextMask { x: mask_x, y: mask_y, image: mask_img })
+            };
+
             regions.push(TextRegion {
                 polygon: orig_corners,
                 crop,
                 confidence: *score,
+                mask,
             });
         }
 

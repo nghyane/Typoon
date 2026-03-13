@@ -30,7 +30,7 @@ impl EdgeInsets {
 }
 
 /// Canonical drawable rectangle inside a bubble.
-/// Computed once from polygon bbox + insets, then shared by FitEngine, overlay, and canvas_agent.
+/// Computed once from polygon bbox + insets, then shared by FitEngine and overlay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawableArea {
     /// Polygon bounding box [x1, y1, x2, y2]

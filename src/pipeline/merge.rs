@@ -1,4 +1,4 @@
-use crate::detection::TextRegion;
+use crate::detection::{LocalTextMask, TextRegion};
 
 /// A bubble with grouped text lines, ready for OCR + concat.
 pub struct MergedBubble {
@@ -8,6 +8,8 @@ pub struct MergedBubble {
     pub lines: Vec<TextRegion>,
     /// Max detection confidence across lines
     pub confidence: f64,
+    /// Composited text mask from all lines (union of per-line masks)
+    pub mask: Option<LocalTextMask>,
 }
 
 /// Maximum absolute vertical gap (px) between two lines to allow merging.
@@ -82,26 +84,40 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
             .map(|i| std::mem::replace(&mut lines[i], placeholder_region()))
             .collect();
 
-        // Filter noise: single small region (likely SFX or artifact)
-        if group_lines.len() == 1 {
-            let (x1, y1, x2, y2) = bbox(&group_lines[0].polygon);
-            if (x2 - x1) < 80.0 || (y2 - y1) < 35.0 {
-                continue;
-            }
-        }
-
         // Sort by reading order: group lines into rows (similar Y), sort left→right within rows
         sort_reading_order(&mut group_lines);
 
         let polygon = bounding_polygon(&group_lines);
+
+        // Filter noise: too small, or every line is portrait-oriented.
+        // Normal dialogue lines are always landscape (w > h).
+        // SFX/sound effects produce portrait lines (h >= w) — if ALL lines
+        // in a group are portrait, the whole group is SFX.
+        let (x1, y1, x2, y2) = bbox(&polygon);
+        if (x2 - x1) < 80.0 || (y2 - y1) < 35.0 {
+            continue;
+        }
+        // SFX lines are bulky (large min-dimension) compared to normal text
+        // lines which are thin (height ~ font size, typically 20-80px).
+        // If any line's shorter side exceeds this, the group is likely SFX.
+        const SFX_MIN_DIM: f64 = 100.0;
+        let has_sfx_line = group_lines.iter().any(|l| {
+            let (lx1, ly1, lx2, ly2) = bbox(&l.polygon);
+            (lx2 - lx1).min(ly2 - ly1) > SFX_MIN_DIM
+        });
+        if has_sfx_line {
+            continue;
+        }
         let confidence = group_lines.iter()
             .map(|l| l.confidence)
             .fold(0.0_f64, f64::max);
+        let mask = composite_masks(&group_lines);
 
         result.push(MergedBubble {
             polygon,
             lines: group_lines,
             confidence,
+            mask,
         });
     }
 
@@ -217,10 +233,51 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+/// Composite per-line text masks into a single bubble mask (logical OR).
+fn composite_masks(lines: &[TextRegion]) -> Option<LocalTextMask> {
+    let masks: Vec<&LocalTextMask> = lines.iter().filter_map(|l| l.mask.as_ref()).collect();
+    if masks.is_empty() {
+        return None;
+    }
+    if masks.len() == 1 {
+        return Some(masks[0].clone());
+    }
+
+    // Union bbox of all masks
+    let mut ux1 = u32::MAX;
+    let mut uy1 = u32::MAX;
+    let mut ux2 = 0u32;
+    let mut uy2 = 0u32;
+    for m in &masks {
+        ux1 = ux1.min(m.x);
+        uy1 = uy1.min(m.y);
+        ux2 = ux2.max(m.x + m.image.width());
+        uy2 = uy2.max(m.y + m.image.height());
+    }
+    let uw = ux2 - ux1;
+    let uh = uy2 - uy1;
+
+    let mut merged = image::GrayImage::new(uw, uh);
+    for m in &masks {
+        let dx = m.x - ux1;
+        let dy = m.y - uy1;
+        for ly in 0..m.image.height() {
+            for lx in 0..m.image.width() {
+                if m.image.get_pixel(lx, ly).0[0] == 255 {
+                    merged.put_pixel(dx + lx, dy + ly, image::Luma([255]));
+                }
+            }
+        }
+    }
+
+    Some(LocalTextMask { x: ux1, y: uy1, image: merged })
+}
+
 fn placeholder_region() -> TextRegion {
     TextRegion {
         polygon: vec![],
         crop: image::DynamicImage::new_rgb8(1, 1),
         confidence: 0.0,
+        mask: None,
     }
 }

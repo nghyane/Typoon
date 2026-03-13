@@ -35,6 +35,9 @@ struct TermEntry {
 impl Glossary {
     /// Open (or create) a glossary database at the given path.
     pub fn open(db_path: &Path) -> Result<Self> {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let conn = Connection::open(db_path)
             .with_context(|| format!("Failed to open glossary DB: {}", db_path.display()))?;
 

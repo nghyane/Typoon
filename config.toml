@@ -1,13 +1,25 @@
-port = 4319
 models_dir = "models"
 default_target_lang = "vi"
 
-[translation]
+[providers.local]
+type = "openai"
 endpoint = "http://localhost:7860/api/provider/openai/v1"
-# api_key not needed — proxy handles auth
+
+[providers.anthropic]
+type = "anthropic"
+endpoint = "http://localhost:7860/api/provider/anthropic/v1"
+
+[translation]
+provider = "local"
 model = "gpt-5.4"
 reasoning_effort = "low"
 
-[canvas_agent]
-enabled = false  # fit engine + border_detect đủ tốt, agent thêm ~70s latency
-model = "gpt-5-codex"
+[context_agent]
+provider = "anthropic"
+model = "claude-haiku-4-5-20250609"
+
+[context]
+db_path = "data/context.db"
+
+[glossary]
+db_path = "data/glossary.db"
