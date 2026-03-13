@@ -1,5 +1,9 @@
 /target
 /cache
+/data
+/output
 /models/*.onnx
+tests/fixtures/chapter_sample/
+tests/fixtures/ctrlaltresign/
 .DS_Store
 .amp/
