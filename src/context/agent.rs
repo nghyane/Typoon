@@ -1,72 +1,62 @@
 use anyhow::Result;
 
 use crate::agent::{Message, Provider, ToolDef};
-use crate::context::{ChapterTranslation, NoteMatch, TranslationMatch};
-use crate::context::ContextStore;
-
-const MAX_TURNS: usize = 5;
+use crate::context::{ChapterTranslation, ContextHit, ContextStore, SearchScope};
 
 const SYSTEM_PROMPT: &str = "\
-You are a context retrieval agent for a manga translation project.
-Your job: answer the translation agent's question by searching the project database.
+You are a context retrieval sub-agent for a manga translation project.
 
-Tools available:
-- search_translations(query): Full-text search over all translated bubbles
-- search_notes(query): Search chapter notes (events, characters, relationships)
-- read_chapter(chapter_index): Get all translations for a specific chapter
+The database contains two types of records from previous chapters:
+- translations: source text → translated text for every bubble.
+- chapter notes (4 types): character (introductions), relationship (who knows whom), \
+  event (plot points), setting (locations/workplace/school).
 
-Workflow:
-1. Analyze the question
-2. Search relevant data using tools
-3. Call answer() with a concise, focused response
+You have 2 tools:
+- search(queries, scope): batch search across translations and/or notes. \
+  Pass 2-6 short keyword queries (names, terms, relationship pairs) in one call. \
+  Use scope='notes' for character/relationship/event/setting info, \
+  scope='translations' for prior wording, scope='all' if unsure.
+- read_chapter(chapter_index): get all translations for a specific chapter. \
+  Use only if search results point to a chapter you need full context from.
 
-Keep answers short and relevant. Only include information that directly answers the question.
-Do not add speculation or information not found in the database.";
+Rules:
+- Call search() ONCE with ALL relevant queries in a single message.
+- After reviewing results, respond with a concise text answer (no tool calls).
+- Only your last text message is returned to the caller.
+- Plain text only, no markdown. Answer directly with facts from the database.
+- Do not speculate or add information not found in search results.";
 
 fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef::new(
-            "search_translations",
-            "Full-text search over all translated bubbles in the project",
+            "search",
+            "Batch search across translations and/or notes. Pass 2-6 short keyword queries.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search terms"}
+                    "queries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Short keyword queries, e.g. [\"Max\", \"Joy\", \"team leader\", \"office setting\"]"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["all", "translations", "notes"],
+                        "description": "Search scope: 'translations' for prior wording, 'notes' for relationships/events, 'all' if unsure"
+                    }
                 },
-                "required": ["query"]
-            }),
-        ),
-        ToolDef::new(
-            "search_notes",
-            "Search chapter notes (events, characters, relationships)",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search terms"}
-                },
-                "required": ["query"]
+                "required": ["queries"]
             }),
         ),
         ToolDef::new(
             "read_chapter",
-            "Get all translations for a specific chapter",
+            "Get all translations for a specific chapter. Use only when search points to a chapter needing full context.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "chapter_index": {"type": "integer", "description": "Chapter number (0-based)"}
                 },
                 "required": ["chapter_index"]
-            }),
-        ),
-        ToolDef::new(
-            "answer",
-            "Submit the final answer to the translation agent's question",
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "The answer"}
-                },
-                "required": ["text"]
             }),
         ),
     ]
@@ -78,59 +68,71 @@ pub async fn answer_context_question(
     project_id: &str,
     question: &str,
 ) -> Result<String> {
+    // Early exit: no data in DB for this project
+    if !store.has_data(project_id)? {
+        tracing::info!("Context agent: no data for project {project_id}, skipping");
+        return Ok(String::new());
+    }
+
     let tools = tool_defs();
     let mut messages = vec![
         Message::system(SYSTEM_PROMPT),
         Message::user_text(question),
     ];
 
-    for turn in 0..MAX_TURNS {
-        tracing::debug!("Context agent turn {turn}");
+    loop {
+        let resp = provider.call(&messages, &tools).await?;
 
-        let tool_calls = provider.call(&messages, &tools).await?;
-
-        if tool_calls.is_empty() {
-            break;
+        // No tool calls → text is the final answer
+        if resp.tool_calls.is_empty() {
+            let answer = resp.text.unwrap_or_default();
+            tracing::info!("Context agent answered ({} chars):\n{}", answer.len(), answer);
+            return Ok(answer);
         }
 
+        // Has tool calls → execute them, continue loop
         messages.push(Message::Assistant {
-            tool_calls: tool_calls.clone(),
+            text: resp.text,
+            tool_calls: resp.tool_calls.clone(),
         });
 
-        for tc in &tool_calls {
-            // Parse arguments as JSON Value for field access
+        for tc in &resp.tool_calls {
             let input: serde_json::Value =
                 serde_json::from_str(&tc.arguments).unwrap_or_default();
 
             let result = match tc.name.as_str() {
-                "search_translations" => {
-                    let query = input["query"].as_str().unwrap_or("");
-                    tracing::debug!("search_translations({:?})", query);
-                    match store.search_translations(query, project_id, 20) {
-                        Ok(matches) => format_translation_matches(&matches),
-                        Err(e) => format!("Search error: {e}"),
-                    }
-                }
-                "search_notes" => {
-                    let query = input["query"].as_str().unwrap_or("");
-                    tracing::debug!("search_notes({:?})", query);
-                    match store.search_notes(query, project_id, 20) {
-                        Ok(matches) => format_note_matches(&matches),
-                        Err(e) => format!("Search error: {e}"),
+                "search" => {
+                    let queries: Vec<String> = input["queries"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let scope: SearchScope = input
+                        .get("scope")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+
+                    tracing::info!("search({:?}, {:?})", queries, scope);
+
+                    if queries.is_empty() {
+                        "No queries provided.".to_string()
+                    } else {
+                        match store.batch_search(project_id, &queries, scope, 12) {
+                            Ok(hits) => format_hits(&hits),
+                            Err(e) => format!("Search error: {e}"),
+                        }
                     }
                 }
                 "read_chapter" => {
                     let chapter_index = input["chapter_index"].as_u64().unwrap_or(0) as usize;
-                    tracing::debug!("read_chapter({})", chapter_index);
+                    tracing::info!("read_chapter({})", chapter_index);
                     match store.get_chapter_translations(project_id, chapter_index) {
                         Ok(translations) => format_chapter_translations(&translations),
                         Err(e) => format!("Read error: {e}"),
                     }
-                }
-                "answer" => {
-                    let text = input["text"].as_str().unwrap_or("").to_string();
-                    tracing::info!("Context agent answered: {} chars", text.len());
-                    return Ok(text);
                 }
                 other => {
                     tracing::warn!("Unknown tool call: {other}");
@@ -141,35 +143,19 @@ pub async fn answer_context_question(
             messages.push(Message::tool_result_text(&tc.id, result));
         }
     }
-
-    tracing::warn!("Context agent exhausted turns without calling answer()");
-    Ok(String::new())
 }
 
-fn format_translation_matches(matches: &[TranslationMatch]) -> String {
-    if matches.is_empty() {
+fn format_hits(hits: &[ContextHit]) -> String {
+    if hits.is_empty() {
         return "No results found.".to_string();
     }
-    let mut out = format!("Found {} results:\n", matches.len());
-    for m in matches {
-        out.push_str(&format!(
-            "  [Ch{} p{} {}] {} → {}\n",
-            m.chapter_index, m.page_index, m.bubble_id, m.source_text, m.translated_text
-        ));
-    }
-    out
-}
-
-fn format_note_matches(matches: &[NoteMatch]) -> String {
-    if matches.is_empty() {
-        return "No results found.".to_string();
-    }
-    let mut out = format!("Found {} results:\n", matches.len());
-    for m in matches {
-        out.push_str(&format!(
-            "  [Ch{} {}] {}\n",
-            m.chapter_index, m.note_type, m.content
-        ));
+    let mut out = format!("Found {} results:\n", hits.len());
+    for h in hits {
+        let kind = match h.kind {
+            crate::context::ContextHitKind::Translation => "translation",
+            crate::context::ContextHitKind::Note => "note",
+        };
+        out.push_str(&format!("  [Ch{} {}] {}\n", h.chapter_index, kind, h.summary));
     }
     out
 }

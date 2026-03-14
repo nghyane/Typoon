@@ -10,8 +10,6 @@ use super::{BubbleTranslated, TranslateContext, TranslateRequest};
 use super::prompt::PromptBuilder;
 use super::tools;
 
-const MAX_AGENT_TURNS: usize = 15;
-
 /// Run the translation agent loop using the given provider.
 pub async fn run(
     provider: &dyn Provider,
@@ -42,21 +40,36 @@ pub async fn run(
     let mut messages = vec![Message::system(system_prompt), user_message];
     let mut results: Vec<BubbleTranslated> = Vec::new();
 
+    // Lookup: id → source_text (for populating results without LLM echoing source)
+    let source_lookup: std::collections::HashMap<&str, &str> = req
+        .all_bubbles()
+        .map(|b| (b.id.as_str(), b.source_text.as_str()))
+        .collect();
+
+    let total_bubbles = req.all_bubbles().count();
+
     // ── Main agent loop ──
-    for turn in 0..MAX_AGENT_TURNS {
-        tracing::debug!("Translation agent turn {turn}");
+    let mut turn = 0usize;
+    loop {
+        turn += 1;
+        tracing::info!(
+            "Agent turn {} — {}/{} bubbles translated",
+            turn,
+            results.len(),
+            total_bubbles,
+        );
 
-        let tool_calls = provider.call(&messages, &tool_defs).await?;
+        let resp = provider.call(&messages, &tool_defs).await?;
 
-        if tool_calls.is_empty() {
+        if resp.tool_calls.is_empty() {
             break;
         }
+        let tool_calls = resp.tool_calls;
 
         messages.push(Message::Assistant {
+            text: resp.text,
             tool_calls: tool_calls.clone(),
         });
-
-        let mut got_done = false;
 
         for tc in &tool_calls {
             match tc.name.as_str() {
@@ -64,13 +77,24 @@ pub async fn run(
                     let args: tools::translate::Args =
                         serde_json::from_str(&tc.arguments)
                             .with_context(|| format!("Bad translate args: {}", tc.arguments))?;
-                    tracing::debug!("translate [{}] → {:?}", args.id, args.translated_text);
-                    results.push(BubbleTranslated {
-                        id: args.id,
-                        source_text: args.source_text,
-                        translated_text: args.translated_text,
-                    });
-                    messages.push(Message::tool_result_text(&tc.id, "ok"));
+                    let count = args.translations.len();
+                    for item in args.translations {
+                        tracing::debug!("translate [{}] → {:?}", item.id, item.translated_text);
+                        let source = source_lookup
+                            .get(item.id.as_str())
+                            .unwrap_or(&"")
+                            .to_string();
+                        results.push(BubbleTranslated {
+                            id: item.id,
+                            source_text: source,
+                            translated_text: item.translated_text,
+                        });
+                    }
+                    tracing::info!("Translated {count} bubbles ({}/{total_bubbles})", results.len());
+                    messages.push(Message::tool_result_text(
+                        &tc.id,
+                        format!("ok ({count} bubbles)"),
+                    ));
                 }
 
                 "view_page" => {
@@ -113,12 +137,6 @@ pub async fn run(
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
 
-                "done" => {
-                    tracing::info!("Translation agent done ({} results)", results.len());
-                    messages.push(Message::tool_result_text(&tc.id, "ok"));
-                    got_done = true;
-                }
-
                 other => {
                     tracing::warn!("Unknown tool call: {other}");
                     messages.push(Message::tool_result_text(&tc.id, "unknown tool"));
@@ -126,13 +144,13 @@ pub async fn run(
             }
         }
 
-        if got_done {
+        if results.len() >= total_bubbles {
             break;
         }
     }
 
     // ── Completeness guardrail ──
-    completeness_check(provider, req, &mut messages, &tool_defs, &mut results).await?;
+    completeness_check(provider, req, &mut messages, &tool_defs, &mut results, &source_lookup).await?;
 
     // ── Dedup: keep last translation per ID ──
     dedup(&mut results);
@@ -140,46 +158,75 @@ pub async fn run(
     Ok(results)
 }
 
+const MAX_COMPLETION_ROUNDS: usize = 5;
+
 async fn completeness_check(
     provider: &dyn Provider,
     req: &TranslateRequest,
     messages: &mut Vec<Message>,
     tool_defs: &[agent::ToolDef],
     results: &mut Vec<BubbleTranslated>,
+    source_lookup: &std::collections::HashMap<&str, &str>,
 ) -> Result<()> {
     let expected_ids: std::collections::HashSet<&str> =
         req.all_bubbles().map(|b| b.id.as_str()).collect();
-    let translated_ids: std::collections::HashSet<&str> =
-        results.iter().map(|r| r.id.as_str()).collect();
-    let missing: Vec<&str> = expected_ids.difference(&translated_ids).copied().collect();
 
-    if missing.is_empty() {
-        return Ok(());
-    }
+    for round in 0..MAX_COMPLETION_ROUNDS {
+        let translated_ids: std::collections::HashSet<&str> =
+            results.iter().map(|r| r.id.as_str()).collect();
+        let missing: Vec<&str> = expected_ids.difference(&translated_ids).copied().collect();
 
-    tracing::warn!(
-        "Translation agent missed {} bubbles: {:?}. Requesting completion.",
-        missing.len(),
-        missing
-    );
+        if missing.is_empty() {
+            return Ok(());
+        }
 
-    messages.push(Message::user_text(format!(
-        "You missed {} bubbles. Translate these remaining IDs now, then call done(): {}",
-        missing.len(),
-        missing.join(", ")
-    )));
+        tracing::warn!(
+            "Completeness round {}: {} bubbles missing",
+            round + 1,
+            missing.len(),
+        );
 
-    if let Ok(tool_calls) = provider.call(messages, tool_defs).await {
-        for tc in &tool_calls {
-            if tc.name == "translate" {
-                if let Ok(args) = serde_json::from_str::<tools::translate::Args>(&tc.arguments) {
-                    results.push(BubbleTranslated {
-                        id: args.id,
-                        source_text: args.source_text,
-                        translated_text: args.translated_text,
-                    });
+        // Re-send missing bubbles with source text so LLM doesn't need to search history.
+        let mut retry_prompt = format!(
+            "You missed {} bubbles. Translate these now, then call done():\n\n",
+            missing.len(),
+        );
+        for id in &missing {
+            let source = source_lookup.get(id).unwrap_or(&"");
+            retry_prompt.push_str(&format!("[{id}] \"{source}\"\n"));
+        }
+        messages.push(Message::user_text(retry_prompt));
+
+        match provider.call(messages, tool_defs).await {
+            Ok(resp) if !resp.tool_calls.is_empty() => {
+                let tool_calls = resp.tool_calls;
+                messages.push(Message::Assistant {
+                    text: resp.text,
+                    tool_calls: tool_calls.clone(),
+                });
+
+                for tc in &tool_calls {
+                    if tc.name == "translate" {
+                        if let Ok(args) =
+                            serde_json::from_str::<tools::translate::Args>(&tc.arguments)
+                        {
+                            for item in args.translations {
+                                let source = source_lookup
+                                    .get(item.id.as_str())
+                                    .unwrap_or(&"")
+                                    .to_string();
+                                results.push(BubbleTranslated {
+                                    id: item.id,
+                                    source_text: source,
+                                    translated_text: item.translated_text,
+                                });
+                            }
+                        }
+                    }
+                    messages.push(Message::tool_result_text(&tc.id, "ok"));
                 }
             }
+            _ => break,
         }
     }
 

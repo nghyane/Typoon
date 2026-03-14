@@ -9,12 +9,15 @@ pub struct Args {
 pub fn def() -> agent::ToolDef {
     agent::ToolDef::new(
         "get_context",
-        "Ask the context agent to search previous chapters for relevant information.\n\n\
+        "Search previous chapters for translation history and chapter notes.\n\n\
             Behavior:\n\
-            - A sub-agent searches the project's translation history and chapter notes.\n\
-            - Ask specific questions: character names, relationships, past events, established terms.\n\
-            - Returns a focused answer based on database search results.\n\n\
-            When to use: encountering a character/term/event that may have appeared in earlier chapters.\n\
+            - A sub-agent searches the project database which contains:\n\
+              • Prior translations: source → translated text for every bubble in past chapters.\n\
+              • Chapter notes (saved by add_note): character introductions, relationships, \
+                plot events, setting descriptions.\n\
+            - Ask a specific question mentioning names, terms, or relationships you need clarified.\n\
+            - Returns a concise factual answer from database results.\n\n\
+            When to use: encountering a character/term/relationship that may have appeared in earlier chapters.\n\
             When NOT to use: first chapter of a project (no prior context exists).",
         serde_json::json!({
             "type": "object",
@@ -35,6 +38,19 @@ pub async fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
     let response = if let (Some(store), Some(agent), Some(project_id)) =
         (ctx.context_store, ctx.context_agent, ctx.project_id)
     {
+        // Early exit: skip LLM sub-agent if DB has no data for this project
+        match store.has_data(project_id) {
+            Ok(false) => {
+                tracing::info!("get_context: no data for project {project_id}, skipping sub-agent");
+                return ToolResponse::Text("No prior context exists for this project.".to_string());
+            }
+            Err(e) => {
+                tracing::warn!("Context store check failed: {e}");
+                return ToolResponse::Text(format!("Context check failed: {e}"));
+            }
+            Ok(true) => {}
+        }
+
         tracing::info!("get_context: {:?}", args.question);
         match crate::context::agent::answer_context_question(
             agent, store, project_id, &args.question,

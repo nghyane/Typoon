@@ -41,6 +41,7 @@ pub fn erase_masks(
     if let Some(lama) = inpainter {
         // Clone canvas once — each per-mask LaMa call uses a small ROI internally
         let base = DynamicImage::ImageRgba8(canvas.clone());
+        let mut lama_fail_logged = false;
         for mask in &lama_masks {
             let page_mask = page_mask_from_local(mask, canvas.width(), canvas.height());
             match lama.inpaint(&base, &page_mask) {
@@ -51,7 +52,10 @@ pub fn erase_masks(
                     });
                 }
                 Err(e) => {
-                    tracing::warn!("LaMa inpaint failed for mask, falling back to median: {e}");
+                    if !lama_fail_logged {
+                        tracing::warn!("LaMa inpaint failed, falling back to median for {} masks: {e}", lama_masks.len());
+                        lama_fail_logged = true;
+                    }
                     erase_with_median(canvas, mask);
                 }
             }

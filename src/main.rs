@@ -29,6 +29,8 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    ort::init().commit();
+
     let cli = Cli::parse();
     match cli.command {
         Command::Translate(args) => cli::translate::run(args).await,
