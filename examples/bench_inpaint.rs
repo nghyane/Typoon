@@ -30,7 +30,9 @@ async fn main() -> Result<()> {
 
     // Benchmark model load
     let t = Instant::now();
-    let inpainter = comic_scan::inpaint::LamaInpainter::new(model_path);
+    let inpainter = comic_scan::inpaint::LamaInpainter::new(
+        comic_scan::model_hub::lazy::LazySession::new(model_path),
+    );
     // Trigger lazy load with a warmup call below
     println!("Model init: {:.1}ms (lazy, session loads on first use)", t.elapsed().as_secs_f64() * 1000.0);
 

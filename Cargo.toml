@@ -14,7 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ONNX Runtime
-ort = "2.0.0-rc.12"
+ort = { version = "2.0.0-rc.12", features = ["coreml"] }
 
 # Image processing
 image = "0.25"
@@ -55,3 +55,4 @@ tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
+

@@ -8,6 +8,7 @@ use crate::context::ContextStore;
 use crate::detection::TextDetector;
 use crate::glossary::Glossary;
 use crate::inpaint::LamaInpainter;
+use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
 use crate::ocr::OcrEngine;
 use crate::translation::TranslationEngine;
@@ -31,8 +32,12 @@ pub struct TranslationRunner {
 
 impl TranslationRunner {
     pub async fn new(config: &AppConfig) -> Result<Self> {
+        let cache_dir = std::path::PathBuf::from(&config.models_dir).join("coreml_cache");
+
         let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
-        let detector = TextDetector::new(ctd_path);
+        let detector = TextDetector::new(
+            LazySession::new_coreml(ctd_path, Some(cache_dir.clone())),
+        );
         let ocr = OcrEngine::new(&config.models_dir).await?;
 
         let resolved = config.resolve_provider(&config.translation)?;
@@ -41,7 +46,9 @@ impl TranslationRunner {
         let inpainter = match model_hub::resolve_optional(&config.models_dir, Model::Lama).await {
             Some(path) => {
                 tracing::info!("LaMa model path resolved (lazy load): {}", path.display());
-                Some(LamaInpainter::new(path))
+                Some(LamaInpainter::new(
+                    LazySession::new_coreml(path, Some(cache_dir.clone())),
+                ))
             }
             None => {
                 tracing::info!("LaMa model not available, using median fill only");

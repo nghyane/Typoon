@@ -15,7 +15,9 @@ fn test_ctd_loads() {
         return;
     }
     let model_path = Path::new(MODELS).join("comic-text-detector.onnx");
-    let detector = comic_scan::detection::TextDetector::new(model_path);
+    let detector = comic_scan::detection::TextDetector::new(
+        comic_scan::model_hub::lazy::LazySession::new(model_path),
+    );
     // Trigger lazy load by detecting on a small test image
     let test_img = image::DynamicImage::new_rgb8(100, 100);
     let result = detector.detect(&test_img);
@@ -45,7 +47,9 @@ async fn test_ja_pipeline() {
 
     // Detect
     let model_path = Path::new(MODELS).join("comic-text-detector.onnx");
-    let detector = comic_scan::detection::TextDetector::new(model_path);
+    let detector = comic_scan::detection::TextDetector::new(
+        comic_scan::model_hub::lazy::LazySession::new(model_path),
+    );
     let regions = detector.detect(&img).expect("Detection failed");
     println!("Detected {} regions", regions.len());
     assert!(!regions.is_empty(), "Expected at least one region");

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use image::DynamicImage;
@@ -21,7 +21,7 @@ pub struct MangaOcrAdapter {
 }
 
 impl MangaOcrAdapter {
-    pub fn new(encoder_path: PathBuf, decoder_path: PathBuf, vocab_path: &Path) -> Result<Self> {
+    pub fn new(encoder: LazySession, decoder: LazySession, vocab_path: &Path) -> Result<Self> {
         let vocab_text = std::fs::read_to_string(vocab_path)
             .with_context(|| format!("Failed to read vocab: {}", vocab_path.display()))?;
         let vocab: Vec<String> = vocab_text.lines().map(|l| l.to_string()).collect();
@@ -31,11 +31,7 @@ impl MangaOcrAdapter {
             vocab.len(),
         );
 
-        Ok(Self {
-            encoder: LazySession::new(encoder_path),
-            decoder: LazySession::new(decoder_path),
-            vocab,
-        })
+        Ok(Self { encoder, decoder, vocab })
     }
 
     /// Preprocess: grayscale → RGB → resize 224×224 → rescale/normalize → NCHW

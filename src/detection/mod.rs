@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 use ort::value::TensorRef;
@@ -48,10 +46,8 @@ pub struct TextDetector {
 }
 
 impl TextDetector {
-    pub fn new(model_path: PathBuf) -> Self {
-        Self {
-            session: LazySession::new(model_path),
-        }
+    pub fn new(session: LazySession) -> Self {
+        Self { session }
     }
 
     pub fn is_loaded(&self) -> bool {

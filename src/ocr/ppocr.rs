@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use geo::{ConvexHull, Coord, LineString, Polygon};
@@ -51,9 +51,9 @@ pub struct PpOcrAdapter {
 
 impl PpOcrAdapter {
     pub fn new(
-        rec_path: PathBuf,
+        rec_session: LazySession,
         dict_path: &Path,
-        det_path: Option<PathBuf>,
+        det_session: Option<LazySession>,
     ) -> Result<Self> {
         let dict_text = std::fs::read_to_string(dict_path)
             .with_context(|| format!("Failed to read dictionary: {}", dict_path.display()))?;
@@ -64,9 +64,6 @@ impl PpOcrAdapter {
             }
         }
         dictionary.push(" ".to_string()); // use_space_char=true
-
-        let det_session = det_path.map(LazySession::new);
-        let rec_session = LazySession::new(rec_path);
 
         tracing::debug!("PpOcrAdapter initialized (lazy): det={}", det_session.is_some());
 

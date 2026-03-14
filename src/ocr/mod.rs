@@ -4,6 +4,7 @@ mod manga_ocr;
 use anyhow::Result;
 
 use crate::detection::TextRegion;
+use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
 
 pub struct OcrResult {
@@ -39,14 +40,22 @@ impl OcrEngine {
         let rec_path = model_hub::resolve(models_dir, Model::PpocrRec).await?;
         let dict_path = model_hub::resolve(models_dir, Model::PpocrKeys).await?;
         let det_path = model_hub::resolve_optional(models_dir, Model::PpocrDet).await;
-        ppocr::PpOcrAdapter::new(rec_path, &dict_path, det_path)
+        ppocr::PpOcrAdapter::new(
+            LazySession::new(rec_path),
+            &dict_path,
+            det_path.map(LazySession::new),
+        )
     }
 
     async fn load_manga_ocr(models_dir: &str) -> Result<manga_ocr::MangaOcrAdapter> {
         let encoder = model_hub::resolve(models_dir, Model::MangaOcrEncoder).await?;
         let decoder = model_hub::resolve(models_dir, Model::MangaOcrDecoder).await?;
         let vocab = model_hub::resolve(models_dir, Model::MangaOcrVocab).await?;
-        manga_ocr::MangaOcrAdapter::new(encoder, decoder, &vocab)
+        manga_ocr::MangaOcrAdapter::new(
+            LazySession::new(encoder),
+            LazySession::new(decoder),
+            &vocab,
+        )
     }
 
     pub fn is_loaded(&self) -> bool {

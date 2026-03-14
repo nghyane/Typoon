@@ -92,7 +92,9 @@ async fn run_detect(
             let ctd_path = crate::model_hub::resolve(
                 &config.models_dir, crate::model_hub::Model::ComicTextDetector,
             ).await?;
-            let detector = crate::detection::TextDetector::new(ctd_path);
+            let detector = crate::detection::TextDetector::new(
+                crate::model_hub::lazy::LazySession::new(ctd_path),
+            );
             let regions = detector.detect(img)?;
             println!("comic-text-detector: {} raw regions", regions.len());
             regions.into_iter().map(|r| (r.polygon, r.confidence, 1usize)).collect::<Vec<_>>()
@@ -200,7 +202,9 @@ async fn run_masks(
     // Dual-path erasure (median + LaMa)
     let inpainter = {
         let lama_path = crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama).await;
-        lama_path.map(crate::inpaint::LamaInpainter::new)
+        lama_path.map(|p| crate::inpaint::LamaInpainter::new(
+            crate::model_hub::lazy::LazySession::new(p),
+        ))
     };
     {
         let t = Instant::now();
@@ -234,7 +238,9 @@ async fn detect_masks(
             let ctd_path = crate::model_hub::resolve(
                 &config.models_dir, crate::model_hub::Model::ComicTextDetector,
             ).await?;
-            let detector = crate::detection::TextDetector::new(ctd_path);
+            let detector = crate::detection::TextDetector::new(
+                crate::model_hub::lazy::LazySession::new(ctd_path),
+            );
             let regions = detector.detect(img)?;
             Ok(regions.into_iter().filter_map(|r| r.mask).collect())
         }
