@@ -8,3 +8,4 @@ tests/fixtures/ctrlaltresign/
 .DS_Store
 .amp/
 __pycache__/
+models/lama-manga.safetensors
