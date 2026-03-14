@@ -43,13 +43,13 @@ info "GPU: $GPU_NAME (${GPU_MEM}MB VRAM)"
 # ---- Auto batch size based on VRAM ----
 if [ -z "$BATCH_SIZE_OVERRIDE" ]; then
     if [ "$GPU_MEM" -ge 20000 ]; then
-        AUTO_BATCH=16
+        AUTO_BATCH=32
     elif [ "$GPU_MEM" -ge 10000 ]; then
-        AUTO_BATCH=8
+        AUTO_BATCH=16
     elif [ "$GPU_MEM" -ge 6000 ]; then
-        AUTO_BATCH=4
+        AUTO_BATCH=8
     else
-        AUTO_BATCH=2
+        AUTO_BATCH=4
     fi
     info "Auto batch size: $AUTO_BATCH (based on ${GPU_MEM}MB VRAM)"
 fi
@@ -115,7 +115,7 @@ python train.py \
     --data_dir "$DATA_DIR" \
     --lama_model "$LAMA_MODEL" \
     --batch_size "$BATCH_SIZE" \
-    --num_workers 4 \
+    --num_workers 8 \
     --use_amp \
     --total_kimg 500 \
     --lr 1e-3 \
