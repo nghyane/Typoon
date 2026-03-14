@@ -130,6 +130,13 @@ def main():
             mask_arr = generate_freeform_mask(args.image_size, args.image_size)
             mask_arr = mask_arr[np.newaxis, ...]  # [1, H, W]
 
+            # Skip if already cached
+            out_path = os.path.join(args.output_dir, f"sample_{sample_idx:07d}.npz")
+            if os.path.exists(out_path):
+                sample_idx += 1
+                pbar.update(1)
+                continue
+
             batch_images.append(img_arr)
             batch_masks.append(mask_arr)
             batch_meta.append(sample_idx)
