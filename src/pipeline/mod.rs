@@ -130,7 +130,7 @@ fn detect_and_ocr_ppocr(
     lang: &str,
 ) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
     let lines = ocr.detect(img)?;
-    let merged = merge::group_lines(lines);
+    let merged = merge::group_lines(lines, img);
 
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();

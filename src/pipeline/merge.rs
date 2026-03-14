@@ -1,3 +1,5 @@
+use image::{DynamicImage, GenericImageView};
+
 use crate::detection::{LocalTextMask, TextRegion};
 
 /// A bubble with grouped text lines, ready for OCR + concat.
@@ -12,47 +14,44 @@ pub struct MergedBubble {
     pub mask: Option<LocalTextMask>,
 }
 
-/// Maximum absolute vertical gap (px) between a line and a group bbox.
+// ── Thresholds (cheap gates first, expensive last) ──
+
 const MAX_VERTICAL_GAP_PX: f64 = 40.0;
-
-/// Maximum absolute horizontal gap (px) between a line and a group bbox.
 const MAX_HORIZONTAL_GAP_PX: f64 = 30.0;
-
-/// Minimum horizontal overlap ratio (line vs group bbox) to allow merging.
 const MIN_OVERLAP_RATIO: f64 = 0.4;
-
-/// Vertical gap multiplier relative to the candidate line's own height.
 const VGAP_HEIGHT_MULT: f64 = 1.5;
-
-/// Maximum angle difference (degrees) between a line and a group's dominant
-/// orientation. Prevents merging horizontal dialogue (~0°) with vertical
-/// SFX (~90°) or heavily rotated text.
 const MAX_ANGLE_DIFF_DEG: f64 = 30.0;
-
-/// Maximum height ratio between a candidate line and a group's average line
-/// height. Lines with very different heights are likely from different bubbles
-/// (e.g. title vs dialogue, whisper vs shout). Ratio is always ≥ 1.0.
 const MAX_HEIGHT_RATIO: f64 = 1.8;
+/// If a new line's gap exceeds this multiple of the group's median inter-line
+/// gap, it's likely from a different bubble.
+const GAP_CONSISTENCY_MULT: f64 = 2.5;
+/// Luminance threshold (0–255) for a pixel to be considered "dark" (border).
+const BORDER_DARK_THRESHOLD: u8 = 100;
+/// Fraction of scan-line width that must be dark to count as a border row.
+const BORDER_ROW_RATIO: f64 = 0.25;
 
-/// Minimum bubble bbox dimensions to filter noise.
 const MIN_BUBBLE_W: f64 = 80.0;
 const MIN_BUBBLE_H: f64 = 35.0;
 
-/// Tracked bounding box + line statistics for a group.
-struct GroupBbox {
+// ── Group state ──
+
+struct GroupState {
+    // Bbox
     x1: f64,
     y1: f64,
     x2: f64,
     y2: f64,
-    /// Running sum of line angles (degrees) for averaging.
+    // Running averages
     angle_sum: f64,
-    /// Running sum of line heights for averaging.
     height_sum: f64,
-    /// Number of lines in this group.
     line_count: usize,
+    // Sorted bottom-y of each line (for nearest-line gap + gap consistency)
+    line_bottoms: Vec<f64>,
+    // Sorted inter-line gaps for consistency check
+    gaps: Vec<f64>,
 }
 
-impl GroupBbox {
+impl GroupState {
     fn from_line(polygon: &[[f64; 2]]) -> Self {
         let (x1, y1, x2, y2) = bbox(polygon);
         Self {
@@ -60,10 +59,12 @@ impl GroupBbox {
             angle_sum: line_angle(polygon),
             height_sum: y2 - y1,
             line_count: 1,
+            line_bottoms: vec![y2],
+            gaps: Vec::new(),
         }
     }
 
-    fn expand(&mut self, polygon: &[[f64; 2]]) {
+    fn add_line(&mut self, polygon: &[[f64; 2]], v_gap: f64) {
         let (x1, y1, x2, y2) = bbox(polygon);
         self.x1 = self.x1.min(x1);
         self.y1 = self.y1.min(y1);
@@ -72,34 +73,40 @@ impl GroupBbox {
         self.angle_sum += line_angle(polygon);
         self.height_sum += y2 - y1;
         self.line_count += 1;
+        self.line_bottoms.push(y2);
+        if v_gap > 0.0 {
+            self.gaps.push(v_gap);
+            self.gaps.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        }
     }
 
     fn w(&self) -> f64 { self.x2 - self.x1 }
 
     fn avg_angle(&self) -> f64 {
-        if self.line_count > 0 { self.angle_sum / self.line_count as f64 } else { 0.0 }
+        self.angle_sum / self.line_count.max(1) as f64
     }
 
     fn avg_height(&self) -> f64 {
-        if self.line_count > 0 { self.height_sum / self.line_count as f64 } else { 0.0 }
+        self.height_sum / self.line_count.max(1) as f64
     }
 
-    /// Vertical gap between this group bbox and a line bbox.
+    fn median_gap(&self) -> Option<f64> {
+        if self.gaps.is_empty() { return None; }
+        Some(self.gaps[self.gaps.len() / 2])
+    }
+
     fn v_gap_to(&self, ly1: f64, ly2: f64) -> f64 {
         if ly2 < self.y1 { self.y1 - ly2 }
         else if ly1 > self.y2 { ly1 - self.y2 }
         else { 0.0 }
     }
 
-    /// Horizontal gap between this group bbox and a line bbox.
     fn h_gap_to(&self, lx1: f64, lx2: f64) -> f64 {
         if lx2 < self.x1 { self.x1 - lx2 }
         else if lx1 > self.x2 { lx1 - self.x2 }
         else { 0.0 }
     }
 
-    /// Horizontal overlap ratio: overlap / max(group_w, line_w).
-    /// Using max_w prevents short lines from inflating the ratio.
     fn h_overlap_ratio(&self, lx1: f64, lx2: f64) -> f64 {
         let overlap = self.x2.min(lx2) - self.x1.max(lx1);
         if overlap <= 0.0 { return 0.0; }
@@ -108,14 +115,63 @@ impl GroupBbox {
     }
 }
 
-/// Group PP-OCR text lines into bubble groups by spatial proximity.
+// ── Border detection ──
+
+/// Check if there's a visible bubble border between two vertical regions.
 ///
-/// Uses greedy group assignment instead of union-find to avoid transitive
-/// merge bugs. Each line is assigned to the closest existing group by
-/// checking distance to the group's accumulated bbox — not individual members.
+/// Samples horizontal scan-lines in the gap between `upper_y2` and `lower_y1`,
+/// within the horizontal overlap `[x_left, x_right]`.
+/// A scan-line is a "border row" if ≥ 25% of its pixels are dark (luminance < 100).
+/// Returns true if any border row is found.
+fn has_border_between(
+    img: &DynamicImage,
+    upper_y2: f64,
+    lower_y1: f64,
+    x_left: f64,
+    x_right: f64,
+) -> bool {
+    let gap_top = upper_y2.ceil() as u32;
+    let gap_bot = lower_y1.floor() as u32;
+    if gap_top >= gap_bot || x_left >= x_right {
+        return false;
+    }
+
+    let (iw, ih) = img.dimensions();
+    let xl = (x_left.floor() as u32).min(iw.saturating_sub(1));
+    let xr = (x_right.ceil() as u32).min(iw);
+    let scan_w = xr.saturating_sub(xl);
+    if scan_w == 0 {
+        return false;
+    }
+
+    for sy in gap_top..gap_bot.min(ih) {
+        let mut dark_count = 0u32;
+        for sx in xl..xr {
+            let p = img.get_pixel(sx, sy);
+            let lum = (p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000;
+            if lum < BORDER_DARK_THRESHOLD as u32 {
+                dark_count += 1;
+            }
+        }
+        if dark_count as f64 / scan_w as f64 >= BORDER_ROW_RATIO {
+            return true;
+        }
+    }
+    false
+}
+
+// ── Main grouping ──
+
+/// Group PP-OCR text lines into bubble groups by spatial proximity + visual
+/// border detection.
 ///
-/// Result sorted top-to-bottom for reading order.
-pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
+/// Gates (ordered cheap → expensive, early-exit):
+/// 1. Angle compatibility
+/// 2. Height (font size) compatibility
+/// 3. Spatial proximity (gap, overlap)
+/// 4. Gap consistency (new gap vs group's median gap)
+/// 5. Border detection (sample image pixels between lines)
+pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage) -> Vec<MergedBubble> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -123,8 +179,7 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
     let mut lines = lines;
     lines.sort_by(|a, b| top_y(&a.polygon).partial_cmp(&top_y(&b.polygon)).unwrap());
 
-    // Greedy group assignment
-    let mut groups: Vec<(GroupBbox, Vec<usize>)> = Vec::new();
+    let mut groups: Vec<(GroupState, Vec<usize>)> = Vec::new();
 
     for i in 0..lines.len() {
         let (lx1, ly1, lx2, ly2) = bbox(&lines[i].polygon);
@@ -134,37 +189,46 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
         let mut best_group: Option<usize> = None;
         let mut best_vgap = f64::INFINITY;
 
-        for (gi, (gb, _)) in groups.iter().enumerate() {
-            // Orientation: reject if angle differs too much from group
-            if (l_angle - gb.avg_angle()).abs() > MAX_ANGLE_DIFF_DEG {
+        for (gi, (gs, _)) in groups.iter().enumerate() {
+            // Gate 1: orientation
+            if (l_angle - gs.avg_angle()).abs() > MAX_ANGLE_DIFF_DEG {
                 continue;
             }
 
-            // Size: reject if line height differs too much from group average
-            let ratio = lh.max(gb.avg_height()) / lh.min(gb.avg_height()).max(1.0);
+            // Gate 2: font size
+            let ratio = lh.max(gs.avg_height()) / lh.min(gs.avg_height()).max(1.0);
             if ratio > MAX_HEIGHT_RATIO {
                 continue;
             }
 
-            let v_gap = gb.v_gap_to(ly1, ly2);
-            let h_gap = gb.h_gap_to(lx1, lx2);
-
-            // Absolute limits
+            // Gate 3: spatial proximity
+            let v_gap = gs.v_gap_to(ly1, ly2);
+            let h_gap = gs.h_gap_to(lx1, lx2);
             if v_gap > MAX_VERTICAL_GAP_PX || h_gap > MAX_HORIZONTAL_GAP_PX {
                 continue;
             }
-
-            // Relative vertical limit: use candidate line's own height
             if v_gap > lh * VGAP_HEIGHT_MULT {
                 continue;
             }
-
-            // Horizontal overlap with group bbox
-            if gb.h_overlap_ratio(lx1, lx2) < MIN_OVERLAP_RATIO {
+            if gs.h_overlap_ratio(lx1, lx2) < MIN_OVERLAP_RATIO {
                 continue;
             }
 
-            // Pick closest group by vertical gap
+            // Gate 4: gap consistency
+            if let Some(median_gap) = gs.median_gap() {
+                if v_gap > median_gap * GAP_CONSISTENCY_MULT {
+                    continue;
+                }
+            }
+
+            // Gate 5: border detection — check if there's a visible border
+            // between the group's bottom and this line's top.
+            let overlap_x1 = gs.x1.max(lx1);
+            let overlap_x2 = gs.x2.min(lx2);
+            if v_gap > 0.0 && has_border_between(img, gs.y2, ly1, overlap_x1, overlap_x2) {
+                continue;
+            }
+
             if v_gap < best_vgap {
                 best_vgap = v_gap;
                 best_group = Some(gi);
@@ -172,10 +236,10 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
         }
 
         if let Some(gi) = best_group {
-            groups[gi].0.expand(&lines[i].polygon);
+            groups[gi].0.add_line(&lines[i].polygon, best_vgap);
             groups[gi].1.push(i);
         } else {
-            groups.push((GroupBbox::from_line(&lines[i].polygon), vec![i]));
+            groups.push((GroupState::from_line(&lines[i].polygon), vec![i]));
         }
     }
 
@@ -195,7 +259,6 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
             continue;
         }
 
-        // NOTE: SFX filtering in pipeline/mod.rs where OCR confidence is available.
         let confidence = group_lines.iter()
             .map(|l| l.confidence)
             .fold(0.0_f64, f64::max);
@@ -215,8 +278,6 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
 
 // ── Reading order sort ──
 
-/// Sort lines into reading order: top→bottom by row, left→right within each row.
-/// Lines whose vertical centers are within half the max line height are considered same row.
 fn sort_reading_order(lines: &mut [TextRegion]) {
     if lines.len() <= 1 {
         return;
@@ -267,18 +328,11 @@ fn top_y(polygon: &[[f64; 2]]) -> f64 {
     polygon.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min)
 }
 
-/// Compute the orientation angle of a text line from its polygon (degrees).
-///
-/// For a rotated quad [TL, TR, BR, BL], the angle is atan2 of the top edge
-/// (TL→TR). Returns 0° for horizontal, 90° for vertical.
-/// For non-quad polygons, falls back to AABB aspect ratio estimation.
 fn line_angle(polygon: &[[f64; 2]]) -> f64 {
     if polygon.len() >= 2 {
-        // Use first edge (TL→TR) as the line's principal direction
         let dx = polygon[1][0] - polygon[0][0];
         let dy = polygon[1][1] - polygon[0][1];
         let angle = dy.atan2(dx).to_degrees().abs();
-        // Normalize to [0, 90]: both 0° and 180° mean horizontal
         if angle > 90.0 { 180.0 - angle } else { angle }
     } else {
         0.0
@@ -316,7 +370,6 @@ fn bounding_polygon(regions: &[TextRegion]) -> Vec<[f64; 2]> {
     vec![[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
 }
 
-/// Composite per-line text masks into a single bubble mask (logical OR).
 fn composite_masks(lines: &[TextRegion]) -> Option<LocalTextMask> {
     let masks: Vec<&LocalTextMask> = lines.iter().filter_map(|l| l.mask.as_ref()).collect();
     if masks.is_empty() {

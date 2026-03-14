@@ -106,7 +106,7 @@ async fn run_detect(
             }
             let lines = ocr.detect(img)?;
             println!("PP-OCR det: {} raw lines", lines.len());
-            let merged = crate::pipeline::merge::group_lines(lines);
+            let merged = crate::pipeline::merge::group_lines(lines, img);
             merged.into_iter().map(|b| (b.polygon, b.confidence, b.lines.len())).collect::<Vec<_>>()
         }
     };
@@ -250,7 +250,7 @@ async fn detect_masks(
                 anyhow::bail!("PP-OCR detection model not loaded");
             }
             let lines = ocr.detect(img)?;
-            let merged = crate::pipeline::merge::group_lines(lines);
+            let merged = crate::pipeline::merge::group_lines(lines, img);
             Ok(merged.into_iter().filter_map(|b| b.mask).collect())
         }
     }
