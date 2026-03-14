@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use image::{DynamicImage, GenericImageView, GrayImage, Rgb, RgbImage};
 use ndarray::Array4;
-use ort::session::Session;
 use ort::value::TensorRef;
+
+use crate::model_hub::lazy::LazySession;
 
 const MODEL_SIZE: usize = 512;
 const MODEL_SIZE_U32: u32 = MODEL_SIZE as u32;
@@ -17,32 +17,18 @@ const CONTEXT_PAD: u32 = 32;
 const TILE_OVERLAP: u32 = 64;
 
 pub struct LamaInpainter {
-    session: Session,
+    session: LazySession,
 }
 
 impl LamaInpainter {
-    pub fn new(model_path: &Path) -> Result<Self> {
-        let session = Session::builder()?
-            .commit_from_file(model_path)
-            .with_context(|| format!("Failed to load LaMa ONNX model: {}", model_path.display()))?;
-
-        for input in session.inputs() {
-            tracing::info!(
-                "LaMa input: name={:?} dtype={:?}",
-                input.name(),
-                input.dtype(),
-            );
+    pub fn new(model_path: PathBuf) -> Self {
+        Self {
+            session: LazySession::new(model_path),
         }
-        for output in session.outputs() {
-            tracing::info!(
-                "LaMa output: name={:?} dtype={:?}",
-                output.name(),
-                output.dtype(),
-            );
-        }
+    }
 
-        tracing::info!("LamaInpainter loaded from {}", model_path.display());
-        Ok(Self { session })
+    pub fn is_loaded(&self) -> bool {
+        self.session.is_loaded()
     }
 
     /// Inpaint masked regions of an image using LaMa FFC-ResNet.
@@ -51,7 +37,7 @@ impl LamaInpainter {
     /// - `mask`: binary mask in page coordinates (255 = inpaint, 0 = keep)
     ///
     /// Returns the full image with masked regions replaced by inpainted content.
-    pub fn inpaint(&mut self, img: &DynamicImage, mask: &GrayImage) -> Result<DynamicImage> {
+    pub fn inpaint(&self, img: &DynamicImage, mask: &GrayImage) -> Result<DynamicImage> {
         let (img_w, img_h) = img.dimensions();
         let (mask_w, mask_h) = mask.dimensions();
         anyhow::ensure!(
@@ -95,9 +81,7 @@ impl LamaInpainter {
         let mut result = img.to_rgb8();
         for y in 0..roi_h {
             for x in 0..roi_w {
-                let mx = x;
-                let my = y;
-                if roi_mask.get_pixel(mx, my).0[0] > 0 {
+                if roi_mask.get_pixel(x, y).0[0] > 0 {
                     let px = roi_x1 + x;
                     let py = roi_y1 + y;
                     result.put_pixel(px, py, *inpainted_roi.get_pixel(x, y));
@@ -110,52 +94,53 @@ impl LamaInpainter {
 
     /// Inpaint a single tile that fits within 512×512.
     /// The input is padded to 512×512 if smaller.
-    fn inpaint_tile(&mut self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
+    fn inpaint_tile(&self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
         let (w, h) = img.dimensions();
         debug_assert!(w <= MODEL_SIZE_U32 && h <= MODEL_SIZE_U32);
 
-        // Build padded 512×512 inputs
-        let mut img_tensor = Array4::<f32>::zeros((1, 3, MODEL_SIZE, MODEL_SIZE));
-        let mut mask_tensor = Array4::<f32>::zeros((1, 1, MODEL_SIZE, MODEL_SIZE));
-
+        // Build padded 512×512 image tensor [1, 3, 512, 512] normalized to [0, 1]
+        let mut img_arr = Array4::<f32>::zeros((1, 3, MODEL_SIZE, MODEL_SIZE));
         for y in 0..h as usize {
             for x in 0..w as usize {
                 let pixel = img.get_pixel(x as u32, y as u32);
-                // Feed raw image — model applies img*(1-mask) internally
-                img_tensor[[0, 0, y, x]] = pixel[0] as f32 / 255.0;
-                img_tensor[[0, 1, y, x]] = pixel[1] as f32 / 255.0;
-                img_tensor[[0, 2, y, x]] = pixel[2] as f32 / 255.0;
-                mask_tensor[[0, 0, y, x]] = if mask.get_pixel(x as u32, y as u32).0[0] > 0 {
-                    1.0f32
-                } else {
-                    0.0f32
-                };
+                img_arr[[0, 0, y, x]] = pixel[0] as f32 / 255.0;
+                img_arr[[0, 1, y, x]] = pixel[1] as f32 / 255.0;
+                img_arr[[0, 2, y, x]] = pixel[2] as f32 / 255.0;
             }
         }
 
-        // Run inference
-        let img_ref = TensorRef::from_array_view(&img_tensor)?;
-        let mask_ref = TensorRef::from_array_view(&mask_tensor)?;
-        let outputs = self.session.run(ort::inputs![img_ref, mask_ref])?;
+        // Build padded 512×512 mask tensor [1, 1, 512, 512] with 0/1 values
+        let mut mask_arr = Array4::<f32>::zeros((1, 1, MODEL_SIZE, MODEL_SIZE));
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                if mask.get_pixel(x as u32, y as u32).0[0] > 0 {
+                    mask_arr[[0, 0, y, x]] = 1.0;
+                }
+            }
+        }
 
-        // Extract output tensor [1, 3, 512, 512]
-        let output_key = outputs
-            .keys()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("LaMa model produced no outputs"))?
-            .to_string();
-        let (_shape, out_data) = outputs[&*output_key].try_extract_tensor::<f32>()?;
+        // Run ort inference
+        let img_ref = TensorRef::from_array_view(&img_arr)?;
+        let mask_ref = TensorRef::from_array_view(&mask_arr)?;
+        let session_mutex = self.session.get()
+            .ok_or_else(|| anyhow::anyhow!("LaMa inpainter session not loaded"))?;
+        let mut session = session_mutex.lock().unwrap();
+        let outputs = session.run(ort::inputs![
+            "image" => img_ref,
+            "mask" => mask_ref,
+        ])?;
 
-        // Convert back to RgbImage (only the original w×h region)
-        // lama_fp32.onnx output is in [0, 255] range
+        // Output is [1, 3, 512, 512] in [0, 1]
+        let (out_shape, out_data) = outputs["output"].try_extract_tensor::<f32>()?;
+        let plane = out_shape[2] as usize * out_shape[3] as usize;
+
         let mut result = RgbImage::new(w, h);
-        let plane = MODEL_SIZE * MODEL_SIZE;
         for y in 0..h as usize {
             for x in 0..w as usize {
                 let idx = y * MODEL_SIZE + x;
-                let r = out_data[idx].round().clamp(0.0, 255.0) as u8;
-                let g = out_data[plane + idx].round().clamp(0.0, 255.0) as u8;
-                let b = out_data[2 * plane + idx].round().clamp(0.0, 255.0) as u8;
+                let r = (out_data[idx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                let g = (out_data[plane + idx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                let b = (out_data[2 * plane + idx] * 255.0).round().clamp(0.0, 255.0) as u8;
                 result.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
             }
         }
@@ -166,7 +151,7 @@ impl LamaInpainter {
     /// Inpaint a region larger than 512×512 by tiling with overlap.
     /// Each tile is 512×512 with `TILE_OVERLAP` pixel overlap.
     /// Overlapping regions are blended with linear weights.
-    fn inpaint_tiled(&mut self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
+    fn inpaint_tiled(&self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
         let (w, h) = img.dimensions();
         let step = MODEL_SIZE_U32 - TILE_OVERLAP;
 
@@ -232,47 +217,6 @@ impl LamaInpainter {
         }
 
         Ok(result)
-    }
-}
-
-/// Lazy wrapper around `LamaInpainter`.
-/// Stores the model path at construction time (cheap),
-/// defers ONNX session creation until first `.get()` call.
-pub struct LazyInpainter {
-    model_path: PathBuf,
-    inner: OnceLock<Option<Mutex<LamaInpainter>>>,
-}
-
-impl LazyInpainter {
-    /// Create a lazy inpainter from a resolved model path.
-    /// Does NOT load the ONNX model — that happens on first `.get()`.
-    pub fn new(model_path: PathBuf) -> Self {
-        Self {
-            model_path,
-            inner: OnceLock::new(),
-        }
-    }
-
-    /// Get the inpainter behind a Mutex, loading on first call.
-    /// Returns `None` if initialization failed.
-    pub fn get(&self) -> Option<&Mutex<LamaInpainter>> {
-        self.inner
-            .get_or_init(|| match LamaInpainter::new(&self.model_path) {
-                Ok(lama) => {
-                    tracing::info!("LazyInpainter: LaMa model loaded on first use");
-                    Some(Mutex::new(lama))
-                }
-                Err(e) => {
-                    tracing::warn!("LazyInpainter: LaMa init failed: {e}");
-                    None
-                }
-            })
-            .as_ref()
-    }
-
-    /// Check if already loaded (without triggering load).
-    pub fn is_loaded(&self) -> bool {
-        self.inner.get().is_some_and(|opt| opt.is_some())
     }
 }
 

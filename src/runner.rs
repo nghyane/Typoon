@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -7,30 +7,32 @@ use crate::config::{AppConfig, ProviderType};
 use crate::context::ContextStore;
 use crate::detection::TextDetector;
 use crate::glossary::Glossary;
-use crate::inpaint::LazyInpainter;
+use crate::inpaint::LamaInpainter;
 use crate::model_hub::{self, Model};
 use crate::ocr::OcrEngine;
 use crate::translation::TranslationEngine;
 
 /// Headless translation runner — holds all pipeline components without Axum/HTTP.
 ///
+/// All ONNX models use `LazySession` internally — sessions are created on first
+/// use, not at startup. This avoids CoreML context overhead for unused models.
+///
 /// Detection components (`detector`, `ocr`) are wrapped in `Arc` so they can be
-/// cloned and used in a separate task for pipeline parallelism: detect chapter N+1
-/// while translating chapter N.
+/// cloned and used in a separate task for pipeline parallelism.
 pub struct TranslationRunner {
-    pub detector: Arc<Mutex<TextDetector>>,
+    pub detector: Arc<TextDetector>,
     pub ocr: Arc<OcrEngine>,
     pub translation: TranslationEngine,
-    pub inpainter: Option<LazyInpainter>,
+    pub inpainter: Option<LamaInpainter>,
     pub glossary: Option<Glossary>,
-    pub context_store: Option<ContextStore>,
+    pub context_store: Option<Arc<ContextStore>>,
     pub context_agent: Option<Box<dyn Provider>>,
 }
 
 impl TranslationRunner {
     pub async fn new(config: &AppConfig) -> Result<Self> {
         let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
-        let detector = TextDetector::new(&ctd_path)?;
+        let detector = TextDetector::new(ctd_path);
         let ocr = OcrEngine::new(&config.models_dir).await?;
 
         let resolved = config.resolve_provider(&config.translation)?;
@@ -39,7 +41,7 @@ impl TranslationRunner {
         let inpainter = match model_hub::resolve_optional(&config.models_dir, Model::Lama).await {
             Some(path) => {
                 tracing::info!("LaMa model path resolved (lazy load): {}", path.display());
-                Some(LazyInpainter::new(path))
+                Some(LamaInpainter::new(path))
             }
             None => {
                 tracing::info!("LaMa model not available, using median fill only");
@@ -123,12 +125,12 @@ impl TranslationRunner {
         };
 
         Ok(Self {
-            detector: Arc::new(Mutex::new(detector)),
+            detector: Arc::new(detector),
             ocr: Arc::new(ocr),
             translation,
             inpainter,
             glossary,
-            context_store,
+            context_store: context_store.map(Arc::new),
             context_agent,
         })
     }

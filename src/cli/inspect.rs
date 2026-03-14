@@ -92,7 +92,7 @@ async fn run_detect(
             let ctd_path = crate::model_hub::resolve(
                 &config.models_dir, crate::model_hub::Model::ComicTextDetector,
             ).await?;
-            let mut detector = crate::detection::TextDetector::new(&ctd_path)?;
+            let detector = crate::detection::TextDetector::new(ctd_path);
             let regions = detector.detect(img)?;
             println!("comic-text-detector: {} raw regions", regions.len());
             regions.into_iter().map(|r| (r.polygon, r.confidence, 1usize)).collect::<Vec<_>>()
@@ -198,19 +198,15 @@ async fn run_masks(
     println!("Saved: {}", path.display());
 
     // Dual-path erasure (median + LaMa)
-    let mut inpainter = {
+    let inpainter = {
         let lama_path = crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama).await;
-        lama_path.and_then(|p| {
-            crate::inpaint::LamaInpainter::new(&p)
-                .inspect_err(|e| println!("LaMa load failed: {e}"))
-                .ok()
-        })
+        lama_path.map(crate::inpaint::LamaInpainter::new)
     };
     {
         let t = Instant::now();
         let mut dual = rgba.clone();
         let mask_refs: Vec<&LocalTextMask> = masks.iter().collect();
-        erase_masks(&mut dual, &mask_refs, inpainter.as_mut());
+        erase_masks(&mut dual, &mask_refs, inpainter.as_ref());
         let path = output.join(format!("{name}_dual.png"));
         dual.save(&path)?;
         println!("Saved (dual {}ms): {}", t.elapsed().as_millis(), path.display());
@@ -238,7 +234,7 @@ async fn detect_masks(
             let ctd_path = crate::model_hub::resolve(
                 &config.models_dir, crate::model_hub::Model::ComicTextDetector,
             ).await?;
-            let mut detector = crate::detection::TextDetector::new(&ctd_path)?;
+            let detector = crate::detection::TextDetector::new(ctd_path);
             let regions = detector.detect(img)?;
             Ok(regions.into_iter().filter_map(|r| r.mask).collect())
         }

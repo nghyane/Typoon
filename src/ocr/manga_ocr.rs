@@ -1,13 +1,12 @@
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use image::DynamicImage;
 use ndarray::{Array2, Array4};
-use ort::session::Session;
 use ort::value::TensorRef;
 
 use super::OcrResult;
+use crate::model_hub::lazy::LazySession;
 
 const INPUT_SIZE: usize = 224;
 const BOS_TOKEN: i64 = 2;
@@ -16,35 +15,25 @@ const SPECIAL_TOKEN_CUTOFF: i64 = 5;
 const MAX_LENGTH: usize = 300;
 
 pub struct MangaOcrAdapter {
-    encoder: Mutex<Session>,
-    decoder: Mutex<Session>,
+    encoder: LazySession,
+    decoder: LazySession,
     vocab: Vec<String>,
 }
 
 impl MangaOcrAdapter {
-    pub fn new(encoder_path: &Path, decoder_path: &Path, vocab_path: &Path) -> Result<Self> {
-        let encoder = Session::builder()?
-            .commit_from_file(encoder_path)
-            .with_context(|| format!("Failed to load encoder: {}", encoder_path.display()))?;
-
-        let decoder = Session::builder()?
-            .commit_from_file(decoder_path)
-            .with_context(|| format!("Failed to load decoder: {}", decoder_path.display()))?;
-
+    pub fn new(encoder_path: PathBuf, decoder_path: PathBuf, vocab_path: &Path) -> Result<Self> {
         let vocab_text = std::fs::read_to_string(vocab_path)
             .with_context(|| format!("Failed to read vocab: {}", vocab_path.display()))?;
         let vocab: Vec<String> = vocab_text.lines().map(|l| l.to_string()).collect();
 
-        tracing::info!(
-            "MangaOcrAdapter loaded: encoder={}, decoder={}, vocab={} tokens",
-            encoder_path.display(),
-            decoder_path.display(),
+        tracing::debug!(
+            "MangaOcrAdapter initialized (lazy): vocab={} tokens",
             vocab.len(),
         );
 
         Ok(Self {
-            encoder: Mutex::new(encoder),
-            decoder: Mutex::new(decoder),
+            encoder: LazySession::new(encoder_path),
+            decoder: LazySession::new(decoder_path),
             vocab,
         })
     }
@@ -77,7 +66,9 @@ impl MangaOcrAdapter {
     fn generate(&self, pixel_values: &Array4<f32>) -> Result<Vec<i64>> {
         // Encode
         let encoder_input = TensorRef::from_array_view(pixel_values)?;
-        let mut encoder_session = self.encoder.lock().unwrap();
+        let mut encoder_session = self.encoder.get()
+            .ok_or_else(|| anyhow::anyhow!("manga-ocr encoder not loaded"))?
+            .lock().unwrap();
         let encoder_outputs = encoder_session.run(ort::inputs![encoder_input])?;
 
         // Extract encoder_hidden_states — first output, copy data to own it
@@ -94,7 +85,9 @@ impl MangaOcrAdapter {
 
         // Decoder loop
         let mut token_ids: Vec<i64> = vec![BOS_TOKEN];
-        let mut decoder_session = self.decoder.lock().unwrap();
+        let mut decoder_session = self.decoder.get()
+            .ok_or_else(|| anyhow::anyhow!("manga-ocr decoder not loaded"))?
+            .lock().unwrap();
 
         let hidden_arr = ndarray::ArrayD::from_shape_vec(
             ndarray::IxDyn(&hidden_shape),

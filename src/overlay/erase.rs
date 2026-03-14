@@ -22,18 +22,42 @@ const MIN_BG_SAMPLES: usize = 4;
 pub fn erase_masks(
     canvas: &mut RgbaImage,
     masks: &[&LocalTextMask],
-    inpainter: Option<&mut LamaInpainter>,
+    inpainter: Option<&LamaInpainter>,
 ) {
-    let mut inpainter = inpainter;
+    let mut lama_masks: Vec<&LocalTextMask> = Vec::new();
 
     for mask in masks {
         if is_flat_background(canvas, mask) {
             erase_with_median(canvas, mask);
-        } else if let Some(ref mut lama) = inpainter {
-            if !try_erase_with_lama(canvas, lama, mask) {
-                erase_with_median(canvas, mask);
-            }
         } else {
+            lama_masks.push(mask);
+        }
+    }
+
+    if lama_masks.is_empty() {
+        return;
+    }
+
+    if let Some(lama) = inpainter {
+        // Clone canvas once — each per-mask LaMa call uses a small ROI internally
+        let base = DynamicImage::ImageRgba8(canvas.clone());
+        for mask in &lama_masks {
+            let page_mask = page_mask_from_local(mask, canvas.width(), canvas.height());
+            match lama.inpaint(&base, &page_mask) {
+                Ok(inpainted) => {
+                    let inpainted_rgba = inpainted.to_rgba8();
+                    apply_mask_pixels(canvas, mask, |_, (px, py)| {
+                        *inpainted_rgba.get_pixel(px, py)
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("LaMa inpaint failed for mask, falling back to median: {e}");
+                    erase_with_median(canvas, mask);
+                }
+            }
+        }
+    } else {
+        for mask in &lama_masks {
             erase_with_median(canvas, mask);
         }
     }
@@ -45,28 +69,6 @@ pub fn erase_with_median(canvas: &mut RgbaImage, text_mask: &LocalTextMask) {
     let mh = text_mask.image.height();
     let bg = median_bg_color(canvas, text_mask.x, text_mask.y, mw, mh);
     apply_mask_pixels(canvas, text_mask, |_, _| bg);
-}
-
-/// Try LaMa neural inpainting for a single mask. Returns true on success.
-fn try_erase_with_lama(
-    canvas: &mut RgbaImage,
-    lama: &mut LamaInpainter,
-    text_mask: &LocalTextMask,
-) -> bool {
-    let full_mask = page_mask_from_local(text_mask, canvas.width(), canvas.height());
-    match lama.inpaint(&DynamicImage::ImageRgba8(canvas.clone()), &full_mask) {
-        Ok(inpainted) => {
-            let inpainted_rgba = inpainted.to_rgba8();
-            apply_mask_pixels(canvas, text_mask, |_, (px, py)| {
-                *inpainted_rgba.get_pixel(px, py)
-            });
-            true
-        }
-        Err(e) => {
-            tracing::warn!("LaMa inpaint failed, falling back to median fill: {e}");
-            false
-        }
-    }
 }
 
 /// Check if the background around a mask region is flat (low color variance).

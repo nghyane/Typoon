@@ -1,9 +1,10 @@
-use std::path::Path;
+use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
-use ort::session::Session;
 use ort::value::TensorRef;
+
+use crate::model_hub::lazy::LazySession;
 
 const MODEL_INPUT_SIZE: u32 = 1024;
 const MODEL_SIZE: usize = MODEL_INPUT_SIZE as usize;
@@ -43,26 +44,23 @@ pub struct TextRegion {
 }
 
 pub struct TextDetector {
-    session: Session,
+    session: LazySession,
 }
 
 impl TextDetector {
-    pub fn new(model_path: &Path) -> Result<Self> {
-        let session = Session::builder()?
-            .commit_from_file(model_path)
-            .with_context(|| format!("Failed to load ONNX model: {}", model_path.display()))?;
-
-        tracing::info!("TextDetector loaded from {}", model_path.display());
-        Ok(Self { session })
+    pub fn new(model_path: PathBuf) -> Self {
+        Self {
+            session: LazySession::new(model_path),
+        }
     }
 
     pub fn is_loaded(&self) -> bool {
-        true
+        self.session.is_loaded()
     }
 
     /// Detect text regions in a comic image.
     /// Returns bubble polygons + cropped regions for OCR.
-    pub fn detect(&mut self, img: &DynamicImage) -> Result<Vec<TextRegion>> {
+    pub fn detect(&self, img: &DynamicImage) -> Result<Vec<TextRegion>> {
         let (orig_w, orig_h) = img.dimensions();
 
         // 1. Preprocess: resize to 1024x1024, normalize to [0,1], NCHW layout
@@ -70,7 +68,10 @@ impl TextDetector {
 
         // 2. Run ONNX inference
         let input_value = TensorRef::from_array_view(&input_tensor)?;
-        let outputs = self.session.run(ort::inputs![input_value])?;
+        let session_mutex = self.session.get()
+            .ok_or_else(|| anyhow::anyhow!("TextDetector session not loaded"))?;
+        let mut session = session_mutex.lock().unwrap();
+        let outputs = session.run(ort::inputs![input_value])?;
 
         // 3. Extract blk output [1, N, 7]: [cx, cy, w, h, obj, cls0, cls1]
         let (blk_shape, blk_data) = outputs["blk"].try_extract_tensor::<f32>()?;

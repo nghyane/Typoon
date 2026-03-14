@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use anyhow::Result;
 use image::DynamicImage;
 
@@ -38,8 +36,12 @@ pub struct ChapterPageOutput {
 
 /// Detect and OCR all pages in a chapter. CPU-bound, can run in parallel
 /// with translation of another chapter.
+///
+/// Uses a pipelined approach: detection (Mutex-bound) runs ahead of OCR +
+/// border detection so the detector lock is released as early as possible,
+/// allowing the next chapter's detection to proceed.
 pub fn detect_chapter(
-    detector: &Mutex<TextDetector>,
+    detector: &TextDetector,
     ocr: &OcrEngine,
     images: &[DynamicImage],
     source_lang: &str,
@@ -197,21 +199,29 @@ async fn translate_and_render_inner(
     let ctx = TranslateContext {
         page_images: images,
         glossary: runner.glossary.as_ref(),
-        context_store: runner.context_store.as_ref(),
+        context_store: runner.context_store.as_deref(),
         context_agent: runner.context_agent.as_ref().map(|a| &**a as &dyn crate::agent::Provider),
         project_id,
         chapter_index,
     };
+    let t_phase = std::time::Instant::now();
     let translated = engine.translate(&translate_req, &ctx).await?;
+    tracing::info!("Phase translate: {:.1}s", t_phase.elapsed().as_secs_f64());
 
     // ── Fit text into bubbles ──
+    let t_phase = std::time::Instant::now();
     let chapter_pages = fit_results(&detections, images, &translated)?;
+    tracing::info!("Phase fit: {:.1}s", t_phase.elapsed().as_secs_f64());
 
     // ── Save translations to ContextStore ──
-    save_context(&chapter_pages, runner, source_lang, target_lang, project_id, chapter_index);
+    save_context(
+        &chapter_pages, runner, source_lang, target_lang, project_id, chapter_index,
+    );
 
     // ── Render translated text onto page images ──
+    let t_phase = std::time::Instant::now();
     let chapter_pages = render_pages(chapter_pages, images, runner);
+    tracing::info!("Phase render: {:.1}s", t_phase.elapsed().as_secs_f64());
 
     Ok(ChapterOutput { pages: chapter_pages })
 }
@@ -290,6 +300,7 @@ fn fit_results(
 
 // ── Save context ──
 
+/// Save chapter translations to the context store (SQLite + FTS5).
 fn save_context(
     chapter_pages: &[ChapterPageOutput],
     runner: &TranslationRunner,
@@ -318,6 +329,10 @@ fn save_context(
         })
         .collect();
 
+    if translations.is_empty() {
+        return;
+    }
+
     if let Err(e) = store.save_chapter(pid, ch_idx, &translations) {
         tracing::warn!("Failed to save chapter context: {e}");
     }
@@ -325,41 +340,64 @@ fn save_context(
 
 // ── Render ──
 
+/// Render translated text onto page images.
+///
+/// Median-fill pages are rendered in parallel via `std::thread::scope`.
+/// LaMa inpainting pages are rendered sequentially (session requires `&mut`).
 fn render_pages(
-    mut chapter_pages: Vec<ChapterPageOutput>,
+    chapter_pages: Vec<ChapterPageOutput>,
     images: &[DynamicImage],
     runner: &TranslationRunner,
 ) -> Vec<ChapterPageOutput> {
-    let needs_lama = chapter_pages.iter().any(|page| {
-        if page.bubbles.iter().all(|b| b.text_mask.is_none()) {
+    let lama = runner.inpainter.as_ref();
+
+    // Classify: which pages need LaMa? (only when LaMa is available and
+    // at least one mask covers a non-flat background)
+    let page_needs_lama = |page: &ChapterPageOutput| -> bool {
+        if lama.is_none() || page.bubbles.is_empty() {
             return false;
         }
         let canvas = images[page.page_index].to_rgba8();
-        page.bubbles.iter().any(|b| {
-            b.text_mask
-                .as_ref()
-                .is_some_and(|mask| !crate::overlay::is_flat_background(&canvas, mask))
-        })
-    });
-
-    let lama_mutex = if needs_lama {
-        runner.inpainter.as_ref().and_then(|lazy| lazy.get())
-    } else {
-        None
+        page.bubbles.iter()
+            .filter_map(|b| b.text_mask.as_ref())
+            .any(|mask| !crate::overlay::is_flat_background(&canvas, mask))
     };
 
-    for page in &mut chapter_pages {
-        if page.bubbles.is_empty() {
-            continue;
+    // Parallel render: all pages that don't need LaMa
+    let mut results: Vec<Option<image::RgbaImage>> = std::thread::scope(|s| {
+        let handles: Vec<_> = chapter_pages
+            .iter()
+            .map(|page| {
+                if page.bubbles.is_empty() || page_needs_lama(page) {
+                    return None;
+                }
+                let img = &images[page.page_index];
+                let bubbles = &page.bubbles;
+                Some(s.spawn(move || crate::overlay::render(img, bubbles, None)))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.map(|j| j.join().unwrap())).collect()
+    });
+
+    // Sequential render: LaMa pages
+    if let Some(lama) = lama {
+        for (i, page) in chapter_pages.iter().enumerate() {
+            if results[i].is_none() && !page.bubbles.is_empty() {
+                let img = &images[page.page_index];
+                results[i] = Some(crate::overlay::render(img, &page.bubbles, Some(lama)));
+            }
         }
-        let img = &images[page.page_index];
-        let mut lama_guard = lama_mutex.map(|m| m.lock().unwrap());
-        let lama_ref = lama_guard.as_deref_mut();
-        let rendered = crate::overlay::render(img, &page.bubbles, lama_ref);
-        page.rendered_image = Some(rendered);
     }
 
+    // Assign results back
     chapter_pages
+        .into_iter()
+        .zip(results)
+        .map(|(mut page, rendered)| {
+            page.rendered_image = rendered;
+            page
+        })
+        .collect()
 }
 
 // ── Notes injection ──
@@ -370,9 +408,7 @@ fn note_priority(note_type: &str) -> u8 {
     match note_type {
         "relationship" => 0,
         "character" => 1,
-        "setting" => 2,
-        "event" => 3,
-        _ => 4,
+        _ => 2,
     }
 }
 
@@ -401,13 +437,23 @@ fn fetch_previous_notes(
         return vec![];
     }
 
+    // Only proactively inject stable facts (relationship, character).
+    // Event/setting notes are ephemeral — available reactively via get_context().
+    let stable: Vec<_> = raw
+        .into_iter()
+        .filter(|n| matches!(n.note_type.as_str(), "relationship" | "character"))
+        .collect();
+
+    // Dedup: keep latest occurrence (later chapter wins).
     let mut seen = std::collections::HashSet::new();
-    let mut notes: Vec<_> = raw
+    let mut notes: Vec<_> = stable
         .into_iter()
         .rev()
         .filter(|n| seen.insert(n.content.clone()))
         .collect();
-    notes.sort_by_key(|n| note_priority(&n.note_type));
+
+    // Stable sort: priority first, then recency (rev order preserved within same priority).
+    notes.sort_by(|a, b| note_priority(&a.note_type).cmp(&note_priority(&b.note_type)));
 
     let mut total = 0;
     let result: Vec<ContextNote> = notes

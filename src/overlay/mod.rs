@@ -25,7 +25,7 @@ use crate::detection::LocalTextMask;
 pub fn render(
     img: &DynamicImage,
     bubbles: &[BubbleResult],
-    inpainter: Option<&mut LamaInpainter>,
+    inpainter: Option<&LamaInpainter>,
 ) -> RgbaImage {
     let mut canvas = img.to_rgba8();
 

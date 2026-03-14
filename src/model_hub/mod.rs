@@ -1,3 +1,5 @@
+pub mod lazy;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -19,7 +21,12 @@ pub enum Model {
 }
 
 impl Model {
-    fn filename(&self) -> &'static str {
+    /// Returns `(hf_repo, filename)` for this model.
+    fn source(&self) -> (&'static str, &'static str) {
+        (HF_REPO, self.default_filename())
+    }
+
+    fn default_filename(&self) -> &'static str {
         match self {
             Self::ComicTextDetector => "comic-text-detector.onnx",
             Self::PpocrDet => "ppocr_det.onnx",
@@ -36,7 +43,7 @@ impl Model {
 
 /// Resolve a model file: check local `models_dir` first, fall back to HuggingFace Hub download.
 pub async fn resolve(models_dir: &str, model: Model) -> Result<PathBuf> {
-    let filename = model.filename();
+    let (hf_repo, filename) = model.source();
 
     // 1. Check local override
     let local = std::path::Path::new(models_dir).join(filename);
@@ -46,13 +53,13 @@ pub async fn resolve(models_dir: &str, model: Model) -> Result<PathBuf> {
     }
 
     // 2. Download from HuggingFace Hub (cached automatically)
-    tracing::info!("Model {filename}: downloading from {HF_REPO}...");
+    tracing::info!("Model {filename}: downloading from {hf_repo}...");
     let api = Api::new().context("Failed to create HF Hub API client")?;
-    let repo = api.model(HF_REPO.to_string());
+    let repo = api.model(hf_repo.to_string());
     let path = repo
         .get(filename)
         .await
-        .with_context(|| format!("Failed to download {filename} from {HF_REPO}"))?;
+        .with_context(|| format!("Failed to download {filename} from {hf_repo}"))?;
     tracing::info!("Model {filename}: cached at {}", path.display());
     Ok(path)
 }
@@ -67,3 +74,5 @@ pub async fn resolve_optional(models_dir: &str, model: Model) -> Option<PathBuf>
         }
     }
 }
+
+

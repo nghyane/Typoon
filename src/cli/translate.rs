@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -44,6 +44,7 @@ pub struct TranslateArgs {
 pub async fn run(args: TranslateArgs) -> Result<()> {
     let config = config::AppConfig::load()?;
     let runner = TranslationRunner::new(&config).await?;
+    
     let source_lang = pipeline::detect_source_lang(Some(&args.source), &args.target);
 
     // Determine if input is a single chapter or a series directory
@@ -186,34 +187,22 @@ async fn translate_series(
             None => detect_inline(ch_dir, &runner.detector, &runner.ocr, source_lang)?,
         };
 
-        // Start detection for next chapter
+        // Start detection for next chapter while we translate this one
         if let Some(&(next_idx, next_dir, _, _)) = work.get(wi + 1) {
             pending = start_detection(next_idx, next_dir, &runner.detector, &runner.ocr, source_lang, chapters.len());
         }
 
         let t = Instant::now();
-        let result = chapter::translate_and_render(
-            runner, detections, &images,
-            target_lang, source_lang,
-            Some(project), Some(ch_num),
+        let (n_pages, ch_bubbles) = translate_render_save(
+            runner, detections, images, ch_output, target_lang, source_lang, project, ch_num,
         ).await?;
 
-        std::fs::create_dir_all(ch_output)?;
-        let mut ch_bubbles = 0;
-        for page in &result.pages {
-            ch_bubbles += page.bubbles.len();
-            if let Some(rendered) = &page.rendered_image {
-                let path = ch_output.join(format!("page_{:03}.png", page.page_index));
-                rendered.save(&path)?;
-            }
-        }
-
-        total_bubbles += ch_bubbles;
-        total_pages += images.len();
         println!(
-            "[{}/{}] {ch_name} — {} pages, {ch_bubbles} bubbles in {:.1}s",
-            idx + 1, chapters.len(), images.len(), t.elapsed().as_secs_f64(),
+            "[{}/{}] {ch_name} — {n_pages} pages, {ch_bubbles} bubbles in {:.1}s",
+            idx + 1, chapters.len(), t.elapsed().as_secs_f64(),
         );
+        total_bubbles += ch_bubbles;
+        total_pages += n_pages;
     }
 
     println!(
@@ -221,6 +210,38 @@ async fn translate_series(
         series_start.elapsed().as_secs_f64(),
     );
     Ok(())
+}
+
+/// Translate, render, and save a single chapter. Owns `images` so they are
+/// freed as soon as rendering finishes, before the caller loads the next chapter.
+async fn translate_render_save(
+    runner: &TranslationRunner,
+    detections: Vec<chapter::PageDetection>,
+    images: Vec<image::DynamicImage>,
+    output: &std::path::Path,
+    target_lang: &str,
+    source_lang: &str,
+    project: &str,
+    chapter_num: usize,
+) -> Result<(usize, usize)> {
+    let n_pages = images.len();
+    let result = chapter::translate_and_render(
+        runner, detections, &images,
+        target_lang, source_lang,
+        Some(project), Some(chapter_num),
+    ).await?;
+    drop(images);
+
+    std::fs::create_dir_all(output)?;
+    let mut ch_bubbles = 0;
+    for page in &result.pages {
+        ch_bubbles += page.bubbles.len();
+        if let Some(rendered) = &page.rendered_image {
+            let path = output.join(format!("page_{:03}.png", page.page_index));
+            rendered.save(&path)?;
+        }
+    }
+    Ok((n_pages, ch_bubbles))
 }
 
 // ── Helpers ──
@@ -264,7 +285,7 @@ struct PendingDetection {
 fn start_detection(
     idx: usize,
     ch_dir: &std::path::Path,
-    detector: &Arc<Mutex<TextDetector>>,
+    detector: &Arc<TextDetector>,
     ocr: &Arc<OcrEngine>,
     source_lang: &str,
     total: usize,
@@ -303,7 +324,7 @@ fn start_detection(
 
 fn detect_inline(
     ch_dir: &std::path::Path,
-    detector: &Arc<Mutex<TextDetector>>,
+    detector: &Arc<TextDetector>,
     ocr: &Arc<OcrEngine>,
     source_lang: &str,
 ) -> Result<(Vec<image::DynamicImage>, Vec<PageDetection>)> {

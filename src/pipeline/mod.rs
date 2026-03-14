@@ -1,7 +1,7 @@
 pub mod chapter;
 pub mod merge;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use base64::Engine;
@@ -82,7 +82,7 @@ pub async fn process_image(
 ///   "ja" → comic-text-detector + manga-ocr
 ///   _    → PP-OCR det (line merge) + PP-OCR rec
 pub(crate) fn detect_and_ocr(
-    detector: &Mutex<TextDetector>,
+    detector: &TextDetector,
     ocr: &OcrEngine,
     img: &DynamicImage,
     source_lang: &str,
@@ -96,12 +96,12 @@ pub(crate) fn detect_and_ocr(
 
 /// comic-text-detector: detects whole bubble polygons, OCR each region
 fn detect_and_ocr_manga(
-    detector: &Mutex<TextDetector>,
+    detector: &TextDetector,
     ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
 ) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
-    let regions = detector.lock().unwrap().detect(img)?;
+    let regions = detector.detect(img)?;
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();
     let mut masks = Vec::new();

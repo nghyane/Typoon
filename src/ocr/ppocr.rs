@@ -1,15 +1,14 @@
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use geo::{ConvexHull, Coord, LineString, Polygon};
 use image::{DynamicImage, Rgb, RgbImage};
 use ndarray::Array4;
-use ort::session::Session;
 use ort::value::TensorRef;
 
 use super::OcrResult;
 use crate::detection::{LocalTextMask, TextRegion, dilate_mask};
+use crate::model_hub::lazy::LazySession;
 
 // ── Recognition constants ──
 /// Fixed input height for PP-OCR recognition models (v5 uses 48)
@@ -45,21 +44,17 @@ const DET_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const DET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 pub struct PpOcrAdapter {
-    det_session: Option<Mutex<Session>>,
-    rec_session: Mutex<Session>,
+    det_session: Option<LazySession>,
+    rec_session: LazySession,
     dictionary: Vec<String>,
 }
 
 impl PpOcrAdapter {
     pub fn new(
-        rec_path: &Path,
+        rec_path: PathBuf,
         dict_path: &Path,
-        det_path: Option<&Path>,
+        det_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let rec_session = Session::builder()?
-            .commit_from_file(rec_path)
-            .with_context(|| format!("Failed to load PP-OCR rec model: {}", rec_path.display()))?;
-
         let dict_text = std::fs::read_to_string(dict_path)
             .with_context(|| format!("Failed to read dictionary: {}", dict_path.display()))?;
         let mut dictionary = vec!["".to_string()]; // CTC blank at index 0
@@ -70,26 +65,14 @@ impl PpOcrAdapter {
         }
         dictionary.push(" ".to_string()); // use_space_char=true
 
-        let det_session = if let Some(dp) = det_path {
-            let session = Session::builder()?
-                .commit_from_file(dp)
-                .with_context(|| format!("Failed to load PP-OCR det model: {}", dp.display()))?;
-            tracing::info!("PP-OCR det loaded: {}", dp.display());
-            Some(Mutex::new(session))
-        } else {
-            None
-        };
+        let det_session = det_path.map(LazySession::new);
+        let rec_session = LazySession::new(rec_path);
 
-        tracing::info!(
-            "PpOcrAdapter loaded: rec={}, dict={} tokens, det={}",
-            rec_path.display(),
-            dictionary.len(),
-            det_session.is_some(),
-        );
+        tracing::debug!("PpOcrAdapter initialized (lazy): det={}", det_session.is_some());
 
         Ok(Self {
             det_session,
-            rec_session: Mutex::new(rec_session),
+            rec_session,
             dictionary,
         })
     }
@@ -102,7 +85,9 @@ impl PpOcrAdapter {
     /// Detect text regions using PP-OCR DB detection model.
     pub fn detect(&self, img: &DynamicImage) -> Result<Vec<TextRegion>> {
         let det_session = self.det_session.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("PP-OCR detection model not loaded"))?;
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR detection model not loaded"))?
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR det session failed to load"))?;
 
         let (orig_w, orig_h) = (img.width(), img.height());
 
@@ -418,7 +403,9 @@ impl PpOcrAdapter {
         let input_tensor = self.rec_preprocess(image);
 
         let input_ref = TensorRef::from_array_view(&input_tensor)?;
-        let mut session = self.rec_session.lock().unwrap();
+        let rec_session = self.rec_session.get()
+            .ok_or_else(|| anyhow::anyhow!("PP-OCR rec session failed to load"))?;
+        let mut session = rec_session.lock().unwrap();
         let outputs = session.run(ort::inputs![input_ref])?;
 
         let output_key = outputs.keys().next()
