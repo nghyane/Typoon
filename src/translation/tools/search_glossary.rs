@@ -55,6 +55,6 @@ pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
         "Glossary not available.".to_string()
     };
 
-    tracing::debug!("search_glossary({:?}) → {} chars", args.query, response.len());
+    tracing::info!("search_glossary({:?}) → {} chars", args.query, response.len());
     ToolResponse::Text(response)
 }

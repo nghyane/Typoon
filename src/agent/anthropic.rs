@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::ir::{ContentPart, Message, ToolCallMsg};
-use super::provider::Provider;
+use super::provider::{CallResponse, Provider};
 use super::tool::ToolDef;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -50,9 +50,8 @@ impl Provider for AnthropicProvider {
         &'a self,
         messages: &'a [Message],
         tools: &'a [ToolDef],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<ToolCallMsg>>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>> {
         Box::pin(async move {
-            // Extract system message as cached block (Anthropic prompt caching)
             let system = messages.iter().find_map(|m| match m {
                 Message::System(text) => Some(serde_json::json!([{
                     "type": "text",
@@ -106,7 +105,6 @@ impl Provider for AnthropicProvider {
                     )
                 })?;
 
-            // Extract tool calls from response content blocks
             let tool_calls = response
                 .content
                 .iter()
@@ -120,7 +118,18 @@ impl Provider for AnthropicProvider {
                 })
                 .collect();
 
-            Ok(tool_calls)
+            let text: String = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ResponseBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            let text = if text.is_empty() { None } else { Some(text) };
+
+            Ok(CallResponse { tool_calls, text })
         })
     }
 }
@@ -184,21 +193,26 @@ fn serialize_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                     "content": serialize_content_parts(parts)
                 }))
             }
-            Message::Assistant { tool_calls } => {
-                let blocks: Vec<serde_json::Value> = tool_calls
-                    .iter()
-                    .map(|tc| {
-                        // Parse arguments back to JSON Value for Anthropic's `input` field
-                        let input: serde_json::Value =
-                            serde_json::from_str(&tc.arguments).unwrap_or_default();
-                        serde_json::json!({
-                            "type": "tool_use",
-                            "id": tc.id,
-                            "name": tc.name,
-                            "input": input
-                        })
-                    })
-                    .collect();
+            Message::Assistant { text, tool_calls } => {
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                if let Some(text) = text {
+                    if !text.is_empty() {
+                        blocks.push(serde_json::json!({
+                            "type": "text",
+                            "text": text
+                        }));
+                    }
+                }
+                for tc in tool_calls {
+                    let input: serde_json::Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or_default();
+                    blocks.push(serde_json::json!({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": input
+                    }));
+                }
                 Some(serde_json::json!({
                     "role": "assistant",
                     "content": blocks

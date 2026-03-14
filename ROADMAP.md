@@ -17,63 +17,33 @@ Pipeline: **detect → OCR → translate → fit → render**
 - [x] Canvas agent (optional, vision LLM typesetting)
 - [x] API: `POST /translate-image`, `GET /health`
 
-## 2. Single Image — Flow chạy tốt 🔲
+## 2. Chapter Context — Nhất quán bản dịch ✅
 
-- [ ] Test end-to-end với ảnh thật (manga JP, manhwa KR, manhua CN)
-- [ ] Tune OCR confidence threshold — giảm noise, giữ text ngắn
-- [ ] Tune watermark filter — tránh false positive
-- [ ] Verify font rendering quality (diacritics VN, size readability)
-- [ ] Fix edge cases: bubble quá nhỏ, text quá dài, polygon lệch
-- [ ] Example script chạy 1 ảnh từ CLI (không cần HTTP server)
+- [x] Gom tất cả pages trong folder → detect+OCR all → 1 LLM call
+- [x] Bubble IDs prefixed by page (`p0_b0`, `p1_b3`)
+- [x] Prompt grouped by page → LLM thấy reading order cả chapter
+- [x] Context store (SQLite + FTS5) — cross-chapter memory
+- [x] Context agent (sub-agent with tool calling) — search translations + notes
+- [x] Proactive notes injection (relationship, character) vào prompt
+- [x] CLI: `comicscan translate` — series/chapter mode
 
-## 3. CLI Tool — Dịch file/folder nhanh 🔲
+## 3. Glossary — Cố định thuật ngữ ✅
 
-- [ ] `comicscan translate image.png -o output.png --target vi`
-- [ ] `comicscan translate ./chapter/ -o ./output/ --target vi`
-- [ ] Đọc config từ `config.toml`, override bằng CLI flags
-- [ ] Progress bar (indicatif) cho folder mode
-- [ ] Skip ảnh đã có output (simple file-based cache)
+- [x] SQLite FTS5 glossary DB
+- [x] Inject glossary matches vào system prompt
+- [x] Import từ `glossary.toml`
 
-## 4. Chapter Context — Nhất quán bản dịch 🔲
+## 4. Performance ✅
 
-- [ ] Gom tất cả pages trong folder → detect+OCR all → 1 LLM call
-- [ ] Bubble IDs prefixed by page (`p0_b0`, `p1_b3`)
-- [ ] Prompt grouped by page → LLM thấy reading order cả chapter
-- [ ] Cache per page (cached pages excluded from translate call)
-- [ ] CLI: `comicscan translate-chapter ./chapter/ -o ./output/ --target vi`
+- [x] CoreML EP cho tất cả ONNX sessions (macOS)
+- [x] Parallel render (std::thread::scope) cho median-fill pages
+- [x] LaMa inpainting sequential under Mutex
+- [x] Inter-chapter pipeline parallelism (detect N+1 while translating N)
+- [x] FTS5 thay SemanticEmbedder — bỏ tokenizers crate, không còn CoreML context leak
 
-## 5. Glossary — Cố định thuật ngữ 🔲
+## 5. Nếu cần sau này
 
-- [ ] File `glossary.toml` per project: tên nhân vật, thuật ngữ
-- [ ] Inject glossary vào system prompt
-- [ ] CLI flag: `--glossary ./glossary.toml`
-
-## 6. Nếu cần sau này
-
-- Parallel detect+OCR (rayon)
+- LaMa inpainting thực tế test (scaffold xong, chưa test production)
 - Web UI review + manual edit
 - Multi-format export (PDF, CBZ)
 - HTTP API cho browser extension
-- Project/chapter DB persistence
-
----
-
-## Architecture
-
-```
-src/
-├── api/            # Axum handlers, models, router
-├── pipeline/       # process_image, detect_and_ocr
-│   ├── common.rs   # translate_and_fit, resolve_engine
-│   └── merge.rs    # PP-OCR line → bubble grouping
-├── detection/      # comic-text-detector (ONNX)
-├── ocr/            # manga-ocr + PP-OCR (ONNX)
-├── translation/    # OpenAI-compatible adapter (tool calling)
-├── fit_engine/     # Binary search font size, page normalization
-├── overlay/        # Render translated text on image
-├── border_detect/  # Auto-detect bubble border thickness
-├── canvas_agent/   # Vision LLM typesetting (optional)
-├── text_layout/    # Font, measure, wrap, bbox
-├── cache/          # redb disk cache
-└── config/         # config.toml loading
-```

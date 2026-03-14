@@ -7,7 +7,10 @@
 pub enum Message {
     System(String),
     User(Vec<ContentPart>),
-    Assistant { tool_calls: Vec<ToolCallMsg> },
+    Assistant {
+        text: Option<String>,
+        tool_calls: Vec<ToolCallMsg>,
+    },
     ToolResult {
         tool_call_id: String,
         content: Vec<ContentPart>,

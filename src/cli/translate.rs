@@ -103,10 +103,9 @@ async fn translate_single_chapter(
     let det = runner.detector.clone();
     let ocr = runner.ocr.clone();
     let lang = source_lang.to_string();
-    let imgs = images.clone();
-    let detections = tokio::task::spawn_blocking(move || {
-        chapter::detect_chapter(&det, &ocr, &imgs, &lang)
-    }).await??;
+    let detections = tokio::task::block_in_place(|| {
+        chapter::detect_chapter(&det, &ocr, &images, &lang)
+    })?;
 
     let result = chapter::translate_and_render(
         runner, detections, &images,

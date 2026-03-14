@@ -9,5 +9,5 @@ pub mod provider;
 pub mod tool;
 
 pub use ir::{ContentPart, Message, ToolCallMsg};
-pub use provider::Provider;
+pub use provider::{CallResponse, Provider};
 pub use tool::{ToolDef, ToolResponse};

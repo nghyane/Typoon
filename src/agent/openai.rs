@@ -10,7 +10,7 @@ use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::ChatCompletionMessageToolCalls;
 
 use super::ir::{ContentPart, Message, ToolCallMsg};
-use super::provider::Provider;
+use super::provider::{CallResponse, Provider};
 use super::tool::ToolDef;
 
 const LLM_TIMEOUT_SECS: u64 = 180;
@@ -56,17 +56,18 @@ impl Provider for OpenAIProvider {
         &'a self,
         messages: &'a [Message],
         tools: &'a [ToolDef],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<ToolCallMsg>>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>> {
         Box::pin(async move {
             let messages_json = serialize_messages(messages);
-            let tools_json = serialize_tools(tools);
 
             let mut body = serde_json::json!({
                 "model": self.model,
                 "messages": messages_json,
-                "tools": tools_json,
-                "parallel_tool_calls": true
             });
+            if !tools.is_empty() {
+                body["tools"] = serialize_tools(tools);
+                body["parallel_tool_calls"] = serde_json::json!(true);
+            }
             if let Some(effort) = &self.reasoning_effort {
                 body["reasoning_effort"] = serde_json::json!(effort);
             }
@@ -79,9 +80,9 @@ impl Provider for OpenAIProvider {
                 )
                 .await
                 .map_err(|_| {
-                    anyhow::anyhow!("Translation LLM call timed out ({}s)", LLM_TIMEOUT_SECS)
+                    anyhow::anyhow!("LLM call timed out ({}s)", LLM_TIMEOUT_SECS)
                 })?
-                .context("Translation LLM call failed")?;
+                .context("LLM call failed")?;
 
             let choice = raw
                 .choices
@@ -105,7 +106,9 @@ impl Provider for OpenAIProvider {
                 _ => vec![],
             };
 
-            Ok(tool_calls)
+            let text = choice.message.content.clone();
+
+            Ok(CallResponse { tool_calls, text })
         })
     }
 }
@@ -132,10 +135,13 @@ fn serialize_message(msg: &Message) -> serde_json::Value {
                 "content": parts.iter().map(serialize_content_part).collect::<Vec<_>>()
             })
         }
-        Message::Assistant { tool_calls } => {
-            serde_json::json!({
-                "role": "assistant",
-                "tool_calls": tool_calls.iter().map(|tc| {
+        Message::Assistant { text, tool_calls } => {
+            let mut msg = serde_json::json!({ "role": "assistant" });
+            if let Some(text) = text {
+                msg["content"] = serde_json::json!(text);
+            }
+            if !tool_calls.is_empty() {
+                msg["tool_calls"] = serde_json::json!(tool_calls.iter().map(|tc| {
                     serde_json::json!({
                         "id": tc.id,
                         "type": "function",
@@ -144,8 +150,9 @@ fn serialize_message(msg: &Message) -> serde_json::Value {
                             "arguments": tc.arguments
                         }
                     })
-                }).collect::<Vec<_>>()
-            })
+                }).collect::<Vec<_>>());
+            }
+            msg
         }
         Message::ToolResult { tool_call_id, content } => {
             if content.len() == 1 {

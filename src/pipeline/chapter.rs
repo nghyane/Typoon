@@ -196,6 +196,9 @@ async fn translate_and_render_inner(
         translate_req.pages.iter().map(|p| p.bubbles.len()).sum::<usize>()
     );
 
+    // Capture page widths before translate (fit only needs widths, not full images).
+    let page_widths: Vec<u32> = images.iter().map(|img| img.width()).collect();
+
     let ctx = TranslateContext {
         page_images: images,
         glossary: runner.glossary.as_ref(),
@@ -210,7 +213,7 @@ async fn translate_and_render_inner(
 
     // ── Fit text into bubbles ──
     let t_phase = std::time::Instant::now();
-    let chapter_pages = fit_results(&detections, images, &translated)?;
+    let chapter_pages = fit_results(&detections, &page_widths, &translated)?;
     tracing::info!("Phase fit: {:.1}s", t_phase.elapsed().as_secs_f64());
 
     // ── Save translations to ContextStore ──
@@ -234,7 +237,7 @@ async fn translate_and_render_inner(
 
 fn fit_results(
     detections: &[PageDetection],
-    images: &[DynamicImage],
+    page_widths: &[u32],
     translated: &[BubbleTranslated],
 ) -> Result<Vec<ChapterPageOutput>> {
     let translated_map: std::collections::HashMap<&str, &BubbleTranslated> =
@@ -243,7 +246,7 @@ fn fit_results(
     let mut chapter_pages = Vec::new();
 
     for pd in detections {
-        let img = &images[pd.page_index];
+        let page_w = page_widths[pd.page_index];
 
         let mut fit_items: Vec<(&BubbleTranslated, usize)> = Vec::new();
         for (local_idx, input) in pd.inputs.iter().enumerate() {
@@ -266,7 +269,7 @@ fn fit_results(
             .map(|(t, idx)| (t.translated_text.as_str(), &pd.areas[*idx]))
             .collect();
 
-        let fits = crate::fit_engine::FitEngine::fit_page_areas(&page_items, img.width())?;
+        let fits = crate::fit_engine::FitEngine::fit_page_areas(&page_items, page_w)?;
 
         let bubbles: Vec<BubbleResult> = fit_items
             .iter()
@@ -342,59 +345,24 @@ fn save_context(
 
 /// Render translated text onto page images.
 ///
-/// Median-fill pages are rendered in parallel via `std::thread::scope`.
-/// LaMa inpainting pages are rendered sequentially (session requires `&mut`).
+/// Uses rayon's work-stealing thread pool — automatically bounded to
+/// available CPU cores, so only a few canvases exist simultaneously.
 fn render_pages(
     chapter_pages: Vec<ChapterPageOutput>,
     images: &[DynamicImage],
     runner: &TranslationRunner,
 ) -> Vec<ChapterPageOutput> {
-    let lama = runner.inpainter.as_ref();
+    use rayon::prelude::*;
 
-    // Classify: which pages need LaMa? (only when LaMa is available and
-    // at least one mask covers a non-flat background)
-    let page_needs_lama = |page: &ChapterPageOutput| -> bool {
-        if lama.is_none() || page.bubbles.is_empty() {
-            return false;
-        }
-        let canvas = images[page.page_index].to_rgba8();
-        page.bubbles.iter()
-            .filter_map(|b| b.text_mask.as_ref())
-            .any(|mask| !crate::overlay::is_flat_background(&canvas, mask))
-    };
+    let inpainter = runner.inpainter.as_ref();
 
-    // Parallel render: all pages that don't need LaMa
-    let mut results: Vec<Option<image::RgbaImage>> = std::thread::scope(|s| {
-        let handles: Vec<_> = chapter_pages
-            .iter()
-            .map(|page| {
-                if page.bubbles.is_empty() || page_needs_lama(page) {
-                    return None;
-                }
-                let img = &images[page.page_index];
-                let bubbles = &page.bubbles;
-                Some(s.spawn(move || crate::overlay::render(img, bubbles, None)))
-            })
-            .collect();
-        handles.into_iter().map(|h| h.map(|j| j.join().unwrap())).collect()
-    });
-
-    // Sequential render: LaMa pages
-    if let Some(lama) = lama {
-        for (i, page) in chapter_pages.iter().enumerate() {
-            if results[i].is_none() && !page.bubbles.is_empty() {
-                let img = &images[page.page_index];
-                results[i] = Some(crate::overlay::render(img, &page.bubbles, Some(lama)));
-            }
-        }
-    }
-
-    // Assign results back
     chapter_pages
-        .into_iter()
-        .zip(results)
-        .map(|(mut page, rendered)| {
-            page.rendered_image = rendered;
+        .into_par_iter()
+        .map(|mut page| {
+            if !page.bubbles.is_empty() {
+                let img = &images[page.page_index];
+                page.rendered_image = Some(crate::overlay::render(img, &page.bubbles, inpainter));
+            }
             page
         })
         .collect()
