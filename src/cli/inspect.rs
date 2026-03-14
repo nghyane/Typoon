@@ -11,6 +11,7 @@ use ab_glyph::PxScale;
 use crate::config;
 use crate::detection::LocalTextMask;
 use crate::overlay::{apply_mask_pixels, erase_masks, erase_with_median};
+use crate::translation::BubbleInput;
 
 const BBOX_COLORS: [Rgba<u8>; 6] = [
     Rgba([255, 0, 0, 255]),
@@ -43,12 +44,18 @@ pub struct InspectArgs {
     pub output: PathBuf,
 }
 
+/// Pipeline result shared between detect and mask visualization.
+struct PipelineResult {
+    inputs: Vec<BubbleInput>,
+    polygons: Vec<Vec<[f64; 2]>>,
+    masks: Vec<Option<LocalTextMask>>,
+}
+
 pub async fn run(mut args: InspectArgs) -> Result<()> {
     if !args.image.exists() {
         anyhow::bail!("Image not found: {}", args.image.display());
     }
 
-    // Default: show everything
     if !args.detect && !args.masks {
         args.detect = true;
         args.masks = true;
@@ -66,70 +73,62 @@ pub async fn run(mut args: InspectArgs) -> Result<()> {
     println!("Size:   {}x{}px", img.width(), img.height());
     println!();
 
+    // Run pipeline once, share results
+    let t = Instant::now();
+    let result = run_pipeline(&config, &img, &args.lang).await?;
+    println!("Pipeline: {} bubbles in {}ms\n", result.inputs.len(), t.elapsed().as_millis());
+
+    for (input, poly) in result.inputs.iter().zip(&result.polygons) {
+        let (x1, y1, x2, y2) = poly_bbox(poly);
+        println!("  [{:>3}] bbox=({:.0},{:.0})-({:.0},{:.0}) det={:.2} ocr={:.2} {:?}",
+            input.id, x1, y1, x2, y2, input.det_confidence, input.ocr_confidence, input.source_text);
+    }
+
     if args.detect {
-        run_detect(&config, &img, &args.lang, name, &args.output).await?;
+        render_detect(&img, &result, name, &args.output)?;
     }
 
     if args.masks {
-        run_masks(&config, &img, &args.lang, name, &args.output).await?;
+        render_masks(&config, &img, &result, name, &args.output).await?;
     }
 
     Ok(())
 }
 
-// ── Detection visualization ──
+// ── Pipeline ──
 
-async fn run_detect(
+async fn run_pipeline(
     config: &config::AppConfig,
     img: &image::DynamicImage,
     lang: &str,
+) -> Result<PipelineResult> {
+    let ctd_path = crate::model_hub::resolve(
+        &config.models_dir, crate::model_hub::Model::ComicTextDetector,
+    ).await?;
+    let detector = crate::detection::TextDetector::new(
+        crate::model_hub::lazy::LazySession::new(ctd_path),
+    );
+    let ocr = crate::ocr::OcrEngine::new(&config.models_dir).await?;
+
+    let (inputs, polygons, masks) =
+        crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
+
+    Ok(PipelineResult { inputs, polygons, masks })
+}
+
+// ── Detection visualization ──
+
+fn render_detect(
+    img: &image::DynamicImage,
+    result: &PipelineResult,
     name: &str,
     output: &PathBuf,
 ) -> Result<()> {
-    let t = Instant::now();
-    let bubbles = match lang {
-        "ja" => {
-            let ctd_path = crate::model_hub::resolve(
-                &config.models_dir, crate::model_hub::Model::ComicTextDetector,
-            ).await?;
-            let detector = crate::detection::TextDetector::new(
-                crate::model_hub::lazy::LazySession::new(ctd_path),
-            );
-            let regions = detector.detect(img)?;
-            println!("comic-text-detector: {} raw regions", regions.len());
-            regions.into_iter().map(|r| (r.polygon, r.confidence, 1usize)).collect::<Vec<_>>()
-        }
-        _ => {
-            let ocr = crate::ocr::OcrEngine::new(&config.models_dir).await?;
-            if !ocr.can_detect() {
-                anyhow::bail!("PP-OCR detection model not loaded");
-            }
-            // Full production pipeline: detect → merge → OCR → filter
-            // (SFX, watermark, short text, min_char_confidence)
-            let ctd_path = crate::model_hub::resolve(
-                &config.models_dir, crate::model_hub::Model::ComicTextDetector,
-            ).await?;
-            let detector = crate::detection::TextDetector::new(
-                crate::model_hub::lazy::LazySession::new(ctd_path),
-            );
-            let (inputs, polygons, _masks) =
-                crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
-            println!("PP-OCR pipeline: {} bubbles (after filtering)", inputs.len());
-            inputs.iter().zip(polygons.iter()).enumerate().map(|(_, (input, poly))| {
-                println!("  [{:>3}] det={:.2} ocr={:.2} text={:?}",
-                    input.id, input.det_confidence, input.ocr_confidence, input.source_text);
-                (poly.clone(), input.det_confidence, 1usize)
-            }).collect::<Vec<_>>()
-        }
-    };
-
-    println!("Total:   {} bubbles in {}ms\n", bubbles.len(), t.elapsed().as_millis());
-
     let font = crate::text_layout::get_font();
     let label_scale = PxScale::from(18.0);
     let mut canvas = img.to_rgba8();
 
-    for (i, (polygon, confidence, line_count)) in bubbles.iter().enumerate() {
+    for (i, (input, polygon)) in result.inputs.iter().zip(&result.polygons).enumerate() {
         let color = BBOX_COLORS[i % BBOX_COLORS.len()];
         let (x1, y1, x2, y2) = poly_bbox(polygon);
 
@@ -146,34 +145,27 @@ async fn run_detect(
             }
         }
 
-        let label = format!("[b{i}] {line_count}L {:.0}%", confidence * 100.0);
+        let label = format!("[b{i}] d={:.0}% o={:.0}%", input.det_confidence * 100.0, input.ocr_confidence * 100.0);
         draw_text_mut(&mut canvas, color, rx + 4, ry.saturating_sub(20), label_scale, font, &label);
-
-        println!(
-            "  [b{i}] bbox=({:.0},{:.0})-({:.0},{:.0}) lines={line_count} conf={:.1}%",
-            x1, y1, x2, y2, confidence * 100.0,
-        );
     }
 
     let path = output.join(format!("{name}_detect.png"));
     canvas.save(&path)?;
-    println!("\nSaved: {}", path.display());
-
+    println!("Saved: {}", path.display());
     Ok(())
 }
 
-// ── Mask inspection ──
+// ── Mask visualization ──
 
-async fn run_masks(
+async fn render_masks(
     config: &config::AppConfig,
     img: &image::DynamicImage,
-    lang: &str,
+    result: &PipelineResult,
     name: &str,
     output: &PathBuf,
 ) -> Result<()> {
-    let t = Instant::now();
-    let masks = detect_masks(config, img, lang).await?;
-    println!("\nMasks: {} in {}ms", masks.len(), t.elapsed().as_millis());
+    let masks: Vec<&LocalTextMask> = result.masks.iter().filter_map(|m| m.as_ref()).collect();
+    println!("\nMasks: {}", masks.len());
 
     for (i, m) in masks.iter().enumerate() {
         let pixel_count = m.image.pixels().filter(|p| p.0[0] == 255).count();
@@ -221,8 +213,7 @@ async fn run_masks(
     {
         let t = Instant::now();
         let mut dual = rgba.clone();
-        let mask_refs: Vec<&LocalTextMask> = masks.iter().collect();
-        erase_masks(&mut dual, &mask_refs, inpainter.as_ref());
+        erase_masks(&mut dual, &masks, inpainter.as_ref());
         let path = output.join(format!("{name}_dual.png"));
         dual.save(&path)?;
         println!("Saved (dual {}ms): {}", t.elapsed().as_millis(), path.display());
@@ -238,34 +229,6 @@ async fn run_masks(
     println!("Saved: {}", path.display());
 
     Ok(())
-}
-
-async fn detect_masks(
-    config: &config::AppConfig,
-    img: &image::DynamicImage,
-    lang: &str,
-) -> Result<Vec<LocalTextMask>> {
-    match lang {
-        "ja" => {
-            let ctd_path = crate::model_hub::resolve(
-                &config.models_dir, crate::model_hub::Model::ComicTextDetector,
-            ).await?;
-            let detector = crate::detection::TextDetector::new(
-                crate::model_hub::lazy::LazySession::new(ctd_path),
-            );
-            let regions = detector.detect(img)?;
-            Ok(regions.into_iter().filter_map(|r| r.mask).collect())
-        }
-        _ => {
-            let ocr = crate::ocr::OcrEngine::new(&config.models_dir).await?;
-            if !ocr.can_detect() {
-                anyhow::bail!("PP-OCR detection model not loaded");
-            }
-            let det = ocr.detect(img)?;
-            let merged = crate::pipeline::merge::group_lines(det.regions, img, det.prob_image.as_ref());
-            Ok(merged.into_iter().filter_map(|b| b.mask).collect())
-        }
-    }
 }
 
 fn poly_bbox(polygon: &[[f64; 2]]) -> (f64, f64, f64, f64) {
