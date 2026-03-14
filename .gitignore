@@ -7,3 +7,4 @@ tests/fixtures/chapter_sample/
 tests/fixtures/ctrlaltresign/
 .DS_Store
 .amp/
+__pycache__/

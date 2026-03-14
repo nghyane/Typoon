@@ -294,7 +294,12 @@ impl PpOcrAdapter {
                 // so dilation can be moderate. /5 with min 5px: line 30×20 → 6px,
                 // line 200×60 → 12px. Covers stroke edges without over-erasing.
                 let dilate_r = (mask_h.min(mask_w) / 5).max(5);
-                let mask_img = dilate_mask(&mask_img, dilate_r);
+                let mut mask_img = dilate_mask(&mask_img, dilate_r);
+
+                // Clip mask to the rotated quad polygon. Without this, text at an
+                // angle produces an axis-aligned rectangle that extends beyond the
+                // actual text region, causing over-erasure.
+                clip_mask_to_polygon(&mut mask_img, mask_x, mask_y, &orig_corners);
 
                 Some(LocalTextMask { x: mask_x, y: mask_y, image: mask_img })
             };
@@ -957,4 +962,47 @@ fn bilinear_sample(img: &RgbImage, x: f64, y: f64, w: u32, h: u32) -> Rgb<u8> {
         out[c] = v.round().clamp(0.0, 255.0) as u8;
     }
     Rgb(out)
+}
+
+/// Zero out mask pixels that fall outside the given convex polygon.
+/// Uses ray-casting (even-odd rule) point-in-polygon test.
+/// `mask_x`, `mask_y` are the page-space origin of the mask image.
+fn clip_mask_to_polygon(
+    mask: &mut image::GrayImage,
+    mask_x: u32,
+    mask_y: u32,
+    polygon: &[[f64; 2]],
+) {
+    if polygon.len() < 3 {
+        return;
+    }
+    let (w, h) = mask.dimensions();
+    for ly in 0..h {
+        for lx in 0..w {
+            if mask.get_pixel(lx, ly).0[0] == 0 {
+                continue;
+            }
+            let px = (mask_x + lx) as f64 + 0.5;
+            let py = (mask_y + ly) as f64 + 0.5;
+            if !point_in_polygon(px, py, polygon) {
+                mask.put_pixel(lx, ly, image::Luma([0]));
+            }
+        }
+    }
+}
+
+/// Ray-casting point-in-polygon test (even-odd rule).
+fn point_in_polygon(px: f64, py: f64, polygon: &[[f64; 2]]) -> bool {
+    let n = polygon.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (polygon[i][0], polygon[i][1]);
+        let (xj, yj) = (polygon[j][0], polygon[j][1]);
+        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
