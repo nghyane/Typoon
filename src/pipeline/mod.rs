@@ -10,7 +10,7 @@ use image::DynamicImage;
 
 use crate::api::{AppState, TranslateImageRequest, TranslateImageResponse};
 use crate::detection::{LocalTextMask, TextDetector};
-use crate::ocr::OcrEngine;
+use crate::ocr::{DetectionOutput, OcrEngine};
 use crate::translation::{BubbleInput, BubbleTranslated};
 
 /// Main HTTP entry point: decode → detect → OCR → translate → fit → render.
@@ -114,6 +114,8 @@ fn detect_and_ocr_manga(
                 id: format!("b{}", inputs.len()),
                 source_text: result.text,
                 position: pos,
+                det_confidence: region.confidence,
+                ocr_confidence: result.confidence,
             });
             polygons.push(region.polygon.clone());
             masks.push(region.mask.clone());
@@ -129,8 +131,8 @@ fn detect_and_ocr_ppocr(
     img: &DynamicImage,
     lang: &str,
 ) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
-    let lines = ocr.detect(img)?;
-    let merged = merge::group_lines(lines, img);
+    let DetectionOutput { regions: lines, prob_image } = ocr.detect(img)?;
+    let merged = merge::group_lines(lines, img, prob_image.as_ref());
 
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();
@@ -144,6 +146,12 @@ fn detect_and_ocr_ppocr(
             let result = ocr.recognize(&line.crop, lang)?;
             let text = result.text.trim().to_string();
             if text.is_empty() || (text.chars().count() <= 2 && result.confidence < 0.5) {
+                continue;
+            }
+            // Reject lines where any single character has very low confidence.
+            // This catches garbled recognitions (e.g., random strokes decoded as
+            // plausible-looking text) that pass the average confidence check.
+            if result.min_char_confidence < 0.15 && text.chars().count() <= 4 {
                 continue;
             }
             total_conf += result.confidence;
@@ -181,6 +189,8 @@ fn detect_and_ocr_ppocr(
             id: format!("b{}", inputs.len()),
             source_text: joined,
             position: pos,
+            det_confidence: bubble.confidence,
+            ocr_confidence: avg_conf,
         });
         polygons.push(bubble.polygon.clone());
         masks.push(bubble.mask.clone());

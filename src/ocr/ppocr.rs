@@ -6,7 +6,7 @@ use image::{DynamicImage, Rgb, RgbImage};
 use ndarray::Array4;
 use ort::value::TensorRef;
 
-use super::OcrResult;
+use super::{DetectionOutput, OcrResult};
 use crate::detection::{LocalTextMask, TextRegion, dilate_mask};
 use crate::model_hub::lazy::LazySession;
 
@@ -35,8 +35,9 @@ const DET_THRESH: f32 = 0.3;
 const DET_BOX_THRESH: f32 = 0.6;
 /// Polygon expansion ratio (unclip)
 const DET_UNCLIP_RATIO: f64 = 1.5;
-/// Minimum side length of a detected box (in model space)
-const DET_MIN_SIZE: f64 = 3.0;
+/// Minimum side length of a detected box (in model space).
+/// At 960px model input, 5px ≈ 10px in a typical 1920px original — below that is noise.
+const DET_MIN_SIZE: f64 = 5.0;
 /// Maximum number of contour candidates to process (like PaddleOCR's max_candidates)
 const DET_MAX_CANDIDATES: usize = 1000;
 /// ImageNet normalization for detection
@@ -80,7 +81,7 @@ impl PpOcrAdapter {
     }
 
     /// Detect text regions using PP-OCR DB detection model.
-    pub fn detect(&self, img: &DynamicImage) -> Result<Vec<TextRegion>> {
+    pub fn detect(&self, img: &DynamicImage) -> Result<DetectionOutput> {
         let det_session = self.det_session.as_ref()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR detection model not loaded"))?
             .get()
@@ -102,14 +103,18 @@ impl PpOcrAdapter {
             .to_string();
         let (_shape, prob_data) = outputs[&*output_key].try_extract_tensor::<f32>()?;
 
-        // 4. DB post-processing: threshold → contours → unclip → crop
+        // 4. Build page-level prob image in original coords (bilinear resize).
+        //    Only the content region (not padding) is meaningful.
+        let prob_image = build_prob_image(prob_data, pad_w, pad_h, content_w, content_h, orig_w, orig_h);
+
+        // 5. DB post-processing: threshold → contours → unclip → crop
         let regions = self.db_postprocess(
             prob_data, pad_w, pad_h, content_w, content_h,
             orig_w, orig_h, img,
         );
 
         tracing::debug!("PP-OCR detected {} text regions", regions.len());
-        Ok(regions)
+        Ok(DetectionOutput { regions, prob_image: Some(prob_image) })
     }
 
     /// Preprocess for detection: resize, normalize with ImageNet stats, NCHW
@@ -275,17 +280,20 @@ impl PpOcrAdapter {
                     &dm_crop, mask_w, mask_h, image::imageops::FilterType::Triangle,
                 );
 
-                // Threshold at ~0.10 (25/255) to capture soft edges from
-                // bilinear interpolation, then dilate to cover anti-aliased
-                // stroke boundaries. Dilation scales with line height: larger
-                // text has thicker strokes needing more coverage.
+                // Threshold at ~0.20 (51/255): DB prob values below 0.20 are
+                // interpolation artifacts from bilinear resize, not real text.
+                // Real text strokes have prob > 0.30; edges soften to ~0.20.
                 let mut mask_img = image::GrayImage::new(mask_w, mask_h);
                 for (px, py, pixel) in resized.enumerate_pixels() {
-                    if pixel.0[0] > 25 {
+                    if pixel.0[0] > 51 {
                         mask_img.put_pixel(px, py, image::Luma([255]));
                     }
                 }
-                let dilate_r = (mask_h.min(mask_w) / 4).max(12);
+                // DB shrink map contracts text boundaries inward — dilation recovers
+                // full stroke width. The raised threshold (51) already filters noise,
+                // so dilation can be moderate. /5 with min 5px: line 30×20 → 6px,
+                // line 200×60 → 12px. Covers stroke edges without over-erasing.
+                let dilate_r = (mask_h.min(mask_w) / 5).max(5);
                 let mask_img = dilate_mask(&mask_img, dilate_r);
 
                 Some(LocalTextMask { x: mask_x, y: mask_y, image: mask_img })
@@ -307,11 +315,16 @@ impl PpOcrAdapter {
     /// Preprocess for recognition: resize to height=48, dynamic width based on
     /// aspect ratio (matching PaddleOCR's resize_norm_img logic), normalize.
     fn rec_preprocess(&self, img: &DynamicImage) -> Array4<f32> {
-        // Upscale tiny crops so downscale to height=48 doesn't lose detail
+        // Upscale tiny crops so downscale to height=48 doesn't lose detail.
+        // Scale factor ensures the crop is at least REC_IMG_HEIGHT tall before
+        // the final resize, so we never lose resolution (2× fixed was too little
+        // for very small crops like 12px tall).
         let img = if img.height() < REC_UPSCALE_THRESHOLD {
+            let scale = (REC_IMG_HEIGHT as f32 / img.height() as f32).ceil() as u32;
+            let scale = scale.max(2);
             std::borrow::Cow::Owned(img.resize(
-                img.width() * 2,
-                img.height() * 2,
+                img.width() * scale,
+                img.height() * scale,
                 image::imageops::FilterType::Lanczos3,
             ))
         } else {
@@ -350,48 +363,90 @@ impl PpOcrAdapter {
         arr
     }
 
-    /// CTC greedy decode
-    fn ctc_decode(&self, logits: &[f32], seq_len: usize, vocab_size: usize) -> (String, f64) {
-        let mut text = String::new();
-        let mut prev_idx: Option<usize> = None;
-        let mut total_prob: f64 = 0.0;
-        let mut char_count: usize = 0;
+    /// CTC beam search decode.
+    ///
+    /// PP-OCR v5 rec model already outputs softmax probabilities (range [0,1]).
+    /// Beam search (width 5) resolves common confusions (l/I, 0/O, rn/m) that
+    /// greedy argmax misses when top candidates have similar probabilities.
+    /// Returns (text, confidence, min_char_confidence).
+    fn ctc_decode(&self, probs: &[f32], seq_len: usize, vocab_size: usize) -> (String, f64, f64) {
+        const BEAM_WIDTH: usize = 5;
 
+        // Convert to log-probabilities for numerically stable accumulation
+        let mut log_probs = vec![f64::NEG_INFINITY; seq_len * vocab_size];
         for t in 0..seq_len {
-            let offset = t * vocab_size;
-            let step_logits = &logits[offset..offset + vocab_size];
-
-            let (best_idx, best_logit) = step_logits
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .unwrap();
-
-            if Some(best_idx) == prev_idx {
-                prev_idx = Some(best_idx);
-                continue;
-            }
-            prev_idx = Some(best_idx);
-
-            if best_idx == 0 {
-                continue;
-            }
-
-            if let Some(ch) = self.dictionary.get(best_idx) {
-                text.push_str(ch);
-                // Model output is already softmax probabilities, use directly
-                total_prob += *best_logit as f64;
-                char_count += 1;
+            let off = t * vocab_size;
+            for i in 0..vocab_size {
+                let p = probs[off + i] as f64;
+                log_probs[off + i] = if p > 0.0 { p.ln() } else { f64::NEG_INFINITY };
             }
         }
 
-        let confidence = if char_count > 0 {
-            total_prob / char_count as f64
-        } else {
-            0.0
-        };
+        // Pre-compute top-k indices per timestep via partial sort (select_nth).
+        // Avoids sorting full vocab (7000+) each step — O(V) select vs O(V log V) sort.
+        let mut top_k_per_step: Vec<[(usize, f64); BEAM_WIDTH]> = Vec::with_capacity(seq_len);
+        let mut indices: Vec<usize> = (0..vocab_size).collect();
+        for t in 0..seq_len {
+            let off = t * vocab_size;
+            indices.iter_mut().enumerate().for_each(|(i, v)| *v = i);
+            let k = BEAM_WIDTH.min(vocab_size);
+            indices.select_nth_unstable_by(k - 1, |&a, &b| {
+                log_probs[off + b].partial_cmp(&log_probs[off + a]).unwrap()
+            });
+            let mut top = [(0usize, f64::NEG_INFINITY); BEAM_WIDTH];
+            for (j, &idx) in indices[..k].iter().enumerate() {
+                top[j] = (idx, log_probs[off + idx]);
+            }
+            top.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            top_k_per_step.push(top);
+        }
 
-        (text, confidence)
+        // Beam state: (text, last_token, total_log_prob, char_log_prob_sum, char_count, min_char_log_prob)
+        // total_log_prob: all timesteps (for beam ranking)
+        // char_log_prob_sum: only character-emitting timesteps (for confidence)
+        type Beam = (String, usize, f64, f64, usize, f64);
+        let mut beams: Vec<Beam> = vec![(String::new(), 0, 0.0, 0.0, 0, 0.0)];
+        let mut candidates: Vec<Beam> = Vec::new();
+
+        for top_k in &top_k_per_step {
+            candidates.clear();
+
+            for (text, last_tok, total_lp, char_lp_sum, n_chars, min_lp) in &beams {
+                for &(tok, tok_lp) in top_k {
+                    if tok_lp < -14.0 {
+                        break;
+                    }
+                    let new_total = total_lp + tok_lp;
+
+                    if tok == *last_tok || tok == 0 {
+                        candidates.push((text.clone(), tok, new_total, *char_lp_sum, *n_chars, *min_lp));
+                    } else if let Some(ch) = self.dictionary.get(tok) {
+                        let mut new_text = text.clone();
+                        new_text.push_str(ch);
+                        let new_min = if text.is_empty() { tok_lp } else { min_lp.min(tok_lp) };
+                        candidates.push((new_text, tok, new_total, char_lp_sum + tok_lp, n_chars + 1, new_min));
+                    }
+                }
+            }
+
+            // Merge beams with identical (text, last_tok), keep best total_log_prob
+            candidates.sort_unstable_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then(a.1.cmp(&b.1))
+                    .then(b.2.partial_cmp(&a.2).unwrap())
+            });
+            candidates.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+            candidates.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+            candidates.truncate(BEAM_WIDTH);
+
+            std::mem::swap(&mut beams, &mut candidates);
+        }
+
+        let (text, _, _, char_lp_sum, n_chars, min_char_lp) = beams.into_iter().next().unwrap_or_default();
+        let confidence = if n_chars > 0 { (char_lp_sum / n_chars as f64).exp() } else { 0.0 };
+        let min_char_confidence = if n_chars > 0 { min_char_lp.exp() } else { 0.0 };
+        (text, confidence, min_char_confidence)
     }
 }
 
@@ -413,13 +468,40 @@ impl PpOcrAdapter {
         let seq_len = shape[1] as usize;
         let vocab_size = shape[2] as usize;
 
-        let (text, confidence) = self.ctc_decode(data, seq_len, vocab_size);
+        let (text, confidence, min_char_confidence) = self.ctc_decode(data, seq_len, vocab_size);
 
-        tracing::debug!("ppocr: text={:?}, conf={:.3}", text, confidence);
+        tracing::debug!("ppocr: text={:?}, conf={:.3}, min_char={:.3}", text, confidence, min_char_confidence);
 
-        Ok(OcrResult { text, confidence })
+        Ok(OcrResult { text, confidence, min_char_confidence })
     }
 
+}
+
+// ── Probability image ──
+
+/// Resize the DB probability map (at detection model resolution) to original
+/// image dimensions as a GrayImage. This decouples downstream consumers from
+/// detection model internals — they just see a grayscale image in page coords.
+fn build_prob_image(
+    prob_data: &[f32],
+    map_w: usize, map_h: usize,
+    content_w: usize, content_h: usize,
+    orig_w: u32, orig_h: u32,
+) -> image::GrayImage {
+    // Extract the content region (excluding padding) as a GrayImage
+    let cw = content_w as u32;
+    let ch = content_h as u32;
+    let mut content_gray = image::GrayImage::new(cw, ch);
+    for y in 0..content_h {
+        for x in 0..content_w {
+            if x < map_w && y < map_h {
+                let v = (prob_data[y * map_w + x] * 255.0).round().clamp(0.0, 255.0) as u8;
+                content_gray.put_pixel(x as u32, y as u32, image::Luma([v]));
+            }
+        }
+    }
+    // Bilinear resize to original image dimensions
+    image::imageops::resize(&content_gray, orig_w, orig_h, image::imageops::FilterType::Triangle)
 }
 
 // ── DB post-processing helpers ──
@@ -471,10 +553,16 @@ fn find_rotated_quads(
                 labels[i] = label_id;
                 component.push((x, y));
 
+                // 8-connected: include diagonal neighbors so tilted text
+                // strokes that connect diagonally stay in one component
                 if x > 0 { stack.push((x - 1, y)); }
                 if x + 1 < width { stack.push((x + 1, y)); }
                 if y > 0 { stack.push((x, y - 1)); }
                 if y + 1 < height { stack.push((x, y + 1)); }
+                if x > 0 && y > 0 { stack.push((x - 1, y - 1)); }
+                if x + 1 < width && y > 0 { stack.push((x + 1, y - 1)); }
+                if x > 0 && y + 1 < height { stack.push((x - 1, y + 1)); }
+                if x + 1 < width && y + 1 < height { stack.push((x + 1, y + 1)); }
             }
 
             if !component.is_empty() {
@@ -493,14 +581,8 @@ fn find_rotated_quads(
             continue;
         }
 
-        // Mean probability score inside contour
-        let score_sum: f64 = component.iter()
-            .map(|&(x, y)| prob_map[y * width + x] as f64)
-            .sum();
-        let score = score_sum / component.len() as f64;
-
         // Extract boundary pixels (pixels with at least one 4-neighbor outside the component)
-        let boundary: Vec<Coord<f64>> = component
+        let boundary: Vec<(usize, usize)> = component
             .iter()
             .filter(|&&(x, y)| {
                 (x == 0 || binary[y * width + (x - 1)] == 0)
@@ -508,15 +590,35 @@ fn find_rotated_quads(
                     || (y == 0 || binary[(y - 1) * width + x] == 0)
                     || (y + 1 >= height || binary[(y + 1) * width + x] == 0)
             })
+            .copied()
+            .collect();
+
+        // Score = mean(prob) over boundary pixels only (PaddleOCR's official approach).
+        // For large text, DB shrink map has high probability only near boundaries;
+        // scoring over the entire component dilutes it and drops valid detections.
+        let score = if boundary.is_empty() {
+            let s: f64 = component.iter()
+                .map(|&(x, y)| prob_map[y * width + x] as f64)
+                .sum();
+            s / component.len() as f64
+        } else {
+            let s: f64 = boundary.iter()
+                .map(|&(x, y)| prob_map[y * width + x] as f64)
+                .sum();
+            s / boundary.len() as f64
+        };
+
+        let boundary_coords: Vec<Coord<f64>> = boundary
+            .iter()
             .map(|&(x, y)| Coord { x: x as f64, y: y as f64 })
             .collect();
 
-        if boundary.len() < 3 {
+        if boundary_coords.len() < 3 {
             continue;
         }
 
         // Convex hull via geo crate
-        let line_string = LineString::new(boundary);
+        let line_string = LineString::new(boundary_coords);
         let poly = Polygon::new(line_string, vec![]);
         let hull = poly.convex_hull();
         let hull_points: Vec<[f64; 2]> = hull

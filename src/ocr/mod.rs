@@ -2,6 +2,7 @@ mod ppocr;
 mod manga_ocr;
 
 use anyhow::Result;
+use image::GrayImage;
 
 use crate::detection::TextRegion;
 use crate::model_hub::lazy::LazySession;
@@ -9,7 +10,25 @@ use crate::model_hub::{self, Model};
 
 pub struct OcrResult {
     pub text: String,
+    /// Geometric mean of per-character softmax probabilities
     pub confidence: f64,
+    /// Lowest single-character probability in the sequence.
+    /// Useful for rejecting results where one character is very uncertain
+    /// even if the overall confidence is acceptable.
+    pub min_char_confidence: f64,
+}
+
+/// Detection output bundling regions with an optional page-level text
+/// probability image in original image coordinates.
+///
+/// The `prob_image` is a GrayImage (0–255) produced by resizing the DB
+/// probability map to original image dimensions. Consumers (e.g. merge)
+/// can sample it without knowing detection model internals.
+pub struct DetectionOutput {
+    pub regions: Vec<TextRegion>,
+    /// DB text probability map resized to original image coords.
+    /// Pixel value 0–255 maps to probability 0.0–1.0.
+    pub prob_image: Option<GrayImage>,
 }
 
 pub struct OcrEngine {
@@ -68,7 +87,7 @@ impl OcrEngine {
     }
 
     /// Detect text regions using PP-OCR's DB detection model
-    pub fn detect(&self, img: &image::DynamicImage) -> Result<Vec<TextRegion>> {
+    pub fn detect(&self, img: &image::DynamicImage) -> Result<DetectionOutput> {
         let ppocr = self.ppocr.as_ref()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR adapter not loaded"))?;
         ppocr.detect(img)

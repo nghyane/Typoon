@@ -25,6 +25,12 @@ pub struct BubbleInput {
     pub source_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<(i32, i32)>,
+    /// Detection model confidence (DB boundary score). Not sent to LLM.
+    #[serde(skip)]
+    pub det_confidence: f64,
+    /// OCR recognition confidence (geometric mean of per-char softmax probs). Not sent to LLM.
+    #[serde(skip)]
+    pub ocr_confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

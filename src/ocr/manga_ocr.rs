@@ -169,6 +169,7 @@ impl MangaOcrAdapter {
         Ok(OcrResult {
             text,
             confidence: 1.0,
+            min_char_confidence: 1.0,
         })
     }
 

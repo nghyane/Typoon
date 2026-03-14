@@ -1,4 +1,4 @@
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, GrayImage};
 
 use crate::detection::{LocalTextMask, TextRegion};
 
@@ -34,6 +34,10 @@ const BORDER_ROW_RATIO: f64 = 0.25;
 
 const MIN_BUBBLE_W: f64 = 80.0;
 const MIN_BUBBLE_H: f64 = 35.0;
+/// Mean DB probability (0–255) in the gap between two lines above which
+/// we consider them connected by text (e.g. underline, continuation).
+/// 0.15 × 255 ≈ 38 — indicates meaningful text signal, not noise.
+const PROB_BRIDGE_THRESHOLD: u8 = 38;
 
 // ── Group state ──
 
@@ -112,8 +116,11 @@ impl GroupState {
     fn h_overlap_ratio(&self, lx1: f64, lx2: f64) -> f64 {
         let overlap = self.x2.min(lx2) - self.x1.max(lx1);
         if overlap <= 0.0 { return 0.0; }
-        let max_w = self.w().max(lx2 - lx1);
-        if max_w > 0.0 { overlap / max_w } else { 0.0 }
+        // Use min(widths): a short centered line (e.g. "MÀ, ĐÚNG KHÔNG?")
+        // inside a wide group should have high ratio. overlap/max penalizes
+        // width disparity; overlap/min asks "is the shorter one contained?"
+        let min_w = self.w().min(lx2 - lx1);
+        if min_w > 0.0 { overlap / min_w } else { 0.0 }
     }
 }
 
@@ -182,6 +189,45 @@ fn has_border_between(
     false
 }
 
+/// Check if the DB probability map shows text signal in the gap between two
+/// vertical regions. High mean probability = text bridge (same text block).
+///
+/// This is a positive signal (encourages merging), complementary to
+/// `has_border_between` which is a negative signal (blocks merging).
+fn has_prob_bridge(
+    prob_img: &GrayImage,
+    upper_y2: f64,
+    lower_y1: f64,
+    x_left: f64,
+    x_right: f64,
+) -> bool {
+    let gap_top = upper_y2.ceil() as u32;
+    let gap_bot = lower_y1.floor() as u32;
+    if gap_top >= gap_bot || x_left >= x_right {
+        return false;
+    }
+    let (pw, ph) = prob_img.dimensions();
+    let xl = (x_left.floor() as u32).min(pw.saturating_sub(1));
+    let xr = (x_right.ceil() as u32).min(pw);
+    let gap_bot = gap_bot.min(ph);
+    if xr <= xl {
+        return false;
+    }
+
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    for sy in gap_top..gap_bot {
+        for sx in xl..xr {
+            sum += prob_img.get_pixel(sx, sy).0[0] as u64;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return false;
+    }
+    (sum / count) as u8 >= PROB_BRIDGE_THRESHOLD
+}
+
 /// BT.601 luminance of a pixel.
 fn pixel_lum(img: &DynamicImage, x: u32, y: u32) -> u32 {
     let p = img.get_pixel(x, y);
@@ -191,7 +237,7 @@ fn pixel_lum(img: &DynamicImage, x: u32, y: u32) -> u32 {
 // ── Main grouping ──
 
 /// Group PP-OCR text lines into bubble groups by spatial proximity + visual
-/// border detection.
+/// border detection + text probability bridging.
 ///
 /// Gates (ordered cheap → expensive, early-exit):
 /// 1. Angle compatibility
@@ -199,7 +245,8 @@ fn pixel_lum(img: &DynamicImage, x: u32, y: u32) -> u32 {
 /// 3. Spatial proximity (gap, overlap)
 /// 4. Gap consistency (new gap vs group's median gap)
 /// 5. Border detection (sample image pixels between lines)
-pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage) -> Vec<MergedBubble> {
+/// 6. Prob bridge (DB probability in gap — positive signal overrides gate 5)
+pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage, prob_image: Option<&GrayImage>) -> Vec<MergedBubble> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -249,12 +296,19 @@ pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage) -> Vec<MergedBubb
                 }
             }
 
-            // Gate 5: border detection — check if there's a visible border
-            // between the group's bottom and this line's top.
+            // Gate 5+6: border detection vs prob bridge.
+            // Border = negative signal (different bubbles).
+            // Prob bridge = positive signal (same text region in DB map).
+            // If prob bridge confirms text, border is likely a false positive
+            // (e.g. underlined text, thin decorative lines within a bubble).
             let overlap_x1 = gs.x1.max(lx1);
             let overlap_x2 = gs.x2.min(lx2);
             if v_gap > 0.0 && has_border_between(img, gs.y2, ly1, overlap_x1, overlap_x2) {
-                continue;
+                let bridged = prob_image
+                    .is_some_and(|pi| has_prob_bridge(pi, gs.y2, ly1, overlap_x1, overlap_x2));
+                if !bridged {
+                    continue;
+                }
             }
 
             if v_gap < best_vgap {

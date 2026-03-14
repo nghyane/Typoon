@@ -104,14 +104,26 @@ async fn run_detect(
             if !ocr.can_detect() {
                 anyhow::bail!("PP-OCR detection model not loaded");
             }
-            let lines = ocr.detect(img)?;
-            println!("PP-OCR det: {} raw lines", lines.len());
-            let merged = crate::pipeline::merge::group_lines(lines, img);
-            merged.into_iter().map(|b| (b.polygon, b.confidence, b.lines.len())).collect::<Vec<_>>()
+            // Full production pipeline: detect → merge → OCR → filter
+            // (SFX, watermark, short text, min_char_confidence)
+            let ctd_path = crate::model_hub::resolve(
+                &config.models_dir, crate::model_hub::Model::ComicTextDetector,
+            ).await?;
+            let detector = crate::detection::TextDetector::new(
+                crate::model_hub::lazy::LazySession::new(ctd_path),
+            );
+            let (inputs, polygons, _masks) =
+                crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
+            println!("PP-OCR pipeline: {} bubbles (after filtering)", inputs.len());
+            inputs.iter().zip(polygons.iter()).enumerate().map(|(_, (input, poly))| {
+                println!("  [{:>3}] det={:.2} ocr={:.2} text={:?}",
+                    input.id, input.det_confidence, input.ocr_confidence, input.source_text);
+                (poly.clone(), input.det_confidence, 1usize)
+            }).collect::<Vec<_>>()
         }
     };
 
-    println!("Merged:  {} bubbles in {}ms\n", bubbles.len(), t.elapsed().as_millis());
+    println!("Total:   {} bubbles in {}ms\n", bubbles.len(), t.elapsed().as_millis());
 
     let font = crate::text_layout::get_font();
     let label_scale = PxScale::from(18.0);
@@ -249,8 +261,8 @@ async fn detect_masks(
             if !ocr.can_detect() {
                 anyhow::bail!("PP-OCR detection model not loaded");
             }
-            let lines = ocr.detect(img)?;
-            let merged = crate::pipeline::merge::group_lines(lines, img);
+            let det = ocr.detect(img)?;
+            let merged = crate::pipeline::merge::group_lines(det.regions, img, det.prob_image.as_ref());
             Ok(merged.into_iter().filter_map(|b| b.mask).collect())
         }
     }
