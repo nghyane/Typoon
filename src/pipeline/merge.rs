@@ -29,11 +29,16 @@ const VGAP_HEIGHT_MULT: f64 = 1.5;
 /// SFX (~90°) or heavily rotated text.
 const MAX_ANGLE_DIFF_DEG: f64 = 30.0;
 
+/// Maximum height ratio between a candidate line and a group's average line
+/// height. Lines with very different heights are likely from different bubbles
+/// (e.g. title vs dialogue, whisper vs shout). Ratio is always ≥ 1.0.
+const MAX_HEIGHT_RATIO: f64 = 1.8;
+
 /// Minimum bubble bbox dimensions to filter noise.
 const MIN_BUBBLE_W: f64 = 80.0;
 const MIN_BUBBLE_H: f64 = 35.0;
 
-/// Tracked bounding box + dominant angle for a group.
+/// Tracked bounding box + line statistics for a group.
 struct GroupBbox {
     x1: f64,
     y1: f64,
@@ -41,15 +46,21 @@ struct GroupBbox {
     y2: f64,
     /// Running sum of line angles (degrees) for averaging.
     angle_sum: f64,
-    /// Number of lines contributing to angle_sum.
-    angle_count: usize,
+    /// Running sum of line heights for averaging.
+    height_sum: f64,
+    /// Number of lines in this group.
+    line_count: usize,
 }
 
 impl GroupBbox {
     fn from_line(polygon: &[[f64; 2]]) -> Self {
         let (x1, y1, x2, y2) = bbox(polygon);
-        let angle = line_angle(polygon);
-        Self { x1, y1, x2, y2, angle_sum: angle, angle_count: 1 }
+        Self {
+            x1, y1, x2, y2,
+            angle_sum: line_angle(polygon),
+            height_sum: y2 - y1,
+            line_count: 1,
+        }
     }
 
     fn expand(&mut self, polygon: &[[f64; 2]]) {
@@ -59,14 +70,18 @@ impl GroupBbox {
         self.x2 = self.x2.max(x2);
         self.y2 = self.y2.max(y2);
         self.angle_sum += line_angle(polygon);
-        self.angle_count += 1;
+        self.height_sum += y2 - y1;
+        self.line_count += 1;
     }
 
     fn w(&self) -> f64 { self.x2 - self.x1 }
 
-    /// Average angle of all lines in this group (degrees, 0°=horizontal).
     fn avg_angle(&self) -> f64 {
-        if self.angle_count > 0 { self.angle_sum / self.angle_count as f64 } else { 0.0 }
+        if self.line_count > 0 { self.angle_sum / self.line_count as f64 } else { 0.0 }
+    }
+
+    fn avg_height(&self) -> f64 {
+        if self.line_count > 0 { self.height_sum / self.line_count as f64 } else { 0.0 }
     }
 
     /// Vertical gap between this group bbox and a line bbox.
@@ -120,9 +135,14 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
         let mut best_vgap = f64::INFINITY;
 
         for (gi, (gb, _)) in groups.iter().enumerate() {
-            // Orientation check: reject if angle differs too much from group
-            let angle_diff = (l_angle - gb.avg_angle()).abs();
-            if angle_diff > MAX_ANGLE_DIFF_DEG {
+            // Orientation: reject if angle differs too much from group
+            if (l_angle - gb.avg_angle()).abs() > MAX_ANGLE_DIFF_DEG {
+                continue;
+            }
+
+            // Size: reject if line height differs too much from group average
+            let ratio = lh.max(gb.avg_height()) / lh.min(gb.avg_height()).max(1.0);
+            if ratio > MAX_HEIGHT_RATIO {
                 continue;
             }
 
