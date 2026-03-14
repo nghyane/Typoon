@@ -25,9 +25,11 @@ const MAX_HEIGHT_RATIO: f64 = 1.8;
 /// If a new line's gap exceeds this multiple of the group's median inter-line
 /// gap, it's likely from a different bubble.
 const GAP_CONSISTENCY_MULT: f64 = 2.5;
-/// Luminance threshold (0–255) for a pixel to be considered "dark" (border).
-const BORDER_DARK_THRESHOLD: u8 = 100;
-/// Fraction of scan-line width that must be dark to count as a border row.
+/// Minimum luminance drop from the local background to detect a border edge.
+/// A border is a thin dark stripe that contrasts with its surroundings,
+/// not just "dark pixels" (which fails on dark backgrounds).
+const BORDER_CONTRAST_DROP: u32 = 40;
+/// Fraction of scan-line width that must show contrast-drop to count as border.
 const BORDER_ROW_RATIO: f64 = 0.25;
 
 const MIN_BUBBLE_W: f64 = 80.0;
@@ -119,10 +121,13 @@ impl GroupState {
 
 /// Check if there's a visible bubble border between two vertical regions.
 ///
-/// Samples horizontal scan-lines in the gap between `upper_y2` and `lower_y1`,
-/// within the horizontal overlap `[x_left, x_right]`.
-/// A scan-line is a "border row" if ≥ 25% of its pixels are dark (luminance < 100).
-/// Returns true if any border row is found.
+/// Instead of absolute darkness, detects **contrast edges**: pixels that are
+/// significantly darker than the local background (median luminance of the
+/// first/last rows of the gap region). This works on both light and dark
+/// backgrounds — a border is always a *relative* contrast feature.
+///
+/// Returns true if any scan-line in the gap has ≥ 25% of pixels showing a
+/// luminance drop ≥ BORDER_CONTRAST_DROP from the local background.
 fn has_border_between(
     img: &DynamicImage,
     upper_y2: f64,
@@ -140,24 +145,47 @@ fn has_border_between(
     let xl = (x_left.floor() as u32).min(iw.saturating_sub(1));
     let xr = (x_right.ceil() as u32).min(iw);
     let scan_w = xr.saturating_sub(xl);
-    if scan_w == 0 {
+    if scan_w < 3 {
         return false;
     }
+    let gap_bot = gap_bot.min(ih);
 
-    for sy in gap_top..gap_bot.min(ih) {
-        let mut dark_count = 0u32;
-        for sx in xl..xr {
-            let p = img.get_pixel(sx, sy);
-            let lum = (p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000;
-            if lum < BORDER_DARK_THRESHOLD as u32 {
-                dark_count += 1;
+    // Compute local background luminance: median of the top and bottom edge
+    // rows of the gap (adjacent to the text lines, where bubble interior is).
+    let bg_lum = {
+        let mut edge_lums = Vec::new();
+        for &sy in &[gap_top, gap_bot.saturating_sub(1)] {
+            if sy < ih {
+                for sx in (xl..xr).step_by(2) {
+                    edge_lums.push(pixel_lum(img, sx, sy));
+                }
             }
         }
-        if dark_count as f64 / scan_w as f64 >= BORDER_ROW_RATIO {
+        if edge_lums.is_empty() { return false; }
+        edge_lums.sort_unstable();
+        edge_lums[edge_lums.len() / 2]
+    };
+
+    // Scan each row: count pixels with luminance significantly below local bg
+    for sy in gap_top..gap_bot {
+        let mut contrast_count = 0u32;
+        for sx in xl..xr {
+            let lum = pixel_lum(img, sx, sy);
+            if bg_lum >= BORDER_CONTRAST_DROP && lum < bg_lum - BORDER_CONTRAST_DROP {
+                contrast_count += 1;
+            }
+        }
+        if contrast_count as f64 / scan_w as f64 >= BORDER_ROW_RATIO {
             return true;
         }
     }
     false
+}
+
+/// BT.601 luminance of a pixel.
+fn pixel_lum(img: &DynamicImage, x: u32, y: u32) -> u32 {
+    let p = img.get_pixel(x, y);
+    (p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000
 }
 
 // ── Main grouping ──
