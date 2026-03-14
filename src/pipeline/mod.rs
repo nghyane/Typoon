@@ -138,16 +138,35 @@ fn detect_and_ocr_ppocr(
 
     for bubble in &merged {
         let mut texts = Vec::new();
+        let mut total_conf = 0.0_f64;
+        let mut conf_count = 0usize;
         for line in &bubble.lines {
             let result = ocr.recognize(&line.crop, lang)?;
             let text = result.text.trim().to_string();
             if text.is_empty() || (text.chars().count() <= 2 && result.confidence < 0.5) {
                 continue;
             }
+            total_conf += result.confidence;
+            conf_count += 1;
             texts.push(text);
         }
         let joined = texts.join(" ");
         if joined.is_empty() {
+            continue;
+        }
+
+        // SFX filter: combine OCR confidence + geometry.
+        // SFX (sound effects) produce portrait-ish lines with low OCR confidence
+        // because they are stylized text the model can't read well.
+        // Normal dialogue has high confidence even with large fonts.
+        let avg_conf = if conf_count > 0 { total_conf / conf_count as f64 } else { 0.0 };
+        let all_portrait = bubble.lines.iter().all(|l| {
+            let (lx1, ly1, lx2, ly2) = merge::line_bbox(&l.polygon);
+            let w = lx2 - lx1;
+            let h = ly2 - ly1;
+            h >= w * 0.8
+        });
+        if all_portrait && avg_conf < 0.7 {
             continue;
         }
 

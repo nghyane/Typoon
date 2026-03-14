@@ -97,17 +97,8 @@ pub fn group_lines(lines: Vec<TextRegion>) -> Vec<MergedBubble> {
         if (x2 - x1) < 80.0 || (y2 - y1) < 35.0 {
             continue;
         }
-        // SFX lines are bulky (large min-dimension) compared to normal text
-        // lines which are thin (height ~ font size, typically 20-80px).
-        // If any line's shorter side exceeds this, the group is likely SFX.
-        const SFX_MIN_DIM: f64 = 100.0;
-        let has_sfx_line = group_lines.iter().any(|l| {
-            let (lx1, ly1, lx2, ly2) = bbox(&l.polygon);
-            (lx2 - lx1).min(ly2 - ly1) > SFX_MIN_DIM
-        });
-        if has_sfx_line {
-            continue;
-        }
+        // NOTE: SFX filtering moved to pipeline/mod.rs where OCR confidence
+        // is available for more accurate classification.
         let confidence = group_lines.iter()
             .map(|l| l.confidence)
             .fold(0.0_f64, f64::max);
@@ -182,6 +173,11 @@ fn sort_reading_order(lines: &mut [TextRegion]) {
 
 fn top_y(polygon: &[[f64; 2]]) -> f64 {
     polygon.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min)
+}
+
+/// Axis-aligned bounding box of a polygon. Public for SFX filtering in pipeline.
+pub fn line_bbox(polygon: &[[f64; 2]]) -> (f64, f64, f64, f64) {
+    bbox(polygon)
 }
 
 fn bbox(polygon: &[[f64; 2]]) -> (f64, f64, f64, f64) {
