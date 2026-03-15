@@ -148,7 +148,7 @@ def train(args):
     # ---- Data ----
     use_cache = args.teacher_cache is not None
     if use_cache:
-        dataset = TeacherCacheDataset(args.teacher_cache, augment=True)
+        dataset = TeacherCacheDataset(args.teacher_cache, augment=True, preload=args.preload_cache)
         print(f"Using teacher cache: {len(dataset)} samples")
     else:
         dataset = MangaInpaintDataset(args.data_dir, mask_dir=args.mask_dir,
@@ -420,6 +420,8 @@ def main():
 
     # System
     p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--preload_cache", action="store_true",
+                   help="Preload teacher cache into RAM")
     p.add_argument("--resume", type=str, default=None,
                    help="Path to checkpoint to resume from")
 
