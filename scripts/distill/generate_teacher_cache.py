@@ -86,12 +86,20 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load LaMa
+    # Load LaMa — prefer TensorRT for fastest inference
     available = ort.get_available_providers()
     providers = []
+    if "TensorrtExecutionProvider" in available:
+        providers.append(("TensorrtExecutionProvider", {
+            "device_id": 0,
+            "trt_fp16_enable": True,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": "/tmp/trt_cache",
+        }))
     if "CUDAExecutionProvider" in available:
         providers.append(("CUDAExecutionProvider", {"device_id": 0}))
     providers.append("CPUExecutionProvider")
+    os.makedirs("/tmp/trt_cache", exist_ok=True)
     session = ort.InferenceSession(args.lama_model, providers=providers)
     input_names = [inp.name for inp in session.get_inputs()]
     output_names = [out.name for out in session.get_outputs()]
