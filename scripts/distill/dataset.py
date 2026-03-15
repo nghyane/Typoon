@@ -178,7 +178,7 @@ class TeacherCacheDataset(Dataset):
         teacher: float32 [3, H, W] in [-1, 1]
     """
 
-    def __init__(self, cache_dir: str, augment: bool = True, preload: bool = True):
+    def __init__(self, cache_dir: str, augment: bool = True, **kwargs):
         self.files = sorted(
             str(p) for p in Path(cache_dir).rglob("*.npz")
         )
@@ -187,37 +187,42 @@ class TeacherCacheDataset(Dataset):
         self.augment = augment
         self.cache = None
 
-        if preload:
+        # Convert .npz to single memmap files for fast I/O
+        mmap_dir = os.path.join(cache_dir, "_mmap")
+        imgs_path = os.path.join(mmap_dir, "images.npy")
+        if not os.path.exists(imgs_path):
             from tqdm import tqdm
+            os.makedirs(mmap_dir, exist_ok=True)
             n = len(self.files)
-            print(f"Preloading {n} cache samples into RAM...")
-            # Pre-allocate to avoid double memory from np.stack
             sample = np.load(self.files[0])
-            imgs = np.empty((n, *sample["image"].shape), dtype=np.float32)
-            msks = np.empty((n, *sample["mask"].shape), dtype=np.float32)
-            tchs = np.empty((n, *sample["teacher"].shape), dtype=np.float32)
-            for i, f in enumerate(tqdm(self.files, desc="Loading cache")):
+            print(f"Converting {n} .npz → memmap (one-time)...")
+            imgs = np.lib.format.open_memmap(
+                imgs_path, mode='w+', dtype=np.float32, shape=(n, *sample["image"].shape))
+            msks = np.lib.format.open_memmap(
+                os.path.join(mmap_dir, "masks.npy"), mode='w+', dtype=np.float32, shape=(n, *sample["mask"].shape))
+            tchs = np.lib.format.open_memmap(
+                os.path.join(mmap_dir, "teachers.npy"), mode='w+', dtype=np.float32, shape=(n, *sample["teacher"].shape))
+            for i, f in enumerate(tqdm(self.files, desc="Converting")):
                 data = np.load(f)
                 imgs[i] = data["image"]
                 msks[i] = data["mask"]
                 tchs[i] = data["teacher"]
-            self.cache = (imgs, msks, tchs)
-            size_gb = (imgs.nbytes + msks.nbytes + tchs.nbytes) / 1024**3
-            print(f"Preloaded: {size_gb:.1f}GB in RAM")
+            del imgs, msks, tchs
+            print("Memmap conversion done.")
+
+        self.images = np.load(imgs_path, mmap_mode='r')
+        self.masks = np.load(os.path.join(mmap_dir, "masks.npy"), mmap_mode='r')
+        self.teachers = np.load(os.path.join(mmap_dir, "teachers.npy"), mmap_mode='r')
+        size_gb = (self.images.nbytes + self.masks.nbytes + self.teachers.nbytes) / 1024**3
+        print(f"Memmap loaded: {size_gb:.1f}GB (OS-cached, near-zero RAM)")
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self.cache is not None:
-            image = torch.from_numpy(self.cache[0][idx].copy())
-            mask = torch.from_numpy(self.cache[1][idx].copy())
-            teacher = torch.from_numpy(self.cache[2][idx].copy())
-        else:
-            data = np.load(self.files[idx])
-            image = torch.from_numpy(data["image"])
-            mask = torch.from_numpy(data["mask"])
-            teacher = torch.from_numpy(data["teacher"])
+        image = torch.from_numpy(self.images[idx].copy())
+        mask = torch.from_numpy(self.masks[idx].copy())
+        teacher = torch.from_numpy(self.teachers[idx].copy())
 
         # Random horizontal flip (apply consistently to all)
         if self.augment and random.random() > 0.5:
