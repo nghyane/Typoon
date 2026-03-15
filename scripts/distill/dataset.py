@@ -178,22 +178,43 @@ class TeacherCacheDataset(Dataset):
         teacher: float32 [3, H, W] in [-1, 1]
     """
 
-    def __init__(self, cache_dir: str, augment: bool = True):
+    def __init__(self, cache_dir: str, augment: bool = True, preload: bool = True):
         self.files = sorted(
             str(p) for p in Path(cache_dir).rglob("*.npz")
         )
         if len(self.files) == 0:
             raise ValueError(f"No .npz files found in {cache_dir}")
         self.augment = augment
+        self.cache = None
+
+        if preload:
+            print(f"Preloading {len(self.files)} cache samples into RAM...")
+            images, masks, teachers = [], [], []
+            for f in self.files:
+                data = np.load(f)
+                images.append(data["image"])
+                masks.append(data["mask"])
+                teachers.append(data["teacher"])
+            self.cache = (
+                np.stack(images),
+                np.stack(masks),
+                np.stack(teachers),
+            )
+            print(f"Preloaded: {self.cache[0].nbytes / 1024**3:.1f}GB in RAM")
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        data = np.load(self.files[idx])
-        image = torch.from_numpy(data["image"])    # [3, H, W]
-        mask = torch.from_numpy(data["mask"])      # [1, H, W]
-        teacher = torch.from_numpy(data["teacher"])  # [3, H, W]
+        if self.cache is not None:
+            image = torch.from_numpy(self.cache[0][idx].copy())
+            mask = torch.from_numpy(self.cache[1][idx].copy())
+            teacher = torch.from_numpy(self.cache[2][idx].copy())
+        else:
+            data = np.load(self.files[idx])
+            image = torch.from_numpy(data["image"])
+            mask = torch.from_numpy(data["mask"])
+            teacher = torch.from_numpy(data["teacher"])
 
         # Random horizontal flip (apply consistently to all)
         if self.augment and random.random() > 0.5:
