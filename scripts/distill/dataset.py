@@ -189,19 +189,21 @@ class TeacherCacheDataset(Dataset):
 
         if preload:
             from tqdm import tqdm
-            print(f"Preloading {len(self.files)} cache samples into RAM...")
-            images, masks, teachers = [], [], []
-            for f in tqdm(self.files, desc="Loading cache"):
+            n = len(self.files)
+            print(f"Preloading {n} cache samples into RAM...")
+            # Pre-allocate to avoid double memory from np.stack
+            sample = np.load(self.files[0])
+            imgs = np.empty((n, *sample["image"].shape), dtype=np.float32)
+            msks = np.empty((n, *sample["mask"].shape), dtype=np.float32)
+            tchs = np.empty((n, *sample["teacher"].shape), dtype=np.float32)
+            for i, f in enumerate(tqdm(self.files, desc="Loading cache")):
                 data = np.load(f)
-                images.append(data["image"])
-                masks.append(data["mask"])
-                teachers.append(data["teacher"])
-            self.cache = (
-                np.stack(images),
-                np.stack(masks),
-                np.stack(teachers),
-            )
-            print(f"Preloaded: {self.cache[0].nbytes / 1024**3:.1f}GB in RAM")
+                imgs[i] = data["image"]
+                msks[i] = data["mask"]
+                tchs[i] = data["teacher"]
+            self.cache = (imgs, msks, tchs)
+            size_gb = (imgs.nbytes + msks.nbytes + tchs.nbytes) / 1024**3
+            print(f"Preloaded: {size_gb:.1f}GB in RAM")
 
     def __len__(self) -> int:
         return len(self.files)
