@@ -188,9 +188,10 @@ class TeacherCacheDataset(Dataset):
         self.cache = None
 
         if preload:
+            from tqdm import tqdm
             print(f"Preloading {len(self.files)} cache samples into RAM...")
             images, masks, teachers = [], [], []
-            for f in self.files:
+            for f in tqdm(self.files, desc="Loading cache"):
                 data = np.load(f)
                 images.append(data["image"])
                 masks.append(data["mask"])
