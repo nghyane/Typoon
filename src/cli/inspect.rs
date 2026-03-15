@@ -207,7 +207,7 @@ async fn render_masks(
     let inpainter = {
         let lama_path = crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama).await;
         lama_path.map(|p| crate::inpaint::LamaInpainter::new(
-            crate::model_hub::lazy::LazySession::new(p),
+            crate::model_hub::lazy::LazySession::gpu(p),
         ))
     };
     {

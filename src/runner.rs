@@ -32,11 +32,9 @@ pub struct TranslationRunner {
 
 impl TranslationRunner {
     pub async fn new(config: &AppConfig) -> Result<Self> {
-        let cache_dir = std::path::PathBuf::from(&config.models_dir).join("ep_cache");
-
         let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
         let detector = TextDetector::new(
-            LazySession::new_accelerated(ctd_path, Some(cache_dir.clone())),
+            LazySession::new(ctd_path),
         );
         let ocr = OcrEngine::new(&config.models_dir).await?;
 
@@ -47,7 +45,7 @@ impl TranslationRunner {
             Some(path) => {
                 tracing::info!("LaMa model path resolved (lazy load): {}", path.display());
                 Some(LamaInpainter::new(
-                    LazySession::new(path),
+                    LazySession::gpu(path),
                 ))
             }
             None => {

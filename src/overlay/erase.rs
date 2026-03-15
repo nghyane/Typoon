@@ -27,14 +27,21 @@ pub fn erase_masks(
     inpainter: Option<&LamaInpainter>,
 ) {
     let mut lama_masks: Vec<&LocalTextMask> = Vec::new();
+    let mut flat_count = 0usize;
 
     for mask in masks {
         if is_flat_background(canvas, mask) {
             erase_with_median(canvas, mask);
+            flat_count += 1;
         } else {
             lama_masks.push(mask);
         }
     }
+
+    tracing::info!(
+        "Erase: {flat_count} flat (median), {} complex (LaMa)",
+        lama_masks.len()
+    );
 
     if lama_masks.is_empty() {
         return;

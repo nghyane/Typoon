@@ -3,46 +3,34 @@ use std::sync::{Mutex, OnceLock};
 
 use ort::session::Session;
 
-/// Execution provider strategy for a lazy session.
-#[derive(Debug, Clone, Default)]
-pub enum SessionEp {
-    /// CPU only — safe for all models, no hardware dependencies.
-    #[default]
-    Cpu,
-    /// Try hardware acceleration at runtime with automatic fallback:
-    /// CUDA (NVIDIA GPU) → CoreML (macOS ANE/GPU) → DirectML (Windows GPU) → CPU.
-    Accelerated {
-        cache_dir: Option<PathBuf>,
-    },
-}
-
 /// Lazy-loading ONNX session wrapper.
 ///
-/// Stores the model path and EP config at construction time (zero cost).
+/// Stores the model path at construction time (zero cost).
 /// The actual ONNX `Session` is created on the first `.get()` call and
 /// cached for subsequent uses.
+///
+/// Use `gpu()` to request hardware acceleration (CUDA/CoreML/DirectML).
 pub struct LazySession {
     model_path: PathBuf,
-    ep: SessionEp,
+    gpu: bool,
     session: OnceLock<Option<Mutex<Session>>>,
 }
 
 impl LazySession {
-    /// Create a lazy session with CPU EP (default, safe for all models).
+    /// Create a session using CPU only.
     pub fn new(model_path: PathBuf) -> Self {
         Self {
             model_path,
-            ep: SessionEp::Cpu,
+            gpu: false,
             session: OnceLock::new(),
         }
     }
 
-    /// Create a lazy session with hardware-accelerated EP.
-    /// Tries CUDA → CoreML → DirectML → CPU at runtime.
-    pub fn new_accelerated(model_path: PathBuf, cache_dir: Option<PathBuf>) -> Self {
+    /// Create a session with GPU acceleration (CoreML/CUDA/DirectML).
+    pub fn gpu(model_path: PathBuf) -> Self {
         Self {
             model_path,
-            ep: SessionEp::Accelerated { cache_dir },
+            gpu: true,
             session: OnceLock::new(),
         }
     }
@@ -52,18 +40,20 @@ impl LazySession {
     pub fn get(&self) -> Option<&Mutex<Session>> {
         self.session
             .get_or_init(|| {
-                let result = match &self.ep {
-                    SessionEp::Cpu => {
-                        Session::builder().and_then(|mut b| b.commit_from_file(&self.model_path))
-                    }
-                    SessionEp::Accelerated { cache_dir } => {
-                        build_accelerated_session(&self.model_path, cache_dir.as_deref())
-                    }
+                let use_gpu = self.gpu;
+
+                let result = if use_gpu {
+                    build_gpu_session(&self.model_path)
+                } else {
+                    Session::builder()
+                        .and_then(|mut b| b.commit_from_file(&self.model_path))
                 };
+
+                let label = if use_gpu { " (GPU)" } else { "" };
                 match result {
                     Ok(session) => {
                         tracing::info!(
-                            "LazySession loaded: {}",
+                            "LazySession loaded{label}: {}",
                             self.model_path.display()
                         );
                         Some(Mutex::new(session))
@@ -91,39 +81,33 @@ impl LazySession {
     }
 }
 
-/// Try hardware EPs in priority order at runtime.
-/// ort's `with_execution_providers` accepts multiple EPs — it tries each in order
-/// and silently skips unavailable ones, falling back to CPU.
-fn build_accelerated_session(
-    model_path: &std::path::Path,
-    cache_dir: Option<&std::path::Path>,
-) -> ort::Result<Session> {
+/// Build a session with GPU execution providers.
+fn build_gpu_session(model_path: &std::path::Path) -> ort::Result<Session> {
     use ort::ep;
 
-    let mut eps: Vec<ort::ep::ExecutionProviderDispatch> = Vec::new();
+    let cache_dir = model_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("ep_cache");
+    std::fs::create_dir_all(&cache_dir).ok();
 
-    // 1. CUDA — best for NVIDIA GPUs (RTX 4090, etc.)
+    let mut eps = Vec::new();
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     eps.push(ep::CUDA::default().build());
 
-    // 2. CoreML — best for macOS Apple Silicon (ANE/GPU)
-    {
-        let mut coreml = ep::CoreML::default()
+    #[cfg(target_os = "macos")]
+    eps.push(
+        ep::CoreML::default()
             .with_model_format(ep::coreml::ModelFormat::MLProgram)
             .with_compute_units(ep::coreml::ComputeUnits::All)
-            .with_specialization_strategy(ep::coreml::SpecializationStrategy::FastPrediction);
+            .with_model_cache_dir(cache_dir.display().to_string())
+            .build(),
+    );
 
-        if let Some(dir) = cache_dir {
-            std::fs::create_dir_all(dir).ok();
-            coreml = coreml.with_model_cache_dir(dir.display().to_string());
-        }
-
-        eps.push(coreml.build());
-    }
-
-    // 3. DirectML — fallback for Windows GPUs (AMD, Intel, NVIDIA without CUDA)
+    #[cfg(target_os = "windows")]
     eps.push(ep::DirectML::default().build());
 
-    // ort tries each EP in order, skips unavailable ones, falls back to CPU
     Session::builder()?
         .with_execution_providers(eps)?
         .commit_from_file(model_path)

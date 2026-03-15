@@ -36,7 +36,7 @@ impl Model {
             Self::MangaOcrEncoder => "encoder_model.onnx",
             Self::MangaOcrDecoder => "decoder_model.onnx",
             Self::MangaOcrVocab => "vocab.txt",
-            Self::Lama => "lama_fp32.onnx",
+            Self::Lama => "lama_inpaint.onnx",
         }
     }
 }

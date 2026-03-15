@@ -2,6 +2,7 @@
 name = "comic-scan"
 version = "0.1.0"
 edition = "2024"
+default-run = "comic-scan"
 
 [dependencies]
 # Web server
@@ -14,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ONNX Runtime — EP features are additive; ort falls back gracefully at runtime
-ort = { version = "2.0.0-rc.12", features = ["cuda", "coreml", "directml"] }
+ort = { git = "https://github.com/pykeio/ort.git", rev = "f5c1548f88c1685b4347e6eb7af82d000d2cca95", features = ["cuda", "coreml", "directml"] }
 
 # Image processing
 image = "0.25"
@@ -56,4 +57,3 @@ tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 tokio = { version = "1", features = ["rt", "macros"] }
-
