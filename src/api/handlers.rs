@@ -9,8 +9,8 @@ use base64::engine::general_purpose::STANDARD;
 
 use super::{AppState, HealthResponse, TranslateImageRequest, TranslateImageResponse};
 use crate::pipeline;
-use crate::pipeline::types::BubbleResult;
-use crate::translation::BubbleTranslated;
+use crate::pipeline::types::{BubbleResult, TranslateJob};
+use crate::runner::Session;
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     Json(HealthResponse {
@@ -51,11 +51,13 @@ async fn process_image(
     let img = image::load_from_memory(&image_bytes)?;
 
     let source_lang = pipeline::detect_source_lang(req.source_lang.as_deref(), &req.target_lang);
-    let engine = super::resolve_engine(state, req)?;
 
-    let runner = &state.runner;
-    let det = Arc::clone(&runner.detector);
-    let ocr = Arc::clone(&runner.ocr);
+    let mut session = Session::new(state.runner.clone(), state.project.clone());
+    if let Ok(engine) = super::resolve_engine_override(state, req) {
+        session = session.with_engine(engine);
+    }
+    let det = Arc::clone(&session.runner.detector);
+    let ocr = Arc::clone(&session.runner.ocr);
     let images = vec![img];
 
     let detections = tokio::task::spawn_blocking({
@@ -65,23 +67,21 @@ async fn process_image(
     })
     .await??;
 
-    let context = build_context(req);
-
-    let output = pipeline::chapter::translate_and_render_with_engine(
-        runner,
-        engine.as_ref(),
-        detections,
-        &images,
-        &req.target_lang,
+    let job = TranslateJob {
+        detections: &detections,
+        images: &images,
+        target_lang: &req.target_lang,
         source_lang,
-        context,
-    )
-    .await?;
+        chapter_index: None,
+    };
+
+    let pages = pipeline::chapter::translate_chapter(&session, &job).await?;
+    let rendered = pipeline::chapter::render_pages(pages, &images, &session.runner);
 
     let mut bubbles = Vec::new();
     let mut rendered_image_png_b64 = None;
 
-    for page in &output.pages {
+    for page in &rendered {
         for b in &page.bubbles {
             bubbles.push(BubbleResult::from_translated(b, page.page_index));
         }
@@ -95,21 +95,4 @@ async fn process_image(
         bubbles,
         rendered_image_png_b64,
     })
-}
-
-fn build_context(req: &TranslateImageRequest) -> Vec<BubbleTranslated> {
-    let Some(hint) = &req.context_hint else {
-        return vec![];
-    };
-
-    hint.previous_translations
-        .iter()
-        .flat_map(|pt| {
-            pt.bubbles.iter().map(|b| BubbleTranslated {
-                id: String::new(),
-                source_text: b.source_text.clone(),
-                translated_text: b.translated_text.clone(),
-            })
-        })
-        .collect()
 }

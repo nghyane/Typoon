@@ -1,5 +1,4 @@
-use crate::llm::{ToolDef, ToolResponse};
-use crate::translation::TranslateContext;
+use crate::llm::ToolDef;
 
 #[derive(serde::Deserialize)]
 pub struct Args {
@@ -30,33 +29,4 @@ pub fn def() -> ToolDef {
         }),
     )
     .strict()
-}
-
-pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
-    let response = if let Some(project) = ctx.project {
-        match project.glossary_search(&args.query) {
-            Ok(entries) if entries.is_empty() => "No matching glossary entries found.".to_string(),
-            Ok(entries) => {
-                let mut out = format!("Found {} entries:\n", entries.len());
-                for e in &entries {
-                    out.push_str(&format!("  {} -> {}", e.source_term, e.target_term));
-                    if let Some(n) = &e.notes {
-                        out.push_str(&format!(" ({})", n));
-                    }
-                    out.push('\n');
-                }
-                out
-            }
-            Err(e) => format!("Search error: {e}"),
-        }
-    } else {
-        "Glossary not available.".to_string()
-    };
-
-    tracing::info!(
-        "search_glossary({:?}) → {} chars",
-        args.query,
-        response.len()
-    );
-    ToolResponse::Text(response)
 }

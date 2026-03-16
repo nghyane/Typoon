@@ -46,20 +46,20 @@ impl MangaOcrAdapter {
             &gray_rgb,
             INPUT_SIZE as u32,
             INPUT_SIZE as u32,
-            image::imageops::FilterType::Triangle, // bilinear
+            image::imageops::FilterType::Triangle,
         );
 
-        let mut arr = Array4::<f32>::zeros((1, 3, INPUT_SIZE, INPUT_SIZE));
-        for y in 0..INPUT_SIZE {
-            for x in 0..INPUT_SIZE {
-                let pixel = resized.get_pixel(x as u32, y as u32);
-                for c in 0..3 {
-                    let v = pixel[c] as f32 / 255.0;
-                    arr[[0, c, y, x]] = (v - 0.5) / 0.5;
-                }
-            }
-        }
-        arr
+        let resized_rgb = image::RgbImage::from_raw(INPUT_SIZE as u32, INPUT_SIZE as u32, {
+            resized.into_raw()
+        }).expect("resize produced correct buffer size");
+
+        crate::vision::rgb_to_nchw(
+            &resized_rgb,
+            INPUT_SIZE,
+            INPUT_SIZE,
+            &[0.5; 3],
+            &[0.5; 3],
+        )
     }
 
     /// Autoregressive decode: BOS → argmax loop → EOS

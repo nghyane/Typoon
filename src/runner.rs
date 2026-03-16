@@ -2,23 +2,60 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::llm::Provider;
 use crate::config::{AppConfig, ProviderType};
+use crate::llm::Provider;
 use crate::storage::project::ProjectStore;
-use crate::vision::detection::TextDetector;
-use crate::vision::inpaint::LamaInpainter;
 use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
-use crate::vision::ocr::OcrEngine;
 use crate::translation::TranslationEngine;
+use crate::vision::detection::TextDetector;
+use crate::vision::inpaint::LamaInpainter;
+use crate::vision::ocr::OcrEngine;
 
-/// Headless translation runner — holds all pipeline components without Axum/HTTP.
+/// Per-series translation session — bundles runner + project + context provider.
 ///
-/// All ONNX models use `LazySession` internally — sessions are created on first
-/// use, not at startup. This avoids CoreML context overhead for unused models.
+/// Created once per series/request. Pipeline functions take `&Session`.
+/// Runner is `Arc` so spawned tasks (render, knowledge) can share it.
+pub struct Session {
+    pub runner: Arc<TranslationRunner>,
+    pub project: Option<Arc<ProjectStore>>,
+    context_provider: Option<Box<dyn Provider>>,
+    engine_override: Option<TranslationEngine>,
+}
+
+impl Session {
+    pub fn new(runner: Arc<TranslationRunner>, project: Option<Arc<ProjectStore>>) -> Self {
+        let context_provider = runner.build_context_agent_provider().ok().flatten();
+        Self {
+            runner,
+            project,
+            context_provider,
+            engine_override: None,
+        }
+    }
+
+    /// Use a custom translation engine (e.g., HTTP API provider override).
+    pub fn with_engine(mut self, engine: TranslationEngine) -> Self {
+        self.engine_override = Some(engine);
+        self
+    }
+
+    pub fn engine(&self) -> &TranslationEngine {
+        self.engine_override
+            .as_ref()
+            .unwrap_or(&self.runner.translation)
+    }
+
+    pub fn context_provider(&self) -> Option<&dyn Provider> {
+        self.context_provider
+            .as_ref()
+            .map(|p| &**p as &dyn Provider)
+    }
+}
+
+/// Pipeline infrastructure — models, providers, render pool.
 ///
-/// Detection components (`detector`, `ocr`) are wrapped in `Arc` so they can be
-/// cloned and used in a separate task for pipeline parallelism.
+/// Does NOT hold per-series data (project store). That's in `Session`.
 pub struct TranslationRunner {
     pub detector: Arc<TextDetector>,
     pub ocr: Arc<OcrEngine>,
@@ -26,8 +63,8 @@ pub struct TranslationRunner {
     pub inpainter: Option<LamaInpainter>,
     render_executor: RenderExecutor,
     max_pending_render_jobs: usize,
-    pub default_project: Option<Arc<ProjectStore>>,
-    pub context_agent: Option<Box<dyn Provider>>,
+    /// Context/knowledge agent provider config (for rebuilding per-spawn).
+    context_agent_config: Option<crate::config::ResolvedProvider>,
 }
 
 struct RenderExecutor {
@@ -85,67 +122,14 @@ impl TranslationRunner {
             inpainter.is_some()
         );
 
-        let default_project = if let Some(project_dir) = &config.context.project_dir {
-            match ProjectStore::open(std::path::Path::new(project_dir)) {
-                Ok(store) => {
-                    if let Some(toml_path) = &config.glossary.import_toml {
-                        if let Err(e) =
-                            store.glossary_import_toml(std::path::Path::new(toml_path))
-                        {
-                            tracing::warn!("Glossary TOML import failed: {e}");
-                        }
-                    }
-                    tracing::info!("Project store opened: {project_dir}");
-                    Some(store)
-                }
-                Err(e) => {
-                    tracing::warn!("Project store init failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let context_agent_config = config
+            .context_agent
+            .as_ref()
+            .and_then(|agent_config| config.resolve_provider(agent_config).ok());
 
-        let context_agent: Option<Box<dyn Provider>> = if let (Some(agent_config), true) =
-            (&config.context_agent, default_project.is_some())
-        {
-            match config.resolve_provider(agent_config) {
-                Ok(resolved) => {
-                    let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
-                    let provider: Result<Box<dyn Provider>> = match resolved.provider_type {
-                        ProviderType::Anthropic => crate::llm::anthropic::AnthropicProvider::new(
-                            &resolved.endpoint,
-                            api_key,
-                            &resolved.model,
-                        )
-                        .map(|p| Box::new(p) as Box<dyn Provider>),
-                        ProviderType::OpenAI => crate::llm::openai::OpenAIProvider::new(
-                            &resolved.endpoint,
-                            Some(api_key),
-                            &resolved.model,
-                        )
-                        .map(|p| Box::new(p) as Box<dyn Provider>),
-                    };
-                    match provider {
-                        Ok(p) => {
-                            tracing::info!("Context agent ready ({})", resolved.model);
-                            Some(p)
-                        }
-                        Err(e) => {
-                            tracing::warn!("Context agent init failed: {e}");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Context agent provider resolution failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        if let Some(ref cfg) = context_agent_config {
+            tracing::info!("Context/knowledge agent configured ({})", cfg.model);
+        }
 
         Ok(Self {
             detector: Arc::new(detector),
@@ -154,8 +138,7 @@ impl TranslationRunner {
             inpainter,
             render_executor,
             max_pending_render_jobs,
-            default_project: default_project.map(Arc::new),
-            context_agent,
+            context_agent_config,
         })
     }
 
@@ -169,6 +152,33 @@ impl TranslationRunner {
 
     pub fn max_pending_render_jobs(&self) -> usize {
         self.max_pending_render_jobs
+    }
+
+    /// Build a context/knowledge agent provider instance.
+    /// Each call creates a fresh provider (needed for spawned tasks).
+    pub fn build_context_agent_provider(&self) -> Result<Option<Box<dyn Provider>>> {
+        match &self.context_agent_config {
+            Some(resolved) => build_provider(resolved).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+fn build_provider(resolved: &crate::config::ResolvedProvider) -> Result<Box<dyn Provider>> {
+    let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
+    match resolved.provider_type {
+        ProviderType::Anthropic => crate::llm::anthropic::AnthropicProvider::new(
+            &resolved.endpoint,
+            api_key,
+            &resolved.model,
+        )
+        .map(|p| Box::new(p) as Box<dyn Provider>),
+        ProviderType::OpenAI => crate::llm::openai::OpenAIProvider::new(
+            &resolved.endpoint,
+            Some(api_key),
+            &resolved.model,
+        )
+        .map(|p| Box::new(p) as Box<dyn Provider>),
     }
 }
 

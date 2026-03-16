@@ -1,0 +1,106 @@
+Global:
+  device: gpu
+  epoch_num: 30
+  log_smooth_window: 20
+  print_batch_step: 50
+  output_dir: /workspace/output/svtrv2_ja_ft/
+  save_epoch_step: [20, 5]
+  eval_epoch_step: [0, 1]
+  eval_batch_step: [0, 500]
+  cal_metric_during_train: true
+  pretrained_model: /workspace/openocr_repsvtr_ch.pth
+  checkpoints:
+  use_tensorboard: false
+  infer_img:
+  character_dict_path: &character_dict_path /workspace/data/ja_dict.txt
+  max_text_length: &max_text_length 80
+  use_space_char: &use_space_char true
+  save_res_path: /workspace/output/svtrv2_ja_ft/predicts.txt
+  use_amp: false
+
+Optimizer:
+  name: Adam
+  lr: 0.0002
+  weight_decay: 0.00003
+  filter_bias_and_bn: false
+
+LRScheduler:
+  name: CosineAnnealingLR
+  warmup_epoch: 2
+
+Architecture:
+  model_type: rec
+  algorithm: SVTRv2_mobile
+  Transform:
+  Encoder:
+    name: RepSVTREncoder
+  Decoder:
+    name: CTCDecoder
+    svtr_encoder:
+      dims: 256
+      depth: 2
+      hidden_dims: 256
+      kernel_size: [1, 3]
+      use_guide: true
+
+Loss:
+  name: CTCLoss
+  zero_infinity: true
+
+PostProcess:
+  name: CTCLabelDecode
+  character_dict_path: *character_dict_path
+
+Metric:
+  name: RecMetric
+  main_indicator: acc
+  ignore_space: false
+
+Train:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /workspace/data/
+    label_file_list:
+      - /workspace/data/train.txt
+    transforms:
+      - DecodeImagePIL:
+          img_mode: RGB
+      - PARSeqAugPIL:
+      - CTCLabelEncode:
+          character_dict_path: *character_dict_path
+          use_space_char: *use_space_char
+          max_text_length: *max_text_length
+      - RecTVResize:
+          image_shape: [48, 320]
+          padding: true
+      - KeepKeys:
+          keep_keys: [image, label, length]
+  loader:
+    shuffle: true
+    batch_size_per_card: 128
+    drop_last: true
+    num_workers: 4
+
+Eval:
+  dataset:
+    name: SimpleDataSet
+    data_dir: /workspace/data/
+    label_file_list:
+      - /workspace/data/val.txt
+    transforms:
+      - DecodeImage:
+          img_mode: BGR
+      - CTCLabelEncode:
+          character_dict_path: *character_dict_path
+          use_space_char: *use_space_char
+          max_text_length: *max_text_length
+      - RecDynamicResize:
+          image_shape: [48, 320]
+          padding: false
+      - KeepKeys:
+          keep_keys: [image, label, length]
+  loader:
+    shuffle: false
+    drop_last: false
+    batch_size_per_card: 1
+    num_workers: 4

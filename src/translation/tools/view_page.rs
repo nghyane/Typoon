@@ -1,5 +1,4 @@
-use crate::llm::{ToolDef, ToolResponse};
-use crate::translation::TranslateContext;
+use crate::llm::ToolDef;
 
 #[derive(serde::Deserialize)]
 pub struct Args {
@@ -30,23 +29,6 @@ pub fn def() -> ToolDef {
         }),
     )
     .strict()
-}
-
-pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
-    if args.page_index < ctx.page_images.len() {
-        tracing::info!("Agent viewing page {}", args.page_index);
-        let data_uri = encode_page_jpeg(&ctx.page_images[args.page_index]);
-        ToolResponse::ImageContent {
-            text: format!("Page {} image:", args.page_index),
-            data_uri,
-        }
-    } else {
-        ToolResponse::Text(format!(
-            "Error: page_index {} out of range (0..{})",
-            args.page_index,
-            ctx.page_images.len()
-        ))
-    }
 }
 
 /// Images sent to the LLM use `detail: "low"` (85 tokens flat, 512×512).

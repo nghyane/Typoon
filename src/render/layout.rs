@@ -34,23 +34,61 @@ impl EdgeInsets {
     }
 }
 
-/// Canonical drawable rectangle inside a bubble.
-/// Computed once from polygon bbox + insets, then shared by FitEngine and overlay.
+/// Canonical drawable area inside a bubble, rotation-aware.
+///
+/// Stores the oriented quad (TL, TR, BR, BL) and computes width/height
+/// along the quad's own axes — not the axis-aligned bounding box.
+/// This means a 15° tilted text region gets the correct local dimensions
+/// for text fitting, and the overlay can draw text at the matching angle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawableArea {
-    /// Polygon bounding box [x1, y1, x2, y2]
+    /// Polygon bounding box [x1, y1, x2, y2] (axis-aligned, for fast clipping)
     pub bbox: [f64; 4],
     /// Insets from each bbox edge
     pub insets: EdgeInsets,
+    /// Rotation angle in radians (0 = horizontal text). Derived from the
+    /// polygon's top edge (TL→TR).
+    pub angle_rad: f64,
+    /// Center of the oriented quad in page coordinates.
+    pub center: [f64; 2],
+    /// Full width along the quad's top/bottom edges (before insets).
+    pub oriented_w: f64,
+    /// Full height along the quad's left/right edges (before insets).
+    pub oriented_h: f64,
 }
 
 impl DrawableArea {
-    /// Create from polygon with uniform inset on all sides.
+    /// Create from an ordered polygon [TL, TR, BR, BL] with uniform inset.
+    ///
+    /// If the polygon has exactly 4 points (rotated quad from PP-OCR),
+    /// width and height are measured along the quad's own edges.
+    /// Otherwise falls back to axis-aligned bbox.
     pub fn from_polygon(polygon: &[[f64; 2]], inset: f64) -> Self {
         let (x1, y1, x2, y2) = polygon_bbox(polygon);
+        let cx = polygon.iter().map(|p| p[0]).sum::<f64>() / polygon.len().max(1) as f64;
+        let cy = polygon.iter().map(|p| p[1]).sum::<f64>() / polygon.len().max(1) as f64;
+
+        let (angle_rad, ow, oh) = if polygon.len() == 4 {
+            let [tl, tr, _br, bl] = [polygon[0], polygon[1], polygon[2], polygon[3]];
+            let dx = tr[0] - tl[0];
+            let dy = tr[1] - tl[1];
+            let w = (dx * dx + dy * dy).sqrt();
+            let dx2 = bl[0] - tl[0];
+            let dy2 = bl[1] - tl[1];
+            let h = (dx2 * dx2 + dy2 * dy2).sqrt();
+            let angle = dy.atan2(dx);
+            (angle, w, h)
+        } else {
+            (0.0, x2 - x1, y2 - y1)
+        };
+
         Self {
             bbox: [x1, y1, x2, y2],
             insets: EdgeInsets::uniform(inset),
+            angle_rad,
+            center: [cx, cy],
+            oriented_w: ow,
+            oriented_h: oh,
         }
     }
 
@@ -64,10 +102,15 @@ impl DrawableArea {
                 top: self.insets.top.max(crop[2]),
                 bottom: self.insets.bottom.max(crop[3]),
             },
+            angle_rad: self.angle_rad,
+            center: self.center,
+            oriented_w: self.oriented_w,
+            oriented_h: self.oriented_h,
         }
     }
 
-    /// Inner drawable rectangle: (x, y, width, height).
+    /// Inner drawable rectangle in **page coordinates** (axis-aligned fallback).
+    /// Used for erase region and backward-compatible callers.
     pub fn rect(&self) -> (f64, f64, f64, f64) {
         let [x1, y1, x2, y2] = self.bbox;
         let x = x1 + self.insets.left;
@@ -77,10 +120,17 @@ impl DrawableArea {
         (x, y, w, h)
     }
 
-    /// Inner drawable size: (width, height).
+    /// Inner drawable size along the quad's own axes (rotation-aware).
+    /// This is what FitEngine should use for text wrapping.
     pub fn size(&self) -> (f64, f64) {
-        let (_, _, w, h) = self.rect();
+        let w = (self.oriented_w - self.insets.left - self.insets.right).max(0.0);
+        let h = (self.oriented_h - self.insets.top - self.insets.bottom).max(0.0);
         (w, h)
+    }
+
+    /// True if the text is meaningfully rotated (> ~2°).
+    pub fn is_rotated(&self) -> bool {
+        self.angle_rad.abs() > 0.035 // ~2 degrees
     }
 }
 

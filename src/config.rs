@@ -98,9 +98,6 @@ pub struct RuntimeConfig {
     #[serde(default = "default_render_workers_with_lama")]
     pub render_workers_with_lama: usize,
     /// Maximum number of chapter render jobs buffered in memory.
-    ///
-    /// A small queue lets translation continue while previous chapters are rendering,
-    /// without unbounded memory growth.
     #[serde(default = "default_max_pending_render_jobs")]
     pub max_pending_render_jobs: usize,
 }
@@ -158,7 +155,9 @@ fn default_render_workers() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    cores.clamp(1, 8)
+    // Use half of cores to avoid thermal throttling on laptops.
+    // ONNX inference already occupies cores; rendering shouldn't compete.
+    (cores / 2).clamp(1, 4)
 }
 fn default_render_workers_with_lama() -> usize {
     1
@@ -166,7 +165,6 @@ fn default_render_workers_with_lama() -> usize {
 fn default_max_pending_render_jobs() -> usize {
     2
 }
-
 impl AppConfig {
     pub fn load() -> Result<Self> {
         let config_path = Path::new("config.toml");

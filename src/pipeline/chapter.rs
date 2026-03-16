@@ -1,14 +1,11 @@
 use anyhow::Result;
 use image::DynamicImage;
 
+use crate::runner::Session;
+use crate::translation::{BubbleTranslated, TranslateRequest};
 use crate::vision::border;
 use crate::vision::detection::TextDetector;
 use crate::vision::ocr::OcrEngine;
-use crate::runner::TranslationRunner;
-use crate::translation::{
-    BubbleInput, BubbleTranslated, ContextNote, PageInput, TranslateContext, TranslateRequest,
-    TranslationEngine,
-};
 
 use super::types::*;
 
@@ -16,9 +13,76 @@ use super::types::*;
 // Phase 1: Detect + OCR
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Detect and OCR all pages in a chapter.
-/// Enriches raw detection with border detection + drawable area.
 pub fn detect_chapter(
+    detector: &TextDetector,
+    ocr: &OcrEngine,
+    images: &[DynamicImage],
+    source_lang: &str,
+) -> Result<Vec<PageDetections>> {
+    let use_ppocr = source_lang != "ja" && ocr.can_detect();
+
+    if !use_ppocr {
+        // manga-ocr is autoregressive — can't split det/rec, run sequentially.
+        return detect_chapter_sequential(detector, ocr, images, source_lang);
+    }
+
+    // PP-OCR pipeline: det and rec use separate ONNX sessions.
+    // While rec model processes page N (batch inference),
+    // det model runs on page N+1 — true parallelism, no session contention.
+    let mut pages = Vec::with_capacity(images.len());
+    let mut pending_det: Option<Result<super::PpocrDetected>> = None;
+
+    for page_idx in 0..images.len() {
+        let detected = pending_det.take()
+            .unwrap_or_else(|| super::ppocr_detect(ocr, &images[page_idx]));
+
+        let next_idx = page_idx + 1;
+
+        // Overlap: rec(page N) ‖ det(page N+1)
+        let (raw, next_det) = if next_idx < images.len() {
+            std::thread::scope(|s| {
+                let next_handle = s.spawn(|| super::ppocr_detect(ocr, &images[next_idx]));
+                let raw = detected.and_then(|d| super::ppocr_recognize(ocr, &d, source_lang));
+                let next = next_handle.join().unwrap();
+                (raw, Some(next))
+            })
+        } else {
+            let raw = detected.and_then(|d| super::ppocr_recognize(ocr, &d, source_lang));
+            (raw, None)
+        };
+
+        let img = &images[page_idx];
+        let bubbles: Vec<DetectedBubble> = raw?
+            .into_iter()
+            .enumerate()
+            .map(|(idx, r)| {
+                let inset = border::detect_inset(img, &r.polygon);
+                let area = crate::render::layout::DrawableArea::from_polygon(&r.polygon, inset);
+                DetectedBubble {
+                    idx,
+                    source_text: r.source_text,
+                    polygon: r.polygon,
+                    area,
+                    det_confidence: r.det_confidence,
+                    ocr_confidence: r.ocr_confidence,
+                    mask: r.mask,
+                }
+            })
+            .collect();
+
+        pages.push(PageDetections {
+            page_index: page_idx,
+            bubbles,
+        });
+
+        pending_det = next_det;
+    }
+
+    Ok(pages)
+}
+
+/// Sequential fallback for manga-ocr (autoregressive decoder can't pipeline).
+fn detect_chapter_sequential(
     detector: &TextDetector,
     ocr: &OcrEngine,
     images: &[DynamicImage],
@@ -60,96 +124,16 @@ pub fn detect_chapter(
 // Phase 2: Translate + Fit
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Translate and fit a chapter from detections. No rendering.
+/// Translate a chapter. All per-series resources come from `session`.
 pub async fn translate_chapter(
-    runner: &TranslationRunner,
-    detections: &[PageDetections],
-    images: &[DynamicImage],
-    target_lang: &str,
-    source_lang: &str,
-    chapter_index: Option<usize>,
+    session: &Session,
+    job: &TranslateJob<'_>,
 ) -> Result<Vec<PageTranslations>> {
-    translate_inner(
-        runner,
-        &runner.translation,
-        detections,
-        images,
-        target_lang,
-        source_lang,
-        vec![],
-        chapter_index,
-    )
-    .await
-}
+    let non_empty = job.detections.iter().any(|pd| !pd.bubbles.is_empty());
 
-/// Translate + fit + render (convenience for single chapter / HTTP).
-pub async fn translate_and_render(
-    runner: &TranslationRunner,
-    detections: Vec<PageDetections>,
-    images: &[DynamicImage],
-    target_lang: &str,
-    source_lang: &str,
-    chapter_index: Option<usize>,
-) -> Result<ChapterOutput> {
-    let pages = translate_chapter(
-        runner, &detections, images, target_lang, source_lang, chapter_index,
-    )
-    .await?;
-
-    let rendered = render_pages(pages, images, runner);
-    Ok(ChapterOutput { pages: rendered })
-}
-
-/// Translate + fit + render with custom engine and context (HTTP API).
-pub async fn translate_and_render_with_engine(
-    runner: &TranslationRunner,
-    engine: &TranslationEngine,
-    detections: Vec<PageDetections>,
-    images: &[DynamicImage],
-    target_lang: &str,
-    source_lang: &str,
-    context: Vec<BubbleTranslated>,
-) -> Result<ChapterOutput> {
-    let pages = translate_inner(
-        runner, engine, &detections, images, target_lang, source_lang, context, None,
-    )
-    .await?;
-
-    let rendered = render_pages(pages, images, runner);
-    Ok(ChapterOutput { pages: rendered })
-}
-
-async fn translate_inner(
-    runner: &TranslationRunner,
-    engine: &TranslationEngine,
-    detections: &[PageDetections],
-    images: &[DynamicImage],
-    target_lang: &str,
-    source_lang: &str,
-    context: Vec<BubbleTranslated>,
-    chapter_index: Option<usize>,
-) -> Result<Vec<PageTranslations>> {
-    let pages: Vec<PageInput> = detections
-        .iter()
-        .filter(|pd| !pd.bubbles.is_empty())
-        .map(|pd| PageInput {
-            page_index: pd.page_index,
-            bubbles: pd
-                .bubbles
-                .iter()
-                .map(|b| BubbleInput {
-                    id: format!("p{}_b{}", pd.page_index, b.idx),
-                    source_text: b.source_text.clone(),
-                    position: b.polygon.first().map(|p| (p[0] as i32, p[1] as i32)),
-                    det_confidence: b.det_confidence,
-                    ocr_confidence: b.ocr_confidence,
-                })
-                .collect(),
-        })
-        .collect();
-
-    if pages.iter().all(|p| p.bubbles.is_empty()) {
-        return Ok(detections
+    if !non_empty {
+        return Ok(job
+            .detections
             .iter()
             .map(|pd| PageTranslations {
                 page_index: pd.page_index,
@@ -158,48 +142,53 @@ async fn translate_inner(
             .collect());
     }
 
-    let glossary_entries = if let Some(project) = &runner.default_project {
-        let all_texts: Vec<&str> = pages
-            .iter()
-            .flat_map(|p| p.bubbles.iter().map(|b| b.source_text.as_str()))
-            .collect();
-        project.glossary_search_batch(&all_texts).unwrap_or_default()
-    } else {
-        vec![]
-    };
+    let knowledge_snapshot = session.project.as_ref().and_then(|store| {
+        job.chapter_index
+            .and_then(|ch| store.get_latest_snapshot(ch).ok().flatten())
+    });
 
-    let notes = fetch_previous_notes(runner, chapter_index);
+    let glossary_entries = match &session.project {
+        Some(store) => {
+            let all_texts: Vec<&str> = job
+                .detections
+                .iter()
+                .flat_map(|pd| pd.bubbles.iter().map(|b| b.source_text.as_str()))
+                .collect();
+            store.glossary_search_batch(&all_texts).unwrap_or_default()
+        }
+        None => vec![],
+    };
 
     let translate_req = TranslateRequest {
-        pages,
-        source_lang: source_lang.to_string(),
-        target_lang: target_lang.to_string(),
-        context,
+        detections: job.detections,
+        source_lang: job.source_lang,
+        target_lang: job.target_lang,
         glossary: glossary_entries,
-        notes,
+        knowledge_snapshot,
     };
 
-    let total_bubbles: usize = translate_req.pages.iter().map(|p| p.bubbles.len()).sum();
-    tracing::info!("Chapter translation: {} pages, {total_bubbles} bubbles", images.len());
-
-    let page_widths: Vec<u32> = images.iter().map(|img| img.width()).collect();
-
-    let ctx = TranslateContext {
-        page_images: images,
-        project: runner.default_project.as_deref(),
-        context_agent: runner
-            .context_agent
-            .as_ref()
-            .map(|a| &**a as &dyn crate::llm::Provider),
-        chapter_index,
-    };
+    let total_bubbles: usize = job.detections.iter().map(|pd| pd.bubbles.len()).sum();
+    tracing::info!(
+        "Chapter translation: {} pages, {total_bubbles} bubbles",
+        job.images.len()
+    );
 
     let t_phase = std::time::Instant::now();
-    let translated = engine.translate(&translate_req, &ctx).await?;
+    let translated = session
+        .engine()
+        .translate(
+            &translate_req,
+            job.images,
+            session.project.as_deref(),
+            session.context_provider(),
+        )
+        .await?;
     tracing::info!("Phase translate: {:.1}s", t_phase.elapsed().as_secs_f64());
 
+    let page_widths: Vec<u32> = job.images.iter().map(|img| img.width()).collect();
+
     let t_phase = std::time::Instant::now();
-    let result = fit_results(detections, &page_widths, &translated)?;
+    let result = fit_results(job.detections, &page_widths, &translated)?;
     tracing::info!("Phase fit: {:.1}s", t_phase.elapsed().as_secs_f64());
 
     Ok(result)
@@ -209,11 +198,10 @@ async fn translate_inner(
 // Phase 3: Render
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Render translated pages onto source images.
 pub fn render_pages(
     pages: Vec<PageTranslations>,
     images: &[DynamicImage],
-    runner: &TranslationRunner,
+    runner: &crate::runner::TranslationRunner,
 ) -> Vec<RenderedPage> {
     let inpainter = runner.inpainter.as_ref();
     tracing::debug!("Render phase using {} worker(s)", runner.render_workers());
@@ -249,131 +237,61 @@ fn fit_results(
     page_widths: &[u32],
     translated: &[BubbleTranslated],
 ) -> Result<Vec<PageTranslations>> {
-    let translated_map: std::collections::HashMap<&str, &BubbleTranslated> =
-        translated.iter().map(|t| (t.id.as_str(), t)).collect();
+    use rayon::prelude::*;
 
-    let mut result = Vec::new();
+    let translated_map: std::collections::HashMap<String, &BubbleTranslated> = translated
+        .iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
 
-    for pd in detections {
-        let page_w = page_widths[pd.page_index];
+    detections
+        .par_iter()
+        .map(|pd| {
+            let page_w = page_widths[pd.page_index];
 
-        let matched: Vec<(&DetectedBubble, &BubbleTranslated)> = pd
-            .bubbles
-            .iter()
-            .filter_map(|b| {
-                let id = format!("p{}_b{}", pd.page_index, b.idx);
-                translated_map.get(id.as_str()).map(|t| (b, *t))
-            })
-            .collect();
+            let matched: Vec<(&DetectedBubble, &BubbleTranslated)> = pd
+                .bubbles
+                .iter()
+                .filter_map(|b| {
+                    let id = TranslateRequest::bubble_id(pd.page_index, b.idx);
+                    translated_map.get(&id).map(|t| (b, *t))
+                })
+                .collect();
 
-        if matched.is_empty() {
-            result.push(PageTranslations {
+            if matched.is_empty() {
+                return Ok(PageTranslations {
+                    page_index: pd.page_index,
+                    bubbles: vec![],
+                });
+            }
+
+            let page_items: Vec<(&str, &crate::render::layout::DrawableArea)> = matched
+                .iter()
+                .map(|(b, t)| (t.translated_text.as_str(), &b.area))
+                .collect();
+
+            let fits = crate::render::fit::FitEngine::fit_page_areas(&page_items, page_w)?;
+
+            let bubbles: Vec<TranslatedBubble> = matched
+                .iter()
+                .zip(fits)
+                .map(|((det, trans), fit)| TranslatedBubble {
+                    idx: det.idx,
+                    source_text: trans.source_text.clone(),
+                    translated_text: fit.text,
+                    polygon: det.polygon.clone(),
+                    area: det.area.clone(),
+                    mask: det.mask.clone(),
+                    font_size_px: fit.font_size_px,
+                    line_height: fit.line_height,
+                    overflow: fit.overflow,
+                })
+                .collect();
+
+            Ok(PageTranslations {
                 page_index: pd.page_index,
-                bubbles: vec![],
-            });
-            continue;
-        }
-
-        let page_items: Vec<(&str, &crate::render::layout::DrawableArea)> = matched
-            .iter()
-            .map(|(b, t)| (t.translated_text.as_str(), &b.area))
-            .collect();
-
-        let fits = crate::render::fit::FitEngine::fit_page_areas(&page_items, page_w)?;
-
-        let bubbles: Vec<TranslatedBubble> = matched
-            .iter()
-            .zip(fits)
-            .map(|((det, trans), fit)| TranslatedBubble {
-                idx: det.idx,
-                source_text: trans.source_text.clone(),
-                translated_text: fit.text,
-                polygon: det.polygon.clone(),
-                area: det.area.clone(),
-                mask: det.mask.clone(),
-                font_size_px: fit.font_size_px,
-                line_height: fit.line_height,
-                overflow: fit.overflow,
+                bubbles,
             })
-            .collect();
-
-        result.push(PageTranslations {
-            page_index: pd.page_index,
-            bubbles,
-        });
-    }
-
-    Ok(result)
-}
-
-// ── Notes injection ──
-
-const NOTES_BUDGET_CHARS: usize = 2000;
-
-fn note_priority(note_type: &str) -> u8 {
-    match note_type {
-        "relationship" => 0,
-        "character" => 1,
-        _ => 2,
-    }
-}
-
-fn fetch_previous_notes(
-    runner: &TranslationRunner,
-    chapter_index: Option<usize>,
-) -> Vec<ContextNote> {
-    let (Some(store), Some(ch_idx)) = (&runner.default_project, chapter_index) else {
-        return vec![];
-    };
-    if ch_idx == 0 {
-        return vec![];
-    }
-
-    let raw = match store.get_notes_before(ch_idx) {
-        Ok(notes) => notes,
-        Err(e) => {
-            tracing::warn!("Failed to fetch previous notes: {e}");
-            return vec![];
-        }
-    };
-    if raw.is_empty() {
-        return vec![];
-    }
-
-    let stable: Vec<_> = raw
-        .into_iter()
-        .filter(|n| matches!(n.note_type.as_str(), "relationship" | "character"))
-        .collect();
-
-    let mut seen = std::collections::HashSet::new();
-    let mut notes: Vec<_> = stable
-        .into_iter()
-        .rev()
-        .filter(|n| seen.insert(n.content.clone()))
-        .collect();
-
-    notes.sort_by(|a, b| note_priority(&a.note_type).cmp(&note_priority(&b.note_type)));
-
-    let mut total = 0;
-    let result: Vec<ContextNote> = notes
-        .into_iter()
-        .take_while(|n| {
-            total += n.content.len();
-            total <= NOTES_BUDGET_CHARS
         })
-        .map(|n| ContextNote {
-            note_type: n.note_type,
-            content: n.content,
-        })
-        .collect();
-
-    if !result.is_empty() {
-        tracing::info!(
-            "Injecting {} continuity notes ({} chars)",
-            result.len(),
-            total
-        );
-    }
-
-    result
+        .collect()
 }

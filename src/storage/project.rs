@@ -141,6 +141,13 @@ const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS idx_notes_chapter ON notes(chapter);
 
+    -- Knowledge snapshots (one per chapter, written by consolidation agent)
+    CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+        chapter     INTEGER PRIMARY KEY,
+        snapshot    TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- FTS indexes
     CREATE VIRTUAL TABLE IF NOT EXISTS bubbles_fts USING fts5(
         source_text, content='bubbles', content_rowid=rowid,
@@ -615,6 +622,33 @@ impl ProjectStore {
         Ok(rows)
     }
 
+    // ── Knowledge snapshots ──
+
+    /// Save or replace the knowledge snapshot for a chapter.
+    pub fn save_snapshot(&self, chapter: usize, snapshot: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO knowledge_snapshots (chapter, snapshot) VALUES (?1, ?2)",
+            params![chapter as i64, snapshot],
+        )?;
+        Ok(())
+    }
+
+    /// Get the latest knowledge snapshot before the given chapter.
+    pub fn get_latest_snapshot(&self, before_chapter: usize) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT snapshot FROM knowledge_snapshots
+                 WHERE chapter < ?1
+                 ORDER BY chapter DESC LIMIT 1",
+                params![before_chapter as i64],
+                |row| row.get(0),
+            )
+            .ok();
+        Ok(result)
+    }
+
     /// FTS search across translations and notes.
     pub fn search_context(&self, query: &str, chapter: usize) -> Result<Vec<String>> {
         let query = query.replace('"', "");
@@ -896,6 +930,42 @@ mod tests {
 
         let notes = store.get_notes_before(2)?;
         assert_eq!(notes.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_knowledge_snapshots() -> Result<()> {
+        let store = ProjectStore::open_in_memory()?;
+
+        // No snapshot initially
+        assert!(store.get_latest_snapshot(1)?.is_none());
+
+        // Save snapshot for chapter 1
+        store.save_snapshot(1, "Characters:\n- Min-jun: protagonist")?;
+        assert!(store.get_latest_snapshot(1)?.is_none()); // before ch1 = nothing
+        assert_eq!(
+            store.get_latest_snapshot(2)?.as_deref(),
+            Some("Characters:\n- Min-jun: protagonist"),
+        );
+
+        // Save snapshot for chapter 3 — ch2 still reads ch1's
+        store.save_snapshot(3, "Characters:\n- Min-jun: team lead\n- Seo-yeon: sister")?;
+        assert_eq!(
+            store.get_latest_snapshot(2)?.as_deref(),
+            Some("Characters:\n- Min-jun: protagonist"),
+        );
+        assert_eq!(
+            store.get_latest_snapshot(4)?.as_deref(),
+            Some("Characters:\n- Min-jun: team lead\n- Seo-yeon: sister"),
+        );
+
+        // Upsert overwrites existing snapshot
+        store.save_snapshot(1, "Characters:\n- Min-jun: updated")?;
+        assert_eq!(
+            store.get_latest_snapshot(2)?.as_deref(),
+            Some("Characters:\n- Min-jun: updated"),
+        );
 
         Ok(())
     }

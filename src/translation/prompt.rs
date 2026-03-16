@@ -1,20 +1,30 @@
-use super::{TranslateContext, TranslateRequest};
+use super::TranslateRequest;
 
 /// Composable prompt builder for translation agent system/user prompts.
-///
-/// Each section is a separate method for testability and future provider override.
-pub struct PromptBuilder<'a> {
-    req: &'a TranslateRequest,
-    ctx: &'a TranslateContext<'a>,
+pub struct PromptBuilder<'a, 'r> {
+    req: &'a TranslateRequest<'r>,
+    num_images: usize,
+    has_glossary: bool,
+    has_context: bool,
 }
 
-impl<'a> PromptBuilder<'a> {
-    pub fn new(req: &'a TranslateRequest, ctx: &'a TranslateContext<'a>) -> Self {
-        Self { req, ctx }
+impl<'a, 'r> PromptBuilder<'a, 'r> {
+    pub fn new(
+        req: &'a TranslateRequest<'r>,
+        num_images: usize,
+        has_glossary: bool,
+        has_context: bool,
+    ) -> Self {
+        Self {
+            req,
+            num_images,
+            has_glossary,
+            has_context,
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // System prompt sections
+    // System prompt
     // ═══════════════════════════════════════════════════════════════════
 
     pub fn system_prompt(&self) -> String {
@@ -27,8 +37,8 @@ impl<'a> PromptBuilder<'a> {
         sys
     }
 
-    pub fn role_header(&self) -> String {
-        let comic_type = match self.req.source_lang.as_str() {
+    fn role_header(&self) -> String {
+        let comic_type = match self.req.source_lang {
             "ja" => "manga",
             "ko" => "manhwa",
             "zh" => "manhua",
@@ -41,7 +51,7 @@ impl<'a> PromptBuilder<'a> {
         )
     }
 
-    pub fn output_contract(&self) -> String {
+    fn output_contract(&self) -> String {
         "\
 ## Output contract
 - Your ONLY valid outputs are function/tool calls. No prose, no markdown, no explanations.
@@ -51,7 +61,7 @@ impl<'a> PromptBuilder<'a> {
             .to_string()
     }
 
-    pub fn workflow(&self) -> String {
+    fn workflow(&self) -> String {
         let research_policy = if self.req.target_lang == "vi" {
             "\
 2. Research (REQUIRED for Vietnamese — 1 message):
@@ -84,23 +94,16 @@ impl<'a> PromptBuilder<'a> {
    - Include EVERY required ID — never skip, even for short text or SFX.
    - translated_text = final localized text only, no notes or explanations.
    - To revise: call translate() again for the same ID (latest wins).
-4. Finish: in the same message as your final translate() calls, call add_note() to record
-   observations for future chapters. Save each distinct observation as a separate note:
-   - character: new character introductions or descriptions
-   - relationship: who knows whom, power dynamics, xưng hô pairs
-   - event: significant plot points
-   - setting: locations, workplace, school, etc.
 
 IMPORTANT — efficiency:
-- Target: 2-4 total messages. Batch aggressively.
+- Target: 2-3 total messages. Batch aggressively.
 - Do NOT trickle translations across many turns.
 - Combine tool calls in a single message when possible.\n\n"
         )
     }
 
-    /// Source-language notes for the system prompt.
-    pub fn source_policy(&self) -> &'static str {
-        match self.req.source_lang.as_str() {
+    fn source_policy(&self) -> &'static str {
+        match self.req.source_lang {
             "ja" => {
                 "\
 ## Source: Japanese manga
@@ -133,9 +136,8 @@ IMPORTANT — efficiency:
         }
     }
 
-    /// Target-language notes for the system prompt.
-    pub fn target_policy(&self) -> &'static str {
-        match self.req.target_lang.as_str() {
+    fn target_policy(&self) -> &'static str {
+        match self.req.target_lang {
             "vi" => {
                 "\
 ## Target: Vietnamese
@@ -168,23 +170,25 @@ default to tôi/anh/chị/em/ông/bà as appropriate. NEVER cậu/tớ for adult
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // User prompt sections
+    // User prompt
     // ═══════════════════════════════════════════════════════════════════
 
     pub fn user_prompt(&self) -> String {
         let mut prompt = String::new();
         prompt.push_str(&self.task_header());
         prompt.push_str(&self.context_summary());
+        prompt.push_str(&self.knowledge_section());
         prompt.push_str(&self.glossary_section());
-        prompt.push_str(&self.notes_section());
-        prompt.push_str(&self.previous_translations());
-        prompt.push_str(&self.workflow_hint());
         prompt.push_str(&self.bubble_list());
         prompt
     }
 
-    pub fn task_header(&self) -> String {
-        let all_ids: Vec<&str> = self.req.all_bubbles().map(|b| b.id.as_str()).collect();
+    fn task_header(&self) -> String {
+        let all_ids: Vec<String> = self
+            .req
+            .all_bubbles()
+            .map(|(page_idx, b)| TranslateRequest::bubble_id(page_idx, b.idx))
+            .collect();
         let mut s = format!(
             "Task: Translate every listed bubble from {} to {} using tool calls only.\n\n",
             self.req.source_lang, self.req.target_lang
@@ -197,28 +201,37 @@ default to tôi/anh/chị/em/ông/bà as appropriate. NEVER cậu/tớ for adult
         s
     }
 
-    pub fn context_summary(&self) -> String {
+    fn context_summary(&self) -> String {
         let mut s = String::from("Available context:\n");
-        let is_single_page = self.req.pages.len() == 1;
-        if is_single_page && !self.ctx.page_images.is_empty() {
+        let is_single_page = self.req.detections.len() == 1;
+        if is_single_page && self.num_images > 0 {
             s.push_str("- Page image: attached below (inspect directly)\n");
-        } else if !self.ctx.page_images.is_empty() {
+        } else if self.num_images > 0 {
             s.push_str(&format!(
                 "- Page images: {} pages available via view_page(index)\n",
-                self.ctx.page_images.len()
+                self.num_images,
             ));
         }
-        if self.ctx.project.is_some() {
+        if self.has_glossary {
             s.push_str("- Glossary search: available via search_glossary()\n");
         }
-        if self.ctx.project.is_some() && self.ctx.context_agent.is_some() {
+        if self.has_context {
             s.push_str("- Prior chapter context: available via get_context(question)\n");
         }
         s.push('\n');
         s
     }
 
-    pub fn glossary_section(&self) -> String {
+    fn knowledge_section(&self) -> String {
+        match &self.req.knowledge_snapshot {
+            Some(snapshot) if !snapshot.is_empty() => {
+                format!("Series knowledge (from previous chapters):\n{snapshot}\n\n")
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn glossary_section(&self) -> String {
         if self.req.glossary.is_empty() {
             return String::new();
         }
@@ -234,47 +247,20 @@ default to tôi/anh/chị/em/ông/bà as appropriate. NEVER cậu/tớ for adult
         s
     }
 
-    pub fn notes_section(&self) -> String {
-        if self.req.notes.is_empty() {
-            return String::new();
-        }
-        let mut s = String::from("Known characters and relationships from previous chapters:\n");
-        for n in &self.req.notes {
-            s.push_str(&format!("  [{}] {}\n", n.note_type, n.content));
-        }
-        s.push('\n');
-        s
-    }
-
-    pub fn previous_translations(&self) -> String {
-        if self.req.context.is_empty() {
-            return String::new();
-        }
-        let mut s = String::from("Previous translations for context:\n");
-        for c in &self.req.context {
-            s.push_str(&format!("  {} → {}\n", c.source_text, c.translated_text));
-        }
-        s.push('\n');
-        s
-    }
-
-    pub fn workflow_hint(&self) -> String {
-        String::new()
-    }
-
-    pub fn bubble_list(&self) -> String {
+    fn bubble_list(&self) -> String {
         let mut s = String::new();
-        for page in &self.req.pages {
-            if self.req.pages.len() > 1 {
-                let img_note = if page.page_index < self.ctx.page_images.len() {
+        for pd in self.req.detections {
+            if self.req.detections.len() > 1 {
+                let img_note = if pd.page_index < self.num_images {
                     "available via view_page"
                 } else {
                     "no image"
                 };
-                s.push_str(&format!("── Page {} ({}) ──\n", page.page_index, img_note));
+                s.push_str(&format!("── Page {} ({}) ──\n", pd.page_index, img_note));
             }
-            for bubble in &page.bubbles {
-                s.push_str(&format!("[{}] \"{}\"\n", bubble.id, bubble.source_text));
+            for bubble in &pd.bubbles {
+                let id = TranslateRequest::bubble_id(pd.page_index, bubble.idx);
+                s.push_str(&format!("[{}] \"{}\"\n", id, bubble.source_text));
             }
             s.push('\n');
         }

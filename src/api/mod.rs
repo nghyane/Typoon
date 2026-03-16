@@ -14,65 +14,70 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::AppConfig;
 use crate::runner::TranslationRunner;
+use crate::storage::project::ProjectStore;
 use crate::translation::TranslationEngine;
 
 pub struct AppState {
-    pub runner: TranslationRunner,
+    pub runner: Arc<TranslationRunner>,
+    pub project: Option<Arc<ProjectStore>>,
     pub config: AppConfig,
 }
 
 impl AppState {
     pub async fn new(config: &AppConfig) -> Result<Arc<Self>> {
-        let runner = TranslationRunner::new(config).await?;
+        let runner = Arc::new(TranslationRunner::new(config).await?);
+
+        let project = config
+            .context
+            .project_dir
+            .as_ref()
+            .and_then(|dir| {
+                ProjectStore::open(std::path::Path::new(dir))
+                    .map(|store| {
+                        if let Some(toml_path) = &config.glossary.import_toml {
+                            if let Err(e) =
+                                store.glossary_import_toml(std::path::Path::new(toml_path))
+                            {
+                                tracing::warn!("Glossary TOML import failed: {e}");
+                            }
+                        }
+                        tracing::info!("HTTP project store opened: {dir}");
+                        Arc::new(store)
+                    })
+                    .ok()
+            });
+
         Ok(Arc::new(Self {
             runner,
+            project,
             config: config.clone(),
         }))
     }
 }
 
-/// Resolve the translation engine: use provider_config override if present, else default.
-pub fn resolve_engine<'a>(
-    state: &'a AppState,
+/// Build an overridden translation engine if `provider_config` is present.
+/// Returns `Err` if no override is needed (caller uses default).
+pub fn resolve_engine_override(
+    state: &AppState,
     req: &TranslateImageRequest,
-) -> Result<ResolvedEngine<'a>> {
-    let has_override = req
+) -> Result<TranslationEngine> {
+    let pc = req
         .provider_config
         .as_ref()
-        .is_some_and(|c| c.endpoint.is_some() || c.api_key.is_some() || c.model.is_some());
+        .filter(|c| c.endpoint.is_some() || c.api_key.is_some() || c.model.is_some())
+        .ok_or_else(|| anyhow::anyhow!("no override"))?;
 
-    if has_override {
-        let pc = req.provider_config.as_ref().unwrap();
-        let mut base = state.config.resolve_provider(&state.config.translation)?;
-        if let Some(endpoint) = &pc.endpoint {
-            base.endpoint = endpoint.clone();
-        }
-        if let Some(api_key) = &pc.api_key {
-            base.api_key = Some(api_key.clone());
-        }
-        if let Some(model) = &pc.model {
-            base.model = model.clone();
-        }
-        Ok(ResolvedEngine::Owned(
-            crate::runner::build_translation_engine(&base)?,
-        ))
-    } else {
-        Ok(ResolvedEngine::Borrowed(&state.runner.translation))
+    let mut base = state.config.resolve_provider(&state.config.translation)?;
+    if let Some(endpoint) = &pc.endpoint {
+        base.endpoint = endpoint.clone();
     }
-}
-
-pub enum ResolvedEngine<'a> {
-    Borrowed(&'a TranslationEngine),
-    Owned(TranslationEngine),
-}
-
-impl ResolvedEngine<'_> {
-    pub fn as_ref(&self) -> &TranslationEngine {
-        match self {
-            ResolvedEngine::Borrowed(e) => e,
-            ResolvedEngine::Owned(e) => e,
-        }
+    if let Some(api_key) = &pc.api_key {
+        base.api_key = Some(api_key.clone());
     }
+    if let Some(model) = &pc.model {
+        base.model = model.clone();
+    }
+    crate::runner::build_translation_engine(&base)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

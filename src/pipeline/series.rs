@@ -6,24 +6,22 @@ use std::time::Instant;
 use anyhow::Result;
 use image::DynamicImage;
 
-use crate::vision::detection::TextDetector;
 use crate::image_io;
+use crate::runner::Session;
+use crate::vision::detection::TextDetector;
 use crate::vision::ocr::OcrEngine;
-use crate::runner::TranslationRunner;
 
 use super::chapter;
 use super::types::*;
 
 // ── Public types ──
 
-/// Minimal input for translating one chapter.
 pub struct ChapterJob {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub chapter_num: usize,
 }
 
-/// Per-chapter translation result.
 pub struct ChapterResult {
     pub pages: Vec<RenderedPage>,
     pub num_pages: usize,
@@ -31,7 +29,6 @@ pub struct ChapterResult {
     pub elapsed_s: f64,
 }
 
-/// Accumulated totals across a batch.
 #[derive(Default)]
 pub struct BatchTotals {
     pub bubbles: usize,
@@ -40,9 +37,9 @@ pub struct BatchTotals {
 
 // ── Public entry points ──
 
-/// Translate a single chapter (detect → translate → render).
+/// Translate a single chapter (detect → translate → render + consolidate).
 pub async fn translate_single(
-    runner: &Arc<TranslationRunner>,
+    session: &Session,
     input: &Path,
     target_lang: &str,
     source_lang: &str,
@@ -52,27 +49,38 @@ pub async fn translate_single(
     let images = image_io::load_images(&image_paths)?;
 
     let t = Instant::now();
-    let det = runner.detector.clone();
-    let ocr = runner.ocr.clone();
+    let det = session.runner.detector.clone();
+    let ocr = session.runner.ocr.clone();
     let lang = source_lang.to_string();
     let detections =
         tokio::task::block_in_place(|| chapter::detect_chapter(&det, &ocr, &images, &lang))?;
 
-    let result = chapter::translate_and_render(
-        runner,
-        detections,
-        &images,
+    let job = TranslateJob {
+        detections: &detections,
+        images: &images,
         target_lang,
         source_lang,
-        Some(chapter_num),
-    )
-    .await?;
+        chapter_index: Some(chapter_num),
+    };
 
-    let num_bubbles = result.pages.iter().map(|p| p.bubbles.len()).sum();
+    let pages = chapter::translate_chapter(session, &job).await?;
+
+    let consolidate_handle =
+        spawn_consolidate(session, &pages, source_lang, target_lang, chapter_num);
+
+    let rendered = chapter::render_pages(pages, &images, &session.runner);
+
+    if let Some(handle) = consolidate_handle {
+        if let Err(e) = handle.await {
+            tracing::warn!("Knowledge consolidation failed: {e}");
+        }
+    }
+
+    let num_bubbles = rendered.iter().map(|p| p.bubbles.len()).sum();
     let num_pages = images.len();
 
     Ok(ChapterResult {
-        pages: result.pages,
+        pages: rendered,
         num_pages,
         num_bubbles,
         elapsed_s: t.elapsed().as_secs_f64(),
@@ -81,7 +89,7 @@ pub async fn translate_single(
 
 /// Translate a batch of chapters with pipeline parallelism.
 pub async fn translate_batch(
-    runner: &Arc<TranslationRunner>,
+    session: &Session,
     jobs: &[ChapterJob],
     source_lang: &str,
     target_lang: &str,
@@ -92,40 +100,51 @@ pub async fn translate_batch(
     }
 
     let mut totals = BatchTotals::default();
-    let mut render_backlog = RenderBacklog::new(runner.max_pending_render_jobs(), &on_done);
+    let mut render_backlog = RenderBacklog::new(session.runner.max_pending_render_jobs(), &on_done);
 
     let mut pending_detect =
-        start_detection(&jobs[0].input_dir, &runner.detector, &runner.ocr, source_lang);
+        start_detection(&jobs[0].input_dir, &session.runner.detector, &session.runner.ocr, source_lang);
 
     for (i, job) in jobs.iter().enumerate() {
         let chapter_start = Instant::now();
 
         let (images, detections) = match pending_detect.take() {
             Some(pd) => pd.handle.await??,
-            None => detect_inline(&job.input_dir, &runner.detector, &runner.ocr, source_lang)?,
+            None => detect_inline(&job.input_dir, &session.runner.detector, &session.runner.ocr, source_lang)?,
         };
 
         if let Some(next) = jobs.get(i + 1) {
             pending_detect =
-                start_detection(&next.input_dir, &runner.detector, &runner.ocr, source_lang);
+                start_detection(&next.input_dir, &session.runner.detector, &session.runner.ocr, source_lang);
         }
 
-        let translated_pages = chapter::translate_chapter(
-            runner,
-            &detections,
-            &images,
+        let translate_job = TranslateJob {
+            detections: &detections,
+            images: &images,
             target_lang,
             source_lang,
-            Some(job.chapter_num),
-        )
-        .await?;
+            chapter_index: Some(job.chapter_num),
+        };
+
+        let translated_pages = chapter::translate_chapter(session, &translate_job).await?;
+
+        let consolidate_handle =
+            spawn_consolidate(session, &translated_pages, source_lang, target_lang, job.chapter_num);
 
         let render_handle = spawn_render_save(
-            Arc::clone(runner),
+            session.runner.clone(),
             images,
             translated_pages,
             job.output_dir.clone(),
         );
+
+        if let Some(handle) = consolidate_handle {
+            tokio::spawn(async move {
+                if let Err(e) = handle.await {
+                    tracing::warn!("Knowledge consolidation failed: {e}");
+                }
+            });
+        }
 
         render_backlog
             .enqueue(i, render_handle, chapter_start, &mut totals)
@@ -134,6 +153,49 @@ pub async fn translate_batch(
 
     render_backlog.finish_all(&mut totals).await?;
     Ok(totals)
+}
+
+// ── Knowledge consolidation ──
+
+fn spawn_consolidate(
+    session: &Session,
+    pages: &[PageTranslations],
+    source_lang: &str,
+    target_lang: &str,
+    chapter_num: usize,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let store = session.project.clone()?;
+    let provider = session.runner.build_context_agent_provider().ok()??;
+
+    let pairs: Vec<(String, String)> = pages
+        .iter()
+        .flat_map(|p| p.bubbles.iter())
+        .map(|b| (b.source_text.clone(), b.translated_text.clone()))
+        .collect();
+
+    if pairs.is_empty() {
+        return None;
+    }
+
+    let previous_snapshot = store.get_latest_snapshot(chapter_num).ok().flatten();
+
+    let source = source_lang.to_string();
+    let target = target_lang.to_string();
+
+    Some(tokio::spawn(async move {
+        let agent = crate::agent::knowledge::KnowledgeAgent::new(
+            store,
+            chapter_num,
+            &source,
+            &target,
+            previous_snapshot,
+            pairs,
+        );
+        match crate::agent::run(&*provider, agent).await {
+            Ok(()) => tracing::info!("Knowledge consolidation done for chapter {chapter_num}"),
+            Err(e) => tracing::warn!("Knowledge consolidation error: {e}"),
+        }
+    }))
 }
 
 // ── Internals ──
@@ -255,13 +317,13 @@ fn detect_inline(
 }
 
 fn spawn_render_save(
-    runner: Arc<TranslationRunner>,
+    runner: Arc<crate::runner::TranslationRunner>,
     images: Vec<DynamicImage>,
     translated_pages: Vec<PageTranslations>,
     output: PathBuf,
 ) -> tokio::task::JoinHandle<Result<Vec<RenderedPage>>> {
     tokio::task::spawn_blocking(move || {
-        let rendered_pages = chapter::render_pages(translated_pages, &images, &runner);
+        let rendered_pages = chapter::render_pages(translated_pages, &images, &*runner);
         drop(images);
 
         std::fs::create_dir_all(&output)?;

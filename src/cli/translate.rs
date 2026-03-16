@@ -9,7 +9,8 @@ use crate::config;
 use crate::image_io;
 use crate::pipeline;
 use crate::pipeline::series::ChapterJob;
-use crate::runner::TranslationRunner;
+use crate::runner::{Session, TranslationRunner};
+use crate::storage::project::ProjectStore;
 
 use super::util;
 
@@ -19,9 +20,9 @@ pub struct TranslateArgs {
     #[arg(short, long)]
     pub input: PathBuf,
 
-    /// Project name (used for context store)
-    #[arg(short, long, default_value = "default")]
-    pub project: String,
+    /// Project name (default: input directory name)
+    #[arg(short, long)]
+    pub project: Option<String>,
 
     /// Translate only this chapter number (default: all chapters)
     #[arg(short, long)]
@@ -45,19 +46,56 @@ pub async fn run(args: TranslateArgs) -> Result<()> {
     let runner = Arc::new(TranslationRunner::new(&config).await?);
     let source_lang = pipeline::detect_source_lang(Some(&args.source), &args.target);
 
+    let project = open_project(&config, &args)?;
+    let session = Session::new(runner, project);
+
     let chapter_dirs = discover_chapter_dirs(&args.input)?;
 
     if chapter_dirs.is_empty() {
-        run_single(&runner, &args, source_lang).await
+        run_single(&session, &args, source_lang).await
     } else {
-        run_series(&runner, &args, &chapter_dirs, source_lang).await
+        run_series(&session, &args, &chapter_dirs, source_lang).await
     }
+}
+
+/// Open per-project store: {base_dir}/{project_name}/project.db
+/// Project name defaults to the input directory name.
+fn open_project(
+    config: &config::AppConfig,
+    args: &TranslateArgs,
+) -> Result<Option<Arc<ProjectStore>>> {
+    let project_name = args.project.clone().or_else(|| {
+        args.input
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+    });
+
+    let Some(project_name) = project_name else {
+        return Ok(None);
+    };
+
+    let base = config
+        .context
+        .project_dir
+        .as_deref()
+        .unwrap_or("data");
+    let project_path = std::path::Path::new(base).join(&project_name);
+    let store = ProjectStore::open(&project_path)?;
+
+    if let Some(toml_path) = &config.glossary.import_toml {
+        if let Err(e) = store.glossary_import_toml(std::path::Path::new(toml_path)) {
+            tracing::warn!("Glossary TOML import failed: {e}");
+        }
+    }
+
+    tracing::info!("Project: {} ({})", project_name, project_path.display());
+    Ok(Some(Arc::new(store)))
 }
 
 // ── Single chapter ──
 
 async fn run_single(
-    runner: &Arc<TranslationRunner>,
+    session: &Session,
     args: &TranslateArgs,
     source_lang: &str,
 ) -> Result<()> {
@@ -68,13 +106,15 @@ async fn run_single(
     let ch_num = args.chapter.unwrap_or(0);
     println!("═══ ComicScan Translate (single chapter) ═══");
     println!("Input:   {}", args.input.display());
-    println!("Project: {}", args.project);
+    if let Some(name) = &args.project {
+        println!("Project: {name}");
+    }
     println!("Chapter: {ch_num}");
     println!("Lang:    {source_lang} → {}", args.target);
     println!();
 
     let result = pipeline::series::translate_single(
-        runner,
+        session,
         &args.input,
         &args.target,
         source_lang,
@@ -99,7 +139,7 @@ async fn run_single(
 // ── Series ──
 
 async fn run_series(
-    runner: &Arc<TranslationRunner>,
+    session: &Session,
     args: &TranslateArgs,
     chapter_dirs: &[PathBuf],
     source_lang: &str,
@@ -107,7 +147,9 @@ async fn run_series(
     let total = chapter_dirs.len();
     println!("═══ ComicScan Translate (series) ═══");
     println!("Input:   {} ({total} chapters)", args.input.display());
-    println!("Project: {}", args.project);
+    if let Some(name) = &args.project {
+        println!("Project: {name}");
+    }
     println!("Lang:    {source_lang} → {}", args.target);
     println!("Output:  {}", args.output.display());
     println!();
@@ -121,7 +163,7 @@ async fn run_series(
 
     let series_start = Instant::now();
     let totals = pipeline::series::translate_batch(
-        runner,
+        session,
         &jobs,
         source_lang,
         &args.target,
@@ -170,7 +212,6 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// Find subdirectories that contain images (chapter directories).
 fn discover_chapter_dirs(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     if !dir.is_dir() {
         anyhow::bail!("{} is not a directory", dir.display());
@@ -186,8 +227,6 @@ fn discover_chapter_dirs(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
-/// Build pipeline jobs + display labels, skipping already-translated chapters.
-/// Returns (jobs, labels) where labels[i] = (chapter_name, display_position).
 fn build_work_list(
     chapter_dirs: &[PathBuf],
     output: &std::path::Path,

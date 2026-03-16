@@ -19,7 +19,7 @@ provider = "anthropic"
 model = "claude-haiku-4-5"
 
 [context]
-db_path = "data/context.db"
+project_dir = "data"
 
 [glossary]
-db_path = "data/glossary.db"
+# import_toml = "glossary.toml"

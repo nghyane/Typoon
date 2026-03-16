@@ -1,7 +1,29 @@
-use anyhow::Result;
+/// Context retrieval agent — searches project DB to answer questions
+/// about characters, relationships, terms, and prior translations.
+///
+/// Used as a sub-agent by the translation agent (via `get_context` tool).
+use std::future::Future;
 
-use crate::llm::{Message, Provider, ToolDef};
+use crate::llm::{Message, ToolCallMsg, ToolDef, ToolResponse};
 use crate::storage::project::ProjectStore;
+
+use super::Agent;
+
+pub struct ContextAgent<'a> {
+    store: &'a ProjectStore,
+    question: String,
+    answer: Option<String>,
+}
+
+impl<'a> ContextAgent<'a> {
+    pub fn new(store: &'a ProjectStore, question: &str) -> Self {
+        Self {
+            store,
+            question: question.to_string(),
+            answer: None,
+        }
+    }
+}
 
 const SYSTEM_PROMPT: &str = "\
 You are a context retrieval sub-agent for a manga translation project.
@@ -37,12 +59,12 @@ fn tool_defs() -> Vec<ToolDef> {
                     "queries": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Short keyword queries, e.g. [\"Max\", \"Joy\", \"team leader\", \"office setting\"]"
+                        "description": "Short keyword queries, e.g. [\"Max\", \"Joy\", \"team leader\"]"
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["all", "translations", "notes"],
-                        "description": "Search scope: 'translations' for prior wording, 'notes' for relationships/events, 'all' if unsure"
+                        "description": "Search scope"
                     }
                 },
                 "required": ["queries"]
@@ -50,7 +72,7 @@ fn tool_defs() -> Vec<ToolDef> {
         ),
         ToolDef::new(
             "read_chapter",
-            "Get all translations for a specific chapter. Use only when search points to a chapter needing full context.",
+            "Get all translations for a specific chapter.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -62,44 +84,34 @@ fn tool_defs() -> Vec<ToolDef> {
     ]
 }
 
-pub async fn answer_context_question(
-    provider: &dyn Provider,
-    store: &ProjectStore,
-    question: &str,
-) -> Result<String> {
-    // Early exit: no data in DB
-    if !store.has_data()? {
-        tracing::info!("Context agent: no data in project store, skipping");
-        return Ok(String::new());
+impl Agent for ContextAgent<'_> {
+    type Output = String;
+
+    fn name(&self) -> &'static str {
+        "context"
     }
 
-    let tools = tool_defs();
-    let mut messages = vec![Message::system(SYSTEM_PROMPT), Message::user_text(question)];
+    fn system_prompt(&self) -> String {
+        SYSTEM_PROMPT.to_string()
+    }
 
-    loop {
-        let resp = provider.call(&messages, &tools).await?;
+    fn user_message(&self) -> Message {
+        Message::user_text(&self.question)
+    }
 
-        // No tool calls -> text is the final answer
-        if resp.tool_calls.is_empty() {
-            let answer = resp.text.unwrap_or_default();
-            tracing::info!(
-                "Context agent answered ({} chars):\n{}",
-                answer.len(),
-                answer
-            );
-            return Ok(answer);
-        }
+    fn tools(&self) -> Vec<ToolDef> {
+        tool_defs()
+    }
 
-        // Has tool calls -> execute them, continue loop
-        messages.push(Message::Assistant {
-            text: resp.text,
-            tool_calls: resp.tool_calls.clone(),
-        });
+    fn dispatch<'a>(
+        &'a mut self,
+        call: &'a ToolCallMsg,
+    ) -> impl Future<Output = ToolResponse> + Send + 'a {
+        async move {
+            let input: serde_json::Value =
+                serde_json::from_str(&call.arguments).unwrap_or_default();
 
-        for tc in &resp.tool_calls {
-            let input: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
-
-            let result = match tc.name.as_str() {
+            match call.name.as_str() {
                 "search" => {
                     let queries: Vec<String> = input["queries"]
                         .as_array()
@@ -109,38 +121,44 @@ pub async fn answer_context_question(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let scope_str = input
+                    let scope = input
                         .get("scope")
                         .and_then(|v| v.as_str())
                         .unwrap_or("all");
 
-                    tracing::info!("search({:?}, {:?})", queries, scope_str);
+                    tracing::info!("context search({:?}, {:?})", queries, scope);
 
                     if queries.is_empty() {
-                        "No queries provided.".to_string()
+                        ToolResponse::Text("No queries provided.".into())
                     } else {
-                        match store.batch_search_context(&queries, scope_str, 12) {
-                            Ok(hits) => format_hits(&hits),
-                            Err(e) => format!("Search error: {e}"),
+                        match self.store.batch_search_context(&queries, scope, 12) {
+                            Ok(hits) => ToolResponse::Text(format_hits(&hits)),
+                            Err(e) => ToolResponse::Text(format!("Search error: {e}")),
                         }
                     }
                 }
                 "read_chapter" => {
-                    let chapter_index = input["chapter_index"].as_u64().unwrap_or(0) as usize;
-                    tracing::info!("read_chapter({})", chapter_index);
-                    match store.get_chapter_pairs(chapter_index) {
-                        Ok(pairs) => format_chapter_pairs(&pairs),
-                        Err(e) => format!("Read error: {e}"),
+                    let chapter = input["chapter_index"].as_u64().unwrap_or(0) as usize;
+                    tracing::info!("context read_chapter({})", chapter);
+                    match self.store.get_chapter_pairs(chapter) {
+                        Ok(pairs) => ToolResponse::Text(format_chapter_pairs(&pairs)),
+                        Err(e) => ToolResponse::Text(format!("Read error: {e}")),
                     }
                 }
                 other => {
-                    tracing::warn!("Unknown tool call: {other}");
-                    "Unknown tool.".to_string()
+                    tracing::warn!("Context agent: unknown tool {other}");
+                    ToolResponse::Text("Unknown tool.".into())
                 }
-            };
-
-            messages.push(Message::tool_result_text(&tc.id, result));
+            }
         }
+    }
+
+    fn on_text(&mut self, text: Option<&str>) {
+        self.answer = text.map(|s| s.to_string());
+    }
+
+    fn into_output(self) -> String {
+        self.answer.unwrap_or_default()
     }
 }
 

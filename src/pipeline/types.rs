@@ -64,6 +64,16 @@ pub struct RenderedPage {
     pub image: image::RgbaImage,
 }
 
+/// All parameters for a chapter translation job.
+/// Replaces 8 loose params in the old `translate_inner`.
+pub struct TranslateJob<'a> {
+    pub detections: &'a [PageDetections],
+    pub images: &'a [image::DynamicImage],
+    pub target_lang: &'a str,
+    pub source_lang: &'a str,
+    pub chapter_index: Option<usize>,
+}
+
 /// API-only response type. Serializable, no render-internal fields.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BubbleResult {

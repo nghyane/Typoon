@@ -155,18 +155,10 @@ impl PpOcrAdapter {
         let pad_w = new_w.div_ceil(32) as usize * 32;
         let pad_h = new_h.div_ceil(32) as usize * 32;
 
-        let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+        let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
         let rgb = resized.to_rgb8();
 
-        let mut arr = Array4::<f32>::zeros((1, 3, pad_h, pad_w));
-        for y in 0..new_h as usize {
-            for x in 0..new_w as usize {
-                let pixel = rgb.get_pixel(x as u32, y as u32);
-                for c in 0..3 {
-                    arr[[0, c, y, x]] = (pixel[c] as f32 / 255.0 - DET_MEAN[c]) / DET_STD[c];
-                }
-            }
-        }
+        let arr = crate::vision::rgb_to_nchw(&rgb, pad_h, pad_w, &DET_MEAN, &DET_STD);
 
         (arr, new_w as usize, new_h as usize, pad_w, pad_h)
     }
@@ -382,20 +374,18 @@ impl PpOcrAdapter {
             image::imageops::FilterType::Triangle,
         );
 
-        let h = REC_IMG_HEIGHT as usize;
-        let w = pad_w as usize;
-        let mut arr = Array4::<f32>::zeros((1, 3, h, w));
+        let resized_rgb = image::RgbImage::from_raw(resized_w, REC_IMG_HEIGHT, {
+            let buf = resized.into_raw();
+            buf
+        }).expect("resize produced correct buffer size");
 
-        for y in 0..h {
-            for x in 0..resized_w as usize {
-                let pixel = resized.get_pixel(x as u32, y as u32);
-                for c in 0..3 {
-                    arr[[0, c, y, x]] = (pixel[c] as f32 / 255.0 - 0.5) / 0.5;
-                }
-            }
-        }
-
-        arr
+        crate::vision::rgb_to_nchw(
+            &resized_rgb,
+            REC_IMG_HEIGHT as usize,
+            pad_w as usize,
+            &[0.5; 3],
+            &[0.5; 3],
+        )
     }
 
     /// CTC beam search decode.
@@ -510,13 +500,41 @@ impl PpOcrAdapter {
 
 impl PpOcrAdapter {
     pub fn recognize(&self, image: &DynamicImage) -> Result<OcrResult> {
-        let input_tensor = self.rec_preprocess(image);
+        let results = self.recognize_batch(&[image])?;
+        results.into_iter().next().unwrap()
+    }
 
-        let input_ref = TensorRef::from_array_view(&input_tensor)?;
+    /// Batch recognition: preprocess all crops, pad to uniform width,
+    /// run a single inference call, decode each row independently.
+    pub fn recognize_batch(&self, images: &[&DynamicImage]) -> Result<Vec<Result<OcrResult>>> {
+        if images.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let rec_session = self
             .rec_session
             .get()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR rec session failed to load"))?;
+
+        // Preprocess each crop to [1, 3, 48, W_i] — widths vary per crop.
+        let singles: Vec<Array4<f32>> = images.iter().map(|img| self.rec_preprocess(img)).collect();
+
+        let batch_size = singles.len();
+        let h = REC_IMG_HEIGHT as usize;
+        let max_w = singles.iter().map(|a| a.shape()[3]).max().unwrap_or(0);
+
+        // Stack into [N, 3, 48, max_w], zero-padded on the right.
+        // Padding value 0.0 maps to gray after de-normalization ((0+0.5)*0.5=0.25),
+        // which CTC learns to treat as blank — same as PaddleOCR's approach.
+        let mut batch = Array4::<f32>::zeros((batch_size, 3, h, max_w));
+        for (i, single) in singles.iter().enumerate() {
+            let w_i = single.shape()[3];
+            batch
+                .slice_mut(ndarray::s![i, .., .., ..w_i])
+                .assign(&single.slice(ndarray::s![0, .., .., ..]));
+        }
+
+        let input_ref = TensorRef::from_array_view(&batch)?;
         let outputs = rec_session.run(ort::inputs![input_ref])?;
 
         let output_key = outputs
@@ -526,23 +544,33 @@ impl PpOcrAdapter {
             .to_string();
         let (shape, data) = outputs[&*output_key].try_extract_tensor::<f32>()?;
 
+        // Output shape: [N, seq_len, vocab_size]
         let seq_len = shape[1] as usize;
         let vocab_size = shape[2] as usize;
+        let row_size = seq_len * vocab_size;
 
-        let (text, confidence, min_char_confidence) = self.ctc_decode(data, seq_len, vocab_size);
+        let results: Vec<Result<OcrResult>> = (0..batch_size)
+            .map(|i| {
+                let row_data = &data[i * row_size..(i + 1) * row_size];
+                let (text, confidence, min_char_confidence) =
+                    self.ctc_decode(row_data, seq_len, vocab_size);
 
-        tracing::debug!(
-            "ppocr: text={:?}, conf={:.3}, min_char={:.3}",
-            text,
-            confidence,
-            min_char_confidence
-        );
+                tracing::debug!(
+                    "ppocr batch[{i}]: text={:?}, conf={:.3}, min_char={:.3}",
+                    text,
+                    confidence,
+                    min_char_confidence
+                );
 
-        Ok(OcrResult {
-            text,
-            confidence,
-            min_char_confidence,
-        })
+                Ok(OcrResult {
+                    text,
+                    confidence,
+                    min_char_confidence,
+                })
+            })
+            .collect();
+
+        Ok(results)
     }
 }
 

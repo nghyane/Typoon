@@ -1,110 +1,54 @@
-mod agent;
-mod prompt;
-mod tools;
+pub mod prompt;
+pub mod tools;
 
 use anyhow::Result;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::Provider;
+use crate::pipeline::types::{DetectedBubble, PageDetections};
 use crate::storage::project::ProjectStore;
 
-// ── Page-grouped input ──
+// ── Translation request (references detection output directly) ──
 
-/// A single page's worth of bubbles.
-#[derive(Debug, Clone, Serialize)]
-pub struct PageInput {
-    pub page_index: usize,
-    pub bubbles: Vec<BubbleInput>,
+/// Translation request — references detections instead of copying into separate types.
+pub struct TranslateRequest<'a> {
+    pub detections: &'a [PageDetections],
+    pub source_lang: &'a str,
+    pub target_lang: &'a str,
+    pub glossary: Vec<crate::storage::project::GlossaryEntry>,
+    pub knowledge_snapshot: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct BubbleInput {
-    pub id: String,
-    pub source_text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub position: Option<(i32, i32)>,
-    /// Detection model confidence (DB boundary score). Not sent to LLM.
-    #[serde(skip)]
-    pub det_confidence: f64,
-    /// OCR recognition confidence (geometric mean of per-char softmax probs). Not sent to LLM.
-    #[serde(skip)]
-    pub ocr_confidence: f64,
+impl<'a> TranslateRequest<'a> {
+    /// All detected bubbles across all pages, flattened.
+    pub fn all_bubbles(&self) -> impl Iterator<Item = (usize, &DetectedBubble)> {
+        self.detections
+            .iter()
+            .flat_map(|pd| pd.bubbles.iter().map(move |b| (pd.page_index, b)))
+    }
+
+    /// Generate the string ID for a bubble (only for LLM prompt/response matching).
+    pub fn bubble_id(page_index: usize, bubble_idx: usize) -> String {
+        format!("p{}_b{}", page_index, bubble_idx)
+    }
 }
 
+/// A previously translated bubble (for context injection from prior pages/chapters).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BubbleTranslated {
-    pub id: String,
+pub struct PreviousTranslation {
     pub source_text: String,
     pub translated_text: String,
 }
 
-/// A continuity note from a previous chapter (proactively injected).
+// ── LLM output (string ID because LLM returns it) ──
+
+/// Raw output from the LLM agent loop. String ID is matched back to bubble index.
 #[derive(Debug, Clone)]
-pub struct ContextNote {
-    pub note_type: String,
-    pub content: String,
-}
-
-// ── Request ──
-
-/// Translation request supporting both single-page and chapter mode.
-pub struct TranslateRequest {
-    pub pages: Vec<PageInput>,
-    pub source_lang: String,
-    pub target_lang: String,
-    pub context: Vec<BubbleTranslated>,
-    pub glossary: Vec<crate::storage::project::GlossaryEntry>,
-    /// Proactive continuity notes from previous chapters.
-    pub notes: Vec<ContextNote>,
-}
-
-impl TranslateRequest {
-    /// Convenience: build a single-page request (backward compat).
-    pub fn single_page(
-        bubbles: Vec<BubbleInput>,
-        source_lang: String,
-        target_lang: String,
-        context: Vec<BubbleTranslated>,
-    ) -> Self {
-        Self {
-            pages: vec![PageInput {
-                page_index: 0,
-                bubbles,
-            }],
-            source_lang,
-            target_lang,
-            context,
-            glossary: vec![],
-            notes: vec![],
-        }
-    }
-
-    /// All bubbles across all pages, flattened.
-    pub fn all_bubbles(&self) -> impl Iterator<Item = &BubbleInput> {
-        self.pages.iter().flat_map(|p| &p.bubbles)
-    }
-}
-
-// ── Runtime context passed alongside the request ──
-
-/// External resources available to the translation agent during execution.
-pub struct TranslateContext<'a> {
-    pub page_images: &'a [DynamicImage],
-    pub project: Option<&'a ProjectStore>,
-    pub context_agent: Option<&'a dyn Provider>,
-    pub chapter_index: Option<usize>,
-}
-
-impl Default for TranslateContext<'_> {
-    fn default() -> Self {
-        Self {
-            page_images: &[],
-            project: None,
-            context_agent: None,
-            chapter_index: None,
-        }
-    }
+pub struct BubbleTranslated {
+    pub id: String,
+    pub source_text: String,
+    pub translated_text: String,
 }
 
 // ── Engine ──
@@ -120,9 +64,17 @@ impl TranslationEngine {
 
     pub async fn translate(
         &self,
-        req: &TranslateRequest,
-        ctx: &TranslateContext<'_>,
+        req: &TranslateRequest<'_>,
+        page_images: &[DynamicImage],
+        project: Option<&ProjectStore>,
+        context_provider: Option<&dyn Provider>,
     ) -> Result<Vec<BubbleTranslated>> {
-        agent::run(&*self.provider, req, ctx).await
+        let agent = crate::agent::translation::TranslationAgent::new(
+            req,
+            page_images,
+            project,
+            context_provider,
+        );
+        crate::agent::run(&*self.provider, agent).await
     }
 }

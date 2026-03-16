@@ -160,13 +160,13 @@ fn build_coreml_session(
     use ort::session::builder::AutoDevicePolicy;
 
     Session::builder()?
-        .with_intra_op_spinning(true)?
-        .with_inter_op_spinning(true)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)?
         .with_auto_device(AutoDevicePolicy::MaxPerformance)?
         .with_execution_providers(vec![
             ep::CoreML::default()
                 .with_model_format(model_format)
-                .with_compute_units(ep::coreml::ComputeUnits::All)
+                .with_compute_units(ep::coreml::ComputeUnits::CPUAndNeuralEngine)
                 .with_model_cache_dir(cache_dir.display().to_string())
                 .build(),
         ])?

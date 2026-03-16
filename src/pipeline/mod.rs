@@ -33,73 +33,67 @@ pub(crate) fn detect_and_ocr(
     }
 }
 
-/// comic-text-detector: detects whole bubble polygons, OCR each region
-fn detect_and_ocr_manga(
-    detector: &TextDetector,
-    ocr: &OcrEngine,
-    img: &DynamicImage,
-    lang: &str,
-) -> Result<Vec<RawBubble>> {
-    let regions = detector.detect(img)?;
-    let mut bubbles = Vec::new();
+// ── PP-OCR two-phase pipeline ──
 
-    for region in &regions {
-        let result = ocr.recognize(&region.crop, lang)?;
-        if !result.text.trim().is_empty() {
-            bubbles.push(RawBubble {
-                source_text: result.text,
-                polygon: region.polygon.clone(),
-                det_confidence: region.confidence,
-                ocr_confidence: result.confidence,
-                mask: region.mask.clone(),
-            });
-        }
-    }
-
-    Ok(bubbles)
+/// Phase 1 (det model only): detect text lines + merge into bubbles.
+/// Returns intermediate state needed by phase 2.
+pub(crate) struct PpocrDetected {
+    pub merged: Vec<merge::MergedBubble>,
 }
 
-/// PP-OCR: detect text lines → merge into bubbles → OCR each line → concat
-fn detect_and_ocr_ppocr(
-    ocr: &OcrEngine,
-    img: &DynamicImage,
-    lang: &str,
-) -> Result<Vec<RawBubble>> {
+fn ppocr_detect(ocr: &OcrEngine, img: &DynamicImage) -> Result<PpocrDetected> {
     let DetectionOutput {
         regions: lines,
         prob_image,
     } = ocr.detect(img)?;
     let merged = merge::group_lines(lines, img, prob_image.as_ref());
+    Ok(PpocrDetected { merged })
+}
+
+/// Phase 2 (rec model only): batch OCR all line crops → assemble bubbles.
+fn ppocr_recognize(ocr: &OcrEngine, detected: &PpocrDetected, lang: &str) -> Result<Vec<RawBubble>> {
+    let merged = &detected.merged;
+
+    // Collect all line crops for a single batch inference.
+    let mut all_crops: Vec<&DynamicImage> = Vec::new();
+    let mut line_to_bubble: Vec<usize> = Vec::new();
+    for (bi, bubble) in merged.iter().enumerate() {
+        for line in &bubble.lines {
+            all_crops.push(&line.crop);
+            line_to_bubble.push(bi);
+        }
+    }
+
+    let all_results = ocr.recognize_batch(&all_crops, lang)?;
+
+    // Distribute results back to their bubbles.
+    let mut bubble_texts: Vec<Vec<(String, f64, f64)>> = vec![Vec::new(); merged.len()];
+    for (idx, result) in all_results.into_iter().enumerate() {
+        let bi = line_to_bubble[idx];
+        if let Ok(r) = result {
+            let text = r.text.trim().to_string();
+            if text.is_empty() || (text.chars().count() <= 2 && r.confidence < 0.5) {
+                continue;
+            }
+            if r.min_char_confidence < 0.15 && text.chars().count() <= 4 {
+                continue;
+            }
+            bubble_texts[bi].push((text, r.confidence, r.min_char_confidence));
+        }
+    }
 
     let mut bubbles = Vec::new();
-
-    for bubble in &merged {
-        let mut texts = Vec::new();
-        let mut total_conf = 0.0_f64;
-        let mut conf_count = 0usize;
-        for line in &bubble.lines {
-            let result = ocr.recognize(&line.crop, lang)?;
-            let text = result.text.trim().to_string();
-            if text.is_empty() || (text.chars().count() <= 2 && result.confidence < 0.5) {
-                continue;
-            }
-            if result.min_char_confidence < 0.15 && text.chars().count() <= 4 {
-                continue;
-            }
-            total_conf += result.confidence;
-            conf_count += 1;
-            texts.push(text);
-        }
-        let joined = texts.join(" ");
-        if joined.is_empty() {
+    for (bi, bubble) in merged.iter().enumerate() {
+        let line_results = &bubble_texts[bi];
+        if line_results.is_empty() {
             continue;
         }
 
-        let avg_conf = if conf_count > 0 {
-            total_conf / conf_count as f64
-        } else {
-            0.0
-        };
+        let joined: String = line_results.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join(" ");
+        let conf_count = line_results.len();
+        let total_conf: f64 = line_results.iter().map(|(_, c, _)| c).sum();
+        let avg_conf = total_conf / conf_count as f64;
+
         let all_portrait = bubble.lines.iter().all(|l| {
             let (lx1, ly1, lx2, ly2) = merge::line_bbox(&l.polygon);
             let w = lx2 - lx1;
@@ -122,6 +116,44 @@ fn detect_and_ocr_ppocr(
             ocr_confidence: avg_conf,
             mask: bubble.mask.clone(),
         });
+    }
+
+    Ok(bubbles)
+}
+
+/// Combined PP-OCR: detect + recognize (single-page convenience).
+fn detect_and_ocr_ppocr(
+    ocr: &OcrEngine,
+    img: &DynamicImage,
+    lang: &str,
+) -> Result<Vec<RawBubble>> {
+    let detected = ppocr_detect(ocr, img)?;
+    ppocr_recognize(ocr, &detected, lang)
+}
+
+// ── Manga pipeline (not split — autoregressive decoder can't pipeline) ──
+
+/// comic-text-detector: detects whole bubble polygons, OCR each region
+fn detect_and_ocr_manga(
+    detector: &TextDetector,
+    ocr: &OcrEngine,
+    img: &DynamicImage,
+    lang: &str,
+) -> Result<Vec<RawBubble>> {
+    let regions = detector.detect(img)?;
+    let mut bubbles = Vec::new();
+
+    for region in &regions {
+        let result = ocr.recognize(&region.crop, lang)?;
+        if !result.text.trim().is_empty() {
+            bubbles.push(RawBubble {
+                source_text: result.text,
+                polygon: region.polygon.clone(),
+                det_confidence: region.confidence,
+                ocr_confidence: result.confidence,
+                mask: region.mask.clone(),
+            });
+        }
     }
 
     Ok(bubbles)

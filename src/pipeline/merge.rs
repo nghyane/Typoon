@@ -14,30 +14,60 @@ pub struct MergedBubble {
     pub mask: Option<LocalTextMask>,
 }
 
-// ── Thresholds (cheap gates first, expensive last) ──
-
-const MAX_VERTICAL_GAP_PX: f64 = 40.0;
-const MAX_HORIZONTAL_GAP_PX: f64 = 30.0;
+// ── Thresholds ──
+// Ratio-based thresholds (resolution-independent)
 const MIN_OVERLAP_RATIO: f64 = 0.4;
-const VGAP_HEIGHT_MULT: f64 = 1.5;
 const MAX_ANGLE_DIFF_DEG: f64 = 30.0;
 const MAX_HEIGHT_RATIO: f64 = 1.8;
-/// If a new line's gap exceeds this multiple of the group's median inter-line
-/// gap, it's likely from a different bubble.
 const GAP_CONSISTENCY_MULT: f64 = 2.5;
 /// Minimum luminance drop from the local background to detect a border edge.
-/// A border is a thin dark stripe that contrasts with its surroundings,
-/// not just "dark pixels" (which fails on dark backgrounds).
 const BORDER_CONTRAST_DROP: u32 = 40;
 /// Fraction of scan-line width that must show contrast-drop to count as border.
 const BORDER_ROW_RATIO: f64 = 0.25;
-
-const MIN_BUBBLE_W: f64 = 80.0;
-const MIN_BUBBLE_H: f64 = 35.0;
 /// Mean DB probability (0–255) in the gap between two lines above which
 /// we consider them connected by text (e.g. underline, continuation).
-/// 0.15 × 255 ≈ 38 — indicates meaningful text signal, not noise.
 const PROB_BRIDGE_THRESHOLD: u8 = 38;
+
+/// Adaptive thresholds derived from the actual detected text lines on this page.
+struct PageStats {
+    /// Max vertical gap: lines farther apart than this are separate bubbles.
+    /// Derived from median line height — typical intra-bubble line spacing
+    /// is well under 1.5× the line height.
+    max_v_gap: f64,
+    /// Max horizontal gap between a line and a group.
+    max_h_gap: f64,
+    /// Minimum bubble width to keep (filters noise).
+    min_bubble_w: f64,
+    /// Minimum bubble height to keep.
+    min_bubble_h: f64,
+}
+
+impl PageStats {
+    fn from_lines(lines: &[TextRegion]) -> Self {
+        let mut heights: Vec<f64> = lines
+            .iter()
+            .map(|l| {
+                let (_, y1, _, y2) = bbox(&l.polygon);
+                y2 - y1
+            })
+            .filter(|&h| h > 1.0)
+            .collect();
+        heights.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let median_h = if heights.is_empty() {
+            20.0 // degenerate fallback
+        } else {
+            heights[heights.len() / 2]
+        };
+
+        Self {
+            max_v_gap: median_h * 1.5,
+            max_h_gap: median_h * 1.0,
+            min_bubble_w: median_h * 2.5,
+            min_bubble_h: median_h * 1.0,
+        }
+    }
+}
 
 // ── Group state ──
 
@@ -277,6 +307,8 @@ pub fn group_lines(
     let mut lines = lines;
     lines.sort_by(|a, b| top_y(&a.polygon).partial_cmp(&top_y(&b.polygon)).unwrap());
 
+    let stats = PageStats::from_lines(&lines);
+
     let mut groups: Vec<(GroupState, Vec<usize>)> = Vec::new();
 
     for i in 0..lines.len() {
@@ -299,13 +331,10 @@ pub fn group_lines(
                 continue;
             }
 
-            // Gate 3: spatial proximity
+            // Gate 3: spatial proximity (adaptive to page text size)
             let v_gap = gs.v_gap_to(ly1, ly2);
             let h_gap = gs.h_gap_to(lx1, lx2);
-            if v_gap > MAX_VERTICAL_GAP_PX || h_gap > MAX_HORIZONTAL_GAP_PX {
-                continue;
-            }
-            if v_gap > lh * VGAP_HEIGHT_MULT {
+            if v_gap > stats.max_v_gap || h_gap > stats.max_h_gap {
                 continue;
             }
             if gs.h_overlap_ratio(lx1, lx2) < MIN_OVERLAP_RATIO {
@@ -320,10 +349,6 @@ pub fn group_lines(
             }
 
             // Gate 5+6: border detection vs prob bridge.
-            // Border = negative signal (different bubbles).
-            // Prob bridge = positive signal (same text region in DB map).
-            // If prob bridge confirms text, border is likely a false positive
-            // (e.g. underlined text, thin decorative lines within a bubble).
             let overlap_x1 = gs.x1.max(lx1);
             let overlap_x2 = gs.x2.min(lx2);
             if v_gap > 0.0 && has_border_between(img, gs.y2, ly1, overlap_x1, overlap_x2) {
@@ -361,7 +386,7 @@ pub fn group_lines(
         let polygon = bounding_polygon(&group_lines);
 
         let (x1, y1, x2, y2) = bbox(&polygon);
-        if (x2 - x1) < MIN_BUBBLE_W || (y2 - y1) < MIN_BUBBLE_H {
+        if (x2 - x1) < stats.min_bubble_w || (y2 - y1) < stats.min_bubble_h {
             continue;
         }
 
