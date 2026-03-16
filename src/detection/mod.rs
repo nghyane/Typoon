@@ -64,9 +64,10 @@ impl TextDetector {
 
         // 2. Run ONNX inference
         let input_value = TensorRef::from_array_view(&input_tensor)?;
-        let session_mutex = self.session.get()
+        let session = self
+            .session
+            .get()
             .ok_or_else(|| anyhow::anyhow!("TextDetector session not loaded"))?;
-        let mut session = session_mutex.lock().unwrap();
         let outputs = session.run(ort::inputs![input_value])?;
 
         // 3. Extract blk output [1, N, 7]: [cx, cy, w, h, obj, cls0, cls1]
@@ -109,7 +110,13 @@ impl TextDetector {
             let cy = blk_data[base + 1] as f64;
             let w = blk_data[base + 2] as f64;
             let h = blk_data[base + 3] as f64;
-            detections.push([cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0, conf as f64]);
+            detections.push([
+                cx - w / 2.0,
+                cy - h / 2.0,
+                cx + w / 2.0,
+                cy + h / 2.0,
+                conf as f64,
+            ]);
         }
 
         // 5. Sort by confidence descending, then NMS
@@ -134,8 +141,14 @@ impl TextDetector {
             let crop_y = (y1 * scale_y).floor().max(0.0) as u32;
             let crop_x = crop_x.min(orig_w.saturating_sub(1));
             let crop_y = crop_y.min(orig_h.saturating_sub(1));
-            let crop_w = ((x2 * scale_x).ceil() as u32).saturating_sub(crop_x).min(orig_w - crop_x).max(1);
-            let crop_h = ((y2 * scale_y).ceil() as u32).saturating_sub(crop_y).min(orig_h - crop_y).max(1);
+            let crop_w = ((x2 * scale_x).ceil() as u32)
+                .saturating_sub(crop_x)
+                .min(orig_w - crop_x)
+                .max(1);
+            let crop_h = ((y2 * scale_y).ceil() as u32)
+                .saturating_sub(crop_y)
+                .min(orig_h - crop_y)
+                .max(1);
 
             if crop_w * crop_h < MIN_REGION_AREA {
                 continue;
@@ -145,9 +158,16 @@ impl TextDetector {
 
             // Build text mask: combine det (tight strokes) + seg (region boundary)
             let mask = build_combined_mask(
-                det_map.as_deref(), seg_map.as_deref(),
-                *x1, *y1, *x2, *y2,
-                crop_x, crop_y, crop_w, crop_h,
+                det_map.as_deref(),
+                seg_map.as_deref(),
+                *x1,
+                *y1,
+                *x2,
+                *y2,
+                crop_x,
+                crop_y,
+                crop_w,
+                crop_h,
             );
 
             regions.push(TextRegion {
@@ -204,8 +224,14 @@ impl TextDetector {
 fn build_combined_mask(
     _det_map: Option<&[f32]>,
     seg_map: Option<&[f32]>,
-    bx1: f64, by1: f64, bx2: f64, by2: f64,
-    crop_x: u32, crop_y: u32, crop_w: u32, crop_h: u32,
+    bx1: f64,
+    by1: f64,
+    bx2: f64,
+    by2: f64,
+    crop_x: u32,
+    crop_y: u32,
+    crop_w: u32,
+    crop_h: u32,
 ) -> Option<LocalTextMask> {
     let seg = seg_map?;
 
@@ -230,7 +256,10 @@ fn build_combined_mask(
 
     // Bilinear resize to original crop dimensions (preserves soft gradients)
     let resized = image::imageops::resize(
-        &seg_crop, crop_w, crop_h, image::imageops::FilterType::Triangle,
+        &seg_crop,
+        crop_w,
+        crop_h,
+        image::imageops::FilterType::Triangle,
     );
 
     // Threshold: seg values > ~0.30 (77 in uint8) are text pixels.
@@ -247,7 +276,11 @@ fn build_combined_mask(
     // Dilate by 2px to ensure full stroke coverage after resize interpolation
     let mask = dilate_mask(&mask, 3);
 
-    Some(LocalTextMask { x: crop_x, y: crop_y, image: mask })
+    Some(LocalTextMask {
+        x: crop_x,
+        y: crop_y,
+        image: mask,
+    })
 }
 
 /// Non-Maximum Suppression: keep boxes that don't overlap too much with higher-confidence ones.

@@ -35,9 +35,7 @@ pub fn def() -> agent::ToolDef {
 pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
     let response = if let Some(glossary) = ctx.glossary {
         match glossary.search(&args.query) {
-            Ok(entries) if entries.is_empty() => {
-                "No matching glossary entries found.".to_string()
-            }
+            Ok(entries) if entries.is_empty() => "No matching glossary entries found.".to_string(),
             Ok(entries) => {
                 let mut out = format!("Found {} entries:\n", entries.len());
                 for e in &entries {
@@ -55,6 +53,10 @@ pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
         "Glossary not available.".to_string()
     };
 
-    tracing::info!("search_glossary({:?}) → {} chars", args.query, response.len());
+    tracing::info!(
+        "search_glossary({:?}) → {} chars",
+        args.query,
+        response.len()
+    );
     ToolResponse::Text(response)
 }

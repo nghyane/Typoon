@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use ab_glyph::PxScale;
 use anyhow::Result;
 use clap::Args;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
-use ab_glyph::PxScale;
 
 use crate::config;
 use crate::detection::LocalTextMask;
@@ -65,7 +65,11 @@ pub async fn run(mut args: InspectArgs) -> Result<()> {
 
     let config = config::AppConfig::load()?;
     let img = image::open(&args.image)?;
-    let name = args.image.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+    let name = args
+        .image
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
 
     println!("═══ ComicScan Inspect ═══");
     println!("Input:  {}", args.image.display());
@@ -76,12 +80,18 @@ pub async fn run(mut args: InspectArgs) -> Result<()> {
     // Run pipeline once, share results
     let t = Instant::now();
     let result = run_pipeline(&config, &img, &args.lang).await?;
-    println!("Pipeline: {} bubbles in {}ms\n", result.inputs.len(), t.elapsed().as_millis());
+    println!(
+        "Pipeline: {} bubbles in {}ms\n",
+        result.inputs.len(),
+        t.elapsed().as_millis()
+    );
 
     for (input, poly) in result.inputs.iter().zip(&result.polygons) {
         let (x1, y1, x2, y2) = poly_bbox(poly);
-        println!("  [{:>3}] bbox=({:.0},{:.0})-({:.0},{:.0}) det={:.2} ocr={:.2} {:?}",
-            input.id, x1, y1, x2, y2, input.det_confidence, input.ocr_confidence, input.source_text);
+        println!(
+            "  [{:>3}] bbox=({:.0},{:.0})-({:.0},{:.0}) det={:.2} ocr={:.2} {:?}",
+            input.id, x1, y1, x2, y2, input.det_confidence, input.ocr_confidence, input.source_text
+        );
     }
 
     if args.detect {
@@ -103,17 +113,21 @@ async fn run_pipeline(
     lang: &str,
 ) -> Result<PipelineResult> {
     let ctd_path = crate::model_hub::resolve(
-        &config.models_dir, crate::model_hub::Model::ComicTextDetector,
-    ).await?;
-    let detector = crate::detection::TextDetector::new(
-        crate::model_hub::lazy::LazySession::new(ctd_path),
-    );
+        &config.models_dir,
+        crate::model_hub::Model::ComicTextDetector,
+    )
+    .await?;
+    let detector =
+        crate::detection::TextDetector::new(crate::model_hub::lazy::LazySession::new(ctd_path));
     let ocr = crate::ocr::OcrEngine::new(&config.models_dir).await?;
 
-    let (inputs, polygons, masks) =
-        crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
+    let (inputs, polygons, masks) = crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
 
-    Ok(PipelineResult { inputs, polygons, masks })
+    Ok(PipelineResult {
+        inputs,
+        polygons,
+        masks,
+    })
 }
 
 // ── Detection visualization ──
@@ -141,12 +155,28 @@ fn render_detect(
             let rect = Rect::at(rx, ry).of_size(rw, rh);
             draw_hollow_rect_mut(&mut canvas, rect, color);
             if rw > 4 && rh > 4 {
-                draw_hollow_rect_mut(&mut canvas, Rect::at(rx + 1, ry + 1).of_size(rw - 2, rh - 2), color);
+                draw_hollow_rect_mut(
+                    &mut canvas,
+                    Rect::at(rx + 1, ry + 1).of_size(rw - 2, rh - 2),
+                    color,
+                );
             }
         }
 
-        let label = format!("[b{i}] d={:.0}% o={:.0}%", input.det_confidence * 100.0, input.ocr_confidence * 100.0);
-        draw_text_mut(&mut canvas, color, rx + 4, ry.saturating_sub(20), label_scale, font, &label);
+        let label = format!(
+            "[b{i}] d={:.0}% o={:.0}%",
+            input.det_confidence * 100.0,
+            input.ocr_confidence * 100.0
+        );
+        draw_text_mut(
+            &mut canvas,
+            color,
+            rx + 4,
+            ry.saturating_sub(20),
+            label_scale,
+            font,
+            &label,
+        );
     }
 
     let path = output.join(format!("{name}_detect.png"));
@@ -169,7 +199,13 @@ async fn render_masks(
 
     for (i, m) in masks.iter().enumerate() {
         let pixel_count = m.image.pixels().filter(|p| p.0[0] == 255).count();
-        println!("  [b{i:>2}] {}x{} at ({},{}) pixels={pixel_count}", m.image.width(), m.image.height(), m.x, m.y);
+        println!(
+            "  [b{i:>2}] {}x{} at ({},{}) pixels={pixel_count}",
+            m.image.width(),
+            m.image.height(),
+            m.x,
+            m.y
+        );
     }
 
     if masks.is_empty() {
@@ -205,10 +241,12 @@ async fn render_masks(
 
     // Dual-path erasure (median + LaMa)
     let inpainter = {
-        let lama_path = crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama).await;
-        lama_path.map(|p| crate::inpaint::LamaInpainter::new(
-            crate::model_hub::lazy::LazySession::gpu(p),
-        ))
+        let lama_path =
+            crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama)
+                .await;
+        lama_path.map(|p| {
+            crate::inpaint::LamaInpainter::new(crate::model_hub::lazy::LazySession::gpu(p))
+        })
     };
     {
         let t = Instant::now();
@@ -216,7 +254,11 @@ async fn render_masks(
         erase_masks(&mut dual, &masks, inpainter.as_ref());
         let path = output.join(format!("{name}_dual.png"));
         dual.save(&path)?;
-        println!("Saved (dual {}ms): {}", t.elapsed().as_millis(), path.display());
+        println!(
+            "Saved (dual {}ms): {}",
+            t.elapsed().as_millis(),
+            path.display()
+        );
     }
 
     // Raw binary mask

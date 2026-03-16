@@ -66,7 +66,10 @@ impl PpOcrAdapter {
         }
         dictionary.push(" ".to_string()); // use_space_char=true
 
-        tracing::debug!("PpOcrAdapter initialized (lazy): det={}", det_session.is_some());
+        tracing::debug!(
+            "PpOcrAdapter initialized (lazy): det={}",
+            det_session.is_some()
+        );
 
         Ok(Self {
             det_session,
@@ -75,14 +78,15 @@ impl PpOcrAdapter {
         })
     }
 
-
     pub fn can_detect(&self) -> bool {
         self.det_session.is_some()
     }
 
     /// Detect text regions using PP-OCR DB detection model.
     pub fn detect(&self, img: &DynamicImage) -> Result<DetectionOutput> {
-        let det_session = self.det_session.as_ref()
+        let det_session = self
+            .det_session
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR detection model not loaded"))?
             .get()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR det session failed to load"))?;
@@ -94,27 +98,32 @@ impl PpOcrAdapter {
 
         // 2. Run inference
         let input_ref = TensorRef::from_array_view(&input_tensor)?;
-        let mut session = det_session.lock().unwrap();
-        let outputs = session.run(ort::inputs![input_ref])?;
+        let outputs = det_session.run(ort::inputs![input_ref])?;
 
         // 3. Extract probability map [1, 1, H, W]
-        let output_key = outputs.keys().next()
+        let output_key = outputs
+            .keys()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR det model produced no outputs"))?
             .to_string();
         let (_shape, prob_data) = outputs[&*output_key].try_extract_tensor::<f32>()?;
 
         // 4. Build page-level prob image in original coords (bilinear resize).
         //    Only the content region (not padding) is meaningful.
-        let prob_image = build_prob_image(prob_data, pad_w, pad_h, content_w, content_h, orig_w, orig_h);
+        let prob_image = build_prob_image(
+            prob_data, pad_w, pad_h, content_w, content_h, orig_w, orig_h,
+        );
 
         // 5. DB post-processing: threshold → contours → unclip → crop
         let regions = self.db_postprocess(
-            prob_data, pad_w, pad_h, content_w, content_h,
-            orig_w, orig_h, img,
+            prob_data, pad_w, pad_h, content_w, content_h, orig_w, orig_h, img,
         );
 
         tracing::debug!("PP-OCR detected {} text regions", regions.len());
-        Ok(DetectionOutput { regions, prob_image: Some(prob_image) })
+        Ok(DetectionOutput {
+            regions,
+            prob_image: Some(prob_image),
+        })
     }
 
     /// Preprocess for detection: resize, normalize with ImageNet stats, NCHW
@@ -193,7 +202,13 @@ impl PpOcrAdapter {
         let scale_y = orig_h as f64 / content_h as f64;
 
         let mut regions = Vec::new();
-        for RotatedQuad { corners, width, height, score } in &quads {
+        for RotatedQuad {
+            corners,
+            width,
+            height,
+            score,
+        } in &quads
+        {
             if *score < DET_BOX_THRESH as f64 {
                 continue;
             }
@@ -211,10 +226,12 @@ impl PpOcrAdapter {
             // Scale corners to original image coordinates
             let orig_corners: Vec<[f64; 2]> = expanded
                 .iter()
-                .map(|[x, y]| [
-                    (x * scale_x).clamp(0.0, orig_w as f64 - 1.0),
-                    (y * scale_y).clamp(0.0, orig_h as f64 - 1.0),
-                ])
+                .map(|[x, y]| {
+                    [
+                        (x * scale_x).clamp(0.0, orig_w as f64 - 1.0),
+                        (y * scale_y).clamp(0.0, orig_h as f64 - 1.0),
+                    ]
+                })
                 .collect();
 
             // Perspective warp crop from original image
@@ -245,8 +262,12 @@ impl PpOcrAdapter {
                 }
                 let mask_x = ax1.floor().max(0.0) as u32;
                 let mask_y = ay1.floor().max(0.0) as u32;
-                let mask_w = ((ax2.ceil() as u32).saturating_sub(mask_x)).min(orig_w - mask_x).max(1);
-                let mask_h = ((ay2.ceil() as u32).saturating_sub(mask_y)).min(orig_h - mask_y).max(1);
+                let mask_w = ((ax2.ceil() as u32).saturating_sub(mask_x))
+                    .min(orig_w - mask_x)
+                    .max(1);
+                let mask_h = ((ay2.ceil() as u32).saturating_sub(mask_y))
+                    .min(orig_h - mask_y)
+                    .max(1);
 
                 // Sample prob_data at detection map resolution as soft grayscale,
                 // then bilinear resize to original image resolution. This avoids
@@ -269,7 +290,9 @@ impl PpOcrAdapter {
                         let mx = dm_x1 + lx as usize;
                         let my = dm_y1 + ly as usize;
                         if mx < map_w && my < map_h {
-                            let v = (prob_data[my * map_w + mx] * 255.0).round().clamp(0.0, 255.0) as u8;
+                            let v = (prob_data[my * map_w + mx] * 255.0)
+                                .round()
+                                .clamp(0.0, 255.0) as u8;
                             dm_crop.put_pixel(lx, ly, image::Luma([v]));
                         }
                     }
@@ -277,7 +300,10 @@ impl PpOcrAdapter {
 
                 // Bilinear resize to original image mask dimensions (smooth edges)
                 let resized = image::imageops::resize(
-                    &dm_crop, mask_w, mask_h, image::imageops::FilterType::Triangle,
+                    &dm_crop,
+                    mask_w,
+                    mask_h,
+                    image::imageops::FilterType::Triangle,
                 );
 
                 // Threshold at ~0.20 (51/255): DB prob values below 0.20 are
@@ -301,7 +327,11 @@ impl PpOcrAdapter {
                 // actual text region, causing over-erasure.
                 clip_mask_to_polygon(&mut mask_img, mask_x, mask_y, &orig_corners);
 
-                Some(LocalTextMask { x: mask_x, y: mask_y, image: mask_img })
+                Some(LocalTextMask {
+                    x: mask_x,
+                    y: mask_y,
+                    image: mask_img,
+                })
             };
 
             regions.push(TextRegion {
@@ -424,12 +454,30 @@ impl PpOcrAdapter {
                     let new_total = total_lp + tok_lp;
 
                     if tok == *last_tok || tok == 0 {
-                        candidates.push((text.clone(), tok, new_total, *char_lp_sum, *n_chars, *min_lp));
+                        candidates.push((
+                            text.clone(),
+                            tok,
+                            new_total,
+                            *char_lp_sum,
+                            *n_chars,
+                            *min_lp,
+                        ));
                     } else if let Some(ch) = self.dictionary.get(tok) {
                         let mut new_text = text.clone();
                         new_text.push_str(ch);
-                        let new_min = if text.is_empty() { tok_lp } else { min_lp.min(tok_lp) };
-                        candidates.push((new_text, tok, new_total, char_lp_sum + tok_lp, n_chars + 1, new_min));
+                        let new_min = if text.is_empty() {
+                            tok_lp
+                        } else {
+                            min_lp.min(tok_lp)
+                        };
+                        candidates.push((
+                            new_text,
+                            tok,
+                            new_total,
+                            char_lp_sum + tok_lp,
+                            n_chars + 1,
+                            new_min,
+                        ));
                     }
                 }
             }
@@ -448,8 +496,13 @@ impl PpOcrAdapter {
             std::mem::swap(&mut beams, &mut candidates);
         }
 
-        let (text, _, _, char_lp_sum, n_chars, min_char_lp) = beams.into_iter().next().unwrap_or_default();
-        let confidence = if n_chars > 0 { (char_lp_sum / n_chars as f64).exp() } else { 0.0 };
+        let (text, _, _, char_lp_sum, n_chars, min_char_lp) =
+            beams.into_iter().next().unwrap_or_default();
+        let confidence = if n_chars > 0 {
+            (char_lp_sum / n_chars as f64).exp()
+        } else {
+            0.0
+        };
         let min_char_confidence = if n_chars > 0 { min_char_lp.exp() } else { 0.0 };
         (text, confidence, min_char_confidence)
     }
@@ -460,12 +513,15 @@ impl PpOcrAdapter {
         let input_tensor = self.rec_preprocess(image);
 
         let input_ref = TensorRef::from_array_view(&input_tensor)?;
-        let rec_session = self.rec_session.get()
+        let rec_session = self
+            .rec_session
+            .get()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR rec session failed to load"))?;
-        let mut session = rec_session.lock().unwrap();
-        let outputs = session.run(ort::inputs![input_ref])?;
+        let outputs = rec_session.run(ort::inputs![input_ref])?;
 
-        let output_key = outputs.keys().next()
+        let output_key = outputs
+            .keys()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR rec model produced no outputs"))?
             .to_string();
         let (shape, data) = outputs[&*output_key].try_extract_tensor::<f32>()?;
@@ -475,11 +531,19 @@ impl PpOcrAdapter {
 
         let (text, confidence, min_char_confidence) = self.ctc_decode(data, seq_len, vocab_size);
 
-        tracing::debug!("ppocr: text={:?}, conf={:.3}, min_char={:.3}", text, confidence, min_char_confidence);
+        tracing::debug!(
+            "ppocr: text={:?}, conf={:.3}, min_char={:.3}",
+            text,
+            confidence,
+            min_char_confidence
+        );
 
-        Ok(OcrResult { text, confidence, min_char_confidence })
+        Ok(OcrResult {
+            text,
+            confidence,
+            min_char_confidence,
+        })
     }
-
 }
 
 // ── Probability image ──
@@ -489,9 +553,12 @@ impl PpOcrAdapter {
 /// detection model internals — they just see a grayscale image in page coords.
 fn build_prob_image(
     prob_data: &[f32],
-    map_w: usize, map_h: usize,
-    content_w: usize, content_h: usize,
-    orig_w: u32, orig_h: u32,
+    map_w: usize,
+    map_h: usize,
+    content_w: usize,
+    content_h: usize,
+    orig_w: u32,
+    orig_h: u32,
 ) -> image::GrayImage {
     // Extract the content region (excluding padding) as a GrayImage
     let cw = content_w as u32;
@@ -506,7 +573,12 @@ fn build_prob_image(
         }
     }
     // Bilinear resize to original image dimensions
-    image::imageops::resize(&content_gray, orig_w, orig_h, image::imageops::FilterType::Triangle)
+    image::imageops::resize(
+        &content_gray,
+        orig_w,
+        orig_h,
+        image::imageops::FilterType::Triangle,
+    )
 }
 
 // ── DB post-processing helpers ──
@@ -560,14 +632,30 @@ fn find_rotated_quads(
 
                 // 8-connected: include diagonal neighbors so tilted text
                 // strokes that connect diagonally stay in one component
-                if x > 0 { stack.push((x - 1, y)); }
-                if x + 1 < width { stack.push((x + 1, y)); }
-                if y > 0 { stack.push((x, y - 1)); }
-                if y + 1 < height { stack.push((x, y + 1)); }
-                if x > 0 && y > 0 { stack.push((x - 1, y - 1)); }
-                if x + 1 < width && y > 0 { stack.push((x + 1, y - 1)); }
-                if x > 0 && y + 1 < height { stack.push((x - 1, y + 1)); }
-                if x + 1 < width && y + 1 < height { stack.push((x + 1, y + 1)); }
+                if x > 0 {
+                    stack.push((x - 1, y));
+                }
+                if x + 1 < width {
+                    stack.push((x + 1, y));
+                }
+                if y > 0 {
+                    stack.push((x, y - 1));
+                }
+                if y + 1 < height {
+                    stack.push((x, y + 1));
+                }
+                if x > 0 && y > 0 {
+                    stack.push((x - 1, y - 1));
+                }
+                if x + 1 < width && y > 0 {
+                    stack.push((x + 1, y - 1));
+                }
+                if x > 0 && y + 1 < height {
+                    stack.push((x - 1, y + 1));
+                }
+                if x + 1 < width && y + 1 < height {
+                    stack.push((x + 1, y + 1));
+                }
             }
 
             if !component.is_empty() {
@@ -602,12 +690,14 @@ fn find_rotated_quads(
         // For large text, DB shrink map has high probability only near boundaries;
         // scoring over the entire component dilutes it and drops valid detections.
         let score = if boundary.is_empty() {
-            let s: f64 = component.iter()
+            let s: f64 = component
+                .iter()
                 .map(|&(x, y)| prob_map[y * width + x] as f64)
                 .sum();
             s / component.len() as f64
         } else {
-            let s: f64 = boundary.iter()
+            let s: f64 = boundary
+                .iter()
                 .map(|&(x, y)| prob_map[y * width + x] as f64)
                 .sum();
             s / boundary.len() as f64
@@ -615,7 +705,10 @@ fn find_rotated_quads(
 
         let boundary_coords: Vec<Coord<f64>> = boundary
             .iter()
-            .map(|&(x, y)| Coord { x: x as f64, y: y as f64 })
+            .map(|&(x, y)| Coord {
+                x: x as f64,
+                y: y as f64,
+            })
             .collect();
 
         if boundary_coords.len() < 3 {
@@ -626,11 +719,7 @@ fn find_rotated_quads(
         let line_string = LineString::new(boundary_coords);
         let poly = Polygon::new(line_string, vec![]);
         let hull = poly.convex_hull();
-        let hull_points: Vec<[f64; 2]> = hull
-            .exterior()
-            .points()
-            .map(|p| [p.x(), p.y()])
-            .collect();
+        let hull_points: Vec<[f64; 2]> = hull.exterior().points().map(|p| [p.x(), p.y()]).collect();
 
         if hull_points.len() < 3 {
             continue;
@@ -642,7 +731,12 @@ fn find_rotated_quads(
             continue;
         }
 
-        results.push(RotatedQuad { corners, width: w, height: h, score });
+        results.push(RotatedQuad {
+            corners,
+            width: w,
+            height: h,
+            score,
+        });
     }
 
     results
@@ -699,10 +793,7 @@ fn min_area_rect(hull: &[[f64; 2]]) -> ([[f64; 2]; 4], f64, f64) {
             ];
             // Rotate back to original space
             for (k, rc) in rotated_corners.iter().enumerate() {
-                best_corners[k] = [
-                    rc[0] * cos_a - rc[1] * sin_a,
-                    rc[0] * sin_a + rc[1] * cos_a,
-                ];
+                best_corners[k] = [rc[0] * cos_a - rc[1] * sin_a, rc[0] * sin_a + rc[1] * cos_a];
             }
         }
     }
@@ -736,7 +827,7 @@ fn order_quad_tl_tr_br_bl(corners: [[f64; 2]; 4]) -> [[f64; 2]; 4] {
 
     // Ensure clockwise winding: TL→TR→BR→BL (not TL→BL→BR→TR)
     let cross = (pts[1][0] - pts[0][0]) * (pts[2][1] - pts[0][1])
-              - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0]);
+        - (pts[1][1] - pts[0][1]) * (pts[2][0] - pts[0][0]);
     if cross < 0.0 {
         pts = vec![pts[0], pts[3], pts[2], pts[1]];
     }
@@ -788,8 +879,8 @@ fn unclip_rotated_rect(
     };
 
     [
-        offset(corners[0], n_top, n_left),   // TL
-        offset(corners[1], n_top, n_right),  // TR
+        offset(corners[0], n_top, n_left),     // TL
+        offset(corners[1], n_top, n_right),    // TR
         offset(corners[2], n_bottom, n_right), // BR
         offset(corners[3], n_bottom, n_left),  // BL
     ]
@@ -853,10 +944,7 @@ fn warp_quad(img: &DynamicImage, corners: &[[f64; 2]]) -> Option<DynamicImage> {
 /// Returns the 8 coefficients [a,b,c, d,e,f, g,h] of:
 ///   x' = (a*x + b*y + c) / (g*x + h*y + 1)
 ///   y' = (d*x + e*y + f) / (g*x + h*y + 1)
-fn perspective_transform_matrix(
-    src: &[[f64; 2]; 4],
-    dst: &[[f64; 2]; 4],
-) -> Option<[f64; 8]> {
+fn perspective_transform_matrix(src: &[[f64; 2]; 4], dst: &[[f64; 2]; 4]) -> Option<[f64; 8]> {
     // Set up 8×8 linear system: A * coeffs = b
     // For each point pair (x,y) → (x',y'):
     //   a*x + b*y + c - g*x*x' - h*y*x' = x'
@@ -919,8 +1007,7 @@ fn perspective_transform_matrix(
     }
 
     Some([
-        aug[0][n], aug[1][n], aug[2][n], aug[3][n],
-        aug[4][n], aug[5][n], aug[6][n], aug[7][n],
+        aug[0][n], aug[1][n], aug[2][n], aug[3][n], aug[4][n], aug[5][n], aug[6][n], aug[7][n],
     ])
 }
 

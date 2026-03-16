@@ -54,7 +54,9 @@ pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
             Ok(()) => {
                 tracing::info!(
                     "Glossary updated: {} → {} ({})",
-                    args.source_term, args.target_term, notes
+                    args.source_term,
+                    args.target_term,
+                    notes
                 );
                 format!("Saved: {} → {}", args.source_term, args.target_term)
             }

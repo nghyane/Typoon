@@ -44,7 +44,7 @@ pub struct TranslateArgs {
 pub async fn run(args: TranslateArgs) -> Result<()> {
     let config = config::AppConfig::load()?;
     let runner = TranslationRunner::new(&config).await?;
-    
+
     let source_lang = pipeline::detect_source_lang(Some(&args.source), &args.target);
 
     // Determine if input is a single chapter or a series directory
@@ -64,22 +64,38 @@ pub async fn run(args: TranslateArgs) -> Result<()> {
         println!();
 
         translate_single_chapter(
-            &runner, &args.input, &args.output,
-            &args.project, ch_num, source_lang, &args.target,
-        ).await?;
+            &runner,
+            &args.input,
+            &args.output,
+            &args.project,
+            ch_num,
+            source_lang,
+            &args.target,
+        )
+        .await?;
     } else {
         // Series mode: multiple chapter directories
         println!("═══ ComicScan Translate (series) ═══");
-        println!("Input:   {} ({} chapters)", args.input.display(), chapters.len());
+        println!(
+            "Input:   {} ({} chapters)",
+            args.input.display(),
+            chapters.len()
+        );
         println!("Project: {}", args.project);
         println!("Lang:    {source_lang} → {}", args.target);
         println!("Output:  {}", args.output.display());
         println!();
 
         translate_series(
-            &runner, &chapters, &args.output,
-            &args.project, args.chapter, source_lang, &args.target,
-        ).await?;
+            &runner,
+            &chapters,
+            &args.output,
+            &args.project,
+            args.chapter,
+            source_lang,
+            &args.target,
+        )
+        .await?;
     }
 
     Ok(())
@@ -103,15 +119,19 @@ async fn translate_single_chapter(
     let det = runner.detector.clone();
     let ocr = runner.ocr.clone();
     let lang = source_lang.to_string();
-    let detections = tokio::task::block_in_place(|| {
-        chapter::detect_chapter(&det, &ocr, &images, &lang)
-    })?;
+    let detections =
+        tokio::task::block_in_place(|| chapter::detect_chapter(&det, &ocr, &images, &lang))?;
 
     let result = chapter::translate_and_render(
-        runner, detections, &images,
-        target_lang, source_lang,
-        Some(project), Some(chapter_num),
-    ).await?;
+        runner,
+        detections,
+        &images,
+        target_lang,
+        source_lang,
+        Some(project),
+        Some(chapter_num),
+    )
+    .await?;
 
     std::fs::create_dir_all(output)?;
     let mut total = 0;
@@ -124,7 +144,11 @@ async fn translate_single_chapter(
         }
     }
 
-    println!("\nTotal: {total} bubbles, {} pages in {:.1}s", images.len(), t.elapsed().as_secs_f64());
+    println!(
+        "\nTotal: {total} bubbles, {} pages in {:.1}s",
+        images.len(),
+        t.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 
@@ -153,12 +177,18 @@ async fn translate_series(
 
             // If --chapter is set, only translate that chapter
             if let Some(only) = only_chapter {
-                if ch_num != only { return None; }
+                if ch_num != only {
+                    return None;
+                }
             }
 
             let ch_output = output.join(&*ch_name);
             if ch_output.exists() && util::has_images(&ch_output) {
-                println!("[{}/{}] {ch_name} — skip (already translated)", idx + 1, chapters.len());
+                println!(
+                    "[{}/{}] {ch_name} — skip (already translated)",
+                    idx + 1,
+                    chapters.len()
+                );
                 None
             } else {
                 Some((idx, ch_dir, ch_num, ch_output))
@@ -175,7 +205,14 @@ async fn translate_series(
     let mut pending: Option<PendingDetection> = None;
 
     if let Some(&(idx, ch_dir, _, _)) = work.first() {
-        pending = start_detection(idx, ch_dir, &runner.detector, &runner.ocr, source_lang, chapters.len());
+        pending = start_detection(
+            idx,
+            ch_dir,
+            &runner.detector,
+            &runner.ocr,
+            source_lang,
+            chapters.len(),
+        );
     }
 
     for (wi, &(idx, ch_dir, ch_num, ref ch_output)) in work.iter().enumerate() {
@@ -188,17 +225,34 @@ async fn translate_series(
 
         // Start detection for next chapter while we translate this one
         if let Some(&(next_idx, next_dir, _, _)) = work.get(wi + 1) {
-            pending = start_detection(next_idx, next_dir, &runner.detector, &runner.ocr, source_lang, chapters.len());
+            pending = start_detection(
+                next_idx,
+                next_dir,
+                &runner.detector,
+                &runner.ocr,
+                source_lang,
+                chapters.len(),
+            );
         }
 
         let t = Instant::now();
         let (n_pages, ch_bubbles) = translate_render_save(
-            runner, detections, images, ch_output, target_lang, source_lang, project, ch_num,
-        ).await?;
+            runner,
+            detections,
+            images,
+            ch_output,
+            target_lang,
+            source_lang,
+            project,
+            ch_num,
+        )
+        .await?;
 
         println!(
             "[{}/{}] {ch_name} — {n_pages} pages, {ch_bubbles} bubbles in {:.1}s",
-            idx + 1, chapters.len(), t.elapsed().as_secs_f64(),
+            idx + 1,
+            chapters.len(),
+            t.elapsed().as_secs_f64(),
         );
         total_bubbles += ch_bubbles;
         total_pages += n_pages;
@@ -225,10 +279,15 @@ async fn translate_render_save(
 ) -> Result<(usize, usize)> {
     let n_pages = images.len();
     let result = chapter::translate_and_render(
-        runner, detections, &images,
-        target_lang, source_lang,
-        Some(project), Some(chapter_num),
-    ).await?;
+        runner,
+        detections,
+        &images,
+        target_lang,
+        source_lang,
+        Some(project),
+        Some(chapter_num),
+    )
+    .await?;
     drop(images);
 
     std::fs::create_dir_all(output)?;
@@ -246,12 +305,19 @@ async fn translate_render_save(
 // ── Helpers ──
 
 fn print_page(page: &chapter::ChapterPageOutput) {
-    if page.bubbles.is_empty() { return; }
-    println!("── Page {} ({} bubbles) ──", page.page_index, page.bubbles.len());
+    if page.bubbles.is_empty() {
+        return;
+    }
+    println!(
+        "── Page {} ({} bubbles) ──",
+        page.page_index,
+        page.bubbles.len()
+    );
     for b in &page.bubbles {
         println!(
             "  [{}] {}px \"{}\" → \"{}\"",
-            b.bubble_id, b.font_size_px,
+            b.bubble_id,
+            b.font_size_px,
             truncate(&b.source_text, 40),
             truncate(&b.translated_text.replace('\n', " "), 50),
         );
@@ -332,8 +398,7 @@ fn detect_inline(
     let det = detector.clone();
     let ocr = ocr.clone();
     let lang = source_lang.to_string();
-    let detections = tokio::task::block_in_place(|| {
-        chapter::detect_chapter(&det, &ocr, &images, &lang)
-    })?;
+    let detections =
+        tokio::task::block_in_place(|| chapter::detect_chapter(&det, &ocr, &images, &lang))?;
     Ok((images, detections))
 }

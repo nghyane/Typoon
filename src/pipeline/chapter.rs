@@ -8,7 +8,10 @@ use crate::detection::{LocalTextMask, TextDetector};
 use crate::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
 use crate::text_layout::DrawableArea;
-use crate::translation::{BubbleInput, BubbleTranslated, ContextNote, PageInput, TranslateContext, TranslateRequest, TranslationEngine};
+use crate::translation::{
+    BubbleInput, BubbleTranslated, ContextNote, PageInput, TranslateContext, TranslateRequest,
+    TranslationEngine,
+};
 
 /// Per-page detection output, kept around for fit+render after translation.
 pub struct PageDetection {
@@ -49,8 +52,7 @@ pub fn detect_chapter(
     let mut detections = Vec::with_capacity(images.len());
 
     for (page_idx, img) in images.iter().enumerate() {
-        let (raw_inputs, polygons, masks) =
-            super::detect_and_ocr(detector, ocr, img, source_lang)?;
+        let (raw_inputs, polygons, masks) = super::detect_and_ocr(detector, ocr, img, source_lang)?;
 
         let inputs: Vec<BubbleInput> = raw_inputs
             .into_iter()
@@ -105,7 +107,8 @@ pub async fn translate_and_render(
         vec![],
         project_id,
         chapter_index,
-    ).await
+    )
+    .await
 }
 
 /// Translate + fit + render using a caller-provided engine and context.
@@ -131,7 +134,8 @@ pub async fn translate_and_render_with_engine(
         context,
         None,
         None,
-    ).await
+    )
+    .await
 }
 
 async fn translate_and_render_inner(
@@ -193,7 +197,11 @@ async fn translate_and_render_inner(
     tracing::info!(
         "Chapter translation: {} pages, {} bubbles",
         images.len(),
-        translate_req.pages.iter().map(|p| p.bubbles.len()).sum::<usize>()
+        translate_req
+            .pages
+            .iter()
+            .map(|p| p.bubbles.len())
+            .sum::<usize>()
     );
 
     // Capture page widths before translate (fit only needs widths, not full images).
@@ -203,7 +211,10 @@ async fn translate_and_render_inner(
         page_images: images,
         glossary: runner.glossary.as_ref(),
         context_store: runner.context_store.as_deref(),
-        context_agent: runner.context_agent.as_ref().map(|a| &**a as &dyn crate::agent::Provider),
+        context_agent: runner
+            .context_agent
+            .as_ref()
+            .map(|a| &**a as &dyn crate::agent::Provider),
         project_id,
         chapter_index,
     };
@@ -218,7 +229,12 @@ async fn translate_and_render_inner(
 
     // ── Save translations to ContextStore ──
     save_context(
-        &chapter_pages, runner, source_lang, target_lang, project_id, chapter_index,
+        &chapter_pages,
+        runner,
+        source_lang,
+        target_lang,
+        project_id,
+        chapter_index,
     );
 
     // ── Render translated text onto page images ──
@@ -226,7 +242,9 @@ async fn translate_and_render_inner(
     let chapter_pages = render_pages(chapter_pages, images, runner);
     tracing::info!("Phase render: {:.1}s", t_phase.elapsed().as_secs_f64());
 
-    Ok(ChapterOutput { pages: chapter_pages })
+    Ok(ChapterOutput {
+        pages: chapter_pages,
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -312,8 +330,7 @@ fn save_context(
     project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) {
-    let (Some(store), Some(pid), Some(ch_idx)) =
-        (&runner.context_store, project_id, chapter_index)
+    let (Some(store), Some(pid), Some(ch_idx)) = (&runner.context_store, project_id, chapter_index)
     else {
         return;
     };
@@ -345,8 +362,9 @@ fn save_context(
 
 /// Render translated text onto page images.
 ///
-/// Uses rayon's work-stealing thread pool — automatically bounded to
-/// available CPU cores, so only a few canvases exist simultaneously.
+/// Pages are rendered in parallel via rayon. ONNX Runtime's C API is
+/// thread-safe for concurrent inference, so a single shared LaMa session
+/// handles all pages without mutex contention.
 fn render_pages(
     chapter_pages: Vec<ChapterPageOutput>,
     images: &[DynamicImage],
@@ -385,8 +403,7 @@ fn fetch_previous_notes(
     project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Vec<ContextNote> {
-    let (Some(store), Some(pid), Some(ch_idx)) =
-        (&runner.context_store, project_id, chapter_index)
+    let (Some(store), Some(pid), Some(ch_idx)) = (&runner.context_store, project_id, chapter_index)
     else {
         return vec![];
     };
@@ -437,7 +454,11 @@ fn fetch_previous_notes(
         .collect();
 
     if !result.is_empty() {
-        tracing::info!("Injecting {} continuity notes ({} chars)", result.len(), total);
+        tracing::info!(
+            "Injecting {} continuity notes ({} chars)",
+            result.len(),
+            total
+        );
     }
 
     result

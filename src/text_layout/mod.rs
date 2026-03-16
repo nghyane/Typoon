@@ -25,7 +25,12 @@ pub struct EdgeInsets {
 
 impl EdgeInsets {
     pub fn uniform(v: f64) -> Self {
-        Self { left: v, right: v, top: v, bottom: v }
+        Self {
+            left: v,
+            right: v,
+            top: v,
+            bottom: v,
+        }
     }
 }
 
@@ -81,9 +86,7 @@ impl DrawableArea {
 
 /// Get or initialize the embedded font.
 pub fn get_font() -> &'static FontRef<'static> {
-    FONT.get_or_init(|| {
-        FontRef::try_from_slice(FONT_BYTES).expect("Failed to parse embedded font")
-    })
+    FONT.get_or_init(|| FontRef::try_from_slice(FONT_BYTES).expect("Failed to parse embedded font"))
 }
 
 /// Measure the width of a text string at a given font size in pixels.
@@ -106,7 +109,12 @@ pub fn measure_text_width(text: &str, font_size_px: u32, font: &FontRef<'_>) -> 
 
 /// Balanced word wrap: split text into lines that fit within `max_width_px`,
 /// distributing words evenly so lines have similar widths.
-pub fn wrap_text(text: &str, max_width_px: f64, font_size_px: u32, font: &FontRef<'_>) -> Vec<String> {
+pub fn wrap_text(
+    text: &str,
+    max_width_px: f64,
+    font_size_px: u32,
+    font: &FontRef<'_>,
+) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return vec![String::new()];
@@ -115,13 +123,18 @@ pub fn wrap_text(text: &str, max_width_px: f64, font_size_px: u32, font: &FontRe
     let space_w = measure_text_width(" ", font_size_px, font);
 
     // Check if any word needs character-level breaking
-    let has_long_word = words.iter().any(|w| measure_text_width(w, font_size_px, font) > max_width_px);
+    let has_long_word = words
+        .iter()
+        .any(|w| measure_text_width(w, font_size_px, font) > max_width_px);
     if has_long_word {
         return wrap_greedy(text, max_width_px, font_size_px, font);
     }
 
     // Measure all word widths
-    let word_widths: Vec<f64> = words.iter().map(|w| measure_text_width(w, font_size_px, font)).collect();
+    let word_widths: Vec<f64> = words
+        .iter()
+        .map(|w| measure_text_width(w, font_size_px, font))
+        .collect();
 
     // Greedy pass to find minimum number of lines
     let n_lines = count_greedy_lines(&word_widths, space_w, max_width_px);
@@ -193,7 +206,12 @@ fn count_greedy_lines(word_widths: &[f64], space_w: f64, max_width: f64) -> usiz
 }
 
 /// Greedy word wrap fallback (for texts with oversized words needing char-breaking).
-pub fn wrap_greedy(text: &str, max_width_px: f64, font_size_px: u32, font: &FontRef<'_>) -> Vec<String> {
+pub fn wrap_greedy(
+    text: &str,
+    max_width_px: f64,
+    font_size_px: u32,
+    font: &FontRef<'_>,
+) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let space_w = measure_text_width(" ", font_size_px, font);
     let mut lines = Vec::new();
@@ -277,7 +295,11 @@ mod tests {
         // 200px wide bubble should force wrapping
         let lines = wrap_text(text, 200.0, 16, font);
         println!("wrap at 200px: {lines:?}");
-        assert!(lines.len() > 1, "Should wrap: full_w={full_w:.0}, got {} line(s)", lines.len());
+        assert!(
+            lines.len() > 1,
+            "Should wrap: full_w={full_w:.0}, got {} line(s)",
+            lines.len()
+        );
 
         // 150px wide bubble
         let lines = wrap_text(text, 150.0, 16, font);

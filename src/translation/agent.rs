@@ -6,9 +6,9 @@ use anyhow::{Context, Result};
 
 use crate::agent::{self, ContentPart, Message, Provider, ToolResponse};
 
-use super::{BubbleTranslated, TranslateContext, TranslateRequest};
 use super::prompt::PromptBuilder;
 use super::tools;
+use super::{BubbleTranslated, TranslateContext, TranslateRequest};
 
 /// Run the translation agent loop using the given provider.
 pub async fn run(
@@ -74,9 +74,8 @@ pub async fn run(
         for tc in &tool_calls {
             match tc.name.as_str() {
                 "translate" => {
-                    let args: tools::translate::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad translate args: {}", tc.arguments))?;
+                    let args: tools::translate::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad translate args: {}", tc.arguments))?;
                     let count = args.translations.len();
                     for item in args.translations {
                         tracing::debug!("translate [{}] → {:?}", item.id, item.translated_text);
@@ -90,7 +89,10 @@ pub async fn run(
                             translated_text: item.translated_text,
                         });
                     }
-                    tracing::info!("Translated {count} bubbles ({}/{total_bubbles})", results.len());
+                    tracing::info!(
+                        "Translated {count} bubbles ({}/{total_bubbles})",
+                        results.len()
+                    );
                     messages.push(Message::tool_result_text(
                         &tc.id,
                         format!("ok ({count} bubbles)"),
@@ -98,41 +100,36 @@ pub async fn run(
                 }
 
                 "view_page" => {
-                    let args: tools::view_page::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad view_page args: {}", tc.arguments))?;
+                    let args: tools::view_page::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad view_page args: {}", tc.arguments))?;
                     let resp = tools::view_page::handle(&args, ctx);
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
 
                 "search_glossary" => {
-                    let args: tools::search_glossary::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad search_glossary args: {}", tc.arguments))?;
+                    let args: tools::search_glossary::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad search_glossary args: {}", tc.arguments))?;
                     let resp = tools::search_glossary::handle(&args, ctx);
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
 
                 "update_glossary" => {
-                    let args: tools::update_glossary::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad update_glossary args: {}", tc.arguments))?;
+                    let args: tools::update_glossary::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad update_glossary args: {}", tc.arguments))?;
                     let resp = tools::update_glossary::handle(&args, ctx);
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
 
                 "get_context" => {
-                    let args: tools::get_context::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad get_context args: {}", tc.arguments))?;
+                    let args: tools::get_context::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad get_context args: {}", tc.arguments))?;
                     let resp = tools::get_context::handle(&args, ctx).await;
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
 
                 "add_note" => {
-                    let args: tools::add_note::Args =
-                        serde_json::from_str(&tc.arguments)
-                            .with_context(|| format!("Bad add_note args: {}", tc.arguments))?;
+                    let args: tools::add_note::Args = serde_json::from_str(&tc.arguments)
+                        .with_context(|| format!("Bad add_note args: {}", tc.arguments))?;
                     let resp = tools::add_note::handle(&args, ctx);
                     messages.push(tool_response_to_message(&tc.id, resp));
                 }
@@ -150,7 +147,15 @@ pub async fn run(
     }
 
     // ── Completeness guardrail ──
-    completeness_check(provider, req, &mut messages, &tool_defs, &mut results, &source_lookup).await?;
+    completeness_check(
+        provider,
+        req,
+        &mut messages,
+        &tool_defs,
+        &mut results,
+        &source_lookup,
+    )
+    .await?;
 
     // ── Dedup: keep last translation per ID ──
     dedup(&mut results);

@@ -50,7 +50,8 @@ impl Provider for AnthropicProvider {
         &'a self,
         messages: &'a [Message],
         tools: &'a [ToolDef],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>>
+    {
         Box::pin(async move {
             let system = messages.iter().find_map(|m| match m {
                 Message::System(text) => Some(serde_json::json!([{
@@ -97,13 +98,12 @@ impl Provider for AnthropicProvider {
                 anyhow::bail!("Anthropic API error ({}): {}", status, body_text);
             }
 
-            let response: ApiResponse =
-                serde_json::from_str(&body_text).with_context(|| {
-                    format!(
-                        "Failed to parse Anthropic response: {}",
-                        &body_text[..200.min(body_text.len())]
-                    )
-                })?;
+            let response: ApiResponse = serde_json::from_str(&body_text).with_context(|| {
+                format!(
+                    "Failed to parse Anthropic response: {}",
+                    &body_text[..200.min(body_text.len())]
+                )
+            })?;
 
             let tool_calls = response
                 .content
@@ -187,12 +187,10 @@ fn serialize_messages(messages: &[Message]) -> Vec<serde_json::Value> {
         .iter()
         .filter_map(|msg| match msg {
             Message::System(_) => None, // handled separately
-            Message::User(parts) => {
-                Some(serde_json::json!({
-                    "role": "user",
-                    "content": serialize_content_parts(parts)
-                }))
-            }
+            Message::User(parts) => Some(serde_json::json!({
+                "role": "user",
+                "content": serialize_content_parts(parts)
+            })),
             Message::Assistant { text, tool_calls } => {
                 let mut blocks: Vec<serde_json::Value> = Vec::new();
                 if let Some(text) = text {
@@ -218,7 +216,10 @@ fn serialize_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                     "content": blocks
                 }))
             }
-            Message::ToolResult { tool_call_id, content } => {
+            Message::ToolResult {
+                tool_call_id,
+                content,
+            } => {
                 // Anthropic: tool results go in a "user" message with tool_result blocks
                 let text = content
                     .iter()

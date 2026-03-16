@@ -38,7 +38,8 @@ pub async fn process_image(
         let images = images.clone();
         let lang = source_lang.to_string();
         move || chapter::detect_chapter(&det, &ocr, &images, &lang)
-    }).await??;
+    })
+    .await??;
 
     // Build context from request hints
     let context = build_context(req);
@@ -52,7 +53,8 @@ pub async fn process_image(
         &req.target_lang,
         source_lang,
         context,
-    ).await?;
+    )
+    .await?;
 
     // Build response
     let mut bubbles = Vec::new();
@@ -86,7 +88,11 @@ pub(crate) fn detect_and_ocr(
     ocr: &OcrEngine,
     img: &DynamicImage,
     source_lang: &str,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
+) -> Result<(
+    Vec<BubbleInput>,
+    Vec<Vec<[f64; 2]>>,
+    Vec<Option<LocalTextMask>>,
+)> {
     match source_lang {
         "ja" => detect_and_ocr_manga(detector, ocr, img, source_lang),
         _ if ocr.can_detect() => detect_and_ocr_ppocr(ocr, img, source_lang),
@@ -100,7 +106,11 @@ fn detect_and_ocr_manga(
     ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
+) -> Result<(
+    Vec<BubbleInput>,
+    Vec<Vec<[f64; 2]>>,
+    Vec<Option<LocalTextMask>>,
+)> {
     let regions = detector.detect(img)?;
     let mut inputs = Vec::new();
     let mut polygons = Vec::new();
@@ -130,8 +140,15 @@ fn detect_and_ocr_ppocr(
     ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(Vec<BubbleInput>, Vec<Vec<[f64; 2]>>, Vec<Option<LocalTextMask>>)> {
-    let DetectionOutput { regions: lines, prob_image } = ocr.detect(img)?;
+) -> Result<(
+    Vec<BubbleInput>,
+    Vec<Vec<[f64; 2]>>,
+    Vec<Option<LocalTextMask>>,
+)> {
+    let DetectionOutput {
+        regions: lines,
+        prob_image,
+    } = ocr.detect(img)?;
     let merged = merge::group_lines(lines, img, prob_image.as_ref());
 
     let mut inputs = Vec::new();
@@ -167,7 +184,11 @@ fn detect_and_ocr_ppocr(
         // SFX (sound effects) produce portrait-ish lines with low OCR confidence
         // because they are stylized text the model can't read well.
         // Normal dialogue has high confidence even with large fonts.
-        let avg_conf = if conf_count > 0 { total_conf / conf_count as f64 } else { 0.0 };
+        let avg_conf = if conf_count > 0 {
+            total_conf / conf_count as f64
+        } else {
+            0.0
+        };
         let all_portrait = bubble.lines.iter().all(|l| {
             let (lx1, ly1, lx2, ly2) = merge::line_bbox(&l.polygon);
             let w = lx2 - lx1;
@@ -224,7 +245,11 @@ const KNOWN_LANGS: &[&str] = &["ja", "ko", "zh", "en", "vi"];
 
 pub fn detect_source_lang(explicit: Option<&str>, target_lang: &str) -> &'static str {
     if let Some(lang) = explicit {
-        return KNOWN_LANGS.iter().find(|&&k| k == lang).copied().unwrap_or("en");
+        return KNOWN_LANGS
+            .iter()
+            .find(|&&k| k == lang)
+            .copied()
+            .unwrap_or("en");
     }
     match target_lang {
         "en" | "vi" => "ja",

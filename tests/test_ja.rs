@@ -62,8 +62,13 @@ async fn test_ja_pipeline() {
     for (i, region) in regions.iter().enumerate() {
         match ocr.recognize(&region.crop, "ja") {
             Ok(r) => {
-                println!("  Region {i}: crop={}x{}, conf={:.3}, text={:?}",
-                    region.crop.width(), region.crop.height(), region.confidence, r.text);
+                println!(
+                    "  Region {i}: crop={}x{}, conf={:.3}, text={:?}",
+                    region.crop.width(),
+                    region.crop.height(),
+                    region.confidence,
+                    r.text
+                );
                 if !r.text.trim().is_empty() {
                     recognized += 1;
                 }

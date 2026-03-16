@@ -8,12 +8,19 @@ use crate::model_hub::lazy::LazySession;
 const MODEL_SIZE: usize = 512;
 const MODEL_SIZE_U32: u32 = MODEL_SIZE as u32;
 
-/// Padding added around the mask bounding box to provide context for inpainting.
-const CONTEXT_PAD: u32 = 32;
-
 /// Overlap between adjacent tiles when the region exceeds 512×512.
 const TILE_OVERLAP: u32 = 64;
 
+/// Background luminance range (P1–P99) below which a tile is "flat"
+/// and can be filled with median color instead of running LaMa (~280ms saved).
+const FLAT_TILE_RANGE: u8 = 8;
+const INV_255: f32 = 1.0 / 255.0;
+
+/// Single LaMa inpainter backed by one ONNX session.
+///
+/// `Session::run()` requires `&mut self`, so each instance is single-threaded.
+/// For parallel page rendering, the pipeline should create a pool of inpainters
+/// and distribute pages across them.
 pub struct LamaInpainter {
     session: LazySession,
 }
@@ -29,10 +36,9 @@ impl LamaInpainter {
 
     /// Inpaint masked regions of an image using LaMa FFC-ResNet.
     ///
-    /// - `img`: original image
-    /// - `mask`: binary mask in page coordinates (255 = inpaint, 0 = keep)
-    ///
-    /// Returns the full image with masked regions replaced by inpainted content.
+    /// Tiles the full page with 512×512 windows (stride 448), skipping tiles
+    /// without mask pixels. Nearby bubbles naturally share tiles, minimizing
+    /// the total number of inference calls.
     pub fn inpaint(&self, img: &DynamicImage, mask: &GrayImage) -> Result<DynamicImage> {
         let (img_w, img_h) = img.dimensions();
         let (mask_w, mask_h) = mask.dimensions();
@@ -41,50 +47,57 @@ impl LamaInpainter {
             "Image ({img_w}x{img_h}) and mask ({mask_w}x{mask_h}) dimensions must match"
         );
 
-        // Find bounding box of non-zero mask pixels
-        let (bbox_x1, bbox_y1, bbox_x2, bbox_y2) = match mask_bbox(mask) {
-            Some(bb) => bb,
-            None => {
-                tracing::debug!("Mask is empty, returning original image");
-                return Ok(img.clone());
-            }
-        };
+        if !has_mask_pixels(mask, 0, 0, mask_w, mask_h) {
+            return Ok(img.clone());
+        }
 
-        // Expand bbox with context padding, clamped to image bounds
-        let roi_x1 = bbox_x1.saturating_sub(CONTEXT_PAD);
-        let roi_y1 = bbox_y1.saturating_sub(CONTEXT_PAD);
-        let roi_x2 = (bbox_x2 + CONTEXT_PAD).min(img_w);
-        let roi_y2 = (bbox_y2 + CONTEXT_PAD).min(img_h);
-        let roi_w = roi_x2 - roi_x1;
-        let roi_h = roi_y2 - roi_y1;
+        let rgb = img.to_rgb8();
+        let mut result = rgb.clone();
+        let mut tile_count = 0u32;
+        let x_starts = tile_starts(img_w);
+        let y_starts = tile_starts(img_h);
 
-        tracing::debug!(
-            "Inpaint ROI: ({roi_x1},{roi_y1})-({roi_x2},{roi_y2}) = {roi_w}x{roi_h}"
-        );
+        for &tile_y in &y_starts {
+            for &tile_x in &x_starts {
+                let tile_w = MODEL_SIZE_U32.min(img_w - tile_x);
+                let tile_h = MODEL_SIZE_U32.min(img_h - tile_y);
 
-        // Crop ROI from image and mask
-        let roi_img = img.crop_imm(roi_x1, roi_y1, roi_w, roi_h).to_rgb8();
-        let roi_mask = crop_gray(mask, roi_x1, roi_y1, roi_w, roi_h);
+                if !has_mask_pixels(mask, tile_x, tile_y, tile_w, tile_h) {
+                    continue;
+                }
 
-        // Inpaint the ROI (handles tiling if needed)
-        let inpainted_roi = if roi_w <= MODEL_SIZE_U32 && roi_h <= MODEL_SIZE_U32 {
-            self.inpaint_tile(&roi_img, &roi_mask)?
-        } else {
-            self.inpaint_tiled(&roi_img, &roi_mask)?
-        };
+                let tile_mask = crop_gray(mask, tile_x, tile_y, tile_w, tile_h);
 
-        // Composite: replace only masked pixels in the original image
-        let mut result = img.to_rgb8();
-        for y in 0..roi_h {
-            for x in 0..roi_w {
-                if roi_mask.get_pixel(x, y).0[0] > 0 {
-                    let px = roi_x1 + x;
-                    let py = roi_y1 + y;
-                    result.put_pixel(px, py, *inpainted_roi.get_pixel(x, y));
+                if is_flat_tile(&rgb, &tile_mask, tile_x, tile_y) {
+                    // Flat background — median fill, skip LaMa
+                    let bg = median_bg(&rgb, &tile_mask, tile_x, tile_y);
+                    for ly in 0..tile_h {
+                        for lx in 0..tile_w {
+                            if tile_mask.get_pixel(lx, ly).0[0] > 0 {
+                                result.put_pixel(tile_x + lx, tile_y + ly, bg);
+                            }
+                        }
+                    }
+                } else {
+                    let tile_img = crop_rgb(&rgb, tile_x, tile_y, tile_w, tile_h);
+                    let inpainted = self.inpaint_tile(&tile_img, &tile_mask)?;
+                    for ly in 0..tile_h {
+                        for lx in 0..tile_w {
+                            if tile_mask.get_pixel(lx, ly).0[0] > 0 {
+                                result.put_pixel(
+                                    tile_x + lx,
+                                    tile_y + ly,
+                                    *inpainted.get_pixel(lx, ly),
+                                );
+                            }
+                        }
+                    }
+                    tile_count += 1;
                 }
             }
         }
 
+        tracing::debug!("Inpaint: {tile_count} tiles on {img_w}x{img_h} page");
         Ok(DynamicImage::ImageRgb8(result))
     }
 
@@ -93,24 +106,47 @@ impl LamaInpainter {
     fn inpaint_tile(&self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
         let (w, h) = img.dimensions();
         debug_assert!(w <= MODEL_SIZE_U32 && h <= MODEL_SIZE_U32);
+        let w = w as usize;
+        let h = h as usize;
+        let model_plane = MODEL_SIZE * MODEL_SIZE;
 
         // Build padded 512×512 image tensor [1, 3, 512, 512] normalized to [0, 1]
         let mut img_arr = Array4::<f32>::zeros((1, 3, MODEL_SIZE, MODEL_SIZE));
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                let pixel = img.get_pixel(x as u32, y as u32);
-                img_arr[[0, 0, y, x]] = pixel[0] as f32 / 255.0;
-                img_arr[[0, 1, y, x]] = pixel[1] as f32 / 255.0;
-                img_arr[[0, 2, y, x]] = pixel[2] as f32 / 255.0;
+        {
+            let src = img.as_raw();
+            let buf = img_arr
+                .as_slice_mut()
+                .ok_or_else(|| anyhow::anyhow!("LaMa image tensor must be contiguous"))?;
+            let (r_plane, gb_plane) = buf.split_at_mut(model_plane);
+            let (g_plane, b_plane) = gb_plane.split_at_mut(model_plane);
+            for y in 0..h {
+                let src_row = y * w * 3;
+                let dst_row = y * MODEL_SIZE;
+                for x in 0..w {
+                    let src_idx = src_row + x * 3;
+                    let dst_idx = dst_row + x;
+                    r_plane[dst_idx] = src[src_idx] as f32 * INV_255;
+                    g_plane[dst_idx] = src[src_idx + 1] as f32 * INV_255;
+                    b_plane[dst_idx] = src[src_idx + 2] as f32 * INV_255;
+                }
             }
         }
 
         // Build padded 512×512 mask tensor [1, 1, 512, 512] with 0/1 values
         let mut mask_arr = Array4::<f32>::zeros((1, 1, MODEL_SIZE, MODEL_SIZE));
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                if mask.get_pixel(x as u32, y as u32).0[0] > 0 {
-                    mask_arr[[0, 0, y, x]] = 1.0;
+        {
+            let src = mask.as_raw();
+            let plane = &mut mask_arr
+                .as_slice_mut()
+                .ok_or_else(|| anyhow::anyhow!("LaMa mask tensor must be contiguous"))?
+                [..model_plane];
+            for y in 0..h {
+                let src_row = y * w;
+                let dst_row = y * MODEL_SIZE;
+                let src_line = &src[src_row..src_row + w];
+                let dst_line = &mut plane[dst_row..dst_row + w];
+                for (dst, &value) in dst_line.iter_mut().zip(src_line.iter()) {
+                    *dst = if value > 0 { 1.0 } else { 0.0 };
                 }
             }
         }
@@ -118,9 +154,10 @@ impl LamaInpainter {
         // Run ort inference
         let img_ref = TensorRef::from_array_view(&img_arr)?;
         let mask_ref = TensorRef::from_array_view(&mask_arr)?;
-        let session_mutex = self.session.get()
+        let session = self
+            .session
+            .get()
             .ok_or_else(|| anyhow::anyhow!("LaMa inpainter session not loaded"))?;
-        let mut session = session_mutex.lock().unwrap();
         let outputs = session.run(ort::inputs![
             "image" => img_ref,
             "mask" => mask_ref,
@@ -128,119 +165,63 @@ impl LamaInpainter {
 
         // Output is [1, 3, 512, 512] in [0, 1]
         let (out_shape, out_data) = outputs["output"].try_extract_tensor::<f32>()?;
-        let plane = out_shape[2] as usize * out_shape[3] as usize;
+        anyhow::ensure!(
+            out_shape.len() == 4,
+            "Unexpected LaMa output rank: {:?}",
+            out_shape
+        );
+        let out_h = out_shape[2] as usize;
+        let out_w = out_shape[3] as usize;
+        anyhow::ensure!(
+            out_h >= h && out_w >= w,
+            "Unexpected LaMa output size: {:?}, expected at least {}x{}",
+            out_shape,
+            w,
+            h
+        );
+        let out_plane = out_h * out_w;
 
-        let mut result = RgbImage::new(w, h);
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                let idx = y * MODEL_SIZE + x;
-                let r = (out_data[idx] * 255.0).round().clamp(0.0, 255.0) as u8;
-                let g = (out_data[plane + idx] * 255.0).round().clamp(0.0, 255.0) as u8;
-                let b = (out_data[2 * plane + idx] * 255.0).round().clamp(0.0, 255.0) as u8;
-                result.put_pixel(x as u32, y as u32, Rgb([r, g, b]));
-            }
-        }
-
-        Ok(result)
-    }
-
-    /// Inpaint a region larger than 512×512 by tiling with overlap.
-    /// Each tile is 512×512 with `TILE_OVERLAP` pixel overlap.
-    /// Overlapping regions are blended with linear weights.
-    fn inpaint_tiled(&self, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage> {
-        let (w, h) = img.dimensions();
-        let step = MODEL_SIZE_U32 - TILE_OVERLAP;
-
-        // Accumulate weighted RGB + weight map for blending
-        let mut accum_r = vec![0.0f64; (w * h) as usize];
-        let mut accum_g = vec![0.0f64; (w * h) as usize];
-        let mut accum_b = vec![0.0f64; (w * h) as usize];
-        let mut weight_map = vec![0.0f64; (w * h) as usize];
-
-        let mut ty = 0u32;
-        while ty < h {
-            let tile_y = ty.min(h.saturating_sub(MODEL_SIZE_U32));
-            let mut tx = 0u32;
-            while tx < w {
-                let tile_x = tx.min(w.saturating_sub(MODEL_SIZE_U32));
-                let tile_w = MODEL_SIZE_U32.min(w - tile_x);
-                let tile_h = MODEL_SIZE_U32.min(h - tile_y);
-
-                // Check if this tile has any masked pixels — skip if not
-                if !has_mask_pixels(mask, tile_x, tile_y, tile_w, tile_h) {
-                    tx += step;
-                    continue;
-                }
-
-                let tile_img = crop_rgb(img, tile_x, tile_y, tile_w, tile_h);
-                let tile_mask = crop_gray(mask, tile_x, tile_y, tile_w, tile_h);
-
-                let inpainted = self.inpaint_tile(&tile_img, &tile_mask)?;
-
-                // Blend into accumulator with linear ramp weights at edges
-                for ly in 0..tile_h {
-                    for lx in 0..tile_w {
-                        let gx = tile_x + lx;
-                        let gy = tile_y + ly;
-                        let idx = (gy * w + gx) as usize;
-
-                        let wt = edge_weight(lx, ly, tile_w, tile_h, TILE_OVERLAP);
-                        let px = inpainted.get_pixel(lx, ly);
-                        accum_r[idx] += px[0] as f64 * wt;
-                        accum_g[idx] += px[1] as f64 * wt;
-                        accum_b[idx] += px[2] as f64 * wt;
-                        weight_map[idx] += wt;
-                    }
-                }
-
-                tx += step;
-            }
-            ty += step;
-        }
-
-        // Build final image: use blended result where weight > 0, original elsewhere
-        let mut result = img.clone();
+        let mut result_raw = vec![0u8; w * h * 3];
         for y in 0..h {
+            let src_row = y * out_w;
+            let dst_row = y * w * 3;
             for x in 0..w {
-                let idx = (y * w + x) as usize;
-                if weight_map[idx] > 0.0 {
-                    let r = (accum_r[idx] / weight_map[idx]).round().clamp(0.0, 255.0) as u8;
-                    let g = (accum_g[idx] / weight_map[idx]).round().clamp(0.0, 255.0) as u8;
-                    let b = (accum_b[idx] / weight_map[idx]).round().clamp(0.0, 255.0) as u8;
-                    result.put_pixel(x, y, Rgb([r, g, b]));
-                }
+                let src_idx = src_row + x;
+                let dst_idx = dst_row + x * 3;
+                result_raw[dst_idx] = unit_f32_to_u8(out_data[src_idx]);
+                result_raw[dst_idx + 1] = unit_f32_to_u8(out_data[out_plane + src_idx]);
+                result_raw[dst_idx + 2] = unit_f32_to_u8(out_data[2 * out_plane + src_idx]);
             }
         }
+
+        let result = RgbImage::from_raw(w as u32, h as u32, result_raw)
+            .ok_or_else(|| anyhow::anyhow!("Failed to build LaMa output image"))?;
 
         Ok(result)
     }
 }
 
-/// Find the axis-aligned bounding box of non-zero pixels in a grayscale mask.
-/// Returns `(x1, y1, x2, y2)` where x2/y2 are exclusive.
-fn mask_bbox(mask: &GrayImage) -> Option<(u32, u32, u32, u32)> {
-    let (w, h) = mask.dimensions();
-    let mut x1 = w;
-    let mut y1 = h;
-    let mut x2 = 0u32;
-    let mut y2 = 0u32;
+#[inline]
+fn unit_f32_to_u8(value: f32) -> u8 {
+    (value * 255.0).round().clamp(0.0, 255.0) as u8
+}
 
-    for y in 0..h {
-        for x in 0..w {
-            if mask.get_pixel(x, y).0[0] > 0 {
-                x1 = x1.min(x);
-                y1 = y1.min(y);
-                x2 = x2.max(x + 1);
-                y2 = y2.max(y + 1);
-            }
-        }
+/// Generate non-duplicated tile origins that fully cover a 1D axis.
+fn tile_starts(length: u32) -> Vec<u32> {
+    if length <= MODEL_SIZE_U32 {
+        return vec![0];
     }
 
-    if x2 > x1 && y2 > y1 {
-        Some((x1, y1, x2, y2))
-    } else {
-        None
+    let step = MODEL_SIZE_U32 - TILE_OVERLAP;
+    let last = length - MODEL_SIZE_U32;
+    let mut starts = Vec::new();
+    let mut pos = 0u32;
+    while pos < last {
+        starts.push(pos);
+        pos = pos.saturating_add(step);
     }
+    starts.push(last);
+    starts
 }
 
 /// Crop a sub-region from a GrayImage.
@@ -269,6 +250,63 @@ fn crop_rgb(img: &RgbImage, x: u32, y: u32, w: u32, h: u32) -> RgbImage {
     out
 }
 
+/// Check if a tile's background is flat (uniform color) by sampling non-masked
+/// pixels and checking their luminance range.
+fn is_flat_tile(img: &RgbImage, tile_mask: &GrayImage, ox: u32, oy: u32) -> bool {
+    let (tw, th) = tile_mask.dimensions();
+    let (iw, ih) = img.dimensions();
+    let mut lums: Vec<u8> = Vec::new();
+
+    for ly in (0..th).step_by(4) {
+        for lx in (0..tw).step_by(4) {
+            if tile_mask.get_pixel(lx, ly).0[0] > 0 {
+                continue;
+            }
+            let sx = (ox + lx).min(iw - 1);
+            let sy = (oy + ly).min(ih - 1);
+            let p = img.get_pixel(sx, sy);
+            lums.push(((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8);
+        }
+    }
+    if lums.len() < 16 {
+        return true;
+    }
+    lums.sort_unstable();
+    let n = lums.len();
+    (lums[n * 99 / 100] - lums[n / 100]) <= FLAT_TILE_RANGE
+}
+
+/// Compute median background color from non-masked pixels in a tile.
+fn median_bg(img: &RgbImage, tile_mask: &GrayImage, ox: u32, oy: u32) -> Rgb<u8> {
+    let (tw, th) = tile_mask.dimensions();
+    let (iw, ih) = img.dimensions();
+    let mut rs = Vec::new();
+    let mut gs = Vec::new();
+    let mut bs = Vec::new();
+
+    for ly in (0..th).step_by(4) {
+        for lx in (0..tw).step_by(4) {
+            if tile_mask.get_pixel(lx, ly).0[0] > 0 {
+                continue;
+            }
+            let sx = (ox + lx).min(iw - 1);
+            let sy = (oy + ly).min(ih - 1);
+            let p = img.get_pixel(sx, sy);
+            rs.push(p[0]);
+            gs.push(p[1]);
+            bs.push(p[2]);
+        }
+    }
+    if rs.is_empty() {
+        return Rgb([255, 255, 255]);
+    }
+    rs.sort_unstable();
+    gs.sort_unstable();
+    bs.sort_unstable();
+    let m = rs.len() / 2;
+    Rgb([rs[m], gs[m], bs[m]])
+}
+
 /// Check if any mask pixels in the given region are non-zero.
 fn has_mask_pixels(mask: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> bool {
     for ly in 0..h {
@@ -283,64 +321,10 @@ fn has_mask_pixels(mask: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> bool {
     false
 }
 
-/// Linear ramp blending weight: 1.0 in the interior, ramps down to 0.0
-/// over `overlap` pixels at each edge. Prevents seam artifacts between tiles.
-fn edge_weight(x: u32, y: u32, w: u32, h: u32, overlap: u32) -> f64 {
-    let ramp = |pos: u32, size: u32| -> f64 {
-        let d_start = pos as f64;
-        let d_end = (size - 1 - pos) as f64;
-        let d = d_start.min(d_end);
-        (d / overlap as f64).min(1.0)
-    };
-    ramp(x, w) * ramp(y, h)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::Luma;
-
-    #[test]
-    fn test_mask_bbox_empty() {
-        let mask = GrayImage::new(100, 100);
-        assert!(mask_bbox(&mask).is_none());
-    }
-
-    #[test]
-    fn test_mask_bbox_single_pixel() {
-        let mut mask = GrayImage::new(100, 100);
-        mask.put_pixel(50, 60, Luma([255]));
-        assert_eq!(mask_bbox(&mask), Some((50, 60, 51, 61)));
-    }
-
-    #[test]
-    fn test_mask_bbox_region() {
-        let mut mask = GrayImage::new(200, 200);
-        for y in 30..80 {
-            for x in 40..120 {
-                mask.put_pixel(x, y, Luma([255]));
-            }
-        }
-        assert_eq!(mask_bbox(&mask), Some((40, 30, 120, 80)));
-    }
-
-    #[test]
-    fn test_edge_weight_center() {
-        let w = edge_weight(256, 256, 512, 512, 64);
-        assert!((w - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_edge_weight_corner() {
-        let w = edge_weight(0, 0, 512, 512, 64);
-        assert!(w < 0.01);
-    }
-
-    #[test]
-    fn test_edge_weight_edge() {
-        let w = edge_weight(32, 256, 512, 512, 64);
-        assert!((w - 0.5).abs() < 0.02);
-    }
 
     #[test]
     fn test_crop_gray() {
@@ -363,5 +347,12 @@ mod tests {
         mask.put_pixel(50, 50, Luma([255]));
         assert!(has_mask_pixels(&mask, 40, 40, 20, 20));
         assert!(!has_mask_pixels(&mask, 0, 0, 10, 10));
+    }
+
+    #[test]
+    fn test_tile_starts_no_duplicates() {
+        assert_eq!(tile_starts(512), vec![0]);
+        assert_eq!(tile_starts(513), vec![0, 1]);
+        assert_eq!(tile_starts(1024), vec![0, 448, 512]);
     }
 }

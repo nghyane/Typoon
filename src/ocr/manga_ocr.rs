@@ -31,7 +31,11 @@ impl MangaOcrAdapter {
             vocab.len(),
         );
 
-        Ok(Self { encoder, decoder, vocab })
+        Ok(Self {
+            encoder,
+            decoder,
+            vocab,
+        })
     }
 
     /// Preprocess: grayscale → RGB → resize 224×224 → rescale/normalize → NCHW
@@ -62,33 +66,33 @@ impl MangaOcrAdapter {
     fn generate(&self, pixel_values: &Array4<f32>) -> Result<Vec<i64>> {
         // Encode
         let encoder_input = TensorRef::from_array_view(pixel_values)?;
-        let mut encoder_session = self.encoder.get()
-            .ok_or_else(|| anyhow::anyhow!("manga-ocr encoder not loaded"))?
-            .lock().unwrap();
+        let encoder_session = self
+            .encoder
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("manga-ocr encoder not loaded"))?;
         let encoder_outputs = encoder_session.run(ort::inputs![encoder_input])?;
 
         // Extract encoder_hidden_states — first output, copy data to own it
-        let hidden_key = encoder_outputs.keys().next()
+        let hidden_key = encoder_outputs
+            .keys()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("Encoder produced no outputs"))?
             .to_string();
         let (shape, data) = encoder_outputs[&*hidden_key].try_extract_tensor::<f32>()?;
         let hidden_vec: Vec<f32> = data.to_vec();
         let hidden_shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
 
-        // Release encoder session and outputs before decoder loop
         drop(encoder_outputs);
-        drop(encoder_session);
 
         // Decoder loop
         let mut token_ids: Vec<i64> = vec![BOS_TOKEN];
-        let mut decoder_session = self.decoder.get()
-            .ok_or_else(|| anyhow::anyhow!("manga-ocr decoder not loaded"))?
-            .lock().unwrap();
+        let decoder_session = self
+            .decoder
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("manga-ocr decoder not loaded"))?;
 
-        let hidden_arr = ndarray::ArrayD::from_shape_vec(
-            ndarray::IxDyn(&hidden_shape),
-            hidden_vec,
-        )?;
+        let hidden_arr =
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&hidden_shape), hidden_vec)?;
 
         for _ in 0..MAX_LENGTH {
             let seq_len = token_ids.len();
@@ -98,15 +102,17 @@ impl MangaOcrAdapter {
 
             let hidden_ref = TensorRef::from_array_view(&hidden_arr)?;
             let ids_ref = TensorRef::from_array_view(&ids_arr)?;
-            let decoder_outputs = decoder_session.run(
-                ort::inputs!["encoder_hidden_states" => hidden_ref, "input_ids" => ids_ref],
-            )?;
+            let decoder_outputs = decoder_session
+                .run(ort::inputs!["encoder_hidden_states" => hidden_ref, "input_ids" => ids_ref])?;
 
             // logits: [1, seq_len, vocab_size]
-            let logits_key = decoder_outputs.keys().next()
+            let logits_key = decoder_outputs
+                .keys()
+                .next()
                 .ok_or_else(|| anyhow::anyhow!("Decoder produced no outputs"))?
                 .to_string();
-            let (_logits_shape, logits_data) = decoder_outputs[&*logits_key].try_extract_tensor::<f32>()?;
+            let (_logits_shape, logits_data) =
+                decoder_outputs[&*logits_key].try_extract_tensor::<f32>()?;
 
             // Take argmax of logits[0, -1, :] (last position)
             let vocab_size = self.vocab.len();
@@ -172,7 +178,6 @@ impl MangaOcrAdapter {
             min_char_confidence: 1.0,
         })
     }
-
 }
 
 /// Convert halfwidth ASCII letters, digits, and common punctuation to fullwidth equivalents.
@@ -180,7 +185,7 @@ impl MangaOcrAdapter {
 fn half_to_full(s: &str) -> String {
     s.chars()
         .map(|c| match c {
-            '!' ..= '~' => {
+            '!'..='~' => {
                 // ASCII printable range 0x21..=0x7E maps to fullwidth 0xFF01..=0xFF5E
                 char::from_u32(c as u32 - 0x21 + 0xFF01).unwrap_or(c)
             }

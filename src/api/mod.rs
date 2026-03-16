@@ -6,8 +6,11 @@ pub use models::*;
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::{Router, routing::{get, post}};
-use tower_http::cors::{CorsLayer, AllowOrigin};
+use axum::{
+    Router,
+    routing::{get, post},
+};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::AppConfig;
 use crate::runner::TranslationRunner;
@@ -33,9 +36,10 @@ pub fn resolve_engine<'a>(
     state: &'a AppState,
     req: &TranslateImageRequest,
 ) -> Result<ResolvedEngine<'a>> {
-    let has_override = req.provider_config.as_ref().is_some_and(|c| {
-        c.endpoint.is_some() || c.api_key.is_some() || c.model.is_some()
-    });
+    let has_override = req
+        .provider_config
+        .as_ref()
+        .is_some_and(|c| c.endpoint.is_some() || c.api_key.is_some() || c.model.is_some());
 
     if has_override {
         let pc = req.provider_config.as_ref().unwrap();
@@ -49,7 +53,9 @@ pub fn resolve_engine<'a>(
         if let Some(model) = &pc.model {
             base.model = model.clone();
         }
-        Ok(ResolvedEngine::Owned(crate::runner::build_translation_engine(&base)?))
+        Ok(ResolvedEngine::Owned(
+            crate::runner::build_translation_engine(&base)?,
+        ))
     } else {
         Ok(ResolvedEngine::Borrowed(&state.runner.translation))
     }

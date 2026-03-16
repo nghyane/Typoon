@@ -54,10 +54,7 @@ impl Message {
         }
     }
 
-    pub fn tool_result_parts(
-        tool_call_id: impl Into<String>,
-        parts: Vec<ContentPart>,
-    ) -> Self {
+    pub fn tool_result_parts(tool_call_id: impl Into<String>, parts: Vec<ContentPart>) -> Self {
         Self::ToolResult {
             tool_call_id: tool_call_id.into(),
             content: parts,

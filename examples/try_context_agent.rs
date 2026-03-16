@@ -22,9 +22,7 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "Who are the main characters and their relationships?".into());
 
-    let project_id = std::env::args()
-        .nth(2)
-        .unwrap_or_else(|| "default".into());
+    let project_id = std::env::args().nth(2).unwrap_or_else(|| "default".into());
 
     tracing::info!("Question: {question:?}");
     tracing::info!("Project: {project_id}");

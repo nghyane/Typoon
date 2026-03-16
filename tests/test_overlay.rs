@@ -6,7 +6,10 @@ use base64::engine::general_purpose::STANDARD;
 const MODELS: &str = "models";
 
 const FIXTURES: &[(&str, &str)] = &[
-    ("sample_multi_bubble", "tests/fixtures/en/sample_multi_bubble.webp"),
+    (
+        "sample_multi_bubble",
+        "tests/fixtures/en/sample_multi_bubble.webp",
+    ),
     ("manhwa_test", "tests/fixtures/en/manhwa_test.webp"),
     ("manhwa_test2", "tests/fixtures/en/manhwa_test2.webp"),
     ("manhwa_test3", "tests/fixtures/en/manhwa_test3.webp"),
@@ -78,7 +81,9 @@ async fn test_overlay_render() {
         // Save rendered image: prefer canvas agent output, fall back to overlay::render
         let out_path = out_dir.join(format!("overlay_{name}.png"));
         if let Some(rendered_b64) = &response.rendered_image_png_b64 {
-            let png_bytes = STANDARD.decode(rendered_b64).expect("Failed to decode rendered PNG");
+            let png_bytes = STANDARD
+                .decode(rendered_b64)
+                .expect("Failed to decode rendered PNG");
             std::fs::write(&out_path, &png_bytes).expect("Failed to write rendered PNG");
             println!("  Saved (canvas agent): {}", out_path.display());
         } else {

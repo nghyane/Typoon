@@ -53,7 +53,10 @@ pub async fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
 
         tracing::info!("get_context: {:?}", args.question);
         match crate::context::agent::answer_context_question(
-            agent, store, project_id, &args.question,
+            agent,
+            store,
+            project_id,
+            &args.question,
         )
         .await
         {

@@ -70,15 +70,16 @@ impl Glossary {
         )
         .context("Failed to initialize glossary schema")?;
 
-        Ok(Self { conn: std::sync::Mutex::new(conn) })
+        Ok(Self {
+            conn: std::sync::Mutex::new(conn),
+        })
     }
 
     /// Import terms from a TOML file. Upserts: existing source_term gets updated.
     pub fn import_toml(&self, toml_path: &Path) -> Result<usize> {
         let text = std::fs::read_to_string(toml_path)
             .with_context(|| format!("Failed to read glossary TOML: {}", toml_path.display()))?;
-        let file: GlossaryFile =
-            toml::from_str(&text).context("Failed to parse glossary TOML")?;
+        let file: GlossaryFile = toml::from_str(&text).context("Failed to parse glossary TOML")?;
 
         let conn = self.conn.lock().unwrap();
         let mut count = 0;
@@ -92,9 +93,15 @@ impl Glossary {
         }
 
         // Rebuild FTS index after bulk import
-        conn.execute("INSERT INTO glossary_fts(glossary_fts) VALUES('rebuild')", [])?;
+        conn.execute(
+            "INSERT INTO glossary_fts(glossary_fts) VALUES('rebuild')",
+            [],
+        )?;
 
-        tracing::info!("Imported {count} glossary terms from {}", toml_path.display());
+        tracing::info!(
+            "Imported {count} glossary terms from {}",
+            toml_path.display()
+        );
         Ok(count)
     }
 

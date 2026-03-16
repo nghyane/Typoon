@@ -10,6 +10,7 @@ tests/fixtures/ctrlaltresign/
 __pycache__/
 models/lama-manga.safetensors
 models/cache/
+models/ep_cache/
 models/*.pt
 runs/
 scripts/distill/overfit_output/

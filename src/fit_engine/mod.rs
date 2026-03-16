@@ -24,7 +24,10 @@ impl FitEngine {
     /// Fit a page of bubbles. Each bubble gets the largest font that fits
     /// its own drawable area — no artificial caps, no cross-bubble normalization.
     /// The bbox from detection already encodes the original text's size.
-    pub fn fit_page_areas(items: &[(&str, &DrawableArea)], _page_width: u32) -> Result<Vec<FitResult>> {
+    pub fn fit_page_areas(
+        items: &[(&str, &DrawableArea)],
+        _page_width: u32,
+    ) -> Result<Vec<FitResult>> {
         items
             .iter()
             .map(|(text, area)| Self::fit_area(text, area))
@@ -155,9 +158,13 @@ mod tests {
         // vs dialogue: 200×40 (inset=2 → 196×36)
         // Narration should get ~2× the font size of dialogue
         let narration = DrawableArea::from_polygon(
-            &[[0.0, 0.0], [400.0, 0.0], [400.0, 80.0], [0.0, 80.0]], 2.0);
+            &[[0.0, 0.0], [400.0, 0.0], [400.0, 80.0], [0.0, 80.0]],
+            2.0,
+        );
         let dialogue = DrawableArea::from_polygon(
-            &[[0.0, 0.0], [200.0, 0.0], [200.0, 40.0], [0.0, 40.0]], 2.0);
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 40.0], [0.0, 40.0]],
+            2.0,
+        );
         let items: Vec<(&str, &DrawableArea)> = vec![
             ("Big narration text", &narration),
             ("Hello world", &dialogue),
@@ -166,23 +173,30 @@ mod tests {
         assert!(
             results[0].font_size_px > results[1].font_size_px,
             "Narration {}px should be bigger than dialogue {}px",
-            results[0].font_size_px, results[1].font_size_px
+            results[0].font_size_px,
+            results[1].font_size_px
         );
     }
 
     #[test]
     fn test_fit_overflow() {
         let polygon = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
-        let result = FitEngine::fit("This is a very long text that should overflow", &polygon).unwrap();
+        let result =
+            FitEngine::fit("This is a very long text that should overflow", &polygon).unwrap();
         assert!(result.overflow);
     }
 
     #[test]
     fn test_fit_wrapping() {
         let polygon = vec![[0.0, 0.0], [150.0, 0.0], [150.0, 200.0], [0.0, 200.0]];
-        let result = FitEngine::fit("Hello wonderful world of manga translation", &polygon).unwrap();
+        let result =
+            FitEngine::fit("Hello wonderful world of manga translation", &polygon).unwrap();
         assert!(!result.overflow);
-        assert!(result.text.contains('\n'), "Expected wrapped text: {:?}", result.text);
+        assert!(
+            result.text.contains('\n'),
+            "Expected wrapped text: {:?}",
+            result.text
+        );
     }
 
     #[test]
@@ -195,7 +209,9 @@ mod tests {
     fn test_drawable_area_size() {
         use crate::text_layout::DrawableArea;
         let area = DrawableArea::from_polygon(
-            &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]], 5.0);
+            &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]],
+            5.0,
+        );
         let (w, h) = area.size();
         assert!((w - 190.0).abs() < 0.1, "w={w}");
         assert!((h - 90.0).abs() < 0.1, "h={h}");

@@ -73,7 +73,8 @@ impl<'a> PromptBuilder<'a> {
    - search_glossary(): only for terms NOT in the provided glossary above."
         };
 
-        format!("\
+        format!(
+            "\
 ## Workflow
 1. Analyze: read all OCR text to understand dialogue flow, characters, tone, and relationships.
    Infer speakers from names, honorifics, speech register, terms of address.
@@ -93,33 +94,40 @@ impl<'a> PromptBuilder<'a> {
 IMPORTANT — efficiency:
 - Target: 2-4 total messages. Batch aggressively.
 - Do NOT trickle translations across many turns.
-- Combine tool calls in a single message when possible.\n\n")
+- Combine tool calls in a single message when possible.\n\n"
+        )
     }
 
     /// Source-language notes for the system prompt.
     pub fn source_policy(&self) -> &'static str {
         match self.req.source_lang.as_str() {
-            "ja" => "\
+            "ja" => {
+                "\
 ## Source: Japanese manga
 - Reading order: right-to-left. Bubble order follows this.
 - Japanese often omits subject — infer from context/visuals.
 - Keigo levels signal character relationships — reflect in translation register.
 - Honorifics (-san, -kun, -chan, -sama, -sensei, -senpai): preserve or adapt per target.
-- SFX onomatopoeia (ドキドキ, ゴゴゴ): translate or transliterate per target norms.\n\n",
+- SFX onomatopoeia (ドキドキ, ゴゴゴ): translate or transliterate per target norms.\n\n"
+            }
 
-            "ko" => "\
+            "ko" => {
+                "\
 ## Source: Korean manhwa
 - Reading order: left-to-right. Webtoon format (vertical scroll).
 - Speech levels (존댓말/반말) signal power dynamics — reflect in translation register.
 - Honorifics (-님, -씨, 선배, 형/오빠/언니/누나): adapt per target conventions.
-- Onomatopoeia (쿵, 두근두근): translate or adapt.\n\n",
+- Onomatopoeia (쿵, 두근두근): translate or adapt.\n\n"
+            }
 
-            "zh" => "\
+            "zh" => {
+                "\
 ## Source: Chinese manhua
 - Reading order: left-to-right (modern).
 - Chengyu (成语): translate meaning, not literally.
 - Cultivation/xianxia terms (修炼, 气, 丹田, 境界): use glossary if available.
-- Honorifics (先生, 大人, 小姐): contextual — adapt per target.\n\n",
+- Honorifics (先生, 大人, 小姐): contextual — adapt per target.\n\n"
+            }
 
             _ => "",
         }
@@ -128,7 +136,8 @@ IMPORTANT — efficiency:
     /// Target-language notes for the system prompt.
     pub fn target_policy(&self) -> &'static str {
         match self.req.target_lang.as_str() {
-            "vi" => "\
+            "vi" => {
+                "\
 ## Target: Vietnamese
 - Xưng hô is chosen from the speaker–addressee RELATIONSHIP, not literal source pronouns.
 - Infer relationships from text cues first: names, honorifics, speech register, terms of address.
@@ -142,14 +151,17 @@ default to tôi/anh/chị/em/ông/bà as appropriate. NEVER cậu/tớ for adult
 - Rough/aggressive: tao/mày. Formal/respectful: tôi/ngài.
 - Keep xưng hô consistent within the same scene unless the relationship shifts.
 - If you viewed a page and the image contradicts a text-only assumption, trust the image.
-- Prefer natural Vietnamese; use Hán-Việt for formal/cultivation terms when natural.\n\n",
+- Prefer natural Vietnamese; use Hán-Việt for formal/cultivation terms when natural.\n\n"
+            }
 
-            "en" => "\
+            "en" => {
+                "\
 ## Target: English
 - Natural, fluent English. Avoid translationese.
 - Preserve character voice: tough characters sound tough, polite ones sound polite.
 - Honorifics: keep -san/-kun/-senpai for manga audience, or naturalize — be consistent.
-- SFX: use English equivalents where natural (THUD, CRACK), keep original for iconic ones.\n\n",
+- SFX: use English equivalents where natural (THUD, CRACK), keep original for iconic ones.\n\n"
+            }
 
             _ => "",
         }

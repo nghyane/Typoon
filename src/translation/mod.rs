@@ -69,7 +69,10 @@ impl TranslateRequest {
         context: Vec<BubbleTranslated>,
     ) -> Self {
         Self {
-            pages: vec![PageInput { page_index: 0, bubbles }],
+            pages: vec![PageInput {
+                page_index: 0,
+                bubbles,
+            }],
             source_lang,
             target_lang,
             context,

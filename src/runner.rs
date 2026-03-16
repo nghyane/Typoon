@@ -33,9 +33,7 @@ pub struct TranslationRunner {
 impl TranslationRunner {
     pub async fn new(config: &AppConfig) -> Result<Self> {
         let ctd_path = model_hub::resolve(&config.models_dir, Model::ComicTextDetector).await?;
-        let detector = TextDetector::new(
-            LazySession::new(ctd_path),
-        );
+        let detector = TextDetector::new(LazySession::new(ctd_path));
         let ocr = OcrEngine::new(&config.models_dir).await?;
 
         let resolved = config.resolve_provider(&config.translation)?;
@@ -44,9 +42,7 @@ impl TranslationRunner {
         let inpainter = match model_hub::resolve_optional(&config.models_dir, Model::Lama).await {
             Some(path) => {
                 tracing::info!("LaMa model path resolved (lazy load): {}", path.display());
-                Some(LamaInpainter::new(
-                    LazySession::gpu(path),
-                ))
+                Some(LamaInpainter::new(LazySession::gpu(path)))
             }
             None => {
                 tracing::info!("LaMa model not available, using median fill only");
@@ -96,18 +92,18 @@ impl TranslationRunner {
                 Ok(resolved) => {
                     let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
                     let provider: Result<Box<dyn Provider>> = match resolved.provider_type {
-                        ProviderType::Anthropic => {
-                            crate::agent::anthropic::AnthropicProvider::new(
-                                &resolved.endpoint, api_key, &resolved.model,
-                            )
-                            .map(|p| Box::new(p) as Box<dyn Provider>)
-                        }
-                        ProviderType::OpenAI => {
-                            crate::agent::openai::OpenAIProvider::new(
-                                &resolved.endpoint, Some(api_key), &resolved.model,
-                            )
-                            .map(|p| Box::new(p) as Box<dyn Provider>)
-                        }
+                        ProviderType::Anthropic => crate::agent::anthropic::AnthropicProvider::new(
+                            &resolved.endpoint,
+                            api_key,
+                            &resolved.model,
+                        )
+                        .map(|p| Box::new(p) as Box<dyn Provider>),
+                        ProviderType::OpenAI => crate::agent::openai::OpenAIProvider::new(
+                            &resolved.endpoint,
+                            Some(api_key),
+                            &resolved.model,
+                        )
+                        .map(|p| Box::new(p) as Box<dyn Provider>),
                     };
                     match provider {
                         Ok(p) => {
@@ -156,13 +152,11 @@ pub fn build_translation_engine(
             .with_reasoning_effort(resolved.reasoning_effort.clone());
             Box::new(p)
         }
-        ProviderType::Anthropic => {
-            Box::new(crate::agent::anthropic::AnthropicProvider::new(
-                &resolved.endpoint,
-                api_key,
-                &resolved.model,
-            )?)
-        }
+        ProviderType::Anthropic => Box::new(crate::agent::anthropic::AnthropicProvider::new(
+            &resolved.endpoint,
+            api_key,
+            &resolved.model,
+        )?),
     };
     Ok(TranslationEngine::new(provider))
 }

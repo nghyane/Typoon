@@ -726,7 +726,7 @@ def export_onnx(model: LamaInpainting, output_path: str):
         model,
         (dummy_image, dummy_mask),
         output_path,
-        opset_version=17,
+        opset_version=18,
         input_names=["image", "mask"],
         output_names=["output"],
         dynamic_axes=None,

@@ -73,7 +73,9 @@ pub struct BubbleResult {
     pub text_mask: Option<LocalTextMask>,
 }
 
-fn default_align() -> String { "center".into() }
+fn default_align() -> String {
+    "center".into()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {

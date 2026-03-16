@@ -17,7 +17,9 @@ const LLM_TIMEOUT_SECS: u64 = 180;
 
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let a = t.as_nanos() as u64;
     let b = (t.as_secs() ^ 0xDEAD_BEEF) * 6364136223846793005;
     format!("{a:016x}-{b:016x}")
@@ -56,7 +58,8 @@ impl Provider for OpenAIProvider {
         &'a self,
         messages: &'a [Message],
         tools: &'a [ToolDef],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CallResponse>> + Send + 'a>>
+    {
         Box::pin(async move {
             let messages_json = serialize_messages(messages);
 
@@ -79,9 +82,7 @@ impl Provider for OpenAIProvider {
                     chat.create_byot(body),
                 )
                 .await
-                .map_err(|_| {
-                    anyhow::anyhow!("LLM call timed out ({}s)", LLM_TIMEOUT_SECS)
-                })?
+                .map_err(|_| anyhow::anyhow!("LLM call timed out ({}s)", LLM_TIMEOUT_SECS))?
                 .context("LLM call failed")?;
 
             let choice = raw
@@ -141,20 +142,28 @@ fn serialize_message(msg: &Message) -> serde_json::Value {
                 msg["content"] = serde_json::json!(text);
             }
             if !tool_calls.is_empty() {
-                msg["tool_calls"] = serde_json::json!(tool_calls.iter().map(|tc| {
-                    serde_json::json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments
-                        }
-                    })
-                }).collect::<Vec<_>>());
+                msg["tool_calls"] = serde_json::json!(
+                    tool_calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                );
             }
             msg
         }
-        Message::ToolResult { tool_call_id, content } => {
+        Message::ToolResult {
+            tool_call_id,
+            content,
+        } => {
             if content.len() == 1 {
                 if let ContentPart::Text(text) = &content[0] {
                     return serde_json::json!({

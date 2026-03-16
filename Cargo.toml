@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ONNX Runtime — EP features are additive; ort falls back gracefully at runtime
-ort = { git = "https://github.com/pykeio/ort.git", rev = "f5c1548f88c1685b4347e6eb7af82d000d2cca95", features = ["cuda", "coreml", "directml"] }
+ort = { git = "https://github.com/nghyane/ort.git", branch = "thread-safe-run", features = ["cuda", "coreml", "directml"] }
 
 # Image processing
 image = "0.25"

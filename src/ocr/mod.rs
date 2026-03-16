@@ -1,5 +1,5 @@
-mod ppocr;
 mod manga_ocr;
+mod ppocr;
 
 use anyhow::Result;
 use image::GrayImage;
@@ -88,7 +88,9 @@ impl OcrEngine {
 
     /// Detect text regions using PP-OCR's DB detection model
     pub fn detect(&self, img: &image::DynamicImage) -> Result<DetectionOutput> {
-        let ppocr = self.ppocr.as_ref()
+        let ppocr = self
+            .ppocr
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("PP-OCR adapter not loaded"))?;
         ppocr.detect(img)
     }
@@ -97,12 +99,16 @@ impl OcrEngine {
     pub fn recognize(&self, image: &image::DynamicImage, lang: &str) -> Result<OcrResult> {
         match lang {
             "ja" => {
-                let provider = self.manga_ocr.as_ref()
+                let provider = self
+                    .manga_ocr
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("manga-ocr model not loaded"))?;
                 provider.recognize(image)
             }
             _ => {
-                let provider = self.ppocr.as_ref()
+                let provider = self
+                    .ppocr
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("PP-OCR model not loaded"))?;
                 provider.recognize(image)
             }

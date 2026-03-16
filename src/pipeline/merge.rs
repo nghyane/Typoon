@@ -61,7 +61,10 @@ impl GroupState {
     fn from_line(polygon: &[[f64; 2]]) -> Self {
         let (x1, y1, x2, y2) = bbox(polygon);
         Self {
-            x1, y1, x2, y2,
+            x1,
+            y1,
+            x2,
+            y2,
             angle_sum: line_angle(polygon),
             height_sum: y2 - y1,
             line_count: 1,
@@ -86,7 +89,9 @@ impl GroupState {
         }
     }
 
-    fn w(&self) -> f64 { self.x2 - self.x1 }
+    fn w(&self) -> f64 {
+        self.x2 - self.x1
+    }
 
     fn avg_angle(&self) -> f64 {
         self.angle_sum / self.line_count.max(1) as f64
@@ -97,25 +102,37 @@ impl GroupState {
     }
 
     fn median_gap(&self) -> Option<f64> {
-        if self.gaps.is_empty() { return None; }
+        if self.gaps.is_empty() {
+            return None;
+        }
         Some(self.gaps[self.gaps.len() / 2])
     }
 
     fn v_gap_to(&self, ly1: f64, ly2: f64) -> f64 {
-        if ly2 < self.y1 { self.y1 - ly2 }
-        else if ly1 > self.y2 { ly1 - self.y2 }
-        else { 0.0 }
+        if ly2 < self.y1 {
+            self.y1 - ly2
+        } else if ly1 > self.y2 {
+            ly1 - self.y2
+        } else {
+            0.0
+        }
     }
 
     fn h_gap_to(&self, lx1: f64, lx2: f64) -> f64 {
-        if lx2 < self.x1 { self.x1 - lx2 }
-        else if lx1 > self.x2 { lx1 - self.x2 }
-        else { 0.0 }
+        if lx2 < self.x1 {
+            self.x1 - lx2
+        } else if lx1 > self.x2 {
+            lx1 - self.x2
+        } else {
+            0.0
+        }
     }
 
     fn h_overlap_ratio(&self, lx1: f64, lx2: f64) -> f64 {
         let overlap = self.x2.min(lx2) - self.x1.max(lx1);
-        if overlap <= 0.0 { return 0.0; }
+        if overlap <= 0.0 {
+            return 0.0;
+        }
         // Use min(widths): a short centered line (e.g. "MÀ, ĐÚNG KHÔNG?")
         // inside a wide group should have high ratio. overlap/max penalizes
         // width disparity; overlap/min asks "is the shorter one contained?"
@@ -168,7 +185,9 @@ fn has_border_between(
                 }
             }
         }
-        if edge_lums.is_empty() { return false; }
+        if edge_lums.is_empty() {
+            return false;
+        }
         edge_lums.sort_unstable();
         edge_lums[edge_lums.len() / 2]
     };
@@ -246,7 +265,11 @@ fn pixel_lum(img: &DynamicImage, x: u32, y: u32) -> u32 {
 /// 4. Gap consistency (new gap vs group's median gap)
 /// 5. Border detection (sample image pixels between lines)
 /// 6. Prob bridge (DB probability in gap — positive signal overrides gate 5)
-pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage, prob_image: Option<&GrayImage>) -> Vec<MergedBubble> {
+pub fn group_lines(
+    lines: Vec<TextRegion>,
+    img: &DynamicImage,
+    prob_image: Option<&GrayImage>,
+) -> Vec<MergedBubble> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -328,7 +351,8 @@ pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage, prob_image: Optio
     // Build MergedBubble results
     let mut result = Vec::new();
     for (_, indices) in groups {
-        let mut group_lines: Vec<TextRegion> = indices.into_iter()
+        let mut group_lines: Vec<TextRegion> = indices
+            .into_iter()
             .map(|i| std::mem::replace(&mut lines[i], placeholder_region()))
             .collect();
 
@@ -341,7 +365,8 @@ pub fn group_lines(lines: Vec<TextRegion>, img: &DynamicImage, prob_image: Optio
             continue;
         }
 
-        let confidence = group_lines.iter()
+        let confidence = group_lines
+            .iter()
             .map(|l| l.confidence)
             .fold(0.0_f64, f64::max);
         let mask = composite_masks(&group_lines);
@@ -365,12 +390,15 @@ fn sort_reading_order(lines: &mut [TextRegion]) {
         return;
     }
 
-    let metas: Vec<(f64, f64, f64)> = lines.iter().map(|l| {
-        let (x1, y1, _, y2) = bbox(&l.polygon);
-        let cy = (y1 + y2) / 2.0;
-        let h = y2 - y1;
-        (cy, h, x1)
-    }).collect();
+    let metas: Vec<(f64, f64, f64)> = lines
+        .iter()
+        .map(|l| {
+            let (x1, y1, _, y2) = bbox(&l.polygon);
+            let cy = (y1 + y2) / 2.0;
+            let h = y2 - y1;
+            (cy, h, x1)
+        })
+        .collect();
 
     let max_h = metas.iter().map(|m| m.1).fold(0.0_f64, f64::max);
     let row_tolerance = max_h * 0.5;
@@ -398,7 +426,8 @@ fn sort_reading_order(lines: &mut [TextRegion]) {
     }
 
     let sorted_indices: Vec<usize> = rows.into_iter().flatten().collect();
-    let mut sorted: Vec<TextRegion> = sorted_indices.into_iter()
+    let mut sorted: Vec<TextRegion> = sorted_indices
+        .into_iter()
         .map(|i| std::mem::replace(&mut lines[i], placeholder_region()))
         .collect();
     lines.swap_with_slice(&mut sorted);
@@ -493,7 +522,11 @@ fn composite_masks(lines: &[TextRegion]) -> Option<LocalTextMask> {
     let pad_r = (avg_line_h / 8).max(2);
     let merged = crate::detection::dilate_mask(&merged, pad_r);
 
-    Some(LocalTextMask { x: ux1, y: uy1, image: merged })
+    Some(LocalTextMask {
+        x: ux1,
+        y: uy1,
+        image: merged,
+    })
 }
 
 fn placeholder_region() -> TextRegion {

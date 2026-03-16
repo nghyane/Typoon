@@ -75,10 +75,7 @@ pub async fn answer_context_question(
     }
 
     let tools = tool_defs();
-    let mut messages = vec![
-        Message::system(SYSTEM_PROMPT),
-        Message::user_text(question),
-    ];
+    let mut messages = vec![Message::system(SYSTEM_PROMPT), Message::user_text(question)];
 
     loop {
         let resp = provider.call(&messages, &tools).await?;
@@ -86,7 +83,11 @@ pub async fn answer_context_question(
         // No tool calls → text is the final answer
         if resp.tool_calls.is_empty() {
             let answer = resp.text.unwrap_or_default();
-            tracing::info!("Context agent answered ({} chars):\n{}", answer.len(), answer);
+            tracing::info!(
+                "Context agent answered ({} chars):\n{}",
+                answer.len(),
+                answer
+            );
             return Ok(answer);
         }
 
@@ -97,8 +98,7 @@ pub async fn answer_context_question(
         });
 
         for tc in &resp.tool_calls {
-            let input: serde_json::Value =
-                serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let input: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
 
             let result = match tc.name.as_str() {
                 "search" => {
@@ -155,7 +155,10 @@ fn format_hits(hits: &[ContextHit]) -> String {
             crate::context::ContextHitKind::Translation => "translation",
             crate::context::ContextHitKind::Note => "note",
         };
-        out.push_str(&format!("  [Ch{} {}] {}\n", h.chapter_index, kind, h.summary));
+        out.push_str(&format!(
+            "  [Ch{} {}] {}\n",
+            h.chapter_index, kind, h.summary
+        ));
     }
     out
 }

@@ -74,5 +74,3 @@ pub async fn resolve_optional(models_dir: &str, model: Model) -> Option<PathBuf>
         }
     }
 }
-
-

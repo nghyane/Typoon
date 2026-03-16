@@ -97,12 +97,24 @@ pub struct ResolvedProvider {
     pub reasoning_effort: Option<String>,
 }
 
-fn default_port() -> u16 { 4319 }
-fn default_models_dir() -> String { "models".into() }
-fn default_target_lang() -> String { "vi".into() }
-fn default_model() -> String { "gpt-5.4".into() }
-fn default_provider_name() -> String { "default".into() }
-fn default_provider_type() -> ProviderType { ProviderType::OpenAI }
+fn default_port() -> u16 {
+    4319
+}
+fn default_models_dir() -> String {
+    "models".into()
+}
+fn default_target_lang() -> String {
+    "vi".into()
+}
+fn default_model() -> String {
+    "gpt-5.4".into()
+}
+fn default_provider_name() -> String {
+    "default".into()
+}
+fn default_provider_type() -> ProviderType {
+    ProviderType::OpenAI
+}
 
 impl AppConfig {
     pub fn load() -> Result<Self> {

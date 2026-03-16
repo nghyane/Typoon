@@ -192,12 +192,14 @@ mod tests {
 
     #[test]
     fn test_no_border() {
-        let img = DynamicImage::ImageRgba8(
-            RgbaImage::from_pixel(200, 150, Rgba([255, 255, 255, 255])),
-        );
+        let img =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(200, 150, Rgba([255, 255, 255, 255])));
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
-        assert!(inset <= MIN_INSET + BORDER_PAD + 1.0, "No border: inset={inset}");
+        assert!(
+            inset <= MIN_INSET + BORDER_PAD + 1.0,
+            "No border: inset={inset}"
+        );
     }
 
     #[test]
@@ -206,7 +208,10 @@ mod tests {
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
         assert!(inset >= 2.0, "2px border: inset={inset}");
-        assert!(inset <= 6.0, "2px border should not produce huge inset: {inset}");
+        assert!(
+            inset <= 6.0,
+            "2px border should not produce huge inset: {inset}"
+        );
     }
 
     #[test]
@@ -215,7 +220,10 @@ mod tests {
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
         assert!(inset >= 4.0, "5px border: inset={inset}");
-        assert!(inset <= 10.0, "5px border should not produce huge inset: {inset}");
+        assert!(
+            inset <= 10.0,
+            "5px border should not produce huge inset: {inset}"
+        );
     }
 
     #[test]
@@ -229,9 +237,8 @@ mod tests {
     #[test]
     fn test_dark_background_skipped() {
         // Dark bg (narration box, SFX on dark area) → should NOT detect border
-        let img = DynamicImage::ImageRgba8(
-            RgbaImage::from_pixel(200, 150, Rgba([30, 30, 30, 255])),
-        );
+        let img =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(200, 150, Rgba([30, 30, 30, 255])));
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
         assert_eq!(inset, MIN_INSET, "Dark bg should skip border detection");
@@ -240,9 +247,8 @@ mod tests {
     #[test]
     fn test_colored_background_skipped() {
         // Mid-tone colored bg → center not light enough → skip
-        let img = DynamicImage::ImageRgba8(
-            RgbaImage::from_pixel(200, 150, Rgba([100, 80, 60, 255])),
-        );
+        let img =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(200, 150, Rgba([100, 80, 60, 255])));
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
         assert_eq!(inset, MIN_INSET, "Colored bg should skip border detection");
@@ -254,7 +260,10 @@ mod tests {
         let img = make_bordered_bubble(15);
         let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 150.0], [0.0, 150.0]];
         let inset = detect_inset(&img, &polygon);
-        assert!(inset <= MAX_BORDER + BORDER_PAD + 0.1,
-            "Should be capped: inset={inset}, max={}", MAX_BORDER + BORDER_PAD);
+        assert!(
+            inset <= MAX_BORDER + BORDER_PAD + 0.1,
+            "Should be capped: inset={inset}, max={}",
+            MAX_BORDER + BORDER_PAD
+        );
     }
 }

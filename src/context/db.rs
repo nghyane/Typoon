@@ -279,12 +279,7 @@ impl ContextStore {
         conn.execute(
             "INSERT INTO chapter_notes (project_id, chapter_index, note_type, content)
              VALUES (?1, ?2, ?3, ?4)",
-            (
-                project_id,
-                chapter_index as i64,
-                note_type,
-                content,
-            ),
+            (project_id, chapter_index as i64, note_type, content),
         )?;
 
         Ok(())
@@ -427,11 +422,19 @@ impl ContextStore {
 
             if search_t {
                 // AND-first, OR fallback
-                let mut results =
-                    Self::run_translation_fts(&conn, &fts_and_query(query), project_id, per_query_limit)?;
+                let mut results = Self::run_translation_fts(
+                    &conn,
+                    &fts_and_query(query),
+                    project_id,
+                    per_query_limit,
+                )?;
                 if results.is_empty() {
-                    results =
-                        Self::run_translation_fts(&conn, &fts_or_query(query), project_id, per_query_limit)?;
+                    results = Self::run_translation_fts(
+                        &conn,
+                        &fts_or_query(query),
+                        project_id,
+                        per_query_limit,
+                    )?;
                 }
                 for m in results {
                     let key = (m.chapter_index, m.page_index, m.bubble_id.clone());
@@ -453,8 +456,12 @@ impl ContextStore {
                 let mut results =
                     Self::run_notes_fts(&conn, &fts_and_query(query), project_id, per_query_limit)?;
                 if results.is_empty() {
-                    results =
-                        Self::run_notes_fts(&conn, &fts_or_query(query), project_id, per_query_limit)?;
+                    results = Self::run_notes_fts(
+                        &conn,
+                        &fts_or_query(query),
+                        project_id,
+                        per_query_limit,
+                    )?;
                 }
                 for m in results {
                     let key = (m.chapter_index, m.note_type.clone(), m.content.clone());
@@ -471,7 +478,11 @@ impl ContextStore {
         }
 
         // Sort by rank (BM25: lower = more relevant)
-        hits.sort_by(|a, b| a.rank.partial_cmp(&b.rank).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            a.rank
+                .partial_cmp(&b.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(limit);
         Ok(hits)
     }
@@ -577,7 +588,12 @@ mod tests {
             .add_note("project-1", 1, "event", "Battle at the castle gate")
             .unwrap();
         store
-            .add_note("project-1", 2, "relationship", "Tanaka and Yuki are siblings")
+            .add_note(
+                "project-1",
+                2,
+                "relationship",
+                "Tanaka and Yuki are siblings",
+            )
             .unwrap();
 
         // Search for notes mentioning Tanaka

@@ -9,11 +9,11 @@ use crate::inpaint::LamaInpainter;
 use crate::text_layout;
 
 // Re-export erasure utilities for use by examples and tests.
-pub use erase::{
-    apply_mask_pixels, erase_masks, erase_with_median, is_flat_background, median_bg_color,
-    page_mask_from_local, pixel_luminance,
-};
 use crate::detection::LocalTextMask;
+pub use erase::{
+    apply_mask_pixels, erase_masks, erase_with_median, median_bg_color, page_mask_from_local,
+    pixel_luminance,
+};
 
 /// Render translated text overlay on a manga/manhwa page.
 ///
@@ -54,9 +54,10 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
             continue;
         }
 
-        let area = bubble.drawable_area.as_ref().unwrap_or_else(|| {
-            panic!("BubbleResult.drawable_area must be set by pipeline")
-        });
+        let area = bubble
+            .drawable_area
+            .as_ref()
+            .unwrap_or_else(|| panic!("BubbleResult.drawable_area must be set by pipeline"));
         let (draw_x1, draw_y1, draw_w, draw_h) = area.rect();
 
         let bg = median_bg_color(
@@ -104,8 +105,12 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
             let sw = ((bubble.font_size_px as f64 * 0.04).round() as i32).max(1);
             for dy in -sw..=sw {
                 for dx in -sw..=sw {
-                    if dx == 0 && dy == 0 { continue; }
-                    if dx * dx + dy * dy > sw * sw { continue; }
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    if dx * dx + dy * dy > sw * sw {
+                        continue;
+                    }
                     draw_text_mut(canvas, stroke_color, ix + dx, iy + dy, scale, font, line);
                 }
             }
@@ -127,7 +132,8 @@ pub fn encode_jpeg_data_uri(img: &DynamicImage, quality: u8) -> String {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let mut buf = std::io::Cursor::new(Vec::new());
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-    img.write_with_encoder(encoder).expect("JPEG encoding failed");
+    img.write_with_encoder(encoder)
+        .expect("JPEG encoding failed");
     let b64 = STANDARD.encode(buf.into_inner());
     format!("data:image/jpeg;base64,{b64}")
 }
@@ -147,9 +153,8 @@ mod tests {
 
     #[test]
     fn test_render_single_bubble() {
-        let img = DynamicImage::ImageRgba8(
-            RgbaImage::from_pixel(400, 300, Rgba([255, 255, 255, 255])),
-        );
+        let img =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(400, 300, Rgba([255, 255, 255, 255])));
         let bubble = BubbleResult {
             bubble_id: "b0".into(),
             polygon: vec![[50.0, 50.0], [350.0, 50.0], [350.0, 250.0], [50.0, 250.0]],
@@ -176,7 +181,9 @@ mod tests {
                     break;
                 }
             }
-            if has_dark { break; }
+            if has_dark {
+                break;
+            }
         }
         assert!(has_dark, "Center region should have dark text pixels");
     }

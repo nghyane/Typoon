@@ -42,12 +42,7 @@ pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
     let response = if let (Some(store), Some(project_id), Some(chapter_idx)) =
         (ctx.context_store, ctx.project_id, ctx.chapter_index)
     {
-        match store.add_note(
-            project_id,
-            chapter_idx,
-            &args.note_type,
-            &args.content,
-        ) {
+        match store.add_note(project_id, chapter_idx, &args.note_type, &args.content) {
             Ok(()) => {
                 let preview = match args.content.char_indices().find(|&(i, _)| i >= 80) {
                     Some((i, _)) => format!("{}…", &args.content[..i]),
