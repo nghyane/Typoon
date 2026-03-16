@@ -6,8 +6,9 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::config;
+use crate::image_io;
 use crate::pipeline;
-use crate::pipeline::series::{ChapterResult, ChapterSpec};
+use crate::pipeline::series::ChapterJob;
 use crate::runner::TranslationRunner;
 
 use super::util;
@@ -44,12 +45,12 @@ pub async fn run(args: TranslateArgs) -> Result<()> {
     let runner = Arc::new(TranslationRunner::new(&config).await?);
     let source_lang = pipeline::detect_source_lang(Some(&args.source), &args.target);
 
-    let chapters = discover_chapters(&args.input)?;
+    let chapter_dirs = discover_chapter_dirs(&args.input)?;
 
-    if chapters.is_empty() {
+    if chapter_dirs.is_empty() {
         run_single(&runner, &args, source_lang).await
     } else {
-        run_series(&runner, &args, &chapters, source_lang).await
+        run_series(&runner, &args, &chapter_dirs, source_lang).await
     }
 }
 
@@ -60,7 +61,7 @@ async fn run_single(
     args: &TranslateArgs,
     source_lang: &str,
 ) -> Result<()> {
-    if !util::has_images(&args.input) {
+    if !image_io::has_images(&args.input) {
         anyhow::bail!("No images found in {}", args.input.display());
     }
 
@@ -103,23 +104,20 @@ async fn run_single(
 async fn run_series(
     runner: &Arc<TranslationRunner>,
     args: &TranslateArgs,
-    chapters: &[PathBuf],
+    chapter_dirs: &[PathBuf],
     source_lang: &str,
 ) -> Result<()> {
+    let total = chapter_dirs.len();
     println!("═══ ComicScan Translate (series) ═══");
-    println!(
-        "Input:   {} ({} chapters)",
-        args.input.display(),
-        chapters.len()
-    );
+    println!("Input:   {} ({total} chapters)", args.input.display());
     println!("Project: {}", args.project);
     println!("Lang:    {source_lang} → {}", args.target);
     println!("Output:  {}", args.output.display());
     println!();
 
-    let specs = build_work_list(chapters, &args.output, args.chapter)?;
+    let (jobs, labels) = build_work_list(chapter_dirs, &args.output, args.chapter, total);
 
-    if specs.is_empty() {
+    if jobs.is_empty() {
         println!("Nothing to translate.");
         return Ok(());
     }
@@ -127,14 +125,15 @@ async fn run_series(
     let series_start = Instant::now();
     let totals = pipeline::series::translate_batch(
         runner,
-        &specs,
+        &jobs,
         source_lang,
         &args.target,
         &args.project,
-        |ch: &ChapterResult| {
+        |job_index, result| {
+            let (label, pos) = &labels[job_index];
             println!(
-                "[{}/{}] {} — {} pages, {} bubbles in {:.1}s",
-                ch.position, ch.total, ch.label, ch.num_pages, ch.num_bubbles, ch.elapsed_s,
+                "[{pos}/{total}] {label} — {} pages, {} bubbles in {:.1}s",
+                result.num_pages, result.num_bubbles, result.elapsed_s,
             );
         },
     )
@@ -175,14 +174,15 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-fn discover_chapters(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+/// Find subdirectories that contain images (chapter directories).
+fn discover_chapter_dirs(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     if !dir.is_dir() {
         anyhow::bail!("{} is not a directory", dir.display());
     }
     let mut dirs = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.is_dir() && util::has_images(&path) {
+        if path.is_dir() && image_io::has_images(&path) {
             dirs.push(path);
         }
     }
@@ -190,17 +190,21 @@ fn discover_chapters(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// Build pipeline jobs + display labels, skipping already-translated chapters.
+/// Returns (jobs, labels) where labels[i] = (chapter_name, display_position).
 fn build_work_list(
-    chapters: &[PathBuf],
+    chapter_dirs: &[PathBuf],
     output: &std::path::Path,
     only_chapter: Option<usize>,
-) -> Result<Vec<ChapterSpec>> {
-    let total = chapters.len();
-    let mut specs = Vec::new();
+    total: usize,
+) -> (Vec<ChapterJob>, Vec<(String, usize)>) {
+    let mut jobs = Vec::new();
+    let mut labels = Vec::new();
 
-    for (idx, ch_dir) in chapters.iter().enumerate() {
+    for (idx, ch_dir) in chapter_dirs.iter().enumerate() {
         let ch_name = ch_dir.file_name().unwrap().to_string_lossy();
         let ch_num = util::parse_chapter_number(&ch_name).unwrap_or(idx + 1);
+        let pos = idx + 1;
 
         if let Some(only) = only_chapter {
             if ch_num != only {
@@ -209,24 +213,18 @@ fn build_work_list(
         }
 
         let ch_output = output.join(&*ch_name);
-        if ch_output.exists() && util::has_images(&ch_output) {
-            println!(
-                "[{}/{}] {ch_name} — skip (already translated)",
-                idx + 1,
-                total,
-            );
+        if ch_output.exists() && image_io::has_images(&ch_output) {
+            println!("[{pos}/{total}] {ch_name} — skip (already translated)");
             continue;
         }
 
-        specs.push(ChapterSpec {
-            dir: ch_dir.clone(),
-            output: ch_output,
+        jobs.push(ChapterJob {
+            input_dir: ch_dir.clone(),
+            output_dir: ch_output,
             chapter_num: ch_num,
-            label: ch_name.to_string(),
-            position: idx + 1,
-            total,
         });
+        labels.push((ch_name.to_string(), pos));
     }
 
-    Ok(specs)
+    (jobs, labels)
 }

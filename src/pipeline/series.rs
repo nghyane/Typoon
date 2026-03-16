@@ -6,8 +6,8 @@ use std::time::Instant;
 use anyhow::Result;
 use image::DynamicImage;
 
-use crate::cli::util;
 use crate::detection::TextDetector;
+use crate::image_io;
 use crate::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
 
@@ -15,38 +15,31 @@ use super::chapter::{self, ChapterPageOutput, PageDetection};
 
 // ── Public types ──
 
-/// A chapter to translate, with its input/output paths and metadata.
-pub struct ChapterSpec {
-    pub dir: PathBuf,
-    pub output: PathBuf,
+/// Minimal input for translating one chapter.
+pub struct ChapterJob {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
     pub chapter_num: usize,
-    pub label: String,
-    pub position: usize, // 1-based
-    pub total: usize,
 }
 
-/// Result from translating one chapter.
+/// Per-chapter translation result.
 pub struct ChapterResult {
-    pub label: String,
-    pub position: usize,
-    pub total: usize,
     pub pages: Vec<ChapterPageOutput>,
     pub num_pages: usize,
     pub num_bubbles: usize,
     pub elapsed_s: f64,
 }
 
-/// Accumulated totals across all chapters.
+/// Accumulated totals across a batch.
 #[derive(Default)]
-pub struct SeriesTotals {
+pub struct BatchTotals {
     pub bubbles: usize,
     pub pages: usize,
 }
 
-// ── Main entry points ──
+// ── Public entry points ──
 
 /// Translate a single chapter (detect → translate → render).
-/// Returns detailed per-page results.
 pub async fn translate_single(
     runner: &Arc<TranslationRunner>,
     input: &Path,
@@ -55,8 +48,8 @@ pub async fn translate_single(
     project: &str,
     chapter_num: usize,
 ) -> Result<ChapterResult> {
-    let image_paths = util::discover_images(input)?;
-    let images = util::load_images(&image_paths)?;
+    let image_paths = image_io::discover_images(input)?;
+    let images = image_io::load_images(&image_paths)?;
 
     let t = Instant::now();
     let det = runner.detector.clone();
@@ -80,9 +73,6 @@ pub async fn translate_single(
     let num_pages = images.len();
 
     Ok(ChapterResult {
-        label: String::new(),
-        position: 0,
-        total: 0,
         pages: result.pages,
         num_pages,
         num_bubbles,
@@ -94,39 +84,39 @@ pub async fn translate_single(
 /// - Detection of chapter N+1 overlaps with translation of chapter N
 /// - Rendering runs in a bounded background queue
 ///
-/// Calls `on_done` for each completed chapter (for progress reporting).
+/// `on_done(job_index, result)` is called as each chapter completes rendering.
 pub async fn translate_batch(
     runner: &Arc<TranslationRunner>,
-    specs: &[ChapterSpec],
+    jobs: &[ChapterJob],
     source_lang: &str,
     target_lang: &str,
     project: &str,
-    on_done: impl Fn(&ChapterResult),
-) -> Result<SeriesTotals> {
-    if specs.is_empty() {
-        return Ok(SeriesTotals::default());
+    on_done: impl Fn(usize, &ChapterResult),
+) -> Result<BatchTotals> {
+    if jobs.is_empty() {
+        return Ok(BatchTotals::default());
     }
 
-    let mut totals = SeriesTotals::default();
+    let mut totals = BatchTotals::default();
     let mut render_backlog = RenderBacklog::new(runner.max_pending_render_jobs(), &on_done);
 
     // Kick off detection for the first chapter
     let mut pending_detect =
-        start_detection(&specs[0], &runner.detector, &runner.ocr, source_lang);
+        start_detection(&jobs[0].input_dir, &runner.detector, &runner.ocr, source_lang);
 
-    for (wi, spec) in specs.iter().enumerate() {
+    for (i, job) in jobs.iter().enumerate() {
         let chapter_start = Instant::now();
 
         // Await current chapter's detection
         let (images, detections) = match pending_detect.take() {
             Some(pd) => pd.handle.await??,
-            None => detect_inline(&spec.dir, &runner.detector, &runner.ocr, source_lang)?,
+            None => detect_inline(&job.input_dir, &runner.detector, &runner.ocr, source_lang)?,
         };
 
         // Start detection for next chapter (pipeline overlap)
-        if let Some(next) = specs.get(wi + 1) {
+        if let Some(next) = jobs.get(i + 1) {
             pending_detect =
-                start_detection(next, &runner.detector, &runner.ocr, source_lang);
+                start_detection(&next.input_dir, &runner.detector, &runner.ocr, source_lang);
         }
 
         // Translate + fit (sequential — depends on context from prior chapters)
@@ -137,20 +127,20 @@ pub async fn translate_batch(
             target_lang,
             source_lang,
             Some(project),
-            Some(spec.chapter_num),
+            Some(job.chapter_num),
         )
         .await?;
 
         // Enqueue render + save in background
-        let render_handle = start_render_save(
+        let render_handle = spawn_render_save(
             Arc::clone(runner),
             images,
             prepared_pages,
-            spec.output.clone(),
+            job.output_dir.clone(),
         );
 
         render_backlog
-            .enqueue(render_handle, spec, chapter_start, &mut totals)
+            .enqueue(i, render_handle, chapter_start, &mut totals)
             .await?;
     }
 
@@ -166,9 +156,7 @@ struct PendingDetection {
 
 struct PendingRender {
     handle: tokio::task::JoinHandle<Result<Vec<ChapterPageOutput>>>,
-    label: String,
-    position: usize,
-    total: usize,
+    job_index: usize,
     chapter_start: Instant,
 }
 
@@ -178,7 +166,7 @@ struct RenderBacklog<'a, F> {
     on_done: &'a F,
 }
 
-impl<'a, F: Fn(&ChapterResult)> RenderBacklog<'a, F> {
+impl<'a, F: Fn(usize, &ChapterResult)> RenderBacklog<'a, F> {
     fn new(max_jobs: usize, on_done: &'a F) -> Self {
         Self {
             max_jobs: max_jobs.max(1),
@@ -189,16 +177,14 @@ impl<'a, F: Fn(&ChapterResult)> RenderBacklog<'a, F> {
 
     async fn enqueue(
         &mut self,
+        job_index: usize,
         handle: tokio::task::JoinHandle<Result<Vec<ChapterPageOutput>>>,
-        spec: &ChapterSpec,
         chapter_start: Instant,
-        totals: &mut SeriesTotals,
+        totals: &mut BatchTotals,
     ) -> Result<()> {
         self.pending.push_back(PendingRender {
             handle,
-            label: spec.label.clone(),
-            position: spec.position,
-            total: spec.total,
+            job_index,
             chapter_start,
         });
         while self.pending.len() > self.max_jobs {
@@ -207,14 +193,14 @@ impl<'a, F: Fn(&ChapterResult)> RenderBacklog<'a, F> {
         Ok(())
     }
 
-    async fn finish_all(&mut self, totals: &mut SeriesTotals) -> Result<()> {
+    async fn finish_all(&mut self, totals: &mut BatchTotals) -> Result<()> {
         while !self.pending.is_empty() {
             self.finish_one(totals).await?;
         }
         Ok(())
     }
 
-    async fn finish_one(&mut self, totals: &mut SeriesTotals) -> Result<()> {
+    async fn finish_one(&mut self, totals: &mut BatchTotals) -> Result<()> {
         let Some(job) = self.pending.pop_front() else {
             return Ok(());
         };
@@ -225,59 +211,32 @@ impl<'a, F: Fn(&ChapterResult)> RenderBacklog<'a, F> {
         totals.bubbles += num_bubbles;
         totals.pages += num_pages;
 
-        (self.on_done)(&ChapterResult {
-            label: job.label,
-            position: job.position,
-            total: job.total,
+        let result = ChapterResult {
             pages,
             num_pages,
             num_bubbles,
             elapsed_s: job.chapter_start.elapsed().as_secs_f64(),
-        });
+        };
+        (self.on_done)(job.job_index, &result);
 
         Ok(())
     }
 }
 
 fn start_detection(
-    spec: &ChapterSpec,
+    dir: &Path,
     detector: &Arc<TextDetector>,
     ocr: &Arc<OcrEngine>,
     source_lang: &str,
 ) -> Option<PendingDetection> {
-    let image_paths = match util::discover_images(&spec.dir) {
+    let image_paths = match image_io::discover_images(dir) {
         Ok(p) if !p.is_empty() => p,
-        Ok(_) => {
-            tracing::warn!(
-                "[{}/{}] {} — skip (no images)",
-                spec.position,
-                spec.total,
-                spec.label
-            );
-            return None;
-        }
-        Err(e) => {
-            tracing::warn!(
-                "[{}/{}] {} — skip ({e})",
-                spec.position,
-                spec.total,
-                spec.label
-            );
-            return None;
-        }
+        _ => return None,
     };
 
-    let images = match util::load_images(&image_paths) {
+    let images = match image_io::load_images(&image_paths) {
         Ok(imgs) => imgs,
-        Err(e) => {
-            tracing::warn!(
-                "[{}/{}] {} — skip ({e})",
-                spec.position,
-                spec.total,
-                spec.label
-            );
-            return None;
-        }
+        Err(_) => return None,
     };
 
     let det = detector.clone();
@@ -297,8 +256,8 @@ fn detect_inline(
     ocr: &Arc<OcrEngine>,
     source_lang: &str,
 ) -> Result<(Vec<DynamicImage>, Vec<PageDetection>)> {
-    let image_paths = util::discover_images(dir)?;
-    let images = util::load_images(&image_paths)?;
+    let image_paths = image_io::discover_images(dir)?;
+    let images = image_io::load_images(&image_paths)?;
     let det = detector.clone();
     let ocr = ocr.clone();
     let lang = source_lang.to_string();
@@ -307,7 +266,7 @@ fn detect_inline(
     Ok((images, detections))
 }
 
-fn start_render_save(
+fn spawn_render_save(
     runner: Arc<TranslationRunner>,
     images: Vec<DynamicImage>,
     chapter_pages: Vec<ChapterPageOutput>,

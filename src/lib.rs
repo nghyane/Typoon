@@ -7,6 +7,7 @@ pub mod context;
 pub mod detection;
 pub mod fit_engine;
 pub mod glossary;
+pub mod image_io;
 pub mod inpaint;
 pub mod model_hub;
 pub mod ocr;
