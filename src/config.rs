@@ -79,14 +79,12 @@ impl Default for RoleConfig {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ContextConfig {
-    /// Path to SQLite context database (created if missing).
-    pub db_path: Option<String>,
+    /// Root directory for the default project store (created if missing).
+    pub project_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct GlossaryConfig {
-    /// Path to SQLite glossary database (created if missing).
-    pub db_path: Option<String>,
     /// Path to TOML file to import terms from on startup.
     pub import_toml: Option<String>,
 }

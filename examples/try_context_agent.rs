@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
 
     // Run the context agent
     let start = std::time::Instant::now();
-    let answer = comic_scan::storage::context::agent::answer_context_question(
+    let answer = comic_scan::storage::context_agent::answer_context_question(
         provider.as_ref(),
         &store,
         &question,

@@ -52,7 +52,7 @@ pub async fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
         }
 
         tracing::info!("get_context: {:?}", args.question);
-        match crate::storage::context::agent::answer_context_question(
+        match crate::storage::context_agent::answer_context_question(
             agent,
             store,
             &args.question,

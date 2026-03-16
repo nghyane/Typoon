@@ -129,7 +129,7 @@ fn render_detect(
     img: &image::DynamicImage,
     result: &PipelineResult,
     name: &str,
-    output: &PathBuf,
+    output: &std::path::Path,
 ) -> Result<()> {
     let font = crate::render::layout::get_font();
     let label_scale = PxScale::from(18.0);
@@ -185,7 +185,7 @@ async fn render_masks(
     img: &image::DynamicImage,
     result: &PipelineResult,
     name: &str,
-    output: &PathBuf,
+    output: &std::path::Path,
 ) -> Result<()> {
     let masks: Vec<&LocalTextMask> = result.bubbles.iter().filter_map(|b| b.mask.as_ref()).collect();
     println!("\nMasks: {}", masks.len());

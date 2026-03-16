@@ -1,7 +1,5 @@
 use image::{DynamicImage, GenericImageView};
 
-use crate::render::layout;
-
 /// Maximum scan depth from bbox edge (px)
 const MAX_SCAN_DEPTH: u32 = 20;
 /// Minimum number of edge samples to consider valid
@@ -24,7 +22,7 @@ const BORDER_PAD: f64 = 1.0;
 /// Returns the inset in pixels: the distance from bbox edge to the inner content area.
 /// Scans all 4 edges, takes the median of detected border widths.
 pub fn detect_inset(img: &DynamicImage, polygon: &[[f64; 2]]) -> f64 {
-    let (x1, y1, x2, y2) = layout::polygon_bbox(polygon);
+    let (x1, y1, x2, y2) = polygon_bbox(polygon);
     let (img_w, img_h) = img.dimensions();
 
     // Clamp bbox to image bounds
@@ -162,6 +160,20 @@ fn pixel_luminance(img: &DynamicImage, x: u32, y: u32) -> u8 {
     let [r, g, b, _] = img.get_pixel(x, y).0;
     // ITU-R BT.601 luma
     ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000) as u8
+}
+
+fn polygon_bbox(polygon: &[[f64; 2]]) -> (f64, f64, f64, f64) {
+    let mut x1 = f64::INFINITY;
+    let mut y1 = f64::INFINITY;
+    let mut x2 = f64::NEG_INFINITY;
+    let mut y2 = f64::NEG_INFINITY;
+    for p in polygon {
+        x1 = x1.min(p[0]);
+        y1 = y1.min(p[1]);
+        x2 = x2.max(p[0]);
+        y2 = y2.max(p[1]);
+    }
+    (x1, y1, x2, y2)
 }
 
 #[cfg(test)]

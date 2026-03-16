@@ -85,11 +85,8 @@ impl TranslationRunner {
             inpainter.is_some()
         );
 
-        let default_project = if let Some(db_path) = &config.context.db_path {
-            let project_root = std::path::Path::new(db_path)
-                .parent()
-                .unwrap_or(std::path::Path::new("data"));
-            match ProjectStore::open(project_root) {
+        let default_project = if let Some(project_dir) = &config.context.project_dir {
+            match ProjectStore::open(std::path::Path::new(project_dir)) {
                 Ok(store) => {
                     if let Some(toml_path) = &config.glossary.import_toml {
                         if let Err(e) =
@@ -98,7 +95,7 @@ impl TranslationRunner {
                             tracing::warn!("Glossary TOML import failed: {e}");
                         }
                     }
-                    tracing::info!("Project store opened: {}", project_root.display());
+                    tracing::info!("Project store opened: {project_dir}");
                     Some(store)
                 }
                 Err(e) => {
