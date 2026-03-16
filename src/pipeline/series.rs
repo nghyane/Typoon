@@ -11,7 +11,8 @@ use crate::image_io;
 use crate::vision::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
 
-use super::chapter::{self, ChapterPageOutput, PageDetection};
+use super::chapter;
+use super::types::*;
 
 // ── Public types ──
 
@@ -24,7 +25,7 @@ pub struct ChapterJob {
 
 /// Per-chapter translation result.
 pub struct ChapterResult {
-    pub pages: Vec<ChapterPageOutput>,
+    pub pages: Vec<RenderedPage>,
     pub num_pages: usize,
     pub num_bubbles: usize,
     pub elapsed_s: f64,
@@ -80,11 +81,7 @@ pub async fn translate_single(
     })
 }
 
-/// Translate a batch of chapters with pipeline parallelism:
-/// - Detection of chapter N+1 overlaps with translation of chapter N
-/// - Rendering runs in a bounded background queue
-///
-/// `on_done(job_index, result)` is called as each chapter completes rendering.
+/// Translate a batch of chapters with pipeline parallelism.
 pub async fn translate_batch(
     runner: &Arc<TranslationRunner>,
     jobs: &[ChapterJob],
@@ -100,29 +97,25 @@ pub async fn translate_batch(
     let mut totals = BatchTotals::default();
     let mut render_backlog = RenderBacklog::new(runner.max_pending_render_jobs(), &on_done);
 
-    // Kick off detection for the first chapter
     let mut pending_detect =
         start_detection(&jobs[0].input_dir, &runner.detector, &runner.ocr, source_lang);
 
     for (i, job) in jobs.iter().enumerate() {
         let chapter_start = Instant::now();
 
-        // Await current chapter's detection
         let (images, detections) = match pending_detect.take() {
             Some(pd) => pd.handle.await??,
             None => detect_inline(&job.input_dir, &runner.detector, &runner.ocr, source_lang)?,
         };
 
-        // Start detection for next chapter (pipeline overlap)
         if let Some(next) = jobs.get(i + 1) {
             pending_detect =
                 start_detection(&next.input_dir, &runner.detector, &runner.ocr, source_lang);
         }
 
-        // Translate + fit (sequential — depends on context from prior chapters)
-        let prepared_pages = chapter::translate_and_prepare(
+        let translated_pages = chapter::translate_chapter(
             runner,
-            detections,
+            &detections,
             &images,
             target_lang,
             source_lang,
@@ -131,11 +124,10 @@ pub async fn translate_batch(
         )
         .await?;
 
-        // Enqueue render + save in background
         let render_handle = spawn_render_save(
             Arc::clone(runner),
             images,
-            prepared_pages,
+            translated_pages,
             job.output_dir.clone(),
         );
 
@@ -151,11 +143,11 @@ pub async fn translate_batch(
 // ── Internals ──
 
 struct PendingDetection {
-    handle: tokio::task::JoinHandle<Result<(Vec<DynamicImage>, Vec<PageDetection>)>>,
+    handle: tokio::task::JoinHandle<Result<(Vec<DynamicImage>, Vec<PageDetections>)>>,
 }
 
 struct PendingRender {
-    handle: tokio::task::JoinHandle<Result<Vec<ChapterPageOutput>>>,
+    handle: tokio::task::JoinHandle<Result<Vec<RenderedPage>>>,
     job_index: usize,
     chapter_start: Instant,
 }
@@ -178,7 +170,7 @@ impl<'a, F: Fn(usize, &ChapterResult)> RenderBacklog<'a, F> {
     async fn enqueue(
         &mut self,
         job_index: usize,
-        handle: tokio::task::JoinHandle<Result<Vec<ChapterPageOutput>>>,
+        handle: tokio::task::JoinHandle<Result<Vec<RenderedPage>>>,
         chapter_start: Instant,
         totals: &mut BatchTotals,
     ) -> Result<()> {
@@ -255,7 +247,7 @@ fn detect_inline(
     detector: &Arc<TextDetector>,
     ocr: &Arc<OcrEngine>,
     source_lang: &str,
-) -> Result<(Vec<DynamicImage>, Vec<PageDetection>)> {
+) -> Result<(Vec<DynamicImage>, Vec<PageDetections>)> {
     let image_paths = image_io::discover_images(dir)?;
     let images = image_io::load_images(&image_paths)?;
     let det = detector.clone();
@@ -269,19 +261,17 @@ fn detect_inline(
 fn spawn_render_save(
     runner: Arc<TranslationRunner>,
     images: Vec<DynamicImage>,
-    chapter_pages: Vec<ChapterPageOutput>,
+    translated_pages: Vec<PageTranslations>,
     output: PathBuf,
-) -> tokio::task::JoinHandle<Result<Vec<ChapterPageOutput>>> {
+) -> tokio::task::JoinHandle<Result<Vec<RenderedPage>>> {
     tokio::task::spawn_blocking(move || {
-        let rendered_pages = chapter::render_prepared_pages(chapter_pages, &images, &runner);
+        let rendered_pages = chapter::render_pages(translated_pages, &images, &runner);
         drop(images);
 
         std::fs::create_dir_all(&output)?;
         for page in &rendered_pages {
-            if let Some(rendered) = &page.rendered_image {
-                let path = output.join(format!("page_{:03}.png", page.page_index));
-                rendered.save(&path)?;
-            }
+            let path = output.join(format!("page_{:03}.png", page.page_index));
+            page.image.save(&path)?;
         }
 
         Ok(rendered_pages)

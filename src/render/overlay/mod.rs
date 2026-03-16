@@ -4,7 +4,7 @@ use ab_glyph::PxScale;
 use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
-use crate::pipeline::chapter::BubbleResult;
+use crate::pipeline::types::TranslatedBubble;
 use crate::vision::inpaint::LamaInpainter;
 use crate::render::layout;
 
@@ -24,7 +24,7 @@ pub use erase::{
 /// Returns the composited RGBA image.
 pub fn render(
     img: &DynamicImage,
-    bubbles: &[BubbleResult],
+    bubbles: &[TranslatedBubble],
     inpainter: Option<&LamaInpainter>,
 ) -> RgbaImage {
     let mut canvas = img.to_rgba8();
@@ -32,7 +32,7 @@ pub fn render(
     let masks: Vec<&LocalTextMask> = bubbles
         .iter()
         .filter(|b| !b.translated_text.is_empty())
-        .filter_map(|b| b.text_mask.as_ref())
+        .filter_map(|b| b.mask.as_ref())
         .collect();
 
     if !masks.is_empty() {
@@ -46,7 +46,7 @@ pub fn render(
 
 /// Draw translated text for all bubbles onto the canvas.
 /// Text color is auto-detected: white on dark backgrounds, black on light.
-fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
+fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[TranslatedBubble]) {
     let font = layout::get_font();
 
     for bubble in bubbles {
@@ -54,11 +54,7 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
             continue;
         }
 
-        let area = bubble
-            .drawable_area
-            .as_ref()
-            .unwrap_or_else(|| panic!("BubbleResult.drawable_area must be set by pipeline"));
-        let (draw_x1, draw_y1, draw_w, draw_h) = area.rect();
+        let (draw_x1, draw_y1, draw_w, draw_h) = bubble.area.rect();
 
         let bg = median_bg_color(
             canvas,
@@ -92,11 +88,7 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
 
         for (i, line) in lines.iter().enumerate() {
             let line_w = layout::measure_text_width(line, bubble.font_size_px, font);
-            let x = match bubble.align.as_str() {
-                "left" => draw_x1,
-                "right" => draw_x1 + draw_w - line_w,
-                _ => draw_x1 + (draw_w - line_w) / 2.0,
-            };
+            let x = draw_x1 + (draw_w - line_w) / 2.0; // always center
             let y = start_y + i as f64 * line_spacing;
             let ix = x as i32;
             let iy = y as i32;
@@ -155,20 +147,17 @@ mod tests {
     fn test_render_single_bubble() {
         let img =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(400, 300, Rgba([255, 255, 255, 255])));
-        let bubble = BubbleResult {
-            bubble_id: "b0".into(),
-            polygon: vec![[50.0, 50.0], [350.0, 50.0], [350.0, 250.0], [50.0, 250.0]],
+        let polygon = vec![[50.0, 50.0], [350.0, 50.0], [350.0, 250.0], [50.0, 250.0]];
+        let bubble = TranslatedBubble {
+            idx: 0,
             source_text: "Hello".into(),
             translated_text: "Xin chào".into(),
+            polygon: polygon.clone(),
+            area: DrawableArea::from_polygon(&polygon, 3.0),
+            mask: None,
             font_size_px: 24,
             line_height: 1.18,
             overflow: false,
-            align: "center".into(),
-            drawable_area: Some(DrawableArea::from_polygon(
-                &[[50.0, 50.0], [350.0, 50.0], [350.0, 250.0], [50.0, 250.0]],
-                3.0,
-            )),
-            text_mask: None,
         };
         let result = render(&img, &[bubble], None);
         assert_eq!(result.width(), 400);

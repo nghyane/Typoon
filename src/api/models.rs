@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub use crate::pipeline::chapter::BubbleResult;
+pub use crate::pipeline::types::BubbleResult;
 
 // --- Request ---
 

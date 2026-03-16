@@ -86,10 +86,8 @@ async fn run_single(
     std::fs::create_dir_all(&args.output)?;
     for page in &result.pages {
         print_page(page);
-        if let Some(rendered) = &page.rendered_image {
-            let path = args.output.join(format!("page_{:03}.png", page.page_index));
-            rendered.save(&path)?;
-        }
+        let path = args.output.join(format!("page_{:03}.png", page.page_index));
+        page.image.save(&path)?;
     }
 
     println!(
@@ -150,7 +148,7 @@ async fn run_series(
 
 // ── Helpers ──
 
-fn print_page(page: &pipeline::chapter::ChapterPageOutput) {
+fn print_page(page: &pipeline::types::RenderedPage) {
     if page.bubbles.is_empty() {
         return;
     }
@@ -161,8 +159,8 @@ fn print_page(page: &pipeline::chapter::ChapterPageOutput) {
     );
     for b in &page.bubbles {
         println!(
-            "  [{}] {}px \"{}\" → \"{}\"",
-            b.bubble_id,
+            "  [b{}] {}px \"{}\" → \"{}\"",
+            b.idx,
             b.font_size_px,
             truncate(&b.source_text, 40),
             truncate(&b.translated_text.replace('\n', " "), 50),

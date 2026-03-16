@@ -11,7 +11,6 @@ use imageproc::rect::Rect;
 use crate::config;
 use crate::vision::detection::LocalTextMask;
 use crate::render::overlay::{apply_mask_pixels, erase_masks, erase_with_median};
-use crate::translation::BubbleInput;
 
 const BBOX_COLORS: [Rgba<u8>; 6] = [
     Rgba([255, 0, 0, 255]),
@@ -46,9 +45,7 @@ pub struct InspectArgs {
 
 /// Pipeline result shared between detect and mask visualization.
 struct PipelineResult {
-    inputs: Vec<BubbleInput>,
-    polygons: Vec<Vec<[f64; 2]>>,
-    masks: Vec<Option<LocalTextMask>>,
+    bubbles: Vec<crate::pipeline::types::RawBubble>,
 }
 
 pub async fn run(mut args: InspectArgs) -> Result<()> {
@@ -82,15 +79,15 @@ pub async fn run(mut args: InspectArgs) -> Result<()> {
     let result = run_pipeline(&config, &img, &args.lang).await?;
     println!(
         "Pipeline: {} bubbles in {}ms\n",
-        result.inputs.len(),
+        result.bubbles.len(),
         t.elapsed().as_millis()
     );
 
-    for (input, poly) in result.inputs.iter().zip(&result.polygons) {
-        let (x1, y1, x2, y2) = poly_bbox(poly);
+    for (i, b) in result.bubbles.iter().enumerate() {
+        let (x1, y1, x2, y2) = poly_bbox(&b.polygon);
         println!(
-            "  [{:>3}] bbox=({:.0},{:.0})-({:.0},{:.0}) det={:.2} ocr={:.2} {:?}",
-            input.id, x1, y1, x2, y2, input.det_confidence, input.ocr_confidence, input.source_text
+            "  [b{i:>3}] bbox=({:.0},{:.0})-({:.0},{:.0}) det={:.2} ocr={:.2} {:?}",
+            x1, y1, x2, y2, b.det_confidence, b.ocr_confidence, b.source_text
         );
     }
 
@@ -121,13 +118,9 @@ async fn run_pipeline(
         crate::vision::detection::TextDetector::new(crate::model_hub::lazy::LazySession::new(ctd_path));
     let ocr = crate::vision::ocr::OcrEngine::new(&config.models_dir).await?;
 
-    let (inputs, polygons, masks) = crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
+    let bubbles = crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
 
-    Ok(PipelineResult {
-        inputs,
-        polygons,
-        masks,
-    })
+    Ok(PipelineResult { bubbles })
 }
 
 // ── Detection visualization ──
@@ -142,9 +135,9 @@ fn render_detect(
     let label_scale = PxScale::from(18.0);
     let mut canvas = img.to_rgba8();
 
-    for (i, (input, polygon)) in result.inputs.iter().zip(&result.polygons).enumerate() {
+    for (i, b) in result.bubbles.iter().enumerate() {
         let color = BBOX_COLORS[i % BBOX_COLORS.len()];
-        let (x1, y1, x2, y2) = poly_bbox(polygon);
+        let (x1, y1, x2, y2) = poly_bbox(&b.polygon);
 
         let rx = x1.max(0.0) as i32;
         let ry = y1.max(0.0) as i32;
@@ -165,8 +158,8 @@ fn render_detect(
 
         let label = format!(
             "[b{i}] d={:.0}% o={:.0}%",
-            input.det_confidence * 100.0,
-            input.ocr_confidence * 100.0
+            b.det_confidence * 100.0,
+            b.ocr_confidence * 100.0
         );
         draw_text_mut(
             &mut canvas,
@@ -194,7 +187,7 @@ async fn render_masks(
     name: &str,
     output: &PathBuf,
 ) -> Result<()> {
-    let masks: Vec<&LocalTextMask> = result.masks.iter().filter_map(|m| m.as_ref()).collect();
+    let masks: Vec<&LocalTextMask> = result.bubbles.iter().filter_map(|b| b.mask.as_ref()).collect();
     println!("\nMasks: {}", masks.len());
 
     for (i, m) in masks.iter().enumerate() {

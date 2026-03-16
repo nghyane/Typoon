@@ -1,19 +1,23 @@
 pub mod chapter;
 pub mod merge;
 pub mod series;
+pub mod types;
 
 use anyhow::Result;
 use image::DynamicImage;
 
-use crate::vision::detection::{LocalTextMask, TextDetector};
+use crate::vision::detection::TextDetector;
 use crate::vision::ocr::{DetectionOutput, OcrEngine};
-use crate::translation::BubbleInput;
+
+use types::RawBubble;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Shared detect + OCR (used by both single-page HTTP and chapter CLI)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Synchronous detect + OCR dispatch. Strategy based on source_lang:
+/// Synchronous detect + OCR dispatch. Returns raw bubbles (no layout info yet).
+///
+/// Strategy based on source_lang:
 ///   "ja" → comic-text-detector + manga-ocr
 ///   _    → PP-OCR det (line merge) + PP-OCR rec
 pub(crate) fn detect_and_ocr(
@@ -21,11 +25,7 @@ pub(crate) fn detect_and_ocr(
     ocr: &OcrEngine,
     img: &DynamicImage,
     source_lang: &str,
-) -> Result<(
-    Vec<BubbleInput>,
-    Vec<Vec<[f64; 2]>>,
-    Vec<Option<LocalTextMask>>,
-)> {
+) -> Result<Vec<RawBubble>> {
     match source_lang {
         "ja" => detect_and_ocr_manga(detector, ocr, img, source_lang),
         _ if ocr.can_detect() => detect_and_ocr_ppocr(ocr, img, source_lang),
@@ -39,33 +39,24 @@ fn detect_and_ocr_manga(
     ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(
-    Vec<BubbleInput>,
-    Vec<Vec<[f64; 2]>>,
-    Vec<Option<LocalTextMask>>,
-)> {
+) -> Result<Vec<RawBubble>> {
     let regions = detector.detect(img)?;
-    let mut inputs = Vec::new();
-    let mut polygons = Vec::new();
-    let mut masks = Vec::new();
+    let mut bubbles = Vec::new();
 
     for region in &regions {
         let result = ocr.recognize(&region.crop, lang)?;
         if !result.text.trim().is_empty() {
-            let pos = region.polygon.first().map(|p| (p[0] as i32, p[1] as i32));
-            inputs.push(BubbleInput {
-                id: format!("b{}", inputs.len()),
+            bubbles.push(RawBubble {
                 source_text: result.text,
-                position: pos,
+                polygon: region.polygon.clone(),
                 det_confidence: region.confidence,
                 ocr_confidence: result.confidence,
+                mask: region.mask.clone(),
             });
-            polygons.push(region.polygon.clone());
-            masks.push(region.mask.clone());
         }
     }
 
-    Ok((inputs, polygons, masks))
+    Ok(bubbles)
 }
 
 /// PP-OCR: detect text lines → merge into bubbles → OCR each line → concat
@@ -73,20 +64,14 @@ fn detect_and_ocr_ppocr(
     ocr: &OcrEngine,
     img: &DynamicImage,
     lang: &str,
-) -> Result<(
-    Vec<BubbleInput>,
-    Vec<Vec<[f64; 2]>>,
-    Vec<Option<LocalTextMask>>,
-)> {
+) -> Result<Vec<RawBubble>> {
     let DetectionOutput {
         regions: lines,
         prob_image,
     } = ocr.detect(img)?;
     let merged = merge::group_lines(lines, img, prob_image.as_ref());
 
-    let mut inputs = Vec::new();
-    let mut polygons = Vec::new();
-    let mut masks = Vec::new();
+    let mut bubbles = Vec::new();
 
     for bubble in &merged {
         let mut texts = Vec::new();
@@ -130,19 +115,16 @@ fn detect_and_ocr_ppocr(
             continue;
         }
 
-        let pos = bubble.polygon.first().map(|p| (p[0] as i32, p[1] as i32));
-        inputs.push(BubbleInput {
-            id: format!("b{}", inputs.len()),
+        bubbles.push(RawBubble {
             source_text: joined,
-            position: pos,
+            polygon: bubble.polygon.clone(),
             det_confidence: bubble.confidence,
             ocr_confidence: avg_conf,
+            mask: bubble.mask.clone(),
         });
-        polygons.push(bubble.polygon.clone());
-        masks.push(bubble.mask.clone());
     }
 
-    Ok((inputs, polygons, masks))
+    Ok(bubbles)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

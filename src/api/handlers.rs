@@ -9,6 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 
 use super::{AppState, HealthResponse, TranslateImageRequest, TranslateImageResponse};
 use crate::pipeline;
+use crate::pipeline::types::BubbleResult;
 use crate::translation::BubbleTranslated;
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -80,12 +81,12 @@ async fn process_image(
     let mut bubbles = Vec::new();
     let mut rendered_image_png_b64 = None;
 
-    for page in output.pages {
-        bubbles.extend(page.bubbles);
-        if let Some(rgba) = page.rendered_image {
-            let png_bytes = crate::render::overlay::encode_png(&rgba);
-            rendered_image_png_b64 = Some(STANDARD.encode(&png_bytes));
+    for page in &output.pages {
+        for b in &page.bubbles {
+            bubbles.push(BubbleResult::from_translated(b, page.page_index));
         }
+        let png_bytes = crate::render::overlay::encode_png(&page.image);
+        rendered_image_png_b64 = Some(STANDARD.encode(&png_bytes));
     }
 
     Ok(TranslateImageResponse {
