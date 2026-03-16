@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::text_layout;
-use crate::text_layout::DrawableArea;
+use crate::render::layout;
+use crate::render::layout::DrawableArea;
 
 /// Minimum font size (px) before declaring overflow.
 const MIN_FONT_SIZE: u32 = 8;
@@ -42,7 +42,7 @@ impl FitEngine {
             return Ok(FitResult {
                 text,
                 font_size_px: MIN_FONT_SIZE,
-                line_height: text_layout::LINE_HEIGHT_MULTIPLIER,
+                line_height: layout::LINE_HEIGHT_MULTIPLIER,
                 overflow: false,
             });
         }
@@ -52,22 +52,22 @@ impl FitEngine {
             return Ok(FitResult {
                 text,
                 font_size_px: MIN_FONT_SIZE,
-                line_height: text_layout::LINE_HEIGHT_MULTIPLIER,
+                line_height: layout::LINE_HEIGHT_MULTIPLIER,
                 overflow: true,
             });
         }
 
-        let font = text_layout::get_font();
+        let font = layout::get_font();
         let hi_bound = (safe_h as u32).min(MAX_FONT_SIZE);
 
         let mut lo = MIN_FONT_SIZE;
         let mut hi = hi_bound;
         let mut best_size = MIN_FONT_SIZE;
-        let mut best_wrapped = text_layout::wrap_text(&text, safe_w, MIN_FONT_SIZE, font);
+        let mut best_wrapped = layout::wrap_text(&text, safe_w, MIN_FONT_SIZE, font);
 
         while lo <= hi {
             let mid = (lo + hi) / 2;
-            let wrapped = text_layout::wrap_text(&text, safe_w, mid, font);
+            let wrapped = layout::wrap_text(&text, safe_w, mid, font);
             let total_h = text_block_height(wrapped.len(), mid);
 
             if total_h <= safe_h {
@@ -88,14 +88,14 @@ impl FitEngine {
         Ok(FitResult {
             text: best_wrapped.join("\n"),
             font_size_px: best_size,
-            line_height: text_layout::LINE_HEIGHT_MULTIPLIER,
+            line_height: layout::LINE_HEIGHT_MULTIPLIER,
             overflow,
         })
     }
 
     /// Fit translated text into a bubble polygon (convenience for single-bubble use).
     pub fn fit(translated_text: &str, polygon: &[[f64; 2]]) -> Result<FitResult> {
-        let area = DrawableArea::from_polygon(polygon, text_layout::DEFAULT_INSET);
+        let area = DrawableArea::from_polygon(polygon, layout::DEFAULT_INSET);
         Self::fit_area(translated_text, &area)
     }
 }
@@ -107,7 +107,7 @@ fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
     if n_lines == 0 {
         return 0.0;
     }
-    let spacing = font_size_px as f64 * text_layout::LINE_HEIGHT_MULTIPLIER;
+    let spacing = font_size_px as f64 * layout::LINE_HEIGHT_MULTIPLIER;
     (n_lines - 1) as f64 * spacing + font_size_px as f64
 }
 
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_drawable_area_size() {
-        use crate::text_layout::DrawableArea;
+        use crate::render::layout::DrawableArea;
         let area = DrawableArea::from_polygon(
             &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]],
             5.0,

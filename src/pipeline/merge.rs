@@ -1,6 +1,6 @@
 use image::{DynamicImage, GenericImageView, GrayImage};
 
-use crate::detection::{LocalTextMask, TextRegion};
+use crate::vision::detection::{LocalTextMask, TextRegion};
 
 /// A bubble with grouped text lines, ready for OCR + concat.
 pub struct MergedBubble {
@@ -520,7 +520,7 @@ fn composite_masks(lines: &[TextRegion]) -> Option<LocalTextMask> {
     // Radius scales with average line height (~8% of line height, min 2px).
     let avg_line_h = masks.iter().map(|m| m.image.height()).sum::<u32>() / masks.len() as u32;
     let pad_r = (avg_line_h / 8).max(2);
-    let merged = crate::detection::dilate_mask(&merged, pad_r);
+    let merged = crate::vision::detection::dilate_mask(&merged, pad_r);
 
     Some(LocalTextMask {
         x: ux1,

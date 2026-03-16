@@ -6,9 +6,9 @@ use anyhow::Result;
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::Provider;
-use crate::context::ContextStore;
-use crate::glossary::{Glossary, GlossaryEntry};
+use crate::llm::Provider;
+use crate::storage::context::ContextStore;
+use crate::storage::glossary::{Glossary, GlossaryEntry};
 
 // ── Page-grouped input ──
 

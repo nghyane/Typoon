@@ -1,7 +1,7 @@
 use image::{DynamicImage, GrayImage, Luma, Rgba, RgbaImage};
 
-use crate::detection::LocalTextMask;
-use crate::inpaint::LamaInpainter;
+use crate::vision::detection::LocalTextMask;
+use crate::vision::inpaint::LamaInpainter;
 
 /// Erase original text from masked regions of a page image.
 ///

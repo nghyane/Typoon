@@ -4,7 +4,7 @@
 /// Uses `agent::ir::Message` (typed IR) instead of raw JSON.
 use anyhow::{Context, Result};
 
-use crate::agent::{self, ContentPart, Message, Provider, ToolResponse};
+use crate::llm::{ContentPart, Message, Provider, ToolDef, ToolResponse};
 
 use super::prompt::PromptBuilder;
 use super::tools;
@@ -169,7 +169,7 @@ async fn completeness_check(
     provider: &dyn Provider,
     req: &TranslateRequest,
     messages: &mut Vec<Message>,
-    tool_defs: &[agent::ToolDef],
+    tool_defs: &[ToolDef],
     results: &mut Vec<BubbleTranslated>,
     source_lookup: &std::collections::HashMap<&str, &str>,
 ) -> Result<()> {

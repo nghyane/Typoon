@@ -1,6 +1,6 @@
 use image::{DynamicImage, GenericImageView};
 
-use crate::text_layout;
+use crate::render::layout;
 
 /// Maximum scan depth from bbox edge (px)
 const MAX_SCAN_DEPTH: u32 = 20;
@@ -24,7 +24,7 @@ const BORDER_PAD: f64 = 1.0;
 /// Returns the inset in pixels: the distance from bbox edge to the inner content area.
 /// Scans all 4 edges, takes the median of detected border widths.
 pub fn detect_inset(img: &DynamicImage, polygon: &[[f64; 2]]) -> f64 {
-    let (x1, y1, x2, y2) = text_layout::polygon_bbox(polygon);
+    let (x1, y1, x2, y2) = layout::polygon_bbox(polygon);
     let (img_w, img_h) = img.dimensions();
 
     // Clamp bbox to image bounds

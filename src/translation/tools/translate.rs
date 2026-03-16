@@ -1,4 +1,4 @@
-use crate::agent;
+use crate::llm::ToolDef;
 
 #[derive(serde::Deserialize)]
 pub struct TranslationItem {
@@ -11,8 +11,8 @@ pub struct Args {
     pub translations: Vec<TranslationItem>,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "translate",
         "Submit translations for one or more bubbles in a single call.\n\n\
             Behavior:\n\

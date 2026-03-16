@@ -1,7 +1,7 @@
 use anyhow::Result;
 
-use crate::agent::{Message, Provider, ToolDef};
-use crate::context::{ChapterTranslation, ContextHit, ContextStore, SearchScope};
+use crate::llm::{Message, Provider, ToolDef};
+use crate::storage::context::{ChapterTranslation, ContextHit, ContextStore, SearchScope};
 
 const SYSTEM_PROMPT: &str = "\
 You are a context retrieval sub-agent for a manga translation project.
@@ -152,8 +152,8 @@ fn format_hits(hits: &[ContextHit]) -> String {
     let mut out = format!("Found {} results:\n", hits.len());
     for h in hits {
         let kind = match h.kind {
-            crate::context::ContextHitKind::Translation => "translation",
-            crate::context::ContextHitKind::Note => "note",
+            crate::storage::context::ContextHitKind::Translation => "translation",
+            crate::storage::context::ContextHitKind::Note => "note",
         };
         out.push_str(&format!(
             "  [Ch{} {}] {}\n",

@@ -1,4 +1,4 @@
-use crate::agent::{self, ToolResponse};
+use crate::llm::{ToolDef, ToolResponse};
 use crate::translation::TranslateContext;
 
 #[derive(serde::Deserialize)]
@@ -7,8 +7,8 @@ pub struct Args {
     pub content: String,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "add_note",
         "Record a chapter observation for future reference.\n\n\
             Behavior:\n\

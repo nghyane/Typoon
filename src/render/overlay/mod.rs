@@ -4,12 +4,12 @@ use ab_glyph::PxScale;
 use image::{DynamicImage, Rgba, RgbaImage};
 use imageproc::drawing::draw_text_mut;
 
-use crate::api::BubbleResult;
-use crate::inpaint::LamaInpainter;
-use crate::text_layout;
+use crate::pipeline::chapter::BubbleResult;
+use crate::vision::inpaint::LamaInpainter;
+use crate::render::layout;
 
 // Re-export erasure utilities for use by examples and tests.
-use crate::detection::LocalTextMask;
+use crate::vision::detection::LocalTextMask;
 pub use erase::{
     apply_mask_pixels, erase_masks, erase_with_median, median_bg_color, page_mask_from_local,
     pixel_luminance,
@@ -47,7 +47,7 @@ pub fn render(
 /// Draw translated text for all bubbles onto the canvas.
 /// Text color is auto-detected: white on dark backgrounds, black on light.
 fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
-    let font = text_layout::get_font();
+    let font = layout::get_font();
 
     for bubble in bubbles {
         if bubble.translated_text.is_empty() {
@@ -91,7 +91,7 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[BubbleResult]) {
         let start_y = (draw_y1 + (draw_h - total_text_h) / 2.0).max(draw_y1);
 
         for (i, line) in lines.iter().enumerate() {
-            let line_w = text_layout::measure_text_width(line, bubble.font_size_px, font);
+            let line_w = layout::measure_text_width(line, bubble.font_size_px, font);
             let x = match bubble.align.as_str() {
                 "left" => draw_x1,
                 "right" => draw_x1 + draw_w - line_w,
@@ -141,7 +141,7 @@ pub fn encode_jpeg_data_uri(img: &DynamicImage, quality: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_layout::DrawableArea;
+    use crate::render::layout::DrawableArea;
 
     #[test]
     fn test_render_empty_bubbles() {

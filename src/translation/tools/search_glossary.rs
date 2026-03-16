@@ -1,4 +1,4 @@
-use crate::agent::{self, ToolResponse};
+use crate::llm::{ToolDef, ToolResponse};
 use crate::translation::TranslateContext;
 
 #[derive(serde::Deserialize)]
@@ -6,8 +6,8 @@ pub struct Args {
     pub query: String,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "search_glossary",
         "Search the persistent glossary for canonical translations.\n\n\
             Behavior:\n\

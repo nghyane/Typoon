@@ -4,7 +4,7 @@ mod ppocr;
 use anyhow::Result;
 use image::GrayImage;
 
-use crate::detection::TextRegion;
+use crate::vision::detection::TextRegion;
 use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
 

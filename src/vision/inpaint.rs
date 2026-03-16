@@ -227,12 +227,20 @@ fn tile_starts(length: u32) -> Vec<u32> {
 /// Crop a sub-region from a GrayImage.
 fn crop_gray(img: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> GrayImage {
     let mut out = GrayImage::new(w, h);
-    for ly in 0..h {
-        for lx in 0..w {
-            let sx = (x + lx).min(img.width() - 1);
-            let sy = (y + ly).min(img.height() - 1);
-            out.put_pixel(lx, ly, *img.get_pixel(sx, sy));
-        }
+    let src_w = img.width() as usize;
+    let x = x as usize;
+    let y = y as usize;
+    let w = w as usize;
+    let h = h as usize;
+    debug_assert!(x + w <= src_w);
+    debug_assert!(y + h <= img.height() as usize);
+
+    let src = img.as_raw();
+    let dst = out.as_mut();
+    for row in 0..h {
+        let src_start = (y + row) * src_w + x;
+        let dst_start = row * w;
+        dst[dst_start..dst_start + w].copy_from_slice(&src[src_start..src_start + w]);
     }
     out
 }
@@ -240,12 +248,23 @@ fn crop_gray(img: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> GrayImage {
 /// Crop a sub-region from an RgbImage.
 fn crop_rgb(img: &RgbImage, x: u32, y: u32, w: u32, h: u32) -> RgbImage {
     let mut out = RgbImage::new(w, h);
-    for ly in 0..h {
-        for lx in 0..w {
-            let sx = (x + lx).min(img.width() - 1);
-            let sy = (y + ly).min(img.height() - 1);
-            out.put_pixel(lx, ly, *img.get_pixel(sx, sy));
-        }
+    let src_w = img.width() as usize;
+    let x = x as usize;
+    let y = y as usize;
+    let w = w as usize;
+    let h = h as usize;
+    let src_stride = src_w * 3;
+    let dst_stride = w * 3;
+    debug_assert!(x + w <= src_w);
+    debug_assert!(y + h <= img.height() as usize);
+
+    let src = img.as_raw();
+    let dst = out.as_mut();
+    for row in 0..h {
+        let src_start = (y + row) * src_stride + x * 3;
+        let dst_start = row * dst_stride;
+        dst[dst_start..dst_start + dst_stride]
+            .copy_from_slice(&src[src_start..src_start + dst_stride]);
     }
     out
 }
@@ -309,13 +328,19 @@ fn median_bg(img: &RgbImage, tile_mask: &GrayImage, ox: u32, oy: u32) -> Rgb<u8>
 
 /// Check if any mask pixels in the given region are non-zero.
 fn has_mask_pixels(mask: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> bool {
-    for ly in 0..h {
-        for lx in 0..w {
-            let sx = (x + lx).min(mask.width() - 1);
-            let sy = (y + ly).min(mask.height() - 1);
-            if mask.get_pixel(sx, sy).0[0] > 0 {
-                return true;
-            }
+    let mask_w = mask.width() as usize;
+    let x = x as usize;
+    let y = y as usize;
+    let w = w as usize;
+    let h = h as usize;
+    debug_assert!(x + w <= mask_w);
+    debug_assert!(y + h <= mask.height() as usize);
+
+    let raw = mask.as_raw();
+    for row in 0..h {
+        let start = (y + row) * mask_w + x;
+        if raw[start..start + w].iter().any(|&v| v > 0) {
+            return true;
         }
     }
     false

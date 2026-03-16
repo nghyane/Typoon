@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         .db_path
         .as_deref()
         .unwrap_or("data/context.db");
-    let store = comic_scan::context::ContextStore::open(std::path::Path::new(db_path))?;
+    let store = comic_scan::storage::context::ContextStore::open(std::path::Path::new(db_path))?;
     tracing::info!("Context store opened: {db_path}");
 
     // Build context agent provider
@@ -47,16 +47,16 @@ async fn main() -> Result<()> {
     let resolved = config.resolve_provider(agent_config)?;
     let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
 
-    let provider: Box<dyn comic_scan::agent::Provider> = match resolved.provider_type {
+    let provider: Box<dyn comic_scan::llm::Provider> = match resolved.provider_type {
         comic_scan::config::ProviderType::Anthropic => {
-            Box::new(comic_scan::agent::anthropic::AnthropicProvider::new(
+            Box::new(comic_scan::llm::anthropic::AnthropicProvider::new(
                 &resolved.endpoint,
                 api_key,
                 &resolved.model,
             )?)
         }
         comic_scan::config::ProviderType::OpenAI => {
-            Box::new(comic_scan::agent::openai::OpenAIProvider::new(
+            Box::new(comic_scan::llm::openai::OpenAIProvider::new(
                 &resolved.endpoint,
                 Some(api_key),
                 &resolved.model,
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
 
     // Run the context agent
     let start = std::time::Instant::now();
-    let answer = comic_scan::context::agent::answer_context_question(
+    let answer = comic_scan::storage::context::agent::answer_context_question(
         provider.as_ref(),
         &store,
         &project_id,

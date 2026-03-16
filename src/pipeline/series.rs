@@ -6,9 +6,9 @@ use std::time::Instant;
 use anyhow::Result;
 use image::DynamicImage;
 
-use crate::detection::TextDetector;
+use crate::vision::detection::TextDetector;
 use crate::image_io;
-use crate::ocr::OcrEngine;
+use crate::vision::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
 
 use super::chapter::{self, ChapterPageOutput, PageDetection};

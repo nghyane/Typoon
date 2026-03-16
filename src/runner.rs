@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::agent::Provider;
+use crate::llm::Provider;
 use crate::config::{AppConfig, ProviderType};
-use crate::context::ContextStore;
-use crate::detection::TextDetector;
-use crate::glossary::Glossary;
-use crate::inpaint::LamaInpainter;
+use crate::storage::context::ContextStore;
+use crate::vision::detection::TextDetector;
+use crate::storage::glossary::Glossary;
+use crate::vision::inpaint::LamaInpainter;
 use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
-use crate::ocr::OcrEngine;
+use crate::vision::ocr::OcrEngine;
 use crate::translation::TranslationEngine;
 
 /// Headless translation runner — holds all pipeline components without Axum/HTTP.
@@ -25,9 +25,36 @@ pub struct TranslationRunner {
     pub ocr: Arc<OcrEngine>,
     pub translation: TranslationEngine,
     pub inpainter: Option<LamaInpainter>,
+    render_executor: RenderExecutor,
+    max_pending_render_jobs: usize,
     pub glossary: Option<Glossary>,
     pub context_store: Option<Arc<ContextStore>>,
     pub context_agent: Option<Box<dyn Provider>>,
+}
+
+struct RenderExecutor {
+    workers: usize,
+    pool: rayon::ThreadPool,
+}
+
+impl RenderExecutor {
+    fn new(workers: usize) -> Result<Self> {
+        let workers = workers.max(1);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .thread_name(|idx| format!("render-{idx}"))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to create render worker pool: {e}"))?;
+        Ok(Self { workers, pool })
+    }
+
+    fn workers(&self) -> usize {
+        self.workers
+    }
+
+    fn install<R: Send>(&self, op: impl FnOnce() -> R + Send) -> R {
+        self.pool.install(op)
+    }
 }
 
 impl TranslationRunner {
@@ -49,6 +76,16 @@ impl TranslationRunner {
                 None
             }
         };
+
+        let render_workers = config.runtime.effective_render_workers(inpainter.is_some());
+        let render_executor = RenderExecutor::new(render_workers)?;
+        let max_pending_render_jobs = config.runtime.max_pending_render_jobs.max(1);
+        tracing::info!(
+            "Render executor initialized with {} worker(s), pending queue {} (LaMa: {})",
+            render_executor.workers(),
+            max_pending_render_jobs,
+            inpainter.is_some()
+        );
 
         let context_store = if let Some(db_path) = &config.context.db_path {
             match ContextStore::open(std::path::Path::new(db_path)) {
@@ -92,13 +129,13 @@ impl TranslationRunner {
                 Ok(resolved) => {
                     let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
                     let provider: Result<Box<dyn Provider>> = match resolved.provider_type {
-                        ProviderType::Anthropic => crate::agent::anthropic::AnthropicProvider::new(
+                        ProviderType::Anthropic => crate::llm::anthropic::AnthropicProvider::new(
                             &resolved.endpoint,
                             api_key,
                             &resolved.model,
                         )
                         .map(|p| Box::new(p) as Box<dyn Provider>),
-                        ProviderType::OpenAI => crate::agent::openai::OpenAIProvider::new(
+                        ProviderType::OpenAI => crate::llm::openai::OpenAIProvider::new(
                             &resolved.endpoint,
                             Some(api_key),
                             &resolved.model,
@@ -130,10 +167,24 @@ impl TranslationRunner {
             ocr: Arc::new(ocr),
             translation,
             inpainter,
+            render_executor,
+            max_pending_render_jobs,
             glossary,
             context_store: context_store.map(Arc::new),
             context_agent,
         })
+    }
+
+    pub fn install_render<R: Send>(&self, op: impl FnOnce() -> R + Send) -> R {
+        self.render_executor.install(op)
+    }
+
+    pub fn render_workers(&self) -> usize {
+        self.render_executor.workers()
+    }
+
+    pub fn max_pending_render_jobs(&self) -> usize {
+        self.max_pending_render_jobs
     }
 }
 
@@ -144,7 +195,7 @@ pub fn build_translation_engine(
     let api_key = resolved.api_key.as_deref().unwrap_or("not-needed");
     let provider: Box<dyn Provider> = match resolved.provider_type {
         ProviderType::OpenAI => {
-            let p = crate::agent::openai::OpenAIProvider::new(
+            let p = crate::llm::openai::OpenAIProvider::new(
                 &resolved.endpoint,
                 Some(api_key),
                 &resolved.model,
@@ -152,7 +203,7 @@ pub fn build_translation_engine(
             .with_reasoning_effort(resolved.reasoning_effort.clone());
             Box::new(p)
         }
-        ProviderType::Anthropic => Box::new(crate::agent::anthropic::AnthropicProvider::new(
+        ProviderType::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(
             &resolved.endpoint,
             api_key,
             &resolved.model,

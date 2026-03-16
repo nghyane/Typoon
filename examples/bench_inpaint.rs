@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
         comic_scan::model_hub::resolve(&config.models_dir, comic_scan::model_hub::Model::Lama)
             .await?;
 
-    let inpainter = Arc::new(comic_scan::inpaint::LamaInpainter::new(
+    let inpainter = Arc::new(comic_scan::vision::inpaint::LamaInpainter::new(
         comic_scan::model_hub::lazy::LazySession::gpu(model_path),
     ));
 

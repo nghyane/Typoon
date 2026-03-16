@@ -1,4 +1,4 @@
-use crate::agent::{self, ToolResponse};
+use crate::llm::{ToolDef, ToolResponse};
 use crate::translation::TranslateContext;
 
 #[derive(serde::Deserialize)]
@@ -6,8 +6,8 @@ pub struct Args {
     pub question: String,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "get_context",
         "Search previous chapters for translation history and chapter notes.\n\n\
             Behavior:\n\
@@ -52,7 +52,7 @@ pub async fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
         }
 
         tracing::info!("get_context: {:?}", args.question);
-        match crate::context::agent::answer_context_question(
+        match crate::storage::context::agent::answer_context_question(
             agent,
             store,
             project_id,

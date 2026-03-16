@@ -7,7 +7,7 @@ use ndarray::Array4;
 use ort::value::TensorRef;
 
 use super::{DetectionOutput, OcrResult};
-use crate::detection::{LocalTextMask, TextRegion, dilate_mask};
+use crate::vision::detection::{LocalTextMask, TextRegion, dilate_mask};
 use crate::model_hub::lazy::LazySession;
 
 // ── Recognition constants ──

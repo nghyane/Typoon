@@ -1,4 +1,4 @@
-use crate::agent::{self, ToolResponse};
+use crate::llm::{ToolDef, ToolResponse};
 use crate::translation::TranslateContext;
 
 #[derive(serde::Deserialize)]
@@ -6,8 +6,8 @@ pub struct Args {
     pub page_index: usize,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "view_page",
         "View a comic page image for visual context.\n\n\
             Behavior:\n\
@@ -64,8 +64,8 @@ pub fn encode_page_jpeg(img: &image::DynamicImage) -> String {
             AGENT_IMAGE_MAX_DIM,
             image::imageops::FilterType::Triangle,
         );
-        crate::overlay::encode_jpeg_data_uri(&resized, AGENT_IMAGE_JPEG_QUALITY)
+        crate::render::overlay::encode_jpeg_data_uri(&resized, AGENT_IMAGE_JPEG_QUALITY)
     } else {
-        crate::overlay::encode_jpeg_data_uri(img, AGENT_IMAGE_JPEG_QUALITY)
+        crate::render::overlay::encode_jpeg_data_uri(img, AGENT_IMAGE_JPEG_QUALITY)
     }
 }

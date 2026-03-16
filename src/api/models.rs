@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::detection::LocalTextMask;
-use crate::text_layout::DrawableArea;
+pub use crate::pipeline::chapter::BubbleResult;
 
 // --- Request ---
 
@@ -52,29 +51,6 @@ pub struct TranslateImageResponse {
     pub bubbles: Vec<BubbleResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendered_image_png_b64: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BubbleResult {
-    pub bubble_id: String,
-    pub polygon: Vec<[f64; 2]>,
-    pub source_text: String,
-    pub translated_text: String,
-    pub font_size_px: u32,
-    pub line_height: f64,
-    pub overflow: bool,
-    #[serde(default = "default_align")]
-    pub align: String,
-    /// Canonical drawable area (computed once, used by fit + render).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drawable_area: Option<DrawableArea>,
-    /// ML-generated text mask for erasing (render-only, not serialized).
-    #[serde(skip, default)]
-    pub text_mask: Option<LocalTextMask>,
-}
-
-fn default_align() -> String {
-    "center".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

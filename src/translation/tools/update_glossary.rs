@@ -1,4 +1,4 @@
-use crate::agent::{self, ToolResponse};
+use crate::llm::{ToolDef, ToolResponse};
 use crate::translation::TranslateContext;
 
 #[derive(serde::Deserialize)]
@@ -9,8 +9,8 @@ pub struct Args {
     pub notes: String,
 }
 
-pub fn def() -> agent::ToolDef {
-    agent::ToolDef::new(
+pub fn def() -> ToolDef {
+    ToolDef::new(
         "update_glossary",
         "Save a high-confidence canonical term to the persistent glossary for future chapters.\n\n\
             Behavior:\n\

@@ -1,17 +1,39 @@
 use anyhow::Result;
 use image::DynamicImage;
+use serde::{Deserialize, Serialize};
 
-use crate::api::BubbleResult;
-use crate::border_detect;
-use crate::context::ChapterTranslation;
-use crate::detection::{LocalTextMask, TextDetector};
-use crate::ocr::OcrEngine;
+use crate::vision::border;
+use crate::storage::context::ChapterTranslation;
+use crate::vision::detection::{LocalTextMask, TextDetector};
+use crate::vision::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
-use crate::text_layout::DrawableArea;
+use crate::render::layout::DrawableArea;
 use crate::translation::{
     BubbleInput, BubbleTranslated, ContextNote, PageInput, TranslateContext, TranslateRequest,
     TranslationEngine,
 };
+
+/// A single translated bubble with fit results and rendering data.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BubbleResult {
+    pub bubble_id: String,
+    pub polygon: Vec<[f64; 2]>,
+    pub source_text: String,
+    pub translated_text: String,
+    pub font_size_px: u32,
+    pub line_height: f64,
+    pub overflow: bool,
+    #[serde(default = "default_align")]
+    pub align: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawable_area: Option<DrawableArea>,
+    #[serde(skip, default)]
+    pub text_mask: Option<LocalTextMask>,
+}
+
+fn default_align() -> String {
+    "center".into()
+}
 
 /// Per-page detection output, kept around for fit+render after translation.
 pub struct PageDetection {
@@ -65,7 +87,7 @@ pub fn detect_chapter(
         let areas: Vec<DrawableArea> = polygons
             .iter()
             .map(|poly| {
-                let inset = border_detect::detect_inset(img, poly);
+                let inset = border::detect_inset(img, poly);
                 DrawableArea::from_polygon(poly, inset)
             })
             .collect();
@@ -83,8 +105,33 @@ pub fn detect_chapter(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Phase 2: Translate + Fit + Save + Render (needs context from prior chapters)
+// Phase 2: Translate + Fit + Save (needs context from prior chapters)
 // ═══════════════════════════════════════════════════════════════════════
+
+/// Translate, fit, and save chapter context from pre-computed detections.
+/// Must run sequentially per chapter (depends on context from prior chapters).
+pub async fn translate_and_prepare(
+    runner: &TranslationRunner,
+    detections: Vec<PageDetection>,
+    images: &[DynamicImage],
+    target_lang: &str,
+    source_lang: &str,
+    project_id: Option<&str>,
+    chapter_index: Option<usize>,
+) -> Result<Vec<ChapterPageOutput>> {
+    translate_and_prepare_inner(
+        runner,
+        &runner.translation,
+        detections,
+        images,
+        target_lang,
+        source_lang,
+        vec![],
+        project_id,
+        chapter_index,
+    )
+    .await
+}
 
 /// Translate, fit, save context, and render a chapter from pre-computed detections.
 /// Must run sequentially per chapter (depends on context from prior chapters).
@@ -97,18 +144,24 @@ pub async fn translate_and_render(
     project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Result<ChapterOutput> {
-    translate_and_render_inner(
+    let chapter_pages = translate_and_prepare(
         runner,
-        &runner.translation,
         detections,
         images,
         target_lang,
         source_lang,
-        vec![],
         project_id,
         chapter_index,
     )
-    .await
+    .await?;
+
+    let t_phase = std::time::Instant::now();
+    let chapter_pages = render_prepared_pages(chapter_pages, images, runner);
+    tracing::info!("Phase render: {:.1}s", t_phase.elapsed().as_secs_f64());
+
+    Ok(ChapterOutput {
+        pages: chapter_pages,
+    })
 }
 
 /// Translate + fit + render using a caller-provided engine and context.
@@ -124,7 +177,7 @@ pub async fn translate_and_render_with_engine(
     source_lang: &str,
     context: Vec<BubbleTranslated>,
 ) -> Result<ChapterOutput> {
-    translate_and_render_inner(
+    let chapter_pages = translate_and_prepare_inner(
         runner,
         engine,
         detections,
@@ -135,10 +188,18 @@ pub async fn translate_and_render_with_engine(
         None,
         None,
     )
-    .await
+    .await?;
+
+    let t_phase = std::time::Instant::now();
+    let chapter_pages = render_prepared_pages(chapter_pages, images, runner);
+    tracing::info!("Phase render: {:.1}s", t_phase.elapsed().as_secs_f64());
+
+    Ok(ChapterOutput {
+        pages: chapter_pages,
+    })
 }
 
-async fn translate_and_render_inner(
+async fn translate_and_prepare_inner(
     runner: &TranslationRunner,
     engine: &TranslationEngine,
     detections: Vec<PageDetection>,
@@ -148,7 +209,7 @@ async fn translate_and_render_inner(
     context: Vec<BubbleTranslated>,
     project_id: Option<&str>,
     chapter_index: Option<usize>,
-) -> Result<ChapterOutput> {
+) -> Result<Vec<ChapterPageOutput>> {
     // ── Build chapter-level translate request ──
     let pages: Vec<PageInput> = detections
         .iter()
@@ -160,16 +221,14 @@ async fn translate_and_render_inner(
         .collect();
 
     if pages.iter().all(|p| p.bubbles.is_empty()) {
-        return Ok(ChapterOutput {
-            pages: detections
-                .iter()
-                .map(|pd| ChapterPageOutput {
-                    page_index: pd.page_index,
-                    bubbles: vec![],
-                    rendered_image: None,
-                })
-                .collect(),
-        });
+        return Ok(detections
+            .iter()
+            .map(|pd| ChapterPageOutput {
+                page_index: pd.page_index,
+                bubbles: vec![],
+                rendered_image: None,
+            })
+            .collect());
     }
 
     let glossary_entries = if let Some(glossary) = &runner.glossary {
@@ -214,7 +273,7 @@ async fn translate_and_render_inner(
         context_agent: runner
             .context_agent
             .as_ref()
-            .map(|a| &**a as &dyn crate::agent::Provider),
+            .map(|a| &**a as &dyn crate::llm::Provider),
         project_id,
         chapter_index,
     };
@@ -237,14 +296,7 @@ async fn translate_and_render_inner(
         chapter_index,
     );
 
-    // ── Render translated text onto page images ──
-    let t_phase = std::time::Instant::now();
-    let chapter_pages = render_pages(chapter_pages, images, runner);
-    tracing::info!("Phase render: {:.1}s", t_phase.elapsed().as_secs_f64());
-
-    Ok(ChapterOutput {
-        pages: chapter_pages,
-    })
+    Ok(chapter_pages)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -287,7 +339,7 @@ fn fit_results(
             .map(|(t, idx)| (t.translated_text.as_str(), &pd.areas[*idx]))
             .collect();
 
-        let fits = crate::fit_engine::FitEngine::fit_page_areas(&page_items, page_w)?;
+        let fits = crate::render::fit::FitEngine::fit_page_areas(&page_items, page_w)?;
 
         let bubbles: Vec<BubbleResult> = fit_items
             .iter()
@@ -362,28 +414,31 @@ fn save_context(
 
 /// Render translated text onto page images.
 ///
-/// Pages are rendered in parallel via rayon. ONNX Runtime's C API is
-/// thread-safe for concurrent inference, so a single shared LaMa session
-/// handles all pages without mutex contention.
-fn render_pages(
+/// Pages are rendered in a dedicated, bounded thread pool configured via
+/// `config.runtime.*`. This avoids unbounded contention when LaMa/CoreML is enabled.
+pub fn render_prepared_pages(
     chapter_pages: Vec<ChapterPageOutput>,
     images: &[DynamicImage],
     runner: &TranslationRunner,
 ) -> Vec<ChapterPageOutput> {
-    use rayon::prelude::*;
-
     let inpainter = runner.inpainter.as_ref();
+    tracing::debug!("Render phase using {} worker(s)", runner.render_workers());
 
-    chapter_pages
-        .into_par_iter()
-        .map(|mut page| {
-            if !page.bubbles.is_empty() {
-                let img = &images[page.page_index];
-                page.rendered_image = Some(crate::overlay::render(img, &page.bubbles, inpainter));
-            }
-            page
-        })
-        .collect()
+    runner.install_render(|| {
+        use rayon::prelude::*;
+
+        chapter_pages
+            .into_par_iter()
+            .map(|mut page| {
+                if !page.bubbles.is_empty() {
+                    let img = &images[page.page_index];
+                    page.rendered_image =
+                        Some(crate::render::overlay::render(img, &page.bubbles, inpainter));
+                }
+                page
+            })
+            .collect()
+    })
 }
 
 // ── Notes injection ──

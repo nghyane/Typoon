@@ -2,80 +2,12 @@ pub mod chapter;
 pub mod merge;
 pub mod series;
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use image::DynamicImage;
 
-use crate::api::{AppState, TranslateImageRequest, TranslateImageResponse};
-use crate::detection::{LocalTextMask, TextDetector};
-use crate::ocr::{DetectionOutput, OcrEngine};
-use crate::translation::{BubbleInput, BubbleTranslated};
-
-/// Main HTTP entry point: decode → detect → OCR → translate → fit → render.
-///
-/// Delegates to the chapter pipeline, treating a single image as a 1-page chapter.
-pub async fn process_image(
-    state: &Arc<AppState>,
-    req: &TranslateImageRequest,
-) -> Result<TranslateImageResponse> {
-    let image_bytes = STANDARD.decode(&req.image_blob_b64)?;
-    let img = image::load_from_memory(&image_bytes)?;
-
-    let source_lang = detect_source_lang(req.source_lang.as_deref(), &req.target_lang);
-
-    // Resolve translation engine (handles per-request provider override)
-    let engine = crate::api::resolve_engine(state, req)?;
-
-    // Detect + OCR as a 1-page chapter
-    let runner = &state.runner;
-    let det = Arc::clone(&runner.detector);
-    let ocr = Arc::clone(&runner.ocr);
-    let images = vec![img];
-
-    let detections = tokio::task::spawn_blocking({
-        let images = images.clone();
-        let lang = source_lang.to_string();
-        move || chapter::detect_chapter(&det, &ocr, &images, &lang)
-    })
-    .await??;
-
-    // Build context from request hints
-    let context = build_context(req);
-
-    // Translate + fit + render using chapter pipeline
-    let output = chapter::translate_and_render_with_engine(
-        runner,
-        engine.as_ref(),
-        detections,
-        &images,
-        &req.target_lang,
-        source_lang,
-        context,
-    )
-    .await?;
-
-    // Build response
-    let mut bubbles = Vec::new();
-    let mut rendered_image_png_b64 = None;
-
-    for page in output.pages {
-        bubbles.extend(page.bubbles);
-        if let Some(rgba) = page.rendered_image {
-            let png_bytes = crate::overlay::encode_png(&rgba);
-            rendered_image_png_b64 = Some(STANDARD.encode(&png_bytes));
-        }
-    }
-
-    Ok(TranslateImageResponse {
-        image_id: req.image_id.clone(),
-        status: "ok".into(),
-        bubbles,
-        rendered_image_png_b64,
-    })
-}
+use crate::vision::detection::{LocalTextMask, TextDetector};
+use crate::vision::ocr::{DetectionOutput, OcrEngine};
+use crate::translation::BubbleInput;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Shared detect + OCR (used by both single-page HTTP and chapter CLI)
@@ -166,9 +98,6 @@ fn detect_and_ocr_ppocr(
             if text.is_empty() || (text.chars().count() <= 2 && result.confidence < 0.5) {
                 continue;
             }
-            // Reject lines where any single character has very low confidence.
-            // This catches garbled recognitions (e.g., random strokes decoded as
-            // plausible-looking text) that pass the average confidence check.
             if result.min_char_confidence < 0.15 && text.chars().count() <= 4 {
                 continue;
             }
@@ -181,10 +110,6 @@ fn detect_and_ocr_ppocr(
             continue;
         }
 
-        // SFX filter: combine OCR confidence + geometry.
-        // SFX (sound effects) produce portrait-ish lines with low OCR confidence
-        // because they are stylized text the model can't read well.
-        // Normal dialogue has high confidence even with large fonts.
         let avg_conf = if conf_count > 0 {
             total_conf / conf_count as f64
         } else {
@@ -200,7 +125,6 @@ fn detect_and_ocr_ppocr(
             continue;
         }
 
-        // Filter watermarks
         let lower = joined.to_lowercase();
         if lower.contains(".com") || lower.contains(".net") || lower.contains(".org") {
             continue;
@@ -222,25 +146,8 @@ fn detect_and_ocr_ppocr(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Shared helpers (used by process_image and examples)
+// Language helpers
 // ═══════════════════════════════════════════════════════════════════════
-
-pub fn build_context(req: &TranslateImageRequest) -> Vec<BubbleTranslated> {
-    let Some(hint) = &req.context_hint else {
-        return vec![];
-    };
-
-    hint.previous_translations
-        .iter()
-        .flat_map(|pt| {
-            pt.bubbles.iter().map(|b| BubbleTranslated {
-                id: String::new(),
-                source_text: b.source_text.clone(),
-                translated_text: b.translated_text.clone(),
-            })
-        })
-        .collect()
-}
 
 const KNOWN_LANGS: &[&str] = &["ja", "ko", "zh", "en", "vi"];
 

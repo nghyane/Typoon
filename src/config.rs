@@ -30,6 +30,10 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub glossary: GlossaryConfig,
+
+    /// Runtime concurrency limits per pipeline stage.
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +91,43 @@ pub struct GlossaryConfig {
     pub import_toml: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuntimeConfig {
+    /// Render worker count when LaMa is disabled (CPU-heavy text drawing only).
+    #[serde(default = "default_render_workers")]
+    pub render_workers: usize,
+    /// Render worker count when LaMa is enabled (CoreML/ANE contention-sensitive).
+    #[serde(default = "default_render_workers_with_lama")]
+    pub render_workers_with_lama: usize,
+    /// Maximum number of chapter render jobs buffered in memory.
+    ///
+    /// A small queue lets translation continue while previous chapters are rendering,
+    /// without unbounded memory growth.
+    #[serde(default = "default_max_pending_render_jobs")]
+    pub max_pending_render_jobs: usize,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            render_workers: default_render_workers(),
+            render_workers_with_lama: default_render_workers_with_lama(),
+            max_pending_render_jobs: default_max_pending_render_jobs(),
+        }
+    }
+}
+
+impl RuntimeConfig {
+    pub fn effective_render_workers(&self, has_lama: bool) -> usize {
+        let workers = if has_lama {
+            self.render_workers_with_lama
+        } else {
+            self.render_workers
+        };
+        workers.max(1)
+    }
+}
+
 /// Fully resolved provider + model settings for a role.
 #[derive(Debug, Clone)]
 pub struct ResolvedProvider {
@@ -115,6 +156,18 @@ fn default_provider_name() -> String {
 fn default_provider_type() -> ProviderType {
     ProviderType::OpenAI
 }
+fn default_render_workers() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    cores.clamp(1, 8)
+}
+fn default_render_workers_with_lama() -> usize {
+    1
+}
+fn default_max_pending_render_jobs() -> usize {
+    2
+}
 
 impl AppConfig {
     pub fn load() -> Result<Self> {
@@ -135,6 +188,7 @@ impl AppConfig {
                 context_agent: None,
                 context: ContextConfig::default(),
                 glossary: GlossaryConfig::default(),
+                runtime: RuntimeConfig::default(),
             })
         }
     }

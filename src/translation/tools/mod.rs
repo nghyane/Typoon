@@ -9,10 +9,10 @@ pub mod translate;
 pub mod update_glossary;
 pub mod view_page;
 
-use crate::agent;
+use crate::llm::ToolDef;
 
 /// Build the translation agent's tool list based on available capabilities.
-pub fn build_tools(has_images: bool, has_glossary: bool, has_context: bool) -> Vec<agent::ToolDef> {
+pub fn build_tools(has_images: bool, has_glossary: bool, has_context: bool) -> Vec<ToolDef> {
     let mut tools = vec![translate::def()];
 
     if has_images {

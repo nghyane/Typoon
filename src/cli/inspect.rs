@@ -9,8 +9,8 @@ use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 
 use crate::config;
-use crate::detection::LocalTextMask;
-use crate::overlay::{apply_mask_pixels, erase_masks, erase_with_median};
+use crate::vision::detection::LocalTextMask;
+use crate::render::overlay::{apply_mask_pixels, erase_masks, erase_with_median};
 use crate::translation::BubbleInput;
 
 const BBOX_COLORS: [Rgba<u8>; 6] = [
@@ -118,8 +118,8 @@ async fn run_pipeline(
     )
     .await?;
     let detector =
-        crate::detection::TextDetector::new(crate::model_hub::lazy::LazySession::new(ctd_path));
-    let ocr = crate::ocr::OcrEngine::new(&config.models_dir).await?;
+        crate::vision::detection::TextDetector::new(crate::model_hub::lazy::LazySession::new(ctd_path));
+    let ocr = crate::vision::ocr::OcrEngine::new(&config.models_dir).await?;
 
     let (inputs, polygons, masks) = crate::pipeline::detect_and_ocr(&detector, &ocr, img, lang)?;
 
@@ -138,7 +138,7 @@ fn render_detect(
     name: &str,
     output: &PathBuf,
 ) -> Result<()> {
-    let font = crate::text_layout::get_font();
+    let font = crate::render::layout::get_font();
     let label_scale = PxScale::from(18.0);
     let mut canvas = img.to_rgba8();
 
@@ -245,7 +245,7 @@ async fn render_masks(
             crate::model_hub::resolve_optional(&config.models_dir, crate::model_hub::Model::Lama)
                 .await;
         lama_path.map(|p| {
-            crate::inpaint::LamaInpainter::new(crate::model_hub::lazy::LazySession::gpu(p))
+            crate::vision::inpaint::LamaInpainter::new(crate::model_hub::lazy::LazySession::gpu(p))
         })
     };
     {
