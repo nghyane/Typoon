@@ -387,11 +387,9 @@ impl ProjectStore {
 
     // ── Translations ──
 
-    /// Save translation results for a page. Replaces existing and logs history.
+    /// Save translation results. Replaces existing and logs history.
     pub fn save_translations(
         &self,
-        _chapter: usize,
-        _page: usize,
         translations: &[TranslationRow],
         source: &str,
     ) -> Result<()> {
@@ -852,7 +850,7 @@ mod tests {
         }])?;
 
         // Auto translation
-        store.save_translations(1, 0, &[TranslationRow {
+        store.save_translations(&[TranslationRow {
             chapter: 1, page: 0, idx: 0,
             translated_text: "xin chào".into(),
             font_size_px: 24, line_height: 1.3, overflow: false,

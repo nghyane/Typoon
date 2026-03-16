@@ -78,7 +78,6 @@ async fn run_single(
         &args.input,
         &args.target,
         source_lang,
-        &args.project,
         ch_num,
     )
     .await?;
@@ -126,7 +125,6 @@ async fn run_series(
         &jobs,
         source_lang,
         &args.target,
-        &args.project,
         |job_index, result| {
             let (label, pos) = &labels[job_index];
             println!(

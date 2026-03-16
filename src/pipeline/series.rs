@@ -46,7 +46,6 @@ pub async fn translate_single(
     input: &Path,
     target_lang: &str,
     source_lang: &str,
-    project: &str,
     chapter_num: usize,
 ) -> Result<ChapterResult> {
     let image_paths = image_io::discover_images(input)?;
@@ -65,7 +64,6 @@ pub async fn translate_single(
         &images,
         target_lang,
         source_lang,
-        Some(project),
         Some(chapter_num),
     )
     .await?;
@@ -87,7 +85,6 @@ pub async fn translate_batch(
     jobs: &[ChapterJob],
     source_lang: &str,
     target_lang: &str,
-    project: &str,
     on_done: impl Fn(usize, &ChapterResult),
 ) -> Result<BatchTotals> {
     if jobs.is_empty() {
@@ -119,7 +116,6 @@ pub async fn translate_batch(
             &images,
             target_lang,
             source_lang,
-            Some(project),
             Some(job.chapter_num),
         )
         .await?;

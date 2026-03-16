@@ -61,14 +61,12 @@ pub fn detect_chapter(
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Translate and fit a chapter from detections. No rendering.
-/// Must run sequentially per chapter (depends on context from prior chapters).
 pub async fn translate_chapter(
     runner: &TranslationRunner,
     detections: &[PageDetections],
     images: &[DynamicImage],
     target_lang: &str,
     source_lang: &str,
-    project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Result<Vec<PageTranslations>> {
     translate_inner(
@@ -79,7 +77,6 @@ pub async fn translate_chapter(
         target_lang,
         source_lang,
         vec![],
-        project_id,
         chapter_index,
     )
     .await
@@ -92,11 +89,10 @@ pub async fn translate_and_render(
     images: &[DynamicImage],
     target_lang: &str,
     source_lang: &str,
-    project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Result<ChapterOutput> {
     let pages = translate_chapter(
-        runner, &detections, images, target_lang, source_lang, project_id, chapter_index,
+        runner, &detections, images, target_lang, source_lang, chapter_index,
     )
     .await?;
 
@@ -115,7 +111,7 @@ pub async fn translate_and_render_with_engine(
     context: Vec<BubbleTranslated>,
 ) -> Result<ChapterOutput> {
     let pages = translate_inner(
-        runner, engine, &detections, images, target_lang, source_lang, context, None, None,
+        runner, engine, &detections, images, target_lang, source_lang, context, None,
     )
     .await?;
 
@@ -131,10 +127,8 @@ async fn translate_inner(
     target_lang: &str,
     source_lang: &str,
     context: Vec<BubbleTranslated>,
-    project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Result<Vec<PageTranslations>> {
-    // ── Build LLM request from detections ──
     let pages: Vec<PageInput> = detections
         .iter()
         .filter(|pd| !pd.bubbles.is_empty())
@@ -174,7 +168,7 @@ async fn translate_inner(
         vec![]
     };
 
-    let notes = fetch_previous_notes(runner, project_id, chapter_index);
+    let notes = fetch_previous_notes(runner, chapter_index);
 
     let translate_req = TranslateRequest {
         pages,
@@ -204,12 +198,9 @@ async fn translate_inner(
     let translated = engine.translate(&translate_req, &ctx).await?;
     tracing::info!("Phase translate: {:.1}s", t_phase.elapsed().as_secs_f64());
 
-    // ── Fit text into bubbles ──
     let t_phase = std::time::Instant::now();
     let result = fit_results(detections, &page_widths, &translated)?;
     tracing::info!("Phase fit: {:.1}s", t_phase.elapsed().as_secs_f64());
-
-    // Translation persistence is handled through ProjectStore pipeline stages.
 
     Ok(result)
 }
@@ -253,7 +244,6 @@ pub fn render_pages(
 // Internal helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Join detection data with LLM translations, then fit text into drawable areas.
 fn fit_results(
     detections: &[PageDetections],
     page_widths: &[u32],
@@ -267,7 +257,6 @@ fn fit_results(
     for pd in detections {
         let page_w = page_widths[pd.page_index];
 
-        // Match detections with translations by ID
         let matched: Vec<(&DetectedBubble, &BubbleTranslated)> = pd
             .bubbles
             .iter()
@@ -331,7 +320,6 @@ fn note_priority(note_type: &str) -> u8 {
 
 fn fetch_previous_notes(
     runner: &TranslationRunner,
-    _project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Vec<ContextNote> {
     let (Some(store), Some(ch_idx)) = (&runner.default_project, chapter_index) else {
