@@ -1,90 +1,112 @@
-# Issue 1: Character context is append-only — causes fragmentation and inconsistent xưng hô
+# Issue: Context layer needs a unified knowledge architecture
 
-## Problem
+## Current state
 
-The current `add_note(type="character")` system stores character information as append-only free-text entries in `chapter_notes`. Over multiple chapters, this causes:
-
-### 1. No upsert — same character accumulates disconnected notes
-
-Each chapter appends a new row. After 10 chapters, a single character like Tanaka might have:
+Knowledge about a series is scattered across 3 disconnected stores with inconsistent semantics:
 
 ```
-Ch.1: [character] Tanaka is a quiet student
-Ch.3: [character] Tanaka seems to be class representative
-Ch.5: [character] Tanaka is now confident after the tournament
-Ch.8: [relationship] Tanaka and Yuki are siblings
-Ch.12: [character] Tanaka is the student council president
+┌─────────────────────────────────────────────────────┐
+│ context.db (ContextStore)                           │
+│  ├── translations    append-per-chapter, immutable  │
+│  └── chapter_notes   append-only, 4 types mixed     │
+│       ├── character  ← should be upsert             │
+│       ├── relationship ← should be upsert           │
+│       ├── event      ← append is fine               │
+│       └── setting    ← append is fine               │
+├─────────────────────────────────────────────────────┤
+│ glossary.db (Glossary)                              │
+│  └── glossary        upsert, term→translation       │
+└─────────────────────────────────────────────────────┘
 ```
 
-No single source of truth — just fragments.
+### The problems
 
-### 2. Dedup fails for same-character notes
+**1. `chapter_notes` is a catch-all for data with different lifecycles**
 
-`fetch_previous_notes` in `chapter.rs` deduplicates by **exact content match**. Two notes about the same character with different wording both survive. The LLM gets redundant, sometimes contradictory context.
+- Characters and relationships **accumulate and evolve** — they need upsert (merge new info into existing)
+- Events and settings are **ephemeral/historical** — append is correct for them
+- Mixing both in one table with identical schema means characters get the append treatment
 
-### 3. Prompt bloat → budget exhaustion
+**2. Two separate databases, two separate systems**
 
-Character + relationship notes share a 2000-char budget (`NOTES_BUDGET_CHARS`). With fragmented notes, this budget fills up fast — pushing out newer, more relevant information in favor of older entries.
+- `ContextStore` and `Glossary` are opened independently in `runner.rs`
+- They share no data — glossary doesn't know about characters, context doesn't know about terms
+- The translation agent gets both injected via different prompt sections (`glossary_section()` vs `notes_section()`) with no coordination
+- The context sub-agent can only search `ContextStore`, not glossary
 
-### 4. Inconsistent xưng hô (Vietnamese pronouns)
+**3. No import path**
 
-Vietnamese translation depends heavily on character relationships for pronoun selection (anh/em, tao/mày, cậu/tớ, etc.). Without a structured relationship map, the LLM may choose different pronouns for the same character pair across chapters.
+- `Glossary` has `import_toml()` — good
+- `ContextStore` has `save_chapter()` but it's internal-only, no external import
+- No way to seed characters, relationships, or translation pairs from existing translations
+- Every series starts cold
 
-## Impact
+**4. Prompt injection is fragmented**
 
-- Translation quality degrades over longer series (more chapters = more noise)
-- Xưng hô inconsistency is the most visible artifact for Vietnamese readers
-- The 2000-char budget becomes a bottleneck instead of a reasonable limit
+`PromptBuilder` assembles knowledge from multiple disconnected sources:
+
+```rust
+// prompt.rs — each pulls from a different place
+pub fn user_prompt(&self) -> String {
+    ...
+    prompt.push_str(&self.glossary_section());    // ← from Glossary DB
+    prompt.push_str(&self.notes_section());       // ← from ContextStore notes
+    prompt.push_str(&self.previous_translations()); // ← from caller-provided context
+    ...
+}
+```
+
+And `chapter.rs` does its own filtering/budgeting in `fetch_previous_notes()`:
+- Only injects `character` + `relationship` notes (hard-coded filter)
+- Dedup by exact content match (misses same-character-different-wording)
+- 2000 char budget shared across all note types
+
+**5. Tools reflect the fragmentation**
+
+Translation agent has separate tools that write to different stores:
+- `add_note()` → `chapter_notes` table (append)
+- `update_glossary()` → `glossary` table (upsert)
+- No tool for structured character data
+
+## What a clean architecture looks like
+
+The knowledge a translation system needs about a series falls into clear categories:
+
+| Data type | Lifecycle | Current store | Correct behavior |
+|-----------|-----------|---------------|-----------------|
+| **Characters** | Accumulate + evolve | `chapter_notes` (append) | Upsert by name |
+| **Relationships** | Accumulate + evolve | `chapter_notes` (append) | Upsert by pair |
+| **Terms/Glossary** | Stable, canonical | `glossary` (upsert) | Upsert — already correct |
+| **Translations** | Historical record | `translations` (append) | Append — already correct |
+| **Events** | Ephemeral/chapter-scoped | `chapter_notes` (append) | Append — already correct |
+| **Settings** | Semi-persistent | `chapter_notes` (append) | Append — already correct |
+
+The refactor should:
+
+1. **Give characters and relationships their own tables** with upsert semantics and structured fields (name, age_group, gender, speech_style, pronoun_pairs)
+2. **Unify into one DB** — glossary, characters, relationships, translations, notes all in one `context.db` so the sub-agent can search everything
+3. **One import interface** — `comicscan import <project_id> <path>` that can seed all data types from existing translations
+4. **Clean prompt assembly** — `PromptBuilder` pulls from one knowledge store with clear priority: characters → relationships → glossary → recent notes, each with its own budget
+
+## Impact on existing code
+
+### What stays the same
+- `translations` table — append per chapter, works fine
+- `event`/`setting` notes — append-only, works fine
+- Translation agent loop — tool dispatch pattern unchanged
+- Context sub-agent pattern — cheap model searching DB, unchanged
+- Detection/OCR/Render pipeline — completely unaffected
+
+### What changes
+- `chapter_notes` loses `character`/`relationship` types → new dedicated tables
+- `Glossary` merges into `ContextStore` (one DB, not two)
+- New `update_character` tool replaces `add_note(type="character")`
+- `add_note` keeps only `event` and `setting`
+- `PromptBuilder` gets `character_profiles()` section with structured format
+- `fetch_previous_notes()` simplified — only fetches events/settings
+- New CLI command for importing existing translations + character data
+- Config: `glossary.db_path` deprecated → glossary lives in `context.db`
 
 ## Context
 
-Analyzed [thang97-21/MTLS](https://github.com/thang97-21/MTLS) which uses structured character registries with voice fingerprints and relationship maps — their profiles are compact and always up-to-date. Different domain (light novels vs manga) but the fragmentation problem is the same.
-
----
-
-# Issue 2: No way to seed context from existing translations — cold start for every series
-
-## Problem
-
-When starting a new series that already has professional translations available (official Vietnamese releases, fan translations, etc.), the system starts from zero. The LLM has no reference for:
-
-- **Established character names** — how were they localized?
-- **Xưng hô conventions** — what pronoun pairs were used for each character relationship?
-- **Tone and register** — is the series casual, formal, comedic, dark?
-- **Terminology** — recurring terms, attack names, place names already have accepted translations
-
-The `ContextStore` already has the right structure for this — `translations` table stores `source_text → translated_text` per bubble, FTS5 indexes it, and the context sub-agent (haiku) already searches it via `get_context()`. The `Glossary` also supports `import_toml()` for term import.
-
-But there's no way to **feed existing translations in** without running them through the full pipeline.
-
-## What's missing
-
-### 1. No import path for translation pairs
-
-`save_chapter()` exists but is only called internally after the LLM translates. There's no CLI command or external interface to bulk-import `source → translated` pairs from an existing translation.
-
-### 2. No way to seed character/relationship context
-
-Even if translation pairs were imported, the character notes wouldn't exist. The LLM builds these incrementally via `add_note()` — but for an imported series, nobody calls `add_note()`.
-
-### 3. Glossary import exists but is disconnected
-
-`import_toml()` handles terms, but character names + relationships are a different category. A professional translation of volume 1-5 contains a wealth of character context that should inform volume 6's translation.
-
-## Why this matters
-
-- **Consistency with existing translations** — readers who've read official volumes 1-5 expect volume 6 to match
-- **Xưng hô accuracy from chapter 1** — instead of the LLM guessing and building context over time, it starts with established conventions
-- **Reduced LLM research overhead** — fewer `view_page()` and `get_context()` calls needed when the system already knows the characters
-
-## The architecture already supports this
-
-| Component | Import capability | Status |
-|-----------|------------------|--------|
-| `translations` table | `save_chapter()` writes source→translated pairs | Exists, just needs external caller |
-| `chapter_notes` table | `add_note()` writes free-text notes | Exists, needs bulk import |
-| `glossary` table | `import_toml()` upserts terms | Exists and works |
-| FTS5 indexes | Auto-sync via triggers | Already works |
-| Context sub-agent | Searches all of the above | Already works |
-
-The gap is purely an **import interface** — the storage and retrieval layers are ready.
+Analyzed [thang97-21/MTLS](https://github.com/thang97-21/MTLS) — their system pre-resolves all character/relationship/term data before translation, injecting structured registries into the prompt. Different domain (light novels) but the core insight is the same: **character identity and relationships are not notes, they're structured data that evolves over time.**
