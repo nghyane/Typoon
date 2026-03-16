@@ -1,5 +1,6 @@
 pub mod chapter;
 pub mod merge;
+pub mod series;
 
 use std::sync::Arc;
 
