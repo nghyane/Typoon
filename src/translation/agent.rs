@@ -21,8 +21,8 @@ pub async fn run(
     let user_prompt = builder.user_prompt();
 
     let has_images = !ctx.page_images.is_empty();
-    let has_glossary = ctx.glossary.is_some();
-    let has_context = ctx.context_store.is_some() && ctx.context_agent.is_some();
+    let has_glossary = ctx.project.is_some();
+    let has_context = ctx.project.is_some() && ctx.context_agent.is_some();
     let tool_defs = tools::build_tools(has_images, has_glossary, has_context);
 
     // Build initial messages

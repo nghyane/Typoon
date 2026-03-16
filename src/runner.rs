@@ -4,9 +4,8 @@ use anyhow::Result;
 
 use crate::llm::Provider;
 use crate::config::{AppConfig, ProviderType};
-use crate::storage::context::ContextStore;
+use crate::storage::project::ProjectStore;
 use crate::vision::detection::TextDetector;
-use crate::storage::glossary::Glossary;
 use crate::vision::inpaint::LamaInpainter;
 use crate::model_hub::lazy::LazySession;
 use crate::model_hub::{self, Model};
@@ -27,8 +26,7 @@ pub struct TranslationRunner {
     pub inpainter: Option<LamaInpainter>,
     render_executor: RenderExecutor,
     max_pending_render_jobs: usize,
-    pub glossary: Option<Glossary>,
-    pub context_store: Option<Arc<ContextStore>>,
+    pub default_project: Option<Arc<ProjectStore>>,
     pub context_agent: Option<Box<dyn Provider>>,
 }
 
@@ -87,34 +85,24 @@ impl TranslationRunner {
             inpainter.is_some()
         );
 
-        let context_store = if let Some(db_path) = &config.context.db_path {
-            match ContextStore::open(std::path::Path::new(db_path)) {
+        let default_project = if let Some(db_path) = &config.context.db_path {
+            let project_root = std::path::Path::new(db_path)
+                .parent()
+                .unwrap_or(std::path::Path::new("data"));
+            match ProjectStore::open(project_root) {
                 Ok(store) => {
-                    tracing::info!("Context store opened: {db_path}");
-                    Some(store)
-                }
-                Err(e) => {
-                    tracing::warn!("Context store init failed: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let glossary = if let Some(db_path) = &config.glossary.db_path {
-            match Glossary::open(std::path::Path::new(db_path)) {
-                Ok(g) => {
                     if let Some(toml_path) = &config.glossary.import_toml {
-                        if let Err(e) = g.import_toml(std::path::Path::new(toml_path)) {
+                        if let Err(e) =
+                            store.glossary_import_toml(std::path::Path::new(toml_path))
+                        {
                             tracing::warn!("Glossary TOML import failed: {e}");
                         }
                     }
-                    tracing::info!("Glossary loaded from {db_path}");
-                    Some(g)
+                    tracing::info!("Project store opened: {}", project_root.display());
+                    Some(store)
                 }
                 Err(e) => {
-                    tracing::warn!("Glossary init failed: {e}");
+                    tracing::warn!("Project store init failed: {e}");
                     None
                 }
             }
@@ -123,7 +111,7 @@ impl TranslationRunner {
         };
 
         let context_agent: Option<Box<dyn Provider>> = if let (Some(agent_config), true) =
-            (&config.context_agent, context_store.is_some())
+            (&config.context_agent, default_project.is_some())
         {
             match config.resolve_provider(agent_config) {
                 Ok(resolved) => {
@@ -169,8 +157,7 @@ impl TranslationRunner {
             inpainter,
             render_executor,
             max_pending_render_jobs,
-            glossary,
-            context_store: context_store.map(Arc::new),
+            default_project: default_project.map(Arc::new),
             context_agent,
         })
     }

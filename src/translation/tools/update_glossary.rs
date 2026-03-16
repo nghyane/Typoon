@@ -49,8 +49,8 @@ pub fn def() -> ToolDef {
 
 pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
     let notes = format!("[{}] {}", args.category, args.notes);
-    let response = if let Some(glossary) = ctx.glossary {
-        match glossary.upsert(&args.source_term, &args.target_term, Some(&notes)) {
+    let response = if let Some(project) = ctx.project {
+        match project.glossary_upsert(&args.source_term, &args.target_term, Some(&notes)) {
             Ok(()) => {
                 tracing::info!(
                     "Glossary updated: {} → {} ({})",

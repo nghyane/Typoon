@@ -5,7 +5,7 @@
 //!   cargo run --example try_context_agent -- "How was 선배 translated before?"
 //!
 //! Requires: config.toml with [context_agent] configured,
-//! and data/context.db populated from prior chapter translations.
+//! and a project DB populated from prior chapter translations.
 
 use anyhow::Result;
 
@@ -22,22 +22,18 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "Who are the main characters and their relationships?".into());
 
-    let project_id = std::env::args().nth(2).unwrap_or_else(|| "default".into());
+    let project_dir = std::env::args().nth(2).unwrap_or_else(|| "data".into());
 
     tracing::info!("Question: {question:?}");
-    tracing::info!("Project: {project_id}");
+    tracing::info!("Project dir: {project_dir}");
 
     // Load config
     let config = comic_scan::config::AppConfig::load()?;
 
-    // Open context store
-    let db_path = config
-        .context
-        .db_path
-        .as_deref()
-        .unwrap_or("data/context.db");
-    let store = comic_scan::storage::context::ContextStore::open(std::path::Path::new(db_path))?;
-    tracing::info!("Context store opened: {db_path}");
+    // Open project store
+    let store =
+        comic_scan::storage::project::ProjectStore::open(std::path::Path::new(&project_dir))?;
+    tracing::info!("Project store opened: {project_dir}");
 
     // Build context agent provider
     let agent_config = config
@@ -70,7 +66,6 @@ async fn main() -> Result<()> {
     let answer = comic_scan::storage::context::agent::answer_context_question(
         provider.as_ref(),
         &store,
-        &project_id,
         &question,
     )
     .await?;

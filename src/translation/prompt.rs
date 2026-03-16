@@ -208,10 +208,10 @@ default to tôi/anh/chị/em/ông/bà as appropriate. NEVER cậu/tớ for adult
                 self.ctx.page_images.len()
             ));
         }
-        if self.ctx.glossary.is_some() {
+        if self.ctx.project.is_some() {
             s.push_str("- Glossary search: available via search_glossary()\n");
         }
-        if self.ctx.context_store.is_some() && self.ctx.context_agent.is_some() {
+        if self.ctx.project.is_some() && self.ctx.context_agent.is_some() {
             s.push_str("- Prior chapter context: available via get_context(question)\n");
         }
         s.push('\n');

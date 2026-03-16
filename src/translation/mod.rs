@@ -7,8 +7,7 @@ use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 
 use crate::llm::Provider;
-use crate::storage::context::ContextStore;
-use crate::storage::glossary::{Glossary, GlossaryEntry};
+use crate::storage::project::ProjectStore;
 
 // ── Page-grouped input ──
 
@@ -55,7 +54,7 @@ pub struct TranslateRequest {
     pub source_lang: String,
     pub target_lang: String,
     pub context: Vec<BubbleTranslated>,
-    pub glossary: Vec<GlossaryEntry>,
+    pub glossary: Vec<crate::storage::project::GlossaryEntry>,
     /// Proactive continuity notes from previous chapters.
     pub notes: Vec<ContextNote>,
 }
@@ -92,10 +91,8 @@ impl TranslateRequest {
 /// External resources available to the translation agent during execution.
 pub struct TranslateContext<'a> {
     pub page_images: &'a [DynamicImage],
-    pub glossary: Option<&'a Glossary>,
-    pub context_store: Option<&'a ContextStore>,
+    pub project: Option<&'a ProjectStore>,
     pub context_agent: Option<&'a dyn Provider>,
-    pub project_id: Option<&'a str>,
     pub chapter_index: Option<usize>,
 }
 
@@ -103,10 +100,8 @@ impl Default for TranslateContext<'_> {
     fn default() -> Self {
         Self {
             page_images: &[],
-            glossary: None,
-            context_store: None,
+            project: None,
             context_agent: None,
-            project_id: None,
             chapter_index: None,
         }
     }

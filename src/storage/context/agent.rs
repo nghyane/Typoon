@@ -1,13 +1,13 @@
 use anyhow::Result;
 
 use crate::llm::{Message, Provider, ToolDef};
-use crate::storage::context::{ChapterTranslation, ContextHit, ContextStore, SearchScope};
+use crate::storage::project::ProjectStore;
 
 const SYSTEM_PROMPT: &str = "\
 You are a context retrieval sub-agent for a manga translation project.
 
 The database contains two types of records from previous chapters:
-- translations: source text → translated text for every bubble.
+- translations: source text -> translated text for every bubble.
 - chapter notes (4 types): character (introductions), relationship (who knows whom), \
   event (plot points), setting (locations/workplace/school).
 
@@ -64,13 +64,12 @@ fn tool_defs() -> Vec<ToolDef> {
 
 pub async fn answer_context_question(
     provider: &dyn Provider,
-    store: &ContextStore,
-    project_id: &str,
+    store: &ProjectStore,
     question: &str,
 ) -> Result<String> {
-    // Early exit: no data in DB for this project
-    if !store.has_data(project_id)? {
-        tracing::info!("Context agent: no data for project {project_id}, skipping");
+    // Early exit: no data in DB
+    if !store.has_data()? {
+        tracing::info!("Context agent: no data in project store, skipping");
         return Ok(String::new());
     }
 
@@ -80,7 +79,7 @@ pub async fn answer_context_question(
     loop {
         let resp = provider.call(&messages, &tools).await?;
 
-        // No tool calls → text is the final answer
+        // No tool calls -> text is the final answer
         if resp.tool_calls.is_empty() {
             let answer = resp.text.unwrap_or_default();
             tracing::info!(
@@ -91,7 +90,7 @@ pub async fn answer_context_question(
             return Ok(answer);
         }
 
-        // Has tool calls → execute them, continue loop
+        // Has tool calls -> execute them, continue loop
         messages.push(Message::Assistant {
             text: resp.text,
             tool_calls: resp.tool_calls.clone(),
@@ -110,17 +109,17 @@ pub async fn answer_context_question(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let scope: SearchScope = input
+                    let scope_str = input
                         .get("scope")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("all");
 
-                    tracing::info!("search({:?}, {:?})", queries, scope);
+                    tracing::info!("search({:?}, {:?})", queries, scope_str);
 
                     if queries.is_empty() {
                         "No queries provided.".to_string()
                     } else {
-                        match store.batch_search(project_id, &queries, scope, 12) {
+                        match store.batch_search_context(&queries, scope_str, 12) {
                             Ok(hits) => format_hits(&hits),
                             Err(e) => format!("Search error: {e}"),
                         }
@@ -129,8 +128,8 @@ pub async fn answer_context_question(
                 "read_chapter" => {
                     let chapter_index = input["chapter_index"].as_u64().unwrap_or(0) as usize;
                     tracing::info!("read_chapter({})", chapter_index);
-                    match store.get_chapter_translations(project_id, chapter_index) {
-                        Ok(translations) => format_chapter_translations(&translations),
+                    match store.get_chapter_pairs(chapter_index) {
+                        Ok(pairs) => format_chapter_pairs(&pairs),
                         Err(e) => format!("Read error: {e}"),
                     }
                 }
@@ -145,34 +144,24 @@ pub async fn answer_context_question(
     }
 }
 
-fn format_hits(hits: &[ContextHit]) -> String {
+fn format_hits(hits: &[String]) -> String {
     if hits.is_empty() {
         return "No results found.".to_string();
     }
     let mut out = format!("Found {} results:\n", hits.len());
     for h in hits {
-        let kind = match h.kind {
-            crate::storage::context::ContextHitKind::Translation => "translation",
-            crate::storage::context::ContextHitKind::Note => "note",
-        };
-        out.push_str(&format!(
-            "  [Ch{} {}] {}\n",
-            h.chapter_index, kind, h.summary
-        ));
+        out.push_str(&format!("  {h}\n"));
     }
     out
 }
 
-fn format_chapter_translations(translations: &[ChapterTranslation]) -> String {
-    if translations.is_empty() {
+fn format_chapter_pairs(pairs: &[(String, String)]) -> String {
+    if pairs.is_empty() {
         return "No translations found for this chapter.".to_string();
     }
-    let mut out = format!("Chapter has {} translations:\n", translations.len());
-    for t in translations {
-        out.push_str(&format!(
-            "  [p{} {}] {} → {}\n",
-            t.page_index, t.bubble_id, t.source_text, t.translated_text
-        ));
+    let mut out = format!("Chapter has {} translations:\n", pairs.len());
+    for (source, translated) in pairs {
+        out.push_str(&format!("  {source} -> {translated}\n"));
     }
     out
 }

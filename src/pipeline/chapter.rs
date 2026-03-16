@@ -2,7 +2,6 @@ use anyhow::Result;
 use image::DynamicImage;
 
 use crate::vision::border;
-use crate::storage::context::ChapterTranslation;
 use crate::vision::detection::TextDetector;
 use crate::vision::ocr::OcrEngine;
 use crate::runner::TranslationRunner;
@@ -165,12 +164,12 @@ async fn translate_inner(
             .collect());
     }
 
-    let glossary_entries = if let Some(glossary) = &runner.glossary {
+    let glossary_entries = if let Some(project) = &runner.default_project {
         let all_texts: Vec<&str> = pages
             .iter()
             .flat_map(|p| p.bubbles.iter().map(|b| b.source_text.as_str()))
             .collect();
-        glossary.search_batch(&all_texts).unwrap_or_default()
+        project.glossary_search_batch(&all_texts).unwrap_or_default()
     } else {
         vec![]
     };
@@ -193,13 +192,11 @@ async fn translate_inner(
 
     let ctx = TranslateContext {
         page_images: images,
-        glossary: runner.glossary.as_ref(),
-        context_store: runner.context_store.as_deref(),
+        project: runner.default_project.as_deref(),
         context_agent: runner
             .context_agent
             .as_ref()
             .map(|a| &**a as &dyn crate::llm::Provider),
-        project_id,
         chapter_index,
     };
 
@@ -212,8 +209,7 @@ async fn translate_inner(
     let result = fit_results(detections, &page_widths, &translated)?;
     tracing::info!("Phase fit: {:.1}s", t_phase.elapsed().as_secs_f64());
 
-    // ── Save translations to ContextStore ──
-    save_context(&result, runner, source_lang, target_lang, project_id, chapter_index);
+    // Translation persistence is handled through ProjectStore pipeline stages.
 
     Ok(result)
 }
@@ -321,42 +317,6 @@ fn fit_results(
     Ok(result)
 }
 
-fn save_context(
-    pages: &[PageTranslations],
-    runner: &TranslationRunner,
-    source_lang: &str,
-    target_lang: &str,
-    project_id: Option<&str>,
-    chapter_index: Option<usize>,
-) {
-    let (Some(store), Some(pid), Some(ch_idx)) = (&runner.context_store, project_id, chapter_index)
-    else {
-        return;
-    };
-
-    let translations: Vec<ChapterTranslation> = pages
-        .iter()
-        .flat_map(|page| {
-            page.bubbles.iter().map(move |b| ChapterTranslation {
-                page_index: page.page_index,
-                bubble_id: format!("p{}_b{}", page.page_index, b.idx),
-                source_text: b.source_text.clone(),
-                translated_text: b.translated_text.clone(),
-                source_lang: source_lang.to_string(),
-                target_lang: target_lang.to_string(),
-            })
-        })
-        .collect();
-
-    if translations.is_empty() {
-        return;
-    }
-
-    if let Err(e) = store.save_chapter(pid, ch_idx, &translations) {
-        tracing::warn!("Failed to save chapter context: {e}");
-    }
-}
-
 // ── Notes injection ──
 
 const NOTES_BUDGET_CHARS: usize = 2000;
@@ -371,18 +331,17 @@ fn note_priority(note_type: &str) -> u8 {
 
 fn fetch_previous_notes(
     runner: &TranslationRunner,
-    project_id: Option<&str>,
+    _project_id: Option<&str>,
     chapter_index: Option<usize>,
 ) -> Vec<ContextNote> {
-    let (Some(store), Some(pid), Some(ch_idx)) = (&runner.context_store, project_id, chapter_index)
-    else {
+    let (Some(store), Some(ch_idx)) = (&runner.default_project, chapter_index) else {
         return vec![];
     };
     if ch_idx == 0 {
         return vec![];
     }
 
-    let raw = match store.get_notes_before(pid, ch_idx) {
+    let raw = match store.get_notes_before(ch_idx) {
         Ok(notes) => notes,
         Err(e) => {
             tracing::warn!("Failed to fetch previous notes: {e}");

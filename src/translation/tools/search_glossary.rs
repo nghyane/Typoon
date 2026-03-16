@@ -33,13 +33,13 @@ pub fn def() -> ToolDef {
 }
 
 pub fn handle(args: &Args, ctx: &TranslateContext<'_>) -> ToolResponse {
-    let response = if let Some(glossary) = ctx.glossary {
-        match glossary.search(&args.query) {
+    let response = if let Some(project) = ctx.project {
+        match project.glossary_search(&args.query) {
             Ok(entries) if entries.is_empty() => "No matching glossary entries found.".to_string(),
             Ok(entries) => {
                 let mut out = format!("Found {} entries:\n", entries.len());
                 for e in &entries {
-                    out.push_str(&format!("  {} → {}", e.source_term, e.target_term));
+                    out.push_str(&format!("  {} -> {}", e.source_term, e.target_term));
                     if let Some(n) = &e.notes {
                         out.push_str(&format!(" ({})", n));
                     }

@@ -390,8 +390,8 @@ impl ProjectStore {
     /// Save translation results for a page. Replaces existing and logs history.
     pub fn save_translations(
         &self,
-        chapter: usize,
-        page: usize,
+        _chapter: usize,
+        _page: usize,
         translations: &[TranslationRow],
         source: &str,
     ) -> Result<()> {
@@ -671,6 +671,113 @@ impl ProjectStore {
             results.extend(hits);
         }
 
+        Ok(results)
+    }
+
+    /// Check if any translations or notes exist.
+    pub fn has_data(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let has: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM translations) OR EXISTS(SELECT 1 FROM notes)",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(has)
+    }
+
+    /// Get all source->translated pairs for a chapter (for context agent).
+    pub fn get_chapter_pairs(&self, chapter: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT b.source_text, t.translated_text
+             FROM translations t
+             JOIN bubbles b ON b.chapter = t.chapter AND b.page = t.page AND b.idx = t.idx
+             WHERE t.chapter = ?1
+             ORDER BY t.page, t.idx",
+        )?;
+        let rows = stmt
+            .query_map(params![chapter as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Batch FTS search for context agent (AND-first, OR fallback).
+    pub fn batch_search_context(
+        &self,
+        queries: &[String],
+        scope: &str,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if queries.is_empty() {
+            return Ok(vec![]);
+        }
+        let conn = self.conn.lock().unwrap();
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let search_t = scope == "all" || scope == "translations";
+        let search_n = scope == "all" || scope == "notes";
+
+        for query in queries {
+            let query = query.trim().replace('"', "");
+            if query.is_empty() {
+                continue;
+            }
+
+            if search_t {
+                let mut stmt = conn.prepare(
+                    "SELECT b.source_text, t.translated_text, t.chapter, t.page
+                     FROM translations_fts tf
+                     JOIN translations t ON t.rowid = tf.rowid
+                     JOIN bubbles b ON b.chapter = t.chapter AND b.page = t.page AND b.idx = t.idx
+                     WHERE translations_fts MATCH ?1
+                     ORDER BY rank LIMIT ?2",
+                )?;
+                let hits: Vec<String> = stmt
+                    .query_map(params![&query, limit as i64], |row| {
+                        let source: String = row.get(0)?;
+                        let translated: String = row.get(1)?;
+                        let ch: i64 = row.get(2)?;
+                        let pg: i64 = row.get(3)?;
+                        Ok(format!("[Ch{ch} p{pg}] {source} -> {translated}"))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for h in hits {
+                    if seen.insert(h.clone()) {
+                        results.push(h);
+                    }
+                }
+            }
+
+            if search_n {
+                let mut stmt = conn.prepare(
+                    "SELECT n.content, n.note_type, n.chapter
+                     FROM notes_fts nf
+                     JOIN notes n ON n.id = nf.rowid
+                     WHERE notes_fts MATCH ?1
+                     ORDER BY rank LIMIT ?2",
+                )?;
+                let hits: Vec<String> = stmt
+                    .query_map(params![&query, limit as i64], |row| {
+                        let content: String = row.get(0)?;
+                        let note_type: String = row.get(1)?;
+                        let ch: i64 = row.get(2)?;
+                        Ok(format!("[Ch{ch} {note_type}] {content}"))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for h in hits {
+                    if seen.insert(h.clone()) {
+                        results.push(h);
+                    }
+                }
+            }
+        }
+
+        results.truncate(limit);
         Ok(results)
     }
 }
