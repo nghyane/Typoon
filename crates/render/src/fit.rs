@@ -1,0 +1,268 @@
+use anyhow::Result;
+
+use crate::layout;
+use crate::layout::DrawableArea;
+
+/// Minimum font size (px) before declaring overflow.
+const MIN_FONT_SIZE: u32 = 8;
+/// Absolute maximum font size (sanity bound).
+const MAX_FONT_SIZE: u32 = 72;
+
+#[derive(Clone)]
+pub struct FitResult {
+    /// Wrapped text with newlines
+    pub text: String,
+    pub font_size_px: u32,
+    /// Line height multiplier
+    pub line_height: f64,
+    pub overflow: bool,
+}
+
+pub struct FitEngine;
+
+impl FitEngine {
+    /// Fit a page of bubbles. Each bubble gets the largest font that fits
+    /// its own drawable area — no artificial caps, no cross-bubble normalization.
+    /// The bbox from detection already encodes the original text's size.
+    pub fn fit_page_areas(
+        items: &[(&str, &DrawableArea)],
+        _page_width: u32,
+    ) -> Result<Vec<FitResult>> {
+        items
+            .iter()
+            .map(|(text, area)| Self::fit_area(text, area))
+            .collect()
+    }
+
+    /// Fit translated text into a drawable area.
+    /// Binary search for the largest font where wrapped text fits within (w, h).
+    fn fit_area(translated_text: &str, area: &DrawableArea) -> Result<FitResult> {
+        let text = normalize_text(translated_text);
+        if text.is_empty() {
+            return Ok(FitResult {
+                text,
+                font_size_px: MIN_FONT_SIZE,
+                line_height: layout::LINE_HEIGHT_MULTIPLIER,
+                overflow: false,
+            });
+        }
+
+        let (safe_w, safe_h) = area.size();
+        if safe_w < 1.0 || safe_h < 1.0 {
+            return Ok(FitResult {
+                text,
+                font_size_px: MIN_FONT_SIZE,
+                line_height: layout::LINE_HEIGHT_MULTIPLIER,
+                overflow: true,
+            });
+        }
+
+        let font = layout::get_font();
+        let hi_bound = (safe_h as u32).min(MAX_FONT_SIZE);
+
+        let mut lo = MIN_FONT_SIZE;
+        let mut hi = hi_bound;
+        let mut best_size = MIN_FONT_SIZE;
+        let mut best_wrapped = layout::wrap_text(&text, safe_w, MIN_FONT_SIZE, font);
+
+        while lo <= hi {
+            let mid = (lo + hi) / 2;
+            let wrapped = layout::wrap_text(&text, safe_w, mid, font);
+            let total_h = text_block_height(wrapped.len(), mid);
+
+            if total_h <= safe_h {
+                best_size = mid;
+                best_wrapped = wrapped;
+                lo = mid + 1;
+            } else {
+                if mid == 0 {
+                    break;
+                }
+                hi = mid - 1;
+            }
+        }
+
+        let total_h = text_block_height(best_wrapped.len(), best_size);
+        let overflow = total_h > safe_h || best_size < MIN_FONT_SIZE;
+
+        Ok(FitResult {
+            text: best_wrapped.join("\n"),
+            font_size_px: best_size,
+            line_height: layout::LINE_HEIGHT_MULTIPLIER,
+            overflow,
+        })
+    }
+
+    /// Fit translated text into a bubble polygon (convenience for single-bubble use).
+    pub fn fit(translated_text: &str, polygon: &[[f64; 2]]) -> Result<FitResult> {
+        let area = DrawableArea::from_polygon(polygon, layout::DEFAULT_INSET);
+        Self::fit_area(translated_text, &area)
+    }
+
+    /// Estimate how many characters fit in a drawable area at readable font size.
+    ///
+    /// Font size is derived from the area height (h/5, clamped to MIN..MAX),
+    /// so it scales naturally with image resolution.
+    /// Returns 0 for areas too small to hold any text.
+    pub fn char_budget(area: &DrawableArea) -> usize {
+        let (w, h) = area.size();
+        if w < 1.0 || h < 1.0 {
+            return 0;
+        }
+
+        // Font scales with bubble: ~4-5 lines of text per bubble is typical density
+        let font_size = (h / 5.0).clamp(MIN_FONT_SIZE as f64, MAX_FONT_SIZE as f64) as u32;
+
+        let font = layout::get_font();
+        let line_h = font_size as f64 * layout::LINE_HEIGHT_MULTIPLIER;
+        let max_lines = ((h - font_size as f64) / line_h + 1.0).floor().max(1.0) as usize;
+
+        // Average char width from real font metrics
+        let sample = "abcdefghijklmnopqrstuvwxyz àáảãạ ăắẳẵặ đ êếểễệ ôốổỗộ ưứửữự";
+        let sample_w = layout::measure_text_width(sample, font_size, font);
+        let char_count = sample.chars().filter(|c| !c.is_whitespace()).count();
+        let avg_char_w = sample_w / char_count as f64;
+
+        let chars_per_line = (w / avg_char_w).floor() as usize;
+        chars_per_line * max_lines
+    }
+}
+
+/// Total height of a text block.
+/// Last line needs only font height (no trailing line spacing).
+///   height = (n-1) × line_spacing + font_size
+fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
+    if n_lines == 0 {
+        return 0.0;
+    }
+    let spacing = font_size_px as f64 * layout::LINE_HEIGHT_MULTIPLIER;
+    (n_lines - 1) as f64 * spacing + font_size_px as f64
+}
+
+/// Normalize text: trim, collapse whitespace, remove internal newlines.
+fn normalize_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fit_empty_text() {
+        let polygon = vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]];
+        let result = FitEngine::fit("", &polygon).unwrap();
+        assert!(!result.overflow);
+        assert!(result.text.is_empty());
+    }
+
+    #[test]
+    fn test_fit_short_text() {
+        let polygon = vec![[0.0, 0.0], [300.0, 0.0], [300.0, 200.0], [0.0, 200.0]];
+        let result = FitEngine::fit("Hello world", &polygon).unwrap();
+        assert!(!result.overflow);
+        assert!(result.font_size_px >= MIN_FONT_SIZE);
+        assert!(result.text.contains("Hello"));
+    }
+
+    #[test]
+    fn test_fit_single_line_fills_height() {
+        // Short text in a 300×50 bbox (inset=2 → 296×46)
+        // Single line should get font ≈ 46 (fills height)
+        let polygon = vec![[0.0, 0.0], [300.0, 0.0], [300.0, 50.0], [0.0, 50.0]];
+        let area = DrawableArea::from_polygon(&polygon, 2.0);
+        let result = FitEngine::fit_area("Hello", &area).unwrap();
+        assert!(!result.overflow);
+        assert!(
+            result.font_size_px >= 40,
+            "Single line should fill height: got {}px for 46px safe_h",
+            result.font_size_px
+        );
+    }
+
+    #[test]
+    fn test_fit_respects_bbox_height() {
+        // Narration box: 400×80 (inset=2 → 396×76)
+        // vs dialogue: 200×40 (inset=2 → 196×36)
+        // Narration should get ~2× the font size of dialogue
+        let narration = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [400.0, 0.0], [400.0, 80.0], [0.0, 80.0]],
+            2.0,
+        );
+        let dialogue = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 40.0], [0.0, 40.0]],
+            2.0,
+        );
+        let items: Vec<(&str, &DrawableArea)> = vec![
+            ("Big narration text", &narration),
+            ("Hello world", &dialogue),
+        ];
+        let results = FitEngine::fit_page_areas(&items, 720).unwrap();
+        assert!(
+            results[0].font_size_px > results[1].font_size_px,
+            "Narration {}px should be bigger than dialogue {}px",
+            results[0].font_size_px,
+            results[1].font_size_px
+        );
+    }
+
+    #[test]
+    fn test_fit_overflow() {
+        let polygon = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
+        let result =
+            FitEngine::fit("This is a very long text that should overflow", &polygon).unwrap();
+        assert!(result.overflow);
+    }
+
+    #[test]
+    fn test_fit_wrapping() {
+        let polygon = vec![[0.0, 0.0], [150.0, 0.0], [150.0, 200.0], [0.0, 200.0]];
+        let result =
+            FitEngine::fit("Hello wonderful world of manga translation", &polygon).unwrap();
+        assert!(!result.overflow);
+        assert!(
+            result.text.contains('\n'),
+            "Expected wrapped text: {:?}",
+            result.text
+        );
+    }
+
+    #[test]
+    fn test_normalize_text() {
+        assert_eq!(normalize_text("  hello   world  "), "hello world");
+        assert_eq!(normalize_text("line1\nline2"), "line1 line2");
+    }
+
+    #[test]
+    fn test_drawable_area_size() {
+        use crate::layout::DrawableArea;
+        let area = DrawableArea::from_polygon(
+            &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]],
+            5.0,
+        );
+        let (w, h) = area.size();
+        assert!((w - 190.0).abs() < 0.1, "w={w}");
+        assert!((h - 90.0).abs() < 0.1, "h={h}");
+    }
+
+    #[test]
+    fn test_char_budget_scales_with_area() {
+        let small =
+            DrawableArea::from_polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 35.0], [0.0, 35.0]], 2.0);
+        let large = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [300.0, 0.0], [300.0, 200.0], [0.0, 200.0]],
+            2.0,
+        );
+        let bs = FitEngine::char_budget(&small);
+        let bl = FitEngine::char_budget(&large);
+        assert!(bs > 0, "small budget should be > 0: {bs}");
+        assert!(bl > bs, "large budget {bl} should exceed small {bs}");
+    }
+
+    #[test]
+    fn test_char_budget_tiny_area() {
+        let tiny =
+            DrawableArea::from_polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]], 2.0);
+        assert_eq!(FitEngine::char_budget(&tiny), 0);
+    }
+}

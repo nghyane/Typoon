@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "typoon-render"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "typoon_render"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+numpy = "0.23"
+ndarray = "0.16"
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"

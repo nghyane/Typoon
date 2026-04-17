@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.DS_Store
+
+# Models (binary, downloaded separately)
+models/
+data/
+
+# Cache / benchmark outputs
+cache/
+
+# Project data
+projects/
