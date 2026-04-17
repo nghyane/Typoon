@@ -1,41 +1,38 @@
 """PP-OCR text detection — auto-selects best backend.
 
-Priority: CoreML (Mac, ANE) > MLX (Mac ARM) > ONNX (all platforms).
+CoreML (Mac, thread-safe, ~58ms) > MLX (Mac ARM, faster but single-stream) > ONNX.
 """
 
 import sys
 from pathlib import Path
 
-_USE_COREML = False
 
-if sys.platform == "darwin":
+def _coreml_available(models_dir: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    if not Path(models_dir).joinpath("ppocr-det.mlpackage").exists():
+        return False
     try:
         import coremltools  # noqa: F401
-        _USE_COREML = True
+        return True
     except ImportError:
-        pass
+        return False
 
-if _USE_COREML:
-    from .coreml import TextDetector as _CoreMLDetector
 
-    class TextDetector:
-        """Wraps CoreML detector, accepts same (model_path, config_path) signature."""
+class TextDetector:
+    """PP-OCR det with auto backend selection."""
 
-        def __init__(self, model_path: str, config_path: str) -> None:
-            mlpackage = str(Path(model_path).parent / "ppocr-det.mlpackage")
-            if Path(mlpackage).exists():
-                self._impl = _CoreMLDetector(mlpackage)
-            else:
-                # Fallback to MLX if mlpackage not found
-                from .mlx import TextDetector as _MLX
-                self._impl = _MLX(model_path, config_path)
+    def __init__(self, model_path: str, config_path: str) -> None:
+        models_dir = str(Path(model_path).parent)
+        if _coreml_available(models_dir):
+            from .coreml import TextDetector as _Impl
+            self._impl = _Impl(str(Path(models_dir) / "ppocr-det.mlpackage"))
+        elif sys.platform == "darwin":
+            from .mlx import TextDetector as _Impl
+            self._impl = _Impl(model_path, config_path)
+        else:
+            from .onnx import TextDetector as _Impl
+            self._impl = _Impl(model_path, config_path)
 
-        def detect(self, image):
-            return self._impl.detect(image)
-
-elif sys.platform == "darwin":
-    from .mlx import TextDetector
-else:
-    from .onnx import TextDetector
-
-__all__ = ["TextDetector"]
+    def detect(self, image):
+        return self._impl.detect(image)
