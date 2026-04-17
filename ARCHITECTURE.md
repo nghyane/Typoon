@@ -2,11 +2,25 @@
 
 ## Overview
 
-Manga/manhwa translation pipeline. Mac-first, Python core.
+Manga/manhwa translation pipeline. Python core, 3 deployment modes.
 
 ```
-Gradio UI (phase 1) ──→ AppService ──→ Scheduler ──→ Compute modules
-Native app (phase 2) ──→ typoond (stdio JSON-RPC) ──→ AppService ──→ ...
+                    ┌─────────────┐
+                    │  Core       │  vision / translation / llm / render
+                    │  Pipeline   │  (stateless compute)
+                    └──────┬──────┘
+                           │
+                    ┌──────┴──────┐
+                    │  AppService │  orchestration, workflows, state
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+         Local app    API Server    Platform
+         CLI/Gradio   FastAPI       Crawler + auto-translate
+         SQLite       Postgres      Postgres
+         in-memory Q  Redis Q       Redis Q + scheduler
+         local disk   S3/CDN        S3/CDN
 ```
 
 ---
@@ -118,7 +132,7 @@ typoon/
 class AppService:
     """Single entry point for all operations."""
 
-    def __init__(self, config, paths, store, scheduler, models, sink):
+    def __init__(self, config, paths, store, scheduler, models, sink, output):
         ...
 
     @classmethod
@@ -438,7 +452,62 @@ Total: ~4.5 days for steps 1-4.
 
 ---
 
-## What We Don't Do
+## What We Don't Do Now
+
+- No event bus (EventSink callback is enough)
+- No microservices
+- No plugin system
+- No abstract factory
+- No DDD aggregates
+
+---
+
+## Backend Protocols (swap per deployment mode)
+
+### JobQueue
+
+```python
+class JobQueue(Protocol):
+    async def submit(self, name: str, params: dict) -> str: ...
+    async def status(self, job_id: str) -> JobStatus: ...
+    async def cancel(self, job_id: str) -> None: ...
+    async def subscribe(self, callback: Callable[[JobEvent], None]) -> None: ...
+```
+
+- `MemoryQueue` — local app (asyncio, no deps)
+- `RedisQueue` — server / platform (arq, persistent)
+
+### Store
+
+```python
+class Store(Protocol):
+    async def get_project(self, project_id: int) -> dict | None: ...
+    async def save_translations(self, ...) -> None: ...
+    # ... same interface as current SqliteStore
+```
+
+- `SqliteStore` — local app
+- `PostgresStore` — server / platform
+
+### OutputWriter
+
+```python
+class OutputWriter(Protocol):
+    async def save_pages(self, project_id: int, chapter: float, pages: list) -> str: ...
+```
+
+- `LocalWriter` — save to disk, return path
+- `S3Writer` — upload S3, return CDN URL
+
+### AppService receives all via constructor
+
+```python
+class AppService:
+    def __init__(self, store: Store, queue: JobQueue, output: OutputWriter, ...):
+        ...
+```
+
+Same AppService, different backends per deployment.
 
 - No event bus (EventSink callback is enough)
 - No UnitOfWork / Repository pattern (SqliteStore is fine)
