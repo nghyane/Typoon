@@ -120,26 +120,22 @@ class VisionScanner(_BaseScanner):
         import Quartz
         import objc
         from CoreFoundation import CFDataCreate
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        results: list[tuple[str, float]] = []
-        with objc.autorelease_pool():
-            for crop in crops:
-                ch, cw = crop.shape[:2]
-                if ch < 5 or cw < 5:
-                    results.append(("", 0.0))
-                    continue
-
+        def _ocr_one(crop: np.ndarray) -> tuple[str, float]:
+            ch, cw = crop.shape[:2]
+            if ch < 5 or cw < 5:
+                return ("", 0.0)
+            with objc.autorelease_pool():
                 gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
                 data = CFDataCreate(None, gray.tobytes(), len(gray.tobytes()))
                 provider = Quartz.CGDataProviderCreateWithCFData(data)
                 cg_image = Quartz.CGImageCreate(
                     cw, ch, 8, 8, cw,
                     Quartz.CGColorSpaceCreateDeviceGray(),
-                    0,
-                    provider, None, False,
+                    0, provider, None, False,
                     Quartz.kCGRenderingIntentDefault,
                 )
-
                 req = Vision.VNRecognizeTextRequest.alloc().init()
                 req.setRecognitionLanguages_(self._languages)
                 req.setRecognitionLevel_(0)
@@ -149,17 +145,24 @@ class VisionScanner(_BaseScanner):
                 )
                 ok, err = handler.performRequests_error_([req], None)
                 if err or not req.results():
-                    results.append(("", 0.0))
-                    continue
-
+                    return ("", 0.0)
                 texts = []
                 min_conf = 1.0
                 for obs in req.results():
                     cand = obs.topCandidates_(1)[0]
                     texts.append(cand.string())
                     min_conf = min(min_conf, float(cand.confidence()))
-                results.append((" ".join(texts), min_conf))
+                return (" ".join(texts), min_conf)
 
+        if len(crops) <= 1:
+            return [_ocr_one(c) for c in crops]
+
+        # Parallel OCR — Apple Vision is thread-safe
+        results = [None] * len(crops)
+        with ThreadPoolExecutor(max_workers=min(4, len(crops))) as pool:
+            futures = {pool.submit(_ocr_one, crop): i for i, crop in enumerate(crops)}
+            for f in as_completed(futures):
+                results[futures[f]] = f.result()
         return results
 
 

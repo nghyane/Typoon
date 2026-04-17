@@ -45,6 +45,15 @@ class Engine:
             eraser=Eraser(config.models_dir),
         )
         engine._hub = hub
+
+        # Preload CoreML models (eliminates ~2s cold start on first page)
+        if hasattr(engine.scanner, '_det') and hasattr(engine.scanner._det, '_backend'):
+            backend = engine.scanner._det._backend
+            if hasattr(backend, '_impl') and hasattr(backend._impl, '_ensure_loaded'):
+                backend._impl._ensure_loaded()
+        if engine.eraser._inpainter is not None:
+            engine.eraser._inpainter._ensure_loaded()
+
         return engine, config, paths
 
     # ── Model lifecycle ──────────────────────────────────────────
