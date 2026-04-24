@@ -39,7 +39,8 @@ async def resolve_url(url, store, source_lang, target_lang, from_ch, to_ch, path
 
     selected = [
         ch for ch in info.chapters
-        if (from_ch == 0 or ch.number >= from_ch) and (to_ch == 0 or ch.number <= to_ch)
+        if (from_ch is None or from_ch == 0 or ch.number >= from_ch)
+        and (to_ch is None or to_ch == 0 or ch.number <= to_ch)
     ]
 
     series_dir = paths.projects / info.suggested_title.lower().replace(" ", "-")
@@ -91,8 +92,8 @@ async def resolve_path(path, store, source_lang, target_lang, from_ch, to_ch, ho
         chapters = [
             (parse_chapter_num(d.name), LocalSource(d))
             for d in chapter_dirs
-            if (from_ch == 0 or parse_chapter_num(d.name) >= from_ch)
-            and (to_ch == 0 or parse_chapter_num(d.name) <= to_ch)
+            if (from_ch is None or from_ch == 0 or parse_chapter_num(d.name) >= from_ch)
+            and (to_ch is None or to_ch == 0 or parse_chapter_num(d.name) <= to_ch)
         ]
     elif has_images(path):
         project_name = path.parent.name
