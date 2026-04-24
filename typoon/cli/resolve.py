@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 from ..adapters.local_source import LocalSource
+from ..paths import ProjectPaths
 from ..downloader import download_images
-from .cli_utils import ch_label, is_url
 
 
 def _get_connectors():
@@ -16,7 +15,7 @@ def _get_connectors():
 
 
 async def resolve_url(url, store, source_lang, target_lang, from_ch, to_ch, paths, hook):
-    """URL → (project_id, chapters, download_q, download_count, fail_count)."""
+    """URL → (project_id, chapters, download_q, download_count, fail_count, ppaths)."""
     connector = next((c for c in _get_connectors() if c.accepts(url)), None)
     if not connector:
         raise RuntimeError(f"No connector for: {url}")
@@ -26,6 +25,9 @@ async def resolve_url(url, store, source_lang, target_lang, from_ch, to_ch, path
     hook.log(f"[dim]Discovering from {connector.site_name}…[/]")
     info = await connector.discover(url)
     hook.log(f"[cyan]{info.suggested_title}[/] ({info.suggested_lang}) — {len(info.chapters)} chapters")
+
+    ppaths = ProjectPaths(paths.projects, info.suggested_title, url)
+    ppaths.ensure()
 
     project = await store.get_project_by_url(url)
     if project:
@@ -43,13 +45,12 @@ async def resolve_url(url, store, source_lang, target_lang, from_ch, to_ch, path
         and (to_ch is None or to_ch == 0 or ch.number <= to_ch)
     ]
 
-    series_dir = paths.projects / info.suggested_title.lower().replace(" ", "-")
     chapters: list[tuple[float, object]] = []
     to_download: list = []
     headers = connector.http_headers()
 
     for ch in selected:
-        ch_dir = series_dir / ch_label(ch.number)
+        ch_dir = ppaths.chapter_source(ch.number)
         if ch_dir.exists() and any(ch_dir.iterdir()):
             chapters.append((ch.number, LocalSource(ch_dir)))
             await store.add_chapter(project_id, ch.number, local_path=str(ch_dir))
@@ -61,16 +62,16 @@ async def resolve_url(url, store, source_lang, target_lang, from_ch, to_ch, path
     if to_download:
         download_q = asyncio.Queue()
         asyncio.create_task(_download_worker(
-            to_download, connector, series_dir, headers, store, project_id,
+            to_download, connector, ppaths, headers, store, project_id,
             download_q, hook, download_fail_count))
 
-    return project_id, chapters, download_q, len(to_download), download_fail_count
+    return project_id, chapters, download_q, len(to_download), download_fail_count, ppaths
 
 
-async def _download_worker(chapters, connector, series_dir, headers, store, project_id, queue, hook, fail_count):
+async def _download_worker(chapters, connector, ppaths: ProjectPaths, headers, store, project_id, queue, hook, fail_count):
     for ch in chapters:
         try:
-            ch_dir = series_dir / ch_label(ch.number)
+            ch_dir = ppaths.chapter_source(ch.number)
             hook.log(f"[dim]↓ downloading ch{ch.number}…[/]")
             urls = await connector.get_page_urls(ch)
             await download_images(urls, ch_dir, headers)
@@ -82,9 +83,9 @@ async def _download_worker(chapters, connector, series_dir, headers, store, proj
     await queue.put(None)
 
 
-async def resolve_path(path, store, source_lang, target_lang, from_ch, to_ch, hook):
-    """Local path → (project_id, chapters)."""
-    from .cli_utils import discover_chapters, has_chapter_subdirs, has_images, parse_chapter_num
+async def resolve_path(path, store, source_lang, target_lang, from_ch, to_ch, paths, hook):
+    """Local path → (project_id, chapters, ppaths)."""
+    from .utils import discover_chapters, has_chapter_subdirs, has_images, parse_chapter_num
 
     if has_chapter_subdirs(path):
         project_name = path.name
@@ -114,4 +115,7 @@ async def resolve_path(path, store, source_lang, target_lang, from_ch, to_ch, ho
         local_path = str(source._path) if hasattr(source, '_path') else None
         await store.add_chapter(project_id, idx, local_path=local_path)
 
-    return project_id, chapters
+    ppaths = ProjectPaths(paths.projects, project_name)
+    ppaths.ensure()
+
+    return project_id, chapters, ppaths

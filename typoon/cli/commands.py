@@ -9,10 +9,10 @@ import cv2
 import typer
 from rich.console import Console
 
-from .cli_output import SingleFileSource, save_pages
-from .cli_pipeline import run_pipeline, translate_cli
-from .cli_resolve import _get_connectors
-from .cli_utils import has_chapter_subdirs, has_images, is_url
+from .output import SingleFileSource, save_pages
+from .pipeline import run_pipeline, translate_cli
+from .resolve import _get_connectors
+from .utils import has_chapter_subdirs, has_images, is_url
 
 app = typer.Typer(name="typoon", invoke_without_command=True)
 console = Console()
@@ -50,7 +50,7 @@ async def _auth(site: str):
 @app.command()
 def detect(path: Path = typer.Argument(..., help="Image file or folder")):
     """Vision only: detect → merge → OCR → erase."""
-    from ..interfaces.cli_hook import RichHook
+    from ..cli.hook import RichHook
     from ..adapters.local_source import LocalSource
     from ..engine import Engine
 
@@ -82,6 +82,46 @@ def translate(
     asyncio.run(translate_cli(input, source_lang, target_lang, from_ch, to_ch, force))
 
 
+@app.command()
+def clean(
+    older_than: int = typer.Option(30, "--older-than", "-d", help="Remove cached images older than N days"),
+    project: str = typer.Option(None, "--project", "-p", help="Only clean this project by slug"),
+):
+    """Remove cached source images older than N days to free disk space."""
+    from ..paths import home
+    from datetime import datetime, timezone
+
+    projects_root = home() / "projects"
+    if not projects_root.exists():
+        console.print("[dim]No projects directory found.[/]")
+        raise typer.Exit(0)
+
+    cutoff = datetime.now(timezone.utc).timestamp() - (older_than * 86400)
+    cleaned = 0
+    freed_bytes = 0
+
+    for project_dir in sorted(projects_root.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        if project and project_dir.name != project:
+            continue
+
+        source_dir = project_dir / "source"
+        if not source_dir.exists():
+            continue
+
+        for ch_dir in sorted(source_dir.iterdir()):
+            if not ch_dir.is_dir():
+                continue
+            for img in ch_dir.iterdir():
+                if img.is_file() and img.stat().st_mtime < cutoff:
+                    freed_bytes += img.stat().st_size
+                    img.unlink()
+                    cleaned += 1
+
+    console.print(f"[bold green]✓ Cleaned[/] {cleaned} files, freed {freed_bytes / (1024 * 1024):.1f} MB")
+
+
 @app.callback()
 def main(ctx: typer.Context):
     """Manga/manhwa translation pipeline."""
@@ -93,7 +133,7 @@ def main(ctx: typer.Context):
 
 
 async def _interactive():
-    from ..adapters.tui import TUI, load_projects
+    from ..cli.tui import TUI, load_projects
     from ..config import load_config as _load_cfg
 
     _, paths = _load_cfg()

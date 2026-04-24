@@ -6,9 +6,9 @@ from pathlib import Path
 
 from ..app.service import AppService
 from ..app.workflows.project import ResumePolicy
-from .cli_output import save_pages
-from .cli_resolve import is_url, resolve_path, resolve_url
-from .cli_utils import ch_label
+from .output import save_pages
+from .resolve import resolve_path, resolve_url
+from .utils import ch_label, is_url
 
 
 async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
@@ -20,13 +20,14 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
 
         download_q = None
         download_count = 0
+        ppaths = None
 
         if is_url(input_str):
-            project_id, chapters, download_q, download_count, _ = await resolve_url(
+            project_id, chapters, download_q, download_count, _, ppaths = await resolve_url(
                 input_str, service.store, "", "", from_ch, to_ch, paths, hook)
         else:
-            project_id, chapters = await resolve_path(
-                Path(input_str), service.store, "", "", from_ch, to_ch, hook)
+            project_id, chapters, ppaths = await resolve_path(
+                Path(input_str), service.store, "", "", from_ch, to_ch, paths, hook)
 
         total_chapters = len(chapters) + download_count
         if not total_chapters:
@@ -35,7 +36,7 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
             return
 
         project = await service.get_project(project_id)
-        name = project["title"] if project else "unknown"
+        name = project["title"] if project else ppaths.slug if ppaths else "unknown"
         lang = f"{project['source_lang']}→{project['target_lang']}" if project else ""
         provider = f"{service.config.translation.provider}/{service.config.translation.model}"
 
@@ -51,10 +52,10 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
             + (" [yellow]force[/]" if force else "")
         )
 
-        project_out = paths.output / name.lower().replace(" ", "-")
+        out_root = ppaths.output_dir if ppaths else paths.output
 
         def _on_chapter(ch, pages):
-            save_pages(pages, project_out / ch_label(ch))
+            save_pages(pages, out_root / ch_label(ch))
 
         result = await service.translate_project(
             project_id=project_id,
@@ -77,7 +78,7 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
 
 async def translate_cli(input_str, source_lang, target_lang, from_ch, to_ch, force):
     """CLI translate command wrapper."""
-    from ..interfaces.cli_hook import RichHook
+    from .hook import RichHook
     from ..config import load_config as _load_cfg
 
     _, paths = _load_cfg()

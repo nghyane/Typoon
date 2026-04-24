@@ -7,6 +7,8 @@ from pathlib import Path
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
+from ..paths import _ch_label as ch_label  # noqa: E402, F401
+
 
 def has_images(path: Path) -> bool:
     return any(f.suffix.lower() in _IMAGE_EXTS for f in path.iterdir() if f.is_file())
@@ -24,10 +26,6 @@ def parse_chapter_num(name: str) -> float:
 def discover_chapters(path: Path) -> list[Path]:
     dirs = [d for d in path.iterdir() if d.is_dir() and has_images(d)]
     return sorted(dirs, key=lambda d: parse_chapter_num(d.name))
-
-
-def ch_label(ch: float) -> str:
-    return f"ch{int(ch):03d}" if ch == int(ch) else f"ch{ch:06.1f}"
 
 
 def is_url(s: str) -> bool:

@@ -1,6 +1,3 @@
-"""CLI entry point — redirects to interfaces/cli.py.
+"""CLI entry point."""
 
-Kept for backward compatibility with pyproject.toml [project.scripts].
-"""
-
-from .interfaces.cli_commands import app  # noqa: F401
+from .cli.commands import app  # noqa: F401

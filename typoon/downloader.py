@@ -21,8 +21,13 @@ async def download_images(
     headers: dict[str, str] | None = None,
     max_retries: int = 3,
     concurrency: int = 5,
+    skip_existing: bool = True,
 ) -> Path:
-    """Download images to dest/. Skips existing files. Returns dest path."""
+    """Download images to dest/. Returns dest path.
+
+    Args:
+        skip_existing: If True (default), skip files already on disk.
+    """
     dest.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(concurrency)
 
@@ -30,7 +35,8 @@ async def download_images(
         headers=headers or {}, follow_redirects=True, timeout=30,
     ) as client:
         tasks = [
-            _download_one(client, url, dest / f"{i + 1:03d}{_ext(url)}", sem, max_retries)
+            _download_one(client, url, dest / f"{i + 1:03d}{_ext(url)}",
+                          sem, max_retries, skip_existing)
             for i, url in enumerate(urls)
         ]
         await asyncio.gather(*tasks)
@@ -42,9 +48,9 @@ async def download_images(
 
 async def _download_one(
     client: httpx.AsyncClient, url: str, fp: Path,
-    sem: asyncio.Semaphore, max_retries: int,
+    sem: asyncio.Semaphore, max_retries: int, skip_existing: bool,
 ) -> None:
-    if fp.exists() and fp.stat().st_size > 0:
+    if skip_existing and fp.exists() and fp.stat().st_size > 0:
         return
     async with sem:
         for attempt in range(max_retries):
