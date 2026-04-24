@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 from typoon.llm.agent import run as agent_run, RunResult
-from typoon.types import Session
+from typoon.domain.bubble import Session
 
 from .tools.update_snapshot import UpdateSnapshotArgs, update_snapshot
 from .tools.add_note import AddNoteArgs, add_note

@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 
 if TYPE_CHECKING:
-    from .types import Bubble, ChapterVariant, DiscoveredChapter, SourceInfo
+    from .domain.bubble import Bubble
+    from .domain.project import ChapterVariant, DiscoveredChapter, SourceInfo
 
 
 @runtime_checkable

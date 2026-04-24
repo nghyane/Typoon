@@ -13,7 +13,7 @@ from collections import defaultdict
 
 from ..auth.browser import BrowserClient
 from ..auth.cookies import CookieStore
-from ..types import ChapterVariant, DiscoveredChapter, SourceInfo
+from ..domain.project import ChapterVariant, DiscoveredChapter, SourceInfo
 
 logger = logging.getLogger(__name__)
 

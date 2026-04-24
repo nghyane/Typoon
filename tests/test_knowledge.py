@@ -7,7 +7,7 @@ import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
 from typoon.events import Hook
-from typoon.types import Session
+from typoon.domain.bubble import Session
 from typoon.translation.knowledge import consolidate
 
 from .conftest import MockProvider, MockStore, MockSource

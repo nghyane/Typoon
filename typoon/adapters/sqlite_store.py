@@ -7,7 +7,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from typoon.types import Bubble
+from typoon.domain.bubble import Bubble
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (

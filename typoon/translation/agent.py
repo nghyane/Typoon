@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typoon.llm.ir import ContentPart, Message, ToolCallMsg, ToolDef, ToolResponse
 from typoon.llm.agent import run as agent_run
-from typoon.types import Bubble, Page, Session
+from typoon.domain.bubble import Bubble, Page, Session
 
 from . import prompt
 from .tools import build_tools

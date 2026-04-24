@@ -14,7 +14,7 @@ import numpy as np
 from .events import Hook, ModelsUnloaded, PageErased, PageRendered, PageScanned
 from .models import ModelHub
 from .ports import ChapterSource
-from .types import Bubble, Page
+from .domain.bubble import Bubble, Page
 from .vision.chapter_images import ChapterImages
 from .vision.erase import Eraser
 from .vision.types import TextMask

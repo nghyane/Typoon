@@ -48,7 +48,7 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
 from typoon.events import Hook
-from typoon.types import Bubble, Page, Session
+from typoon.domain.bubble import Bubble, Page, Session
 
 
 class MockProvider:

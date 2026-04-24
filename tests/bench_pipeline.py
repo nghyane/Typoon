@@ -25,7 +25,7 @@ from typoon.events import (
     TranslateStart,
     TranslationReady,
 )
-from typoon.types import Bubble, Page, Session
+from typoon.domain.bubble import Bubble, Page, Session
 from typoon.vision.chapter_images import ChapterImages
 
 
@@ -310,8 +310,7 @@ async def bench_progressive_output() -> dict:
     """Verify TranslationReady fires between translate and erase."""
     from unittest.mock import patch
 
-    from typoon.runner import ChapterRunner
-    from typoon.orchestrator import Orchestrator
+    from typoon.app.workflows.project import ResumePolicy, translate_project
 
     hook = RecorderHook()
     store = FakeStore()
@@ -326,10 +325,8 @@ async def bench_progressive_output() -> dict:
         return 1, None
 
     source = FakeSource()
-    runner = ChapterRunner(engine, store, config)
-    orchestrator = Orchestrator(runner, store)
     with patch("typoon.translation.agent.translate_pages", mock_translate_pages):
-        await orchestrator.run(1, [(1, source)], hook=hook)
+        await translate_project(engine, store, config, 1, [(1, source)], hook=hook)
 
     event_names = [e.name for e in hook.events]
     results = {
