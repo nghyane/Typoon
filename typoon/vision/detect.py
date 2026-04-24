@@ -29,6 +29,7 @@ _DET_RESIZE_LONG_SMALL = 1280
 _DET_SMALL_THRESH = 960
 _DET_MIN_WIDTH = 768
 _DET_MAX_PIXELS = 1_500_000
+_DET_MAX_DIM = 2048  # hard cap on any input dim — CoreML RangeDim upper bound
 _DET_THRESH = 0.3
 _DET_BOX_THRESH = 0.6
 _DET_UNCLIP_RATIO = 1.5
@@ -77,6 +78,12 @@ def _ppocr_preprocess(image: np.ndarray):
 
     if nw * nh > _DET_MAX_PIXELS:
         s = math.sqrt(_DET_MAX_PIXELS / (nw * nh))
+        nw, nh = int(nw * s), int(nh * s)
+
+    # Hard cap: pad is multiple of 32, so leave headroom for the round-up.
+    dim_cap = (_DET_MAX_DIM // 32) * 32  # 2048 — already /32
+    if max(nw, nh) > dim_cap:
+        s = dim_cap / max(nw, nh)
         nw, nh = int(nw * s), int(nh * s)
 
     pw = ((nw + 31) // 32) * 32
