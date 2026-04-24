@@ -310,7 +310,7 @@ async def bench_progressive_output() -> dict:
     """Verify TranslationReady fires between translate and erase."""
     from unittest.mock import patch
 
-    from typoon.app.workflows.project import ResumePolicy, translate_project
+    from typoon.app.workflows.project import ResumePolicy, run_pipeline
 
     hook = RecorderHook()
     store = FakeStore()
@@ -326,7 +326,7 @@ async def bench_progressive_output() -> dict:
 
     source = FakeSource()
     with patch("typoon.translation.agent.translate_pages", mock_translate_pages):
-        await translate_project(engine, store, config, 1, [(1, source)], hook=hook)
+        await run_pipeline(engine, store, config, 1, [(1, source)], hook=hook)
 
     event_names = [e.name for e in hook.events]
     results = {

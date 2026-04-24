@@ -2,7 +2,7 @@
 
 from .events import CompositeSink, EventSink, HookAdapter
 from .service import AppService
-from .workflows.project import ResumePolicy, translate_project
+from .workflows.project import ResumePolicy, run_pipeline
 
 __all__ = [
     "AppService",
@@ -10,5 +10,5 @@ __all__ = [
     "EventSink",
     "HookAdapter",
     "ResumePolicy",
-    "translate_project",
+    "run_pipeline",
 ]

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .events import CompositeSink, EventSink, Hook, HookAdapter
-from .workflows.project import ResumePolicy, translate_project
+from .workflows.project import ResumePolicy, run_pipeline
 
 if TYPE_CHECKING:
     from ..config import Config, Paths
@@ -87,7 +87,7 @@ class AppService:
         total_hint: int = 0,
         hook: Hook | None = None,
     ) -> dict:
-        return await translate_project(
+        return await run_pipeline(
             engine=self.engine, store=self.store, config=self.config,
             project_id=project_id, chapters=chapters,
             hook=self._hook(hook), on_chapter=on_chapter,
