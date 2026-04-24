@@ -102,11 +102,7 @@ class AppService:
     ) -> None:
         parts = bubble_id.replace("p", "").replace("b", " ").split("_")
         page, idx = int(parts[0]), int(parts[1])
-        await self.store._db.execute(
-            "UPDATE translations SET translated_text=? "
-            "WHERE project_id=? AND chapter=? AND page=? AND idx=?",
-            (text, project_id, chapter_idx, page, idx))
-        await self.store._db.commit()
+        await self.store.update_bubble(project_id, chapter_idx, page, idx, text)
 
     # ── Cleanup ──
 

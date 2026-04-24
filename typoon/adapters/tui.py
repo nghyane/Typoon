@@ -796,8 +796,7 @@ async def load_projects() -> tuple[list[dict], dict[int, list[dict]]]:
 
     store = await SqliteStore.open(paths.db)
     try:
-        cur = await store._db.execute("SELECT * FROM projects ORDER BY id DESC")
-        projects = [dict(r) for r in await cur.fetchall()]
+        projects = await store.list_projects()
         chapters_map: dict[int, list[dict]] = {}
         for p in projects:
             chapters_map[p["id"]] = await store.get_chapters(p["id"])

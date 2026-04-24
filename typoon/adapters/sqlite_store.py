@@ -350,3 +350,14 @@ class SqliteStore:
             (project_id, chapter),
         )
         return [(r[0], r[1]) for r in await cur.fetchall()]
+
+    async def update_bubble(self, project_id: int, chapter: float, page: int, idx: int, text: str) -> None:
+        await self._db.execute(
+            "UPDATE translations SET translated_text=? "
+            "WHERE project_id=? AND chapter=? AND page=? AND idx=?",
+            (text, project_id, chapter, page, idx))
+        await self._db.commit()
+
+    async def list_projects(self) -> list[dict]:
+        cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
+        return [dict(r) for r in await cur.fetchall()]
