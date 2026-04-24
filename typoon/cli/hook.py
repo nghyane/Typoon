@@ -19,6 +19,8 @@ from typoon.app.events import (
     Hook,
     KnowledgeDone,
     KnowledgeStart,
+    LLMCall,
+    LLMResponse,
     ModelsUnloaded,
     PageErased,
     PageRendered,
@@ -36,8 +38,8 @@ class CliHook(Hook):
     """One-line-per-event progress reporter.
 
     Coarse granularity on purpose: scan / translate / render each
-    emit a single summary line when they complete, not per page. This
-    keeps the output short and greppable for long runs.
+    emit summary lines at phase boundaries, plus one line per LLM
+    turn so translate phase doesn't look frozen on long chapters.
     """
 
     def __init__(self, log_file: Path | None = None) -> None:
@@ -50,6 +52,8 @@ class CliHook(Hook):
         self._scan_bubbles = 0
         self._scan_pages_seen = 0
         self._translate_total = 0
+        self._translated = 0
+        self._tool_queue: list[str] = []
 
     # ── Public logging ───────────────────────────────────────────
 
@@ -66,6 +70,8 @@ class CliHook(Hook):
                 self._scan_bubbles = 0
                 self._scan_pages_seen = 0
                 self._translate_total = 0
+                self._translated = 0
+                self._tool_queue.clear()
                 self._println(f"\n[bold]ch{_ch(ch)}[/]  {n} pages")
 
             case ChapterSkipped(chapter=ch, reason=r):
@@ -84,8 +90,28 @@ class CliHook(Hook):
                 self._translate_total = n
                 self._println(f"  [yellow]translate[/] {n} bubbles…")
 
-            case TranslateDone():
-                pass  # TranslationReady gives the same info with a clearer label
+            case LLMCall(agent=a, turn=t):
+                # Flush tool calls accumulated from the previous turn
+                # (they arrive between LLMResponse and the next LLMCall).
+                self._flush_tools()
+                self._println(f"  [dim]·[/] t{t} [dim]{a}…[/]")
+
+            case LLMResponse(turn=t, tool_calls=tc, ms=ms):
+                if tc:
+                    self._println(
+                        f"  [dim]·[/] t{t} [green]{ms/1000:.1f}s[/] "
+                        f"[dim]→ {tc} tool call{'s' if tc != 1 else ''}[/]"
+                    )
+                else:
+                    self._println(f"  [dim]·[/] t{t} [green]{ms/1000:.1f}s[/]")
+
+            case ToolResult(tool=tool):
+                self._tool_queue.append(tool)
+                self._log_lines.append(f"tool {tool}")
+
+            case TranslateDone(translated=tr, total=n):
+                self._flush_tools()
+                self._translated = tr
 
             case TranslationReady(translated=tr, total=n):
                 self._println(f"  [green]⚡[/]         {tr}/{n} translated")
@@ -100,14 +126,10 @@ class CliHook(Hook):
             case KnowledgeStart():
                 pass
             case KnowledgeDone():
-                pass
+                self._flush_tools()
 
             case ModelsUnloaded(stage=s):
-                # Log only — not worth a console line.
                 self._log_lines.append(f"unloaded {s}")
-
-            case ToolResult(tool=t):
-                self._log_lines.append(f"tool {t}")
 
             case SeriesProgress():
                 pass
@@ -126,6 +148,20 @@ class CliHook(Hook):
             self._log_file.write_text("\n".join(self._log_lines) + "\n")
 
     # ── Internals ────────────────────────────────────────────────
+
+    def _flush_tools(self) -> None:
+        """Collapse queued tool calls into one summary line."""
+        if not self._tool_queue:
+            return
+        groups: list[tuple[str, int]] = []
+        for tool in self._tool_queue:
+            if groups and groups[-1][0] == tool:
+                groups[-1] = (tool, groups[-1][1] + 1)
+            else:
+                groups.append((tool, 1))
+        parts = ", ".join(f"{t}×{c}" if c > 1 else t for t, c in groups)
+        self._println(f"    [dim]→ {parts}[/]")
+        self._tool_queue.clear()
 
     def _println(self, msg: str) -> None:
         self._console.print(msg)
