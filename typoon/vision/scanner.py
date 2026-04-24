@@ -115,11 +115,11 @@ class VisionScanner(_BaseScanner):
         self._languages = languages or ["en-US"]
 
     def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
-        import cv2
         import Vision
         import Quartz
         import objc
-        from CoreFoundation import CFDataCreate
+        import ctypes
+        from AppKit import NSBitmapImageRep
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _ocr_one(crop: np.ndarray) -> tuple[str, float]:
@@ -127,21 +127,36 @@ class VisionScanner(_BaseScanner):
             if ch < 5 or cw < 5:
                 return ("", 0.0)
             with objc.autorelease_pool():
-                gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-                data = CFDataCreate(None, gray.tobytes(), len(gray.tobytes()))
-                provider = Quartz.CGDataProviderCreateWithCFData(data)
-                cg_image = Quartz.CGImageCreate(
-                    cw, ch, 8, 8, cw,
-                    Quartz.CGColorSpaceCreateDeviceGray(),
-                    0, provider, None, False,
-                    Quartz.kCGRenderingIntentDefault,
+                # Fast path: RGB → NSBitmapImageRep (single memcpy, no grayscale conversion)
+                if not crop.flags['C_CONTIGUOUS']:
+                    crop = np.ascontiguousarray(crop)
+
+                rep = NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel_(
+                    (None, None, None, None, None),
+                    cw, ch,
+                    8,           # bitsPerSample
+                    3,           # samplesPerPixel (RGB)
+                    False,       # hasAlpha
+                    False,       # isPlanar
+                    'NSDeviceRGBColorSpace',
+                    0,           # bitmapFormat
+                    cw * 3,      # bytesPerRow
+                    24,          # bitsPerPixel
                 )
+
+                # Fast memcpy from numpy buffer into NSBitmapImageRep (single copy)
+                dst_arr = np.frombuffer(rep.bitmapData(), dtype=np.uint8)
+                dst_ptr = dst_arr.ctypes.data_as(ctypes.c_void_p)
+                src_ptr = crop.ctypes.data_as(ctypes.c_void_p)
+                ctypes.memmove(dst_ptr, src_ptr, ch * cw * 3)
+
+                ciimage = Quartz.CIImage.alloc().initWithBitmapImageRep_(rep)
                 req = Vision.VNRecognizeTextRequest.alloc().init()
                 req.setRecognitionLanguages_(self._languages)
                 req.setRecognitionLevel_(0)
                 req.setUsesLanguageCorrection_(True)
-                handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(
-                    cg_image, None,
+                handler = Vision.VNImageRequestHandler.alloc().initWithCIImage_options_(
+                    ciimage, None,
                 )
                 ok, err = handler.performRequests_error_([req], None)
                 if err or not req.results():
