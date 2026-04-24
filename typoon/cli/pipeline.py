@@ -12,7 +12,12 @@ from .utils import ch_label, is_url
 
 
 async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
-    """Run translation pipeline via AppService."""
+    """Run translation pipeline via AppService.
+
+    Returns a summary dict: {done, skipped, failed, out_root} — or None
+    when nothing was run. Caller is responsible for presenting the
+    summary after the TUI screen is torn down.
+    """
     try:
         hook.log("[dim]Loading models…[/]")
         service = await AppService.create(paths.root)
@@ -33,7 +38,7 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
         if not total_chapters:
             hook.log("[red]No chapters to translate.[/]")
             await service.close()
-            return
+            return None
 
         project = await service.get_project(project_id)
         name = project["title"] if project else ppaths.slug if ppaths else "unknown"
@@ -53,6 +58,7 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
         )
 
         out_root = ppaths.output_dir if ppaths else paths.output
+        hook.log(f"[dim]Output → {out_root}[/]")
 
         def _on_chapter(ch, pages):
             save_pages(pages, out_root / ch_label(ch))
@@ -72,21 +78,40 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
             f"{result['skipped']} skipped, {result['failed']} failed"
         )
         await service.close()
+        return {**result, "out_root": out_root, "name": name}
     except Exception as e:
         hook.log(f"[bold red]error:[/] {e}")
+        return None
 
 
 async def translate_cli(input_str, source_lang, target_lang, from_ch, to_ch, force):
     """CLI translate command wrapper."""
+    from rich.console import Console
     from .hook import RichHook
     from ..config import load_config as _load_cfg
 
     _, paths = _load_cfg()
     paths.ensure()
 
-    hook = RichHook(log_file=paths.cache / "last_run.log")
+    log_file = paths.cache / "last_run.log"
+    hook = RichHook(log_file=log_file)
     hook.start()
     try:
-        await run_pipeline(hook, input_str, force, from_ch, to_ch, paths)
+        summary = await run_pipeline(hook, input_str, force, from_ch, to_ch, paths)
     finally:
         hook.stop()
+
+    # Post-TUI: print summary on the real terminal so user can read it
+    # after the alternate screen buffer is released.
+    console = Console()
+    if summary is None:
+        console.print("[dim]No output. See log:[/] "
+                      f"[cyan]{log_file}[/]")
+        return
+    console.print(
+        f"[bold green]✓ Done[/] [cyan]{summary['name']}[/] — "
+        f"{summary['done']} done, {summary['skipped']} skipped, "
+        f"{summary['failed']} failed"
+    )
+    console.print(f"[bold]Output:[/] [cyan]{summary['out_root']}[/]")
+    console.print(f"[dim]Log:[/]    [cyan]{log_file}[/]")

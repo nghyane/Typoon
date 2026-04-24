@@ -133,17 +133,20 @@ def main(ctx: typer.Context):
 
 
 async def _interactive():
+    from rich.console import Console
     from ..cli.tui import TUI, load_projects
     from ..config import load_config as _load_cfg
 
     _, paths = _load_cfg()
     paths.ensure()
 
-    tui = TUI(log_file=paths.cache / "last_run.log")
+    log_file = paths.cache / "last_run.log"
+    tui = TUI(log_file=log_file)
     projects, chapters_map = await load_projects()
     tui.set_projects(projects, chapters_map)
     tui.start()
 
+    last_summary = None
     try:
         while True:
             result = await tui.browse()
@@ -154,9 +157,22 @@ async def _interactive():
             else:
                 input_str = result.input_value
             tui.switch_to_pipeline()
-            await run_pipeline(tui, input_str, result.force, result.from_ch, result.to_ch, paths)
+            last_summary = await run_pipeline(
+                tui, input_str, result.force, result.from_ch, result.to_ch, paths)
             await tui.wait_for_key()
             projects, chapters_map = await load_projects()
             tui.set_projects(projects, chapters_map)
     finally:
         tui.stop()
+
+    # Post-TUI: restore user context lost when alternate screen buffer
+    # is released.
+    if last_summary:
+        console = Console()
+        console.print(
+            f"[bold green]✓ Done[/] [cyan]{last_summary['name']}[/] — "
+            f"{last_summary['done']} done, {last_summary['skipped']} skipped, "
+            f"{last_summary['failed']} failed"
+        )
+        console.print(f"[bold]Output:[/] [cyan]{last_summary['out_root']}[/]")
+        console.print(f"[dim]Log:[/]    [cyan]{log_file}[/]")
