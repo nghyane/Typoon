@@ -97,6 +97,84 @@ class BrowserClient:
             err = resp.get("result", {}).get("exceptionDetails", {})
             raise RuntimeError(f"Browser fetch failed: {err or result}")
 
+    async def capture_network_request(self, domain: str, url_pattern: str, navigate_url: str | None = None, reload: bool = True, timeout: int = 20) -> str | None:
+        """Capture first network request matching pattern. Returns full URL.
+
+        If navigate_url is given, navigates to that URL first, capturing
+        requests fired DURING page load (e.g. React API calls).
+        If reload=True, reloads the current page to trigger fresh requests.
+        """
+        import asyncio, websockets
+
+        ws_url = self._find_tab(domain)
+        if not ws_url:
+            ws_url = self._open_tab(f"https://{domain}", domain)
+
+        async with websockets.connect(ws_url, max_size=10_000_000) as ws:
+            # Enable network domain
+            await ws.send(json.dumps({"id": 1, "method": "Network.enable"}))
+            await asyncio.wait_for(ws.recv(), timeout=5)
+
+            if navigate_url:
+                # Navigate to target URL, capture requests during load
+                await ws.send(json.dumps({
+                    "id": 2,
+                    "method": "Page.navigate",
+                    "params": {"url": navigate_url},
+                }))
+
+                # Drain messages: capture API calls + wait for navigate response
+                navigate_done = False
+                start = asyncio.get_event_loop().time()
+                while asyncio.get_event_loop().time() - start < timeout:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                        data = json.loads(msg)
+                        # Check for matching API requests
+                        if data.get("method") == "Network.requestWillBeSent":
+                            url = data["params"]["request"]["url"]
+                            if url_pattern in url:
+                                return url
+                        # Check for navigate completion
+                        if data.get("id") == 2:
+                            navigate_done = True
+                    except asyncio.TimeoutError:
+                        break
+
+                # After navigate completes, wait a bit more for lazy-loaded API calls
+                if navigate_done:
+                    await asyncio.sleep(3)
+                    deadline = asyncio.get_event_loop().time() + 10
+                    while asyncio.get_event_loop().time() < deadline:
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=3)
+                            data = json.loads(msg)
+                            if data.get("method") == "Network.requestWillBeSent":
+                                url = data["params"]["request"]["url"]
+                                if url_pattern in url:
+                                    return url
+                        except asyncio.TimeoutError:
+                            break
+                return None
+
+            elif reload:
+                # Reload page to trigger requests
+                await ws.send(json.dumps({"id": 3, "method": "Page.reload", "params": {"ignoreCache": True}}))
+
+            # Listen for matching requests
+            start = asyncio.get_event_loop().time()
+            while asyncio.get_event_loop().time() - start < timeout:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=5)
+                    data = json.loads(msg)
+                    if data.get("method") == "Network.requestWillBeSent":
+                        url = data["params"]["request"]["url"]
+                        if url_pattern in url:
+                            return url
+                except asyncio.TimeoutError:
+                    break
+            return None
+
     async def execute_js(self, expression: str, domain: str, timeout: int = 30) -> dict:
         """Execute JS expression in browser tab, return value."""
         import asyncio, websockets
