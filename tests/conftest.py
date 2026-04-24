@@ -125,11 +125,22 @@ def make_session(
     return pages, session
 
 
-def make_translate_response(items: list[tuple[str, str]]) -> CallResponse:
-    """Build a translate tool call response."""
+def make_translate_response(
+    items: list[tuple[str, str]],
+    unclear: list[str] | None = None,
+) -> CallResponse:
+    """Build a submit_translations tool call response.
+
+    items: list of (bubble_id, translated_text) tuples.
+    unclear: optional list of bubble_ids to mark unclear=True (text ignored).
+    """
     import json
-    translations = [{"id": bid, "translated_text": text} for bid, text in items]
+    unclear_set = set(unclear or ())
+    edits = [
+        {"id": bid, "text": text, "unclear": bid in unclear_set}
+        for bid, text in items
+    ]
     return CallResponse(tool_calls=[ToolCallMsg(
-        id="c1", name="translate",
-        arguments=json.dumps({"translations": translations}),
+        id="c1", name="submit_translations",
+        arguments=json.dumps({"edits": edits}),
     )])

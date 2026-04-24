@@ -12,7 +12,7 @@ async def _do_translate_and_render(job, store, engine, config, hook, loop, gpu):
     await store.set_chapter_status(job.project_id, job.chapter, "translating")
 
     session = await _make_session(store, config, job.project_id, job.chapter, job.images, hook)
-    from ....translation.agent import translate_pages
+    from ....translation.translate import translate_pages
 
     total = sum(len(p.bubbles) for p in job.pages)
     hook.on(TranslateStart(total_bubbles=total))

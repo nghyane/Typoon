@@ -325,7 +325,7 @@ async def bench_progressive_output() -> dict:
         return 1, None
 
     source = FakeSource()
-    with patch("typoon.translation.agent.translate_pages", mock_translate_pages):
+    with patch("typoon.translation.translate.translate_pages", mock_translate_pages):
         await run_pipeline(engine, store, config, 1, [(1, source)], hook=hook)
 
     event_names = [e.name for e in hook.events]

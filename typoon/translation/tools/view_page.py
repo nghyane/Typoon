@@ -1,49 +1,28 @@
+"""Page image encoder — no longer exposed as an LLM tool.
+
+Kept for utilities that may need full-page encoding (e.g. CLI `detect`).
+The translate module attaches bubble crops (view_bubble) by default,
+not full pages.
+"""
+
 from __future__ import annotations
 
 import base64
+import math
 
 import cv2
 import numpy as np
-from pydantic import BaseModel, Field
-
-from typoon.llm.tool_dec import tool
 
 _MAX_WIDTH = 1024
-_MAX_PIXELS = 1_568 * 1_568  # ~2.4M tokens budget
+_MAX_PIXELS = 1_568 * 1_568
 _JPEG_QUALITY = 40
 
 
-class ViewPageArgs(BaseModel):
-    page_index: int = Field(description="Zero-based page index")
-
-
-@tool(strict=True)
-async def view_page(args: ViewPageArgs) -> str:
-    """View a comic page image for visual context.
-
-    This is a SELECTIVE tool — only call when the OCR text is insufficient.
-    If the page image is already attached in the user message, do not call again.
-
-    When to use:
-    - OCR text looks garbled, incomplete, or doesn't make sense in context.
-    - Unnamed speaker, ambiguous age/rank not clear from dialogue.
-    When NOT to use: all bubbles read clearly and speakers are obvious from text.
-    """
-    raise NotImplementedError("dispatch handles this")
-
-
 def encode_page_jpeg(image: np.ndarray) -> str:
-    """Encode RGB image to JPEG data URI.
-
-    Scales to fit within _MAX_WIDTH and _MAX_PIXELS while keeping
-    text readable on both regular manga and long manhwa strips.
-    """
+    """Encode RGB image to JPEG data URI, scaled for LLM vision input."""
     h, w = image.shape[:2]
-    import math
 
-    # Scale to max width first (keeps text readable on long pages)
     scale = min(1.0, _MAX_WIDTH / w)
-    # Then cap total pixels
     nw, nh = int(w * scale), int(h * scale)
     if nw * nh > _MAX_PIXELS:
         scale *= math.sqrt(_MAX_PIXELS / (nw * nh))

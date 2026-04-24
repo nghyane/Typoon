@@ -1,3 +1,9 @@
+"""Bubble image encoder — no longer exposed as an LLM tool.
+
+The translate module attaches bubble crops directly when the model flags
+bubbles as unclear in pass 1. Kept here for the encoder utility.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -5,28 +11,10 @@ import math
 
 import cv2
 import numpy as np
-from pydantic import BaseModel, Field
-
-from typoon.llm.tool_dec import tool
 
 _MAX_DIM = 384
 _JPEG_QUALITY = 85
 _CONTEXT_PAD = 0.3  # 30% padding around bubble bbox
-
-
-class ViewBubbleArgs(BaseModel):
-    bubble_id: str = Field(description="Bubble ID, e.g. 'p0_b3'")
-
-
-@tool(strict=True)
-async def view_bubble(args: ViewBubbleArgs) -> str:
-    """View a single bubble's region at full resolution.
-
-    Use when OCR text for a specific bubble is garbled or unclear.
-    Returns a cropped image of the bubble with context padding.
-    Prefer this over view_page when you only need to verify one bubble.
-    """
-    raise NotImplementedError("dispatch handles this")
 
 
 def encode_bubble_jpeg(image: np.ndarray, polygon: list[list[float]]) -> str:
