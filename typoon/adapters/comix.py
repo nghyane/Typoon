@@ -110,44 +110,155 @@ class ComixConnector:
         title = slug.split("-", 1)[1].replace("-", " ").title() if "-" in slug else slug
         prefix = slug.split("-")[0]
 
+        # First try: scrape chapter links from rendered DOM via browser
+        chapters = await self._scrape_from_dom(url, slug)
+
+        # Fallback: try API (needs anti-CSRF token, often fails)
+        if not chapters:
+            logger.info("DOM scraping empty, trying API fallback...")
+            chapters = await self._discover_via_api(prefix, slug)
+
+        # Detect language from title patterns
+        detected_lang = "en"
+        if "-raw" in slug or "-kr" in slug:
+            detected_lang = "ko"
+        elif "-cn" in slug or "-zh" in slug:
+            detected_lang = "zh"
+        elif "-jp" in slug:
+            detected_lang = "ja"
+
+        logger.info("comix.to: %s — %d chapters (%s)", slug, len(chapters), detected_lang)
+        return SourceInfo(suggested_title=title, suggested_lang=detected_lang, chapters=chapters)
+
+    async def _scrape_from_dom(self, url: str, slug: str) -> list[DiscoveredChapter]:
+        """Scrape chapter links from rendered DOM via browser CDP.
+
+        Navigates to the title page, clicks through all pagination pages,
+        and scrapes chapter links from the DOM.
+        """
+        import asyncio
+
+        all_chapters: dict[float, list[str]] = defaultdict(list)
+
+        # Navigate to title page
+        result = await self._browser.execute_js(
+            f'window.location.href = "{url}"',
+            _DOMAIN, timeout=30
+        )
+        await asyncio.sleep(3)  # Wait for initial render
+
+        page_target = 1
+        while True:
+            # Scrape chapter links from current DOM
+            scrape_js = '''
+            (() => {
+                const links = [...document.querySelectorAll('a[href*="chapter"]')];
+                return links.map(a => {
+                    const match = a.href.match(/-chapter-([\\d.]+)$/);
+                    return {
+                        num: match ? match[1] : null,
+                        href: a.href,
+                        text: a.textContent.trim()
+                    };
+                }).filter(l => l.num !== null);
+            })()
+            '''
+            result = await self._browser.execute_js(scrape_js, _DOMAIN, timeout=15)
+            dom_chapters = result.get("value", [])
+
+            new_count = 0
+            for ch in dom_chapters:
+                try:
+                    num = float(ch["num"])
+                except (ValueError, KeyError):
+                    continue
+                if ch["href"] not in all_chapters[num]:
+                    all_chapters[num].append(ch["href"])
+                    new_count += 1
+
+            logger.debug("DOM page %d: %d links, %d new unique", page_target, len(dom_chapters), new_count)
+
+            # Try to click Next page
+            click_js = f'''
+            (() => {{
+                // Look for a page link to page {page_target + 1}
+                const next = document.querySelector('.page-link[href="#{page_target + 1}"]');
+                if (next) {{
+                    next.click();
+                    return 'clicked page {page_target + 1}';
+                }}
+                // Or try the "Next" button
+                const nextBtn = [...document.querySelectorAll('.page-link')].find(a => a.textContent.trim() === 'Next');
+                if (nextBtn && !nextBtn.closest('.disabled')) {{
+                    nextBtn.click();
+                    return 'clicked Next';
+                }}
+                return 'no more pages';
+            }})()
+            '''
+            result = await self._browser.execute_js(click_js, _DOMAIN, timeout=15)
+            click_result = result.get("value", "")
+
+            if "no more" in click_result or new_count == 0 and page_target > 1:
+                break
+
+            await asyncio.sleep(3)  # Wait for React to update DOM
+            page_target += 1
+
+            # Safety: limit to 50 pages
+            if page_target > 50:
+                break
+
+        # Build DiscoveredChapter list
+        chapters = []
+        for num in sorted(all_chapters):
+            variants = [
+                ChapterVariant(
+                    id=f"ch{num}_{i}",
+                    url=href,
+                )
+                for i, href in enumerate(all_chapters[num])
+            ]
+            chapters.append(DiscoveredChapter(number=num, variants=variants))
+
+        return chapters
+
+    async def _discover_via_api(self, prefix: str, slug: str) -> list[DiscoveredChapter]:
+        """Fallback: discover via API (needs anti-CSRF token, often fails)."""
         all_items: list[dict] = []
         page = 1
         while True:
-            data = await self._fetch_json(
-                f"{_BASE}/api/v2/manga/{prefix}/chapters?limit=100&page={page}&order[number]=desc"
-            )
-            items = data.get("result", {}).get("items", [])
-            if not items:
+            try:
+                data = await self._fetch_json(
+                    f"{_BASE}/api/v2/manga/{prefix}/chapters?limit=100&page={page}&order[number]=desc"
+                )
+                items = data.get("result", {}).get("items", [])
+                if not items:
+                    break
+                all_items.extend(items)
+                page += 1
+            except Exception as e:
+                logger.warning("API page %d failed: %s", page, e)
                 break
-            all_items.extend(items)
-            page += 1
 
         by_number: dict[float, list[dict]] = defaultdict(list)
         for item in all_items:
-            by_number[item["number"]].append(item)
+            by_number[float(item["number"])].append(item)
 
         chapters = []
         for num in sorted(by_number):
             variants = [
                 ChapterVariant(
-                    id=str(item["chapter_id"]),
-                    url=f"{_BASE}/title/{slug}/{item['chapter_id']}-chapter-{num}",
+                    id=str(item.get("chapter_id", f"ch{num}_{i}")),
+                    url=f"{_BASE}/title/{slug}/{item.get('chapter_id', '')}-chapter-{num}",
                     group=(item.get("scanlation_group") or {}).get("name"),
                     votes=item.get("votes", 0),
                 )
-                for item in by_number[num]
+                for i, item in enumerate(by_number[num])
             ]
             chapters.append(DiscoveredChapter(number=num, variants=variants))
 
-        # Detect source language from most common chapter language
-        lang_counts: dict[str, int] = {}
-        for item in all_items:
-            lang = item.get("language", "en")
-            lang_counts[lang] = lang_counts.get(lang, 0) + 1
-        detected_lang = max(lang_counts, key=lang_counts.get) if lang_counts else "en"
-
-        logger.info("comix.to: %s — %d chapters (%s)", slug, len(chapters), detected_lang)
-        return SourceInfo(suggested_title=title, suggested_lang=detected_lang, chapters=chapters)
+        return chapters
 
     async def get_page_urls(
         self, chapter: DiscoveredChapter, variant: ChapterVariant | None = None,

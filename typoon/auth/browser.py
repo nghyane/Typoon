@@ -78,25 +78,39 @@ class BrowserClient:
 
     async def fetch(self, url: str, domain: str, timeout: int = 30) -> str:
         """Fetch URL through browser. Returns response text."""
-        import asyncio
-        import websockets
+        import asyncio, websockets
 
         ws_url = self._find_tab(domain)
         if not ws_url:
             ws_url = self._open_tab(f"https://{domain}", domain)
 
         async with websockets.connect(ws_url, max_size=10_000_000) as ws:
-            expr = f'fetch("{url}").then(r => r.ok ? r.text() : Promise.reject(r.status))'
             await ws.send(json.dumps({
                 "id": 1,
                 "method": "Runtime.evaluate",
-                "params": {"expression": expr, "awaitPromise": True},
+                "params": {"expression": f'fetch("{url}", {{credentials: "include"}}).then(r => r.ok ? r.text() : Promise.reject(r.status))', "awaitPromise": True},
             }))
             resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
             result = resp.get("result", {}).get("result", {})
-
             if result.get("type") == "string":
                 return result["value"]
-
             err = resp.get("result", {}).get("exceptionDetails", {})
             raise RuntimeError(f"Browser fetch failed: {err or result}")
+
+    async def execute_js(self, expression: str, domain: str, timeout: int = 30) -> dict:
+        """Execute JS expression in browser tab, return value."""
+        import asyncio, websockets
+
+        ws_url = self._find_tab(domain)
+        if not ws_url:
+            ws_url = self._open_tab(f"https://{domain}", domain)
+
+        async with websockets.connect(ws_url, max_size=10_000_000) as ws:
+            await ws.send(json.dumps({
+                "id": 1,
+                "method": "Runtime.evaluate",
+                "params": {"expression": expression, "awaitPromise": True, "returnByValue": True},
+            }))
+            resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+            result = resp.get("result", {}).get("result", {})
+            return result
