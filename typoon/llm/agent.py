@@ -83,10 +83,33 @@ async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK) -> RunRes
                 continue
             break
 
-        messages.append(Message.assistant(text=resp.text, tool_calls=resp.tool_calls))
+        # Sanitize assistant tool_calls before appending to message history.
+        # Streaming can produce truncated/malformed JSON args; sending them
+        # back upstream triggers a 400 at the gateway before we ever see
+        # the next turn. Replace bad args with "{}" and short-circuit the
+        # dispatch for those calls with an error tool_result so the LLM
+        # retries on the next turn.
+        safe_tool_calls = []
+        bad_call_ids: set[str] = set()
+        for tc in resp.tool_calls:
+            if _is_valid_json(tc.arguments):
+                safe_tool_calls.append(tc)
+            else:
+                safe_tool_calls.append(ToolCallMsg(
+                    id=tc.id, name=tc.name, arguments="{}",
+                ))
+                bad_call_ids.add(tc.id)
+
+        messages.append(Message.assistant(text=resp.text, tool_calls=safe_tool_calls))
 
         for tc in resp.tool_calls:
-            result = await agent.dispatch(tc)
+            if tc.id in bad_call_ids:
+                result = ToolResponse(
+                    "Error: your previous tool call had malformed JSON arguments "
+                    "and was dropped. Retry with valid JSON."
+                )
+            else:
+                result = await agent.dispatch(tc)
             hook.on(ToolResult(agent=name, turn=turns_used, tool=tc.name, result=result.text[:120]))
             messages.append(_tool_response_to_message(tc.id, result))
 
@@ -143,3 +166,15 @@ def _tool_response_to_message(tool_call_id: str, response: ToolResponse) -> Mess
             ContentPart.of_image(response.image_data_uri),
         ])
     return Message.tool_result_text(tool_call_id, response.text)
+
+
+def _is_valid_json(s: str) -> bool:
+    """True if string parses as JSON. Empty string is treated as valid ({})."""
+    import json
+    if not s or not s.strip():
+        return True
+    try:
+        json.loads(s)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False

@@ -73,15 +73,15 @@ class TextAgent:
 async def test_multi_turn():
     provider = MockProvider([
         CallResponse(tool_calls=[
-            ToolCallMsg(id="c1", name="add", arguments="item1"),
-            ToolCallMsg(id="c2", name="add", arguments="item2"),
+            ToolCallMsg(id="c1", name="add", arguments='{"v":"item1"}'),
+            ToolCallMsg(id="c2", name="add", arguments='{"v":"item2"}'),
         ]),
         CallResponse(tool_calls=[
-            ToolCallMsg(id="c3", name="add", arguments="item3"),
+            ToolCallMsg(id="c3", name="add", arguments='{"v":"item3"}'),
         ]),
     ])
     result = await run(provider, CollectAgent(target=3))
-    assert result.output == ["item1", "item2", "item3"]
+    assert result.output == ['{"v":"item1"}', '{"v":"item2"}', '{"v":"item3"}']
     assert result.turns == 2
 
 
@@ -89,10 +89,10 @@ async def test_multi_turn():
 async def test_early_stop_when_done():
     """Agent stops as soon as is_done() returns True, regardless of remaining turns."""
     provider = MockProvider([
-        CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments="only_one")]),
+        CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments='{"v":"only_one"}')]),
     ])
     result = await run(provider, CollectAgent(target=1))
-    assert result.output == ["only_one"]
+    assert result.output == ['{"v":"only_one"}']
     assert result.turns == 1
 
 
@@ -117,11 +117,48 @@ async def test_text_response():
 
 
 @pytest.mark.asyncio
+async def test_malformed_json_args_dont_reach_dispatch():
+    """Truncated/corrupt tool args are short-circuited with an error
+    tool_result so the LLM can retry, instead of being forwarded to the
+    provider where they would trigger a 400."""
+    dispatched: list[str] = []
+
+    class GuardAgent:
+        def __init__(self) -> None:
+            self.items: list[str] = []
+            self._done = False
+
+        def name(self) -> str: return "guard"
+        def system_prompt(self) -> str: return "test"
+        def user_message(self) -> Message: return Message.user_text("go")
+        def tools(self) -> list[ToolDef]: return [ToolDef("add", "add", {"type": "object"})]
+        async def dispatch(self, call: ToolCallMsg) -> ToolResponse:
+            dispatched.append(call.arguments)
+            self.items.append(call.arguments)
+            return ToolResponse("ok")
+        def on_text(self, text: str | None) -> None: pass
+        def is_done(self) -> bool: return self._done
+        def retry_prompt(self) -> str | None:
+            self._done = True  # stop after one retry turn
+            return None
+        def into_output(self) -> list[str]: return list(self.items)
+
+    provider = MockProvider([
+        # First turn: corrupt JSON — should NOT be dispatched
+        CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments='{id": "broken')]),
+        # Second turn: clean JSON — should be dispatched
+        CallResponse(tool_calls=[ToolCallMsg(id="c2", name="add", arguments='{"ok": true}')]),
+    ])
+    await run(provider, GuardAgent())
+    assert dispatched == ['{"ok": true}']
+
+
+@pytest.mark.asyncio
 async def test_retry():
     provider = MockProvider([
-        CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments="first")]),
+        CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments='{"v":"first"}')]),
         CallResponse(text="thinking..."),
-        CallResponse(tool_calls=[ToolCallMsg(id="c2", name="add", arguments="second")]),
+        CallResponse(tool_calls=[ToolCallMsg(id="c2", name="add", arguments='{"v":"second"}')]),
     ])
     result = await run(provider, RetryAgent())
-    assert result.output == ["first", "second"]
+    assert result.output == ['{"v":"first"}', '{"v":"second"}']
