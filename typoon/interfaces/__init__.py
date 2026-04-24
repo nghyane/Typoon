@@ -1,5 +1,5 @@
 """Interfaces — adapters for UI, CLI, HTTP, etc."""
 
-from .cli import app
+from .cli_commands import app
 
 __all__ = ["app"]

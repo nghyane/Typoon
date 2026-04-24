@@ -3,4 +3,4 @@
 Kept for backward compatibility with pyproject.toml [project.scripts].
 """
 
-from .interfaces.cli import app  # noqa: F401
+from .interfaces.cli_commands import app  # noqa: F401
