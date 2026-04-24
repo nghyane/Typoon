@@ -162,8 +162,8 @@ async def _interactive():
 
 async def _run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
     """Run translation pipeline via AppService."""
-    from .app.service import AppService
-    from .app.workflows.project import ResumePolicy
+    from ..app.service import AppService
+    from ..app.workflows.project import ResumePolicy
 
     try:
         hook.log("[dim]Loading models…[/]")
