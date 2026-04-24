@@ -1,4 +1,4 @@
-"""CLI commands — typer app + interactive TUI."""
+"""CLI commands."""
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ import typer
 from rich.console import Console
 
 from .output import SingleFileSource, save_pages
-from .pipeline import run_pipeline, translate_cli
+from .pipeline import translate_cli
 from .resolve import _get_connectors
-from .utils import has_chapter_subdirs, has_images, is_url
 
-app = typer.Typer(name="typoon", invoke_without_command=True)
+app = typer.Typer(name="typoon")
 console = Console()
 
 
@@ -50,17 +49,15 @@ async def _auth(site: str):
 @app.command()
 def detect(path: Path = typer.Argument(..., help="Image file or folder")):
     """Vision only: detect → merge → OCR → erase."""
-    from ..cli.hook import RichHook
     from ..adapters.local_source import LocalSource
     from ..engine import Engine
 
-    engine, config, paths = Engine.from_config()
+    engine, _, paths = Engine.from_config()
     paths.output.mkdir(exist_ok=True)
-    hook = RichHook()
 
     source = LocalSource(path) if path.is_dir() else SingleFileSource(path)
-    pages, images = engine.preprocess(source, hook=hook)
-    engine.erase(pages, images, hook=hook)
+    pages, images = engine.preprocess(source)
+    engine.erase(pages, images)
 
     for page in pages:
         if page.erased is not None:
@@ -88,8 +85,9 @@ def clean(
     project: str = typer.Option(None, "--project", "-p", help="Only clean this project by slug"),
 ):
     """Remove cached source images older than N days to free disk space."""
-    from ..paths import home
     from datetime import datetime, timezone
+
+    from ..paths import home
 
     projects_root = home() / "projects"
     if not projects_root.exists():
@@ -120,59 +118,3 @@ def clean(
                     cleaned += 1
 
     console.print(f"[bold green]✓ Cleaned[/] {cleaned} files, freed {freed_bytes / (1024 * 1024):.1f} MB")
-
-
-@app.callback()
-def main(ctx: typer.Context):
-    """Manga/manhwa translation pipeline."""
-    if ctx.invoked_subcommand is None:
-        asyncio.run(_interactive())
-
-
-# ── Interactive TUI ──────────────────────────────────────────────
-
-
-async def _interactive():
-    from rich.console import Console
-    from ..cli.tui import TUI, load_projects
-    from ..config import load_config as _load_cfg
-
-    _, paths = _load_cfg()
-    paths.ensure()
-
-    log_file = paths.cache / "last_run.log"
-    tui = TUI(log_file=log_file)
-    projects, chapters_map = await load_projects()
-    tui.set_projects(projects, chapters_map)
-    tui.start()
-
-    last_summary = None
-    try:
-        while True:
-            result = await tui.browse()
-            if result.action == "quit":
-                break
-            if result.action == "resume" and result.project:
-                input_str = result.project.get("source_url") or result.project.get("title", "")
-            else:
-                input_str = result.input_value
-            tui.switch_to_pipeline()
-            last_summary = await run_pipeline(
-                tui, input_str, result.force, result.from_ch, result.to_ch, paths)
-            await tui.wait_for_key()
-            projects, chapters_map = await load_projects()
-            tui.set_projects(projects, chapters_map)
-    finally:
-        tui.stop()
-
-    # Post-TUI: restore user context lost when alternate screen buffer
-    # is released.
-    if last_summary:
-        console = Console()
-        console.print(
-            f"[bold green]✓ Done[/] [cyan]{last_summary['name']}[/] — "
-            f"{last_summary['done']} done, {last_summary['skipped']} skipped, "
-            f"{last_summary['failed']} failed"
-        )
-        console.print(f"[bold]Output:[/] [cyan]{last_summary['out_root']}[/]")
-        console.print(f"[dim]Log:[/]    [cyan]{log_file}[/]")
