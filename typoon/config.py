@@ -95,14 +95,32 @@ class Config(BaseSettings):
 # ── Loading ──────────────────────────────────────────────────────
 
 
+def _find_config_file(root: Path | None = None) -> Path:
+    """Find config file: explicit root first, then CWD, then app home."""
+    if root is not None:
+        root_cfg = Path(root) / "config.toml"
+        if root_cfg.exists():
+            return root_cfg
+    cwd_cfg = Path.cwd() / "config.toml"
+    if cwd_cfg.exists():
+        return cwd_cfg
+    return home() / "config.toml"
+
+
 def load_config(root: Path | None = None) -> tuple[Config, Paths]:
-    """Load config from app home. Returns (config, paths)."""
-    paths = Paths(root)
-    if paths.config_file.exists():
-        data = tomllib.loads(paths.config_file.read_text())
+    """Load config from nearest config.toml (CWD → root → app home)."""
+    config_path = _find_config_file(root)
+    if config_path.exists():
+        data = tomllib.loads(config_path.read_text())
         config = Config(**data)
     else:
         config = Config()
+
+    # Determine effective root: if CWD has config.toml, resolve relative to CWD
+    if config_path.parent == Path.cwd():
+        paths = Paths(Path.cwd())
+    else:
+        paths = Paths(root)
     # Resolve models_dir relative to home
     models = Path(config.models_dir)
     if not models.is_absolute():

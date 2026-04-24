@@ -24,8 +24,10 @@ def make_context_provider(config: Config) -> Provider:
     return _build_provider(pcfg, config.context_agent.model, config.context_agent.reasoning_effort)
 
 
-def _resolve_api_key(pcfg: ProviderConfig) -> str:
-    if pcfg.api_key:
+def _resolve_api_key(pcfg: ProviderConfig) -> str | None:
+    """Return API key: explicit value (even empty string), env var, or fallback."""
+    # Explicitly set (including empty string for no-auth gateways)
+    if pcfg.api_key is not None:
         return pcfg.api_key
     env_map = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY"}
     env_key = env_map.get(pcfg.type)
@@ -35,7 +37,9 @@ def _resolve_api_key(pcfg: ProviderConfig) -> str:
 
 
 def _build_provider(pcfg: ProviderConfig, model: str, reasoning_effort: str | None = None) -> Provider:
+    # Keep empty string "" as-is for CF Gateway — SDK skips Authorization when empty.
     api_key = _resolve_api_key(pcfg)
+    extra = pcfg.extra_headers if pcfg.extra_headers else None
     match pcfg.type:
         case "anthropic":
             from .llm.anthropic import AnthropicProvider
@@ -50,5 +54,5 @@ def _build_provider(pcfg: ProviderConfig, model: str, reasoning_effort: str | No
                 api_key=api_key,
                 model=model,
                 reasoning_effort=reasoning_effort,
-                extra_headers=pcfg.extra_headers if pcfg.extra_headers else None,
+                extra_headers=extra,
             )

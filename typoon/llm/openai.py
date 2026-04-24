@@ -47,8 +47,8 @@ class OpenAIProvider:
         kwargs: dict = {
             "messages": [_serialize_message(m) for m in messages],
         }
-        # model="" or "dynamic/auto" lets gateway route (Cloudflare, etc.)
-        if self._model and self._model not in ("dynamic/auto", "auto"):
+        # model="" lets gateway auto-route (Cloudflare, etc.)
+        if self._model:
             kwargs["model"] = self._model
         if tools:
             kwargs["tools"] = [_serialize_tool(t) for t in tools]
@@ -75,7 +75,7 @@ class OpenAIProvider:
             "messages": [_serialize_message(m) for m in messages],
             "stream": True,
         }
-        if self._model and self._model not in ("dynamic/auto", "auto"):
+        if self._model:
             kwargs["model"] = self._model
         if tools:
             kwargs["tools"] = [_serialize_tool(t) for t in tools]

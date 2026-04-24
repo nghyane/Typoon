@@ -1,20 +1,27 @@
-# Typoon config — Cloudflare AI Gateway + OpenAI compatible
+# Typoon config — Cloudflare AI Gateway
+# Copy to config.toml and customize.
+
+models_dir = "models"
+default_target_lang = "vi"
 
 [providers.cf]
 type = "openai"
-endpoint = "https://gateway.ai.cloudflare.com/v1/11a58966d1289d0387eebba638a19cc3/opencode/openai"
-api_key = "cf-gateway"
-extra_headers = { cf-aig-authorization = "Bearer cfut_vxNVxasBOzsMzk0kM6fZQ1W8YdYwzzUxD333gfTu6892e253" }
+# Cloudflare AI Gateway — OpenAI-compatible compat endpoint
+# Set api_key = "" to skip Authorization (SDK will not inject a key).
+# The CF token is passed via cf-aig-authorization.
+endpoint = "https://gateway.ai.cloudflare.com/v1/<account-id>/<gateway-name>/compat"
+api_key = ""
+extra_headers = { cf-aig-authorization = "Bearer <your-cf-aig-token>" }
 
 [translation]
 provider = "cf"
-model = "dynamic/auto"  # Cloudflare Gateway auto-selects best available
+model = "dynamic/auto"   # Gateway auto-routes; requires endpoint compat path
 
 [context_agent]
 provider = "cf"
 model = "dynamic/auto"
 
-# Alternative: direct OpenAI (comment out above, uncomment below)
+# Alternative: direct OpenAI
 # [providers.openai]
 # type = "openai"
 # api_key = "sk-..."
