@@ -16,3 +16,8 @@ cache/
 
 # Project data
 projects/
+
+# SQLite temp files
+*.db
+*.db-shm
+*.db-wal
