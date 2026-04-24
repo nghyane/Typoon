@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .events import Hook, ModelsUnloaded, PageErased, PageRendered, PageScanned
+from .app.events import Hook, ModelsUnloaded, PageErased, PageRendered, PageScanned
 from .models import ModelHub
 from .ports import ChapterSource
 from .domain.bubble import Bubble, Page

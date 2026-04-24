@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from typoon.config import Config, ProviderConfig
-from typoon.events import (
+from typoon.app.events import (
     ChapterDone,
     ChapterStart,
     Event,

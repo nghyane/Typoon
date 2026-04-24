@@ -30,7 +30,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from typoon.events import (
+from typoon.app.events import (
     ChapterDone,
     ChapterSkipped,
     ChapterStart,
@@ -787,7 +787,7 @@ class TUI(Hook):
 # ── Load projects helper ─────────────────────────────────────────
 
 async def load_projects() -> tuple[list[dict], dict[int, list[dict]]]:
-    from .sqlite_store import SqliteStore
+    from ..storage.sqlite import SqliteStore
     from ..config import load_config
 
     _, paths = load_config()

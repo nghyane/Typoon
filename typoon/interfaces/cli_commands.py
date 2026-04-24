@@ -50,7 +50,7 @@ async def _auth(site: str):
 @app.command()
 def detect(path: Path = typer.Argument(..., help="Image file or folder")):
     """Vision only: detect → merge → OCR → erase."""
-    from ..adapters.cli_hook import RichHook
+    from ..interfaces.cli_hook import RichHook
     from ..adapters.local_source import LocalSource
     from ..engine import Engine
 

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
-from typoon.events import Hook
+from typoon.app.events import Hook
 from typoon.domain.bubble import Session
 from typoon.translation.knowledge import consolidate
 

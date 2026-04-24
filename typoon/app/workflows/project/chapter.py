@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from ....domain.bubble import Page, Session
-from ....events import Hook, KnowledgeDone, KnowledgeStart, PipelineError, TranslateDone, TranslateStart, TranslationReady
+from ...events import Hook, KnowledgeDone, KnowledgeStart, PipelineError, TranslateDone, TranslateStart, TranslationReady
 
 
 async def _do_translate_and_render(job, store, engine, config, hook, loop, gpu):

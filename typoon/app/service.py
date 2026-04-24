@@ -39,7 +39,7 @@ class AppService:
     @classmethod
     async def create(cls, root: Path | None = None) -> AppService:
         """Bootstrap everything: config, DB, models."""
-        from ..adapters.sqlite_store import SqliteStore
+        from ..storage.sqlite import SqliteStore
         from ..config import load_config
         from ..engine import Engine
 

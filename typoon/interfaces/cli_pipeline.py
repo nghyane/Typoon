@@ -77,7 +77,7 @@ async def run_pipeline(hook, input_str, force, from_ch, to_ch, paths):
 
 async def translate_cli(input_str, source_lang, target_lang, from_ch, to_ch, force):
     """CLI translate command wrapper."""
-    from ..adapters.cli_hook import RichHook
+    from ..interfaces.cli_hook import RichHook
     from ..config import load_config as _load_cfg
 
     _, paths = _load_cfg()

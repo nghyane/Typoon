@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from ..events import Hook, LLMCall, LLMResponse, LLMText, LLMThinking, PipelineError, ToolCallStart, ToolResult
+from ..app.events import Hook, LLMCall, LLMResponse, LLMText, LLMThinking, PipelineError, ToolCallStart, ToolResult
 from .ir import (
     CallResponse,
     ContentPart,

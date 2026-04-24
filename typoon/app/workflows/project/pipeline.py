@@ -6,7 +6,7 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from ....events import ChapterDone, ChapterSkipped, Hook, PipelineError, SeriesProgress
+from ...events import ChapterDone, ChapterSkipped, Hook, PipelineError, SeriesProgress
 from ....ports import Store
 
 from .chapter import _do_render_only, _do_translate_and_render
