@@ -86,12 +86,22 @@ async def test_multi_turn():
 
 
 @pytest.mark.asyncio
-async def test_early_stop():
+async def test_early_stop_when_done():
+    """Agent stops as soon as is_done() returns True, regardless of remaining turns."""
     provider = MockProvider([
         CallResponse(tool_calls=[ToolCallMsg(id="c1", name="add", arguments="only_one")]),
     ])
     result = await run(provider, CollectAgent(target=1))
     assert result.output == ["only_one"]
+    assert result.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_stops_on_empty_response():
+    """If model returns no tool calls and agent doesn't retry, stop with partial output."""
+    provider = MockProvider([CallResponse(text="done")])
+    result = await run(provider, CollectAgent(target=99))
+    assert result.output == []
     assert result.turns == 1
 
 
@@ -115,11 +125,3 @@ async def test_retry():
     ])
     result = await run(provider, RetryAgent())
     assert result.output == ["first", "second"]
-
-
-@pytest.mark.asyncio
-async def test_no_tool_calls_stops():
-    provider = MockProvider([CallResponse(text="done")])
-    result = await run(provider, CollectAgent(target=99))
-    assert result.output == []
-    assert result.turns == 1
