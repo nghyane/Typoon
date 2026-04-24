@@ -120,7 +120,7 @@ class PageRendered(Event):
 @dataclass
 class ChapterStart(Event):
     project_id: int = 0
-    chapter: int = 0
+    chapter: float = 0
     pages: int = 0
 
 
@@ -134,7 +134,7 @@ class ChapterDone(Event):
 
 @dataclass
 class ChapterSkipped(Event):
-    chapter: int = 0
+    chapter: float = 0
     reason: str = ""
 
 

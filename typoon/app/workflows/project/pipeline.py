@@ -6,7 +6,7 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from ...events import ChapterDone, ChapterSkipped, Hook, PipelineError, SeriesProgress
+from ...events import ChapterDone, ChapterSkipped, ChapterStart, Hook, PipelineError, SeriesProgress
 from ....ports import Store
 
 from .chapter import _do_render_only, _do_translate_and_render
@@ -81,6 +81,11 @@ async def run_pipeline(
                 await render_q.put(None)
                 return
             try:
+                h.on(ChapterStart(
+                    project_id=project_id,
+                    chapter=job.chapter,
+                    pages=job.source.page_count(),
+                ))
                 job.pages, job.images = await loop.run_in_executor(
                     gpu, engine.preprocess, job.source, h)
             except Exception as e:
