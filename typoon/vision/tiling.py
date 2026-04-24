@@ -23,10 +23,13 @@ def compute_tiles(
     tiles: list[tuple[int, int]] = []
     y = 0
     while y < image_h:
-        th = min(max_h, image_h - y)
-        tiles.append((y, th))
-        if y + th >= image_h:
+        remaining = image_h - y
+        if remaining <= max_h:
+            # Last tile — may be smaller, always valid
+            tiles.append((y, remaining))
             break
+        # Non-last tile: must be exactly max_h so next tile starts correctly
+        tiles.append((y, max_h))
         y += max_h - overlap
     return tiles
 
