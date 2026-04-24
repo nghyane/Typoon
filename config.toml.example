@@ -1,0 +1,25 @@
+# Typoon config — Cloudflare AI Gateway + OpenAI compatible
+
+[providers.cf]
+type = "openai"
+endpoint = "https://gateway.ai.cloudflare.com/v1/11a58966d1289d0387eebba638a19cc3/opencode/openai"
+api_key = "cf-gateway"
+extra_headers = { cf-aig-authorization = "Bearer cfut_vxNVxasBOzsMzk0kM6fZQ1W8YdYwzzUxD333gfTu6892e253" }
+
+[translation]
+provider = "cf"
+model = "gpt-4o"
+# model = ""  # leave empty for gateway routing (cf will auto-select based on load)
+
+[context_agent]
+provider = "cf"
+model = "claude-sonnet-4-20250514"
+
+# Alternative: direct OpenAI (comment out above, uncomment below)
+# [providers.openai]
+# type = "openai"
+# api_key = "sk-..."
+#
+# [translation]
+# provider = "openai"
+# model = "gpt-4o-mini"

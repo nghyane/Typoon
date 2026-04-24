@@ -107,4 +107,10 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     models = Path(config.models_dir)
     if not models.is_absolute():
         config.models_dir = str(paths.root / models)
+    # Expand env vars in provider config (e.g. $CF_AIG_TOKEN in extra_headers)
+    for pcfg in config.providers.values():
+        pcfg.api_key = os.path.expandvars(pcfg.api_key or "")
+        pcfg.extra_headers = {
+            k: os.path.expandvars(v) for k, v in pcfg.extra_headers.items()
+        }
     return config, paths
