@@ -45,9 +45,11 @@ class OpenAIProvider:
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {
-            "model": self._model,
             "messages": [_serialize_message(m) for m in messages],
         }
+        # model="" or "dynamic/auto" lets gateway route (Cloudflare, etc.)
+        if self._model and self._model not in ("dynamic/auto", "auto"):
+            kwargs["model"] = self._model
         if tools:
             kwargs["tools"] = [_serialize_tool(t) for t in tools]
             kwargs["parallel_tool_calls"] = True
@@ -70,10 +72,11 @@ class OpenAIProvider:
 
     async def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
         kwargs: dict = {
-            "model": self._model,
             "messages": [_serialize_message(m) for m in messages],
             "stream": True,
         }
+        if self._model and self._model not in ("dynamic/auto", "auto"):
+            kwargs["model"] = self._model
         if tools:
             kwargs["tools"] = [_serialize_tool(t) for t in tools]
             kwargs["parallel_tool_calls"] = True

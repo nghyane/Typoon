@@ -8,12 +8,11 @@ extra_headers = { cf-aig-authorization = "Bearer cfut_vxNVxasBOzsMzk0kM6fZQ1W8Yd
 
 [translation]
 provider = "cf"
-model = "gpt-4o"
-# model = ""  # leave empty for gateway routing (cf will auto-select based on load)
+model = "dynamic/auto"  # Cloudflare Gateway auto-selects best available
 
 [context_agent]
 provider = "cf"
-model = "claude-sonnet-4-20250514"
+model = "dynamic/auto"
 
 # Alternative: direct OpenAI (comment out above, uncomment below)
 # [providers.openai]
