@@ -1,7 +1,7 @@
 """Ports — protocol definitions only. No data types, no logic.
 
 Adapters implement these protocols.
-Data types live in types.py.
+Data types live in domain/.
 """
 
 from __future__ import annotations
