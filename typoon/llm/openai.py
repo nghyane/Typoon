@@ -25,7 +25,7 @@ _TIMEOUT = 180
 
 
 class OpenAIProvider:
-    """OpenAI native provider."""
+    """OpenAI provider — supports standard OpenAI, Cloudflare Gateway, and proxies."""
 
     def __init__(
         self,
@@ -34,8 +34,12 @@ class OpenAIProvider:
         base_url: str | None = None,
         model: str = "gpt-4o-mini",
         reasoning_effort: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
-        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=_TIMEOUT)
+        kwargs: dict = {"api_key": api_key, "base_url": base_url, "timeout": _TIMEOUT}
+        if extra_headers:
+            kwargs["default_headers"] = extra_headers
+        self._client = openai.AsyncOpenAI(**kwargs)
         self._model = model
         self._reasoning_effort = reasoning_effort
 

@@ -65,6 +65,9 @@ class ProviderConfig(BaseModel):
     type: str = "openai"
     endpoint: str = ""
     api_key: str | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    # Cloudflare Gateway: set cf-aig-authorization header
+    # e.g. extra_headers = { "cf-aig-authorization": "Bearer $TOKEN" }
 
 
 class TranslationConfig(BaseModel):

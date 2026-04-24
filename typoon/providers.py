@@ -45,4 +45,10 @@ def _build_provider(pcfg: ProviderConfig, model: str, reasoning_effort: str | No
             return GeminiProvider(api_key=api_key, model=model)
         case _:
             from .llm.openai import OpenAIProvider
-            return OpenAIProvider(base_url=pcfg.endpoint or None, api_key=api_key, model=model, reasoning_effort=reasoning_effort)
+            return OpenAIProvider(
+                base_url=pcfg.endpoint or None,
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                extra_headers=pcfg.extra_headers if pcfg.extra_headers else None,
+            )
