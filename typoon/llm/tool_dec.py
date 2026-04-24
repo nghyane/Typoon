@@ -75,6 +75,7 @@ def _clean_schema(schema: dict, strict: bool = False) -> dict:
     _strip_keys(resolved, {"title"})
     if strict:
         _add_additional_properties_false(resolved)
+        _force_all_required(resolved)
     return resolved
 
 
@@ -111,3 +112,20 @@ def _add_additional_properties_false(node: Any) -> None:
     elif isinstance(node, list):
         for item in node:
             _add_additional_properties_false(item)
+
+
+def _force_all_required(node: Any) -> None:
+    """OpenAI strict mode: every key in `properties` must appear in `required`.
+
+    Pydantic omits fields with defaults from `required`; strict mode rejects
+    that (error: 'Missing <field>' in tools[N].function.parameters). Override
+    by setting required = list(properties.keys()) on every object schema.
+    """
+    if isinstance(node, dict):
+        if node.get("type") == "object" and "properties" in node:
+            node["required"] = list(node["properties"].keys())
+        for v in node.values():
+            _force_all_required(v)
+    elif isinstance(node, list):
+        for item in node:
+            _force_all_required(item)
