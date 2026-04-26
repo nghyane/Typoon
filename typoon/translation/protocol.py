@@ -13,14 +13,13 @@ from .tools.submit import SubmitArgs
 @dataclass(slots=True)
 class TranslationOp:
     key: str
-    status: str  # ok | skip | need_look
+    status: str  # ok | skip
     text: str = ""
 
 
 @dataclass(slots=True)
 class ValidationResult:
     accepted: list[TranslationOp]
-    need_look: list[TranslationOp]
     invalid: dict[str, str]
 
 
@@ -49,10 +48,8 @@ def validate_ops(
     *,
     active: set[str],
     key_map: dict[str, Bubble],
-    look_notes: dict[str, str],
 ) -> ValidationResult:
     accepted: list[TranslationOp] = []
-    need_look: list[TranslationOp] = []
     invalid: dict[str, str] = {}
     seen: set[str] = set()
     for op in ops:
@@ -69,7 +66,7 @@ def validate_ops(
             invalid[key] = "duplicate key"
             continue
         seen.add(key)
-        if status not in {"ok", "skip", "need_look"}:
+        if status not in {"ok", "skip"}:
             invalid[key] = f"invalid status {status}"
             continue
         if status == "ok":
@@ -80,11 +77,6 @@ def validate_ops(
                 invalid[key] = "translation contains key marker"
                 continue
             accepted.append(TranslationOp(key=key, status="ok", text=text))
-        elif status == "skip":
-            accepted.append(TranslationOp(key=key, status="skip", text=""))
         else:
-            if key in look_notes:
-                invalid[key] = "need_look already answered by LookAt"
-                continue
-            need_look.append(TranslationOp(key=key, status="need_look", text=text))
-    return ValidationResult(accepted=accepted, need_look=need_look, invalid=invalid)
+            accepted.append(TranslationOp(key=key, status="skip", text=""))
+    return ValidationResult(accepted=accepted, invalid=invalid)
