@@ -104,12 +104,6 @@ class StitchedStrip:
         self._buffer = None
 
 
-# ── Backward compat alias ───────────────────────────────────────────
-
-ChapterImages = StitchedStrip
-LazyChapterImages = LazyPageProvider
-
-
 # ── Internals ────────────────────────────────────────────────────────
 
 

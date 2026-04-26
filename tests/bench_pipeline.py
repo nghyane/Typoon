@@ -26,7 +26,7 @@ from typoon.app.events import (
     TranslationReady,
 )
 from typoon.domain.bubble import Bubble, Page, Session
-from typoon.vision.chapter_images import ChapterImages
+from typoon.vision.chapter_images import LazyPageProvider
 
 
 # ── Simulated delays (seconds) ───────────────────────────────────────
@@ -357,7 +357,7 @@ async def bench_progressive_output() -> dict:
 # ── Benchmark 5: Preprocess API ──────────────────────────────────────
 
 async def bench_preprocess_api() -> dict:
-    """Verify Engine.preprocess() returns (list[Page], ChapterImages)."""
+    """Verify Engine.preprocess() returns (list[Page], LazyPageProvider)."""
     engine = _make_engine()
     source = FakeSource()
     hook = RecorderHook()
@@ -366,7 +366,7 @@ async def bench_preprocess_api() -> dict:
 
     results = {
         "returns_pages": isinstance(pages, list) and all(isinstance(p, Page) for p in pages),
-        "returns_chapter_images": isinstance(images, ChapterImages),
+        "returns_lazy_provider": isinstance(images, LazyPageProvider),
         "page_count_match": len(pages) == source.page_count(),
         "images_page_count": images.page_count() == source.page_count(),
         "images_alive": images.alive,
