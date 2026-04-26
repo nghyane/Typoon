@@ -67,8 +67,6 @@ class Engine:
         )
         return engine, config, paths
 
-    # ── Model lifecycle ──────────────────────────────────────────
-
     def unload_scan_models(self, hook: Hook = _NO_HOOK) -> None:
         self.scanner = None  # type: ignore[assignment]
         hook.on(ModelsUnloaded(stage="scan"))
@@ -87,8 +85,6 @@ class Engine:
         if self.eraser is not None:
             return
         self.eraser = Eraser(str(self._hub.dir))
-
-    # ── Preprocess ───────────────────────────────────────────────
 
     def preprocess(
         self, source: ChapterSource, hook: Hook = _NO_HOOK,
@@ -168,8 +164,6 @@ class Engine:
             scope_imgsz=self._bubble_scope_imgsz,
         )
 
-    # ── Erase + Render ───────────────────────────────────────────
-
     def erase_and_render(
         self, pages: list[Page], images: LazyPageProvider, hook: Hook = _NO_HOOK,
     ) -> None:
@@ -203,8 +197,6 @@ class Engine:
 
         images.free()
 
-    # ── Erase only ───────────────────────────────────────────────
-
     def erase(
         self, pages: list[Page], images: LazyPageProvider, hook: Hook = _NO_HOOK,
     ) -> None:
@@ -224,8 +216,6 @@ class Engine:
 
         images.free()
 
-
-# ── Helpers ──────────────────────────────────────────────────────────
 
 
 def _split_strip(

@@ -10,8 +10,6 @@ from __future__ import annotations
 import numpy as np
 
 
-# ── Lazy runtime provider ────────────────────────────────────────────
-
 
 class LazyPageProvider:
     """Loads and crops logical pages from source images on demand."""
@@ -69,8 +67,6 @@ class LazyPageProvider:
         return self._alive
 
 
-# ── Stitch buffer (scan-time only) ──────────────────────────────────
-
 
 class StitchedStrip:
     """Temporary stitched buffer for scanning. Free after preprocess."""
@@ -103,8 +99,6 @@ class StitchedStrip:
     def free(self) -> None:
         self._buffer = None
 
-
-# ── Internals ────────────────────────────────────────────────────────
 
 
 def _stitch_rust(images: list[np.ndarray]) -> StitchedStrip:
