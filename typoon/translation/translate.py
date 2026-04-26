@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typoon.app.events import PipelineError
-from typoon.domain.bubble import Page, Session
+from typoon.domain.bubble import Bubble, Page, Session
 
 from .context import build_chapter_brief
 from .keys import assign_keys
 from .page import translate_window
+from .tools.submit import TextKind
 
 _PAGE_WINDOW_MAX_KEYS = 25
 
@@ -32,7 +33,7 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
             for op in accepted:
                 b = key_map[op.key]
                 b.translation_status = op.kind
-                b.translated_text = op.text if op.kind != "skip" else ""
+                b.translated_text = op.text if op.kind != TextKind.skip.value else ""
 
         await session.store.save_chapter_brief(session.project_id, session.chapter, brief.to_dict())
         return turns, None
@@ -41,10 +42,10 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
         return turns, e
 
 
-def _page_windows(pages: list[Page]) -> list[list]:
+def _page_windows(pages: list[Page]) -> list[list[Bubble]]:
     """Group bubbles into windows, preferring page boundaries."""
-    windows: list[list] = []
-    current: list = []
+    windows: list[list[Bubble]] = []
+    current: list[Bubble] = []
     for page in pages:
         if current and len(current) + len(page.bubbles) > _PAGE_WINDOW_MAX_KEYS:
             windows.append(current)

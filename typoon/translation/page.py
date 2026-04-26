@@ -15,7 +15,7 @@ from .tools.submit import SubmitArgs, TextKind, submit_translations
 @dataclass(slots=True)
 class TranslationOp:
     key: str
-    kind: str  # dialogue | narration | sfx | noise | meta
+    kind: str  # dialogue | sfx | skip
     text: str = ""
 
 
@@ -82,14 +82,16 @@ class PageAgent:
             if text and (key in text or f"#{key}" in text):
                 errors.append(f"#{key}: translation contains key marker")
                 continue
-            self._accepted.append(TranslationOp(key=key, kind=kind.value, text=text if kind != TextKind.skip else ""))
+            self._accepted.append(TranslationOp(
+                key=key, kind=kind.value,
+                text=text if kind != TextKind.skip else "",
+            ))
             self._active.discard(key)
-        if not self._active:
-            return ToolResponse("ok")
         if self._active:
             errors.append(f"Missing keys: {', '.join(sorted(self._active))}")
-        self._pending_feedback = "\n".join(errors)
-        return ToolResponse(f"Validation errors:\n{self._pending_feedback}")
+            self._pending_feedback = "\n".join(errors)
+            return ToolResponse(f"Validation errors:\n{self._pending_feedback}")
+        return ToolResponse("ok")
 
     def on_text(self, text: str | None) -> None:
         self._text_retries += 1
