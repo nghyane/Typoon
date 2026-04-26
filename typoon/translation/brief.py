@@ -37,6 +37,19 @@ def chapter_text(pages: list) -> str:
     return "\n".join(lines)
 
 
+def annotated_chapter_text(pages: list, active_keys: set[str]) -> str:
+    """Chapter text with >>> markers on active keys to translate."""
+    lines = []
+    for page in pages:
+        for b in page.bubbles:
+            key = b.translation_key
+            if key is None:
+                raise ValueError(f"Bubble {b.id} has no translation key")
+            prefix = ">>> " if key in active_keys else "    "
+            lines.append(f"{prefix}[p{b.page_index}] #{key} {b.source_text}")
+    return "\n".join(lines)
+
+
 def brief_slice(brief: ChapterBrief, page_indices: set[int], keys: list[str]) -> str:
     parts: list[str] = []
     if brief.summary:

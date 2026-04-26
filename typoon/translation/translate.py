@@ -5,7 +5,6 @@ from __future__ import annotations
 from typoon.app.events import PipelineError
 from typoon.domain.bubble import Page, Session
 
-from .brief import chapter_text as build_chapter_text
 from .context import build_chapter_brief
 from .keys import assign_keys
 from .page import translate_window
@@ -24,12 +23,10 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
         brief, ctx_turns = await build_chapter_brief(pages, session, key_map)
         turns += ctx_turns
 
-        full_text = build_chapter_text(pages)
-
         for window in _page_windows(pages):
             accepted, page_turns = await translate_window(
                 session, brief=brief, bubbles=window, key_map=key_map,
-                chapter_text=full_text,
+                all_pages=pages,
             )
             turns += page_turns
             for op in accepted:

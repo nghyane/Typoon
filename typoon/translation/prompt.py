@@ -26,7 +26,8 @@ CONTEXT_USER = """\
 PAGE_SYSTEM = """\
 You are a page translator for comics ({source_lang} -> {target_lang}).
 
-Full chapter text is provided for context. Translate only the listed active keys.
+Chapter dialogue is listed below. Lines marked >>> are active keys to translate.
+Unmarked lines are read-only context. Translate only active keys.
 Reading order is approximate on manga pages.
 Call submit_translations with the results.
 
@@ -35,12 +36,8 @@ Call submit_translations with the results.
 
 PAGE_USER = """\
 {brief_slice}
-
-Chapter context (do not translate, read-only):
-{chapter_text}
 {feedback_block}
-Active keys to translate:
-{keys}"""
+{annotated_text}"""
 
 LOOKAT_SYSTEM = """\
 You are a visual assistant for comic translation.
