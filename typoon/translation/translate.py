@@ -23,16 +23,20 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
         brief, ctx_turns = await build_chapter_brief(pages, session, key_map)
         turns += ctx_turns
 
+        accepted_so_far: list[tuple[str, str, str]] = []  # (key, source, translated)
+
         for window in _page_windows(pages):
             accepted, page_turns = await translate_window(
                 session, brief=brief, bubbles=window, key_map=key_map,
-                all_pages=pages,
+                all_pages=pages, prior_translations=accepted_so_far,
             )
             turns += page_turns
             for op in accepted:
                 b = key_map[op.key]
                 b.translation_status = op.status
                 b.translated_text = op.text if op.status == "ok" else ""
+                if op.status == "ok":
+                    accepted_so_far.append((op.key, b.source_text, op.text))
 
         await session.store.save_chapter_brief(session.project_id, session.chapter, brief.to_dict())
         return turns, None

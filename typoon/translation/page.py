@@ -25,13 +25,14 @@ class PageAgent:
     def __init__(
         self, session: Session, *, brief: ChapterBrief,
         bubbles: list[Bubble], key_map: dict[str, Bubble],
-        all_pages: list,
+        all_pages: list, prior_translations: list[tuple[str, str, str]],
     ) -> None:
         self._session = session
         self._brief = brief
         self._bubbles = bubbles
         self._key_map = key_map
         self._all_pages = all_pages
+        self._prior = prior_translations
         self._keys = [b.translation_key or "" for b in bubbles]
         self._active = set(self._keys)
         self._accepted: list[TranslationOp] = []
@@ -51,8 +52,10 @@ class PageAgent:
 
     def user_message(self) -> Message:
         page_indices = {b.page_index for b in self._bubbles}
+        prior_block = _prior_block(self._prior)
         return Message.user_text(prompt.PAGE_USER.format(
             brief_slice=brief_slice(self._brief, page_indices, self._keys),
+            prior_translations=prior_block,
             feedback_block="",
             annotated_text=annotated_chapter_text(self._all_pages, self._active),
         ))
@@ -113,15 +116,22 @@ class PageAgent:
 async def translate_window(
     session: Session, *, brief: ChapterBrief,
     bubbles: list[Bubble], key_map: dict[str, Bubble],
-    all_pages: list,
+    all_pages: list, prior_translations: list[tuple[str, str, str]],
 ) -> tuple[list[TranslationOp], int]:
     """Run PageAgent. Returns (accepted ops, turns used)."""
     from typoon.llm.agent import run as agent_run
     agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map,
-                      all_pages=all_pages)
+                      all_pages=all_pages, prior_translations=prior_translations)
     result = await agent_run(session.provider, agent, hook=session.hook, max_turns=4)
     if result.error:
         raise result.error
     if agent._active:
         raise RuntimeError(f"Page agent incomplete. Missing: {', '.join(sorted(agent._active))}")
     return result.output or [], result.turns
+
+
+def _prior_block(prior: list[tuple[str, str, str]]) -> str:
+    if not prior:
+        return ""
+    lines = [f"#{k}: {src} → {tgt}" for k, src, tgt in prior[-15:]]
+    return "\nAccepted translations (maintain consistency):\n" + "\n".join(lines)

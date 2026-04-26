@@ -35,6 +35,7 @@ Call submit_translations with the results.
 
 PAGE_USER = """\
 {brief_slice}
+{prior_translations}
 {feedback_block}
 {annotated_text}"""
 
