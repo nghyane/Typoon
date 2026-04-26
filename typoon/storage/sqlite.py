@@ -47,31 +47,29 @@ CREATE TABLE IF NOT EXISTS translations (
     chapter       REAL NOT NULL,
     page          INTEGER NOT NULL,
     idx           INTEGER NOT NULL,
+    key           TEXT NOT NULL,
     source_text   TEXT NOT NULL,
     translated_text TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'ok',
     polygon       TEXT,
     font_size_px  INTEGER,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (project_id, chapter, page, idx)
+    PRIMARY KEY (project_id, chapter, page, idx),
+    UNIQUE(project_id, chapter, key)
 );
 
-CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+CREATE TABLE IF NOT EXISTS chapter_briefs (
     project_id    INTEGER NOT NULL,
     chapter       REAL NOT NULL,
-    snapshot      TEXT NOT NULL,
+    brief_json    TEXT NOT NULL,
+    summary       TEXT,
+    terms_text    TEXT,
+    facts_text    TEXT,
+    rules_text    TEXT,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (project_id, chapter)
 );
-
-CREATE TABLE IF NOT EXISTS notes (
-    id            INTEGER PRIMARY KEY,
-    project_id    INTEGER NOT NULL,
-    chapter       REAL NOT NULL,
-    note_type     TEXT NOT NULL,
-    content       TEXT NOT NULL,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_notes_project_ch ON notes(project_id, chapter);
 
 -- FTS for glossary search
 CREATE VIRTUAL TABLE IF NOT EXISTS glossary_fts USING fts5(
@@ -99,18 +97,6 @@ CREATE TRIGGER IF NOT EXISTS translations_ai AFTER INSERT ON translations BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS translations_ad AFTER DELETE ON translations BEGIN
     INSERT INTO translations_fts(translations_fts, rowid, source_text, translated_text) VALUES('delete', old.rowid, old.source_text, old.translated_text);
-END;
-
--- FTS for notes search
-CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    content, content='notes', content_rowid='id',
-    tokenize='unicode61'
-);
-CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, content) VALUES (new.id, new.content);
-END;
-CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 """
 
@@ -216,15 +202,12 @@ class SqliteStore:
         await self._db.commit()
 
     async def delete_chapter_data(self, project_id: int, idx: float) -> None:
-        """Remove translations + knowledge + notes for a chapter (for re-translate)."""
+        """Remove translations + chapter brief for a chapter (for re-translate)."""
         await self._db.execute(
             "DELETE FROM translations WHERE project_id=? AND chapter=?", (project_id, idx),
         )
         await self._db.execute(
-            "DELETE FROM knowledge_snapshots WHERE project_id=? AND chapter=?", (project_id, idx),
-        )
-        await self._db.execute(
-            "DELETE FROM notes WHERE project_id=? AND chapter=?", (project_id, idx),
+            "DELETE FROM chapter_briefs WHERE project_id=? AND chapter=?", (project_id, idx),
         )
         await self._db.commit()
 
@@ -254,55 +237,98 @@ class SqliteStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    # ── Knowledge (Store port) ───────────────────────────────────
+    # ── Chapter briefs / context ─────────────────────────────────
 
-    async def get_knowledge(self, project_id: int, before_chapter: float) -> str | None:
-        cur = await self._db.execute(
-            "SELECT snapshot FROM knowledge_snapshots WHERE project_id=? AND chapter<? ORDER BY chapter DESC LIMIT 1",
-            (project_id, before_chapter),
-        )
-        row = await cur.fetchone()
-        return row["snapshot"] if row else None
-
-    async def save_knowledge(self, project_id: int, chapter: float, snapshot: str) -> None:
+    async def save_chapter_brief(self, project_id: int, chapter: float, brief: dict) -> None:
+        brief_json = json.dumps(brief, ensure_ascii=False)
+        summary = str(brief.get("summary", ""))
+        terms = brief.get("glossary", {}) or {}
+        terms_text = "\n".join(f"{k} -> {v}" for k, v in terms.items())
+        facts_text = "\n".join(str(x) for x in brief.get("facts", []) or [])
+        rules = list(brief.get("style_rules", []) or []) + list(brief.get("pronoun_rules", []) or [])
+        rules_text = "\n".join(str(x) for x in rules)
         await self._db.execute(
-            "INSERT OR REPLACE INTO knowledge_snapshots (project_id, chapter, snapshot) VALUES (?,?,?)",
-            (project_id, chapter, snapshot),
+            "INSERT OR REPLACE INTO chapter_briefs "
+            "(project_id, chapter, brief_json, summary, terms_text, facts_text, rules_text, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,datetime('now'))",
+            (project_id, chapter, brief_json, summary, terms_text, facts_text, rules_text),
         )
         await self._db.commit()
+
+    async def get_chapter_brief(self, project_id: int, chapter: float) -> dict | None:
+        cur = await self._db.execute(
+            "SELECT chapter, brief_json, summary, terms_text, facts_text, rules_text "
+            "FROM chapter_briefs WHERE project_id=? AND chapter=?",
+            (project_id, chapter),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["brief"] = json.loads(out.pop("brief_json"))
+        return out
+
+    async def get_recent_chapter_briefs(
+        self, project_id: int, before_chapter: float, limit: int = 3,
+    ) -> list[dict]:
+        cur = await self._db.execute(
+            "SELECT chapter, brief_json, summary, terms_text, facts_text, rules_text "
+            "FROM chapter_briefs WHERE project_id=? AND chapter<? "
+            "ORDER BY chapter DESC LIMIT ?",
+            (project_id, before_chapter, limit),
+        )
+        rows = []
+        for row in await cur.fetchall():
+            out = dict(row)
+            out["brief"] = json.loads(out.pop("brief_json"))
+            rows.append(out)
+        return rows
+
+    async def search_briefs(self, project_id: int, queries: list[str], limit: int = 10) -> list[str]:
+        results: list[str] = []
+        seen: set[str] = set()
+        for query in queries:
+            like = f"%{query}%"
+            cur = await self._db.execute(
+                "SELECT chapter, summary, terms_text, facts_text, rules_text FROM chapter_briefs "
+                "WHERE project_id=? AND (summary LIKE ? OR terms_text LIKE ? OR facts_text LIKE ? OR rules_text LIKE ?) "
+                "ORDER BY chapter DESC LIMIT ?",
+                (project_id, like, like, like, like, limit),
+            )
+            for r in await cur.fetchall():
+                text = "\n".join(
+                    str(r[k] or "") for k in ("summary", "terms_text", "facts_text", "rules_text")
+                ).strip()
+                hit = f"[Ch{r['chapter']} brief] {text}"
+                if text and hit not in seen:
+                    seen.add(hit)
+                    results.append(hit)
+        return results[:limit]
 
     # ── Translations (Store port) ────────────────────────────────
 
     async def save_translations(self, project_id: int, chapter: float, bubbles: list[Bubble]) -> None:
         rows = [
-            (project_id, chapter, b.page_index, b.idx, b.source_text,
-             b.translated_text or "", json.dumps(b.polygon), b.font_size)
+            (project_id, chapter, b.page_index, b.idx, b.translation_key or b.id,
+             b.source_text, b.translated_text or "", b.translation_status,
+             json.dumps(b.polygon), b.font_size)
             for b in bubbles
         ]
         await self._db.executemany(
             "INSERT OR REPLACE INTO translations "
-            "(project_id, chapter, page, idx, source_text, translated_text, polygon, font_size_px) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(project_id, chapter, page, idx, key, source_text, translated_text, status, polygon, font_size_px) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
         await self._db.commit()
 
     async def get_chapter_translations(self, project_id: int, chapter: float) -> list[dict]:
         cur = await self._db.execute(
-            "SELECT page, idx, source_text, translated_text FROM translations "
+            "SELECT page, idx, key, source_text, translated_text, status FROM translations "
             "WHERE project_id=? AND chapter=? ORDER BY page, idx",
             (project_id, chapter),
         )
         return [dict(r) for r in await cur.fetchall()]
-
-    # ── Notes ────────────────────────────────────────────────────
-
-    async def add_note(self, project_id: int, chapter: float, note_type: str, content: str) -> None:
-        await self._db.execute(
-            "INSERT INTO notes (project_id, chapter, note_type, content) VALUES (?,?,?,?)",
-            (project_id, chapter, note_type, content),
-        )
-        await self._db.commit()
 
     # ── Context search ───────────────────────────────────────────
 
@@ -322,21 +348,6 @@ class SqliteStore:
                 )
                 for r in await cur.fetchall():
                     h = f"[Ch{r[2]} p{r[3]}] {r[0]} → {r[1]}"
-                    if h not in seen:
-                        seen.add(h)
-                        results.append(h)
-
-            if scope in ("all", "notes"):
-                cur = await self._db.execute(
-                    "SELECT n.content, n.note_type, n.chapter "
-                    "FROM notes_fts f "
-                    "JOIN notes n ON n.id = f.rowid "
-                    "WHERE notes_fts MATCH ? AND n.project_id=? "
-                    "ORDER BY rank LIMIT ?",
-                    (query, project_id, limit),
-                )
-                for r in await cur.fetchall():
-                    h = f"[Ch{r[2]} {r[1]}] {r[0]}"
                     if h not in seen:
                         seen.add(h)
                         results.append(h)

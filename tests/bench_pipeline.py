@@ -73,15 +73,21 @@ class RecorderHook(Hook):
 # ── Mock models with delays ──────────────────────────────────────────
 
 class FakeScanner:
-    """Simulates scanner.scan() → list[ScannedBubble]."""
+    """Simulates scanner.scan() -> list[VisualTextGroup]."""
 
     def scan(self, image: np.ndarray) -> list:
         time.sleep(SCAN_DELAY / PAGES_PER_CHAPTER)
-        from typoon.vision.scanner import ScannedBubble
+        from typoon.vision.types import VisualTextGroup
         return [
-            ScannedBubble(
-                polygon=[[0, 0], [100, 0], [100, 50], [0, 50]],
-                text=f"text_{i}", confidence=0.95,
+            VisualTextGroup(
+                text=f"text_{i}",
+                confidence=0.95,
+                text_polygon=[[0, 0], [100, 0], [100, 50], [0, 50]],
+                render_polygon=[[0, 0], [100, 0], [100, 50], [0, 50]],
+                text_bbox=[0, 0, 100, 50],
+                mask_bbox=[0, 0, 100, 50],
+                fit_bbox=[0, 0, 100, 50],
+                erase_bbox=[0, 0, 100, 50],
             )
             for i in range(BUBBLES_PER_PAGE)
         ]
@@ -108,10 +114,10 @@ class FakeSource:
 
 
 class FakeStore:
-    """Store that tracks knowledge saves for gating verification."""
+    """Store that tracks chapter brief saves for gating verification."""
     def __init__(self) -> None:
-        self.knowledge_log: list[tuple[int, float]] = []
-        self._knowledge: dict[int, str] = {}
+        self.brief_log: list[tuple[int, float]] = []
+        self._briefs: dict[int, dict] = {}
 
     async def get_project(self, sid):
         return {"source_lang": "en", "target_lang": "vi"}
@@ -119,15 +125,22 @@ class FakeStore:
     async def get_glossary(self, sid):
         return {}
 
-    async def get_knowledge(self, sid, before_chapter):
-        for ch in sorted(self._knowledge.keys(), reverse=True):
-            if ch < before_chapter:
-                return self._knowledge[ch]
-        return None
+    async def save_chapter_brief(self, sid, chapter, brief):
+        self._briefs[chapter] = brief
+        self.brief_log.append((chapter, time.monotonic()))
 
-    async def save_knowledge(self, sid, chapter, snapshot):
-        self._knowledge[chapter] = snapshot
-        self.knowledge_log.append((chapter, time.monotonic()))
+    async def get_chapter_brief(self, sid, chapter):
+        return self._briefs.get(chapter)
+
+    async def get_recent_chapter_briefs(self, sid, before_chapter, limit=3):
+        return [
+            {"chapter": ch, "brief": brief, "summary": brief.get("summary", "")}
+            for ch, brief in sorted(self._briefs.items(), reverse=True)
+            if ch < before_chapter
+        ][:limit]
+
+    async def search_briefs(self, sid, queries, limit=10):
+        return []
 
     async def save_translations(self, sid, ch, bubbles):
         pass
@@ -139,9 +152,6 @@ class FakeStore:
         return []
 
     async def glossary_upsert(self, sid, s, t, n):
-        pass
-
-    async def add_note(self, sid, ch, nt, c):
         pass
 
     async def search_context(self, sid, q, scope, limit):

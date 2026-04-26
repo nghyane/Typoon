@@ -17,8 +17,6 @@ from typoon.app.events import (
     ChapterStart,
     Event,
     Hook,
-    KnowledgeDone,
-    KnowledgeStart,
     LLMCall,
     LLMResponse,
     ModelsUnloaded,
@@ -122,11 +120,6 @@ class CliHook(Hook):
 
             case PageRendered():
                 pass
-
-            case KnowledgeStart():
-                pass
-            case KnowledgeDone():
-                self._flush_tools()
 
             case ModelsUnloaded(stage=s):
                 self._log_lines.append(f"unloaded {s}")

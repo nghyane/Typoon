@@ -152,21 +152,6 @@ class ModelsUnloaded(Event):
     stage: str = ""  # "scan" or "erase"
 
 
-# ── Knowledge ─────────────────────────────────────────────────────
-
-
-@dataclass
-class KnowledgeStart(Event):
-    chapter: int = 0
-    pairs: int = 0
-
-
-@dataclass
-class KnowledgeDone(Event):
-    chapter: int = 0
-    turns: int = 0
-
-
 # ── Errors ────────────────────────────────────────────────────────
 
 

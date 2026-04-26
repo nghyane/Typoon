@@ -1,9 +1,4 @@
-"""submit_translations — batch translation submission tool.
-
-LLM calls this multiple times per turn (parallel tool calls), one per
-logical batch (page, scene, difficulty group). Code merges all batches
-into the same dict.
-"""
+"""submit_translations — keyed batch translation submission tool."""
 
 from __future__ import annotations
 
@@ -13,31 +8,27 @@ from typoon.llm.tool_dec import tool
 
 
 class TranslationEdit(BaseModel):
-    id: str = Field(description="Bubble ID, e.g. 'p0_b3'")
+    key: str = Field(description="Opaque bubble key, e.g. 'K7Q9M2'")
+    status: str = Field(
+        default="ok",
+        description="One of: ok, skip, need_look.",
+    )
     text: str = Field(
         description=(
-            "Translation in target language. "
-            "Use empty string for noise/SFX that should not render."
-        ),
-    )
-    unclear: bool = Field(
-        default=False,
-        description=(
-            "Set true when speaker, honorific, or meaning cannot be "
-            "determined from text alone. System will re-ask with image."
+            "Translation in target language for status=ok. "
+            "Use empty string for skip or need_look."
         ),
     )
 
 
 class SubmitArgs(BaseModel):
-    edits: list[TranslationEdit] = Field(
+    items: list[TranslationEdit] = Field(
         description=(
-            "One or more bubble translations. "
-            "Call this tool multiple times per turn to batch logically "
-            "(e.g. one call per page). Prefer several small calls over "
-            "one huge list."
+            "One or more keyed translation operations. "
+            "Use status=need_look when visual context is needed."
         ),
     )
+    done: bool = Field(default=False, description="Hint only; controller validates completeness.")
 
 
 @tool(strict=True)
@@ -45,10 +36,9 @@ async def submit_translations(args: SubmitArgs) -> str:
     """Submit translations for a batch of bubbles.
 
     Rules:
-    - Translate each bubble ID exactly once across all calls.
-    - Use empty text for noise/SFX that shouldn't render in the target.
-    - Set unclear=true when speaker/honorific is ambiguous without seeing
-      the panel; the system will follow up with the bubble image.
-    - You may emit multiple submit_translations calls in one response.
+    - Use each opaque key exactly as given.
+    - status=ok requires final translated text.
+    - status=skip uses empty text for text that should not render.
+    - status=need_look asks the controller for page-level visual clarification.
     """
     raise NotImplementedError("dispatch handles this")

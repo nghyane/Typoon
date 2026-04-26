@@ -22,16 +22,24 @@ class Bubble:
     idx: int
     page_index: int
     polygon: list[list[float]]
-    masks: list[TextMask] = field(default_factory=list, repr=False)
+    erase_masks: list[TextMask] = field(default_factory=list, repr=False)
+    text_masks: list[TextMask] = field(default_factory=list, repr=False)
     source_text: str = ""
     ocr_confidence: float = 1.0
     translated_text: str | None = None
+    translation_key: str | None = None
+    translation_status: str = "ok"
     font_size: int = 0
     overflow: bool = False
 
     @property
     def id(self) -> str:
         return f"p{self.page_index}_b{self.idx}"
+
+    @property
+    def masks(self) -> list[TextMask]:
+        """Erase masks — used by Eraser and renderer."""
+        return self.erase_masks
 
 
 @dataclass
@@ -56,5 +64,6 @@ class Session:
     provider: Provider
     context_provider: Provider
     hook: object  # EventSink or legacy Hook
+    chapter: float = 0.0
     glossary: dict[str, str] = field(default_factory=dict)
-    knowledge: str | None = None
+    prior_context: str | None = None

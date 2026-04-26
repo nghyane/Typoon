@@ -65,8 +65,7 @@ class MockProvider:
 class MockStore:
     """In-memory store for testing."""
     def __init__(self):
-        self.snapshots = {}
-        self.notes = []
+        self.briefs = {}
         self.glossary = {}
         self._translations = {}
 
@@ -74,16 +73,19 @@ class MockStore:
     async def get_project_by_title(self, title): return None
     async def get_project_by_url(self, url): return None
     async def get_glossary(self, pid): return dict(self.glossary)
-    async def get_knowledge(self, pid, before_chapter):
-        for ch in sorted(self.snapshots, reverse=True):
-            if ch < before_chapter: return self.snapshots[ch]
-        return None
-    async def save_knowledge(self, pid, ch, snap): self.snapshots[ch] = snap
+    async def save_chapter_brief(self, pid, ch, brief): self.briefs[(pid, ch)] = brief
+    async def get_chapter_brief(self, pid, ch): return self.briefs.get((pid, ch))
+    async def get_recent_chapter_briefs(self, pid, before_chapter, limit=3):
+        rows = []
+        for (p, ch), brief in sorted(self.briefs.items(), key=lambda x: x[0][1], reverse=True):
+            if p == pid and ch < before_chapter:
+                rows.append({"chapter": ch, "brief": brief, "summary": brief.get("summary", "")})
+        return rows[:limit]
+    async def search_briefs(self, pid, queries, limit=10): return []
     async def save_translations(self, pid, ch, bubbles): self._translations[(pid, ch)] = bubbles
     async def get_chapter_translations(self, pid, ch): return []
     async def glossary_search(self, pid, q): return []
     async def glossary_upsert(self, pid, s, t, n): self.glossary[s] = t
-    async def add_note(self, pid, ch, nt, c): self.notes.append({"chapter": ch, "type": nt, "content": c})
     async def search_context(self, pid, q, scope, limit): return []
     async def get_chapter_pairs(self, pid, ch): return []
     async def get_chapter_status(self, pid, idx): return None
@@ -125,22 +127,6 @@ def make_session(
     return pages, session
 
 
-def make_translate_response(
-    items: list[tuple[str, str]],
-    unclear: list[str] | None = None,
-) -> CallResponse:
-    """Build a submit_translations tool call response.
-
-    items: list of (bubble_id, translated_text) tuples.
-    unclear: optional list of bubble_ids to mark unclear=True (text ignored).
-    """
-    import json
-    unclear_set = set(unclear or ())
-    edits = [
-        {"id": bid, "text": text, "unclear": bid in unclear_set}
-        for bid, text in items
-    ]
-    return CallResponse(tool_calls=[ToolCallMsg(
-        id="c1", name="submit_translations",
-        arguments=json.dumps({"edits": edits}),
-    )])
+def make_text_response(text: str) -> CallResponse:
+    """Build a plain-text response (pass 1)."""
+    return CallResponse(text=text)

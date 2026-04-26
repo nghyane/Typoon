@@ -1,318 +1,140 @@
-"""Two-pass translation: text-only first, images for unclear bubbles second.
-
-No agent loop — translate is a pure function, not agentic exploration.
-"""
+"""Chapter brief + keyed page translation pipeline."""
 
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
+from collections import defaultdict
 
-from typoon.app.events import (
-    Hook,
-    LLMCall,
-    LLMResponse,
-    LLMText,
-    LLMThinking,
-    PipelineError,
-    ToolCallStart,
-    ToolResult,
-)
+from typoon.app.events import PipelineError
 from typoon.domain.bubble import Bubble, Page, Session
-from typoon.llm.ir import (
-    CallResponse,
-    ContentPart,
-    Message,
-    Provider,
-    StreamEvent,
-    StreamEventType,
-    ToolCallMsg,
-)
 
-from . import prompt
-from .tools.submit import SubmitArgs, submit_translations
-from .tools.view_bubble import encode_bubble_jpeg
-from .tools.view_page import encode_page_jpeg
+from .brief import ChapterBrief
+from .context import build_chapter_brief
+from .keys import assign_keys
+from .look_at import look_at_page
+from .page import translate_window
 
-_LOW_CONF = 0.6
-_MAX_PASSES = 3
+_PAGE_WINDOW_MAX_KEYS = 25
+_MAX_REPAIR_TURNS = 2
 
 
-@dataclass
-class _State:
-    source: dict[str, Bubble]
-    translated: dict[str, str] = field(default_factory=dict)
-    unclear: set[str] = field(default_factory=set)
-    turns: int = 0
-    error: Exception | None = None
-
-    def missing(self) -> list[str]:
-        return sorted(set(self.source) - set(self.translated))
-
-
-async def translate_pages(
-    pages: list[Page],
-    session: Session,
-) -> tuple[int, Exception | None]:
-    """Fill bubble.translated_text for all bubbles across pages.
-
-    Returns (total_turns, error_or_none). Partial state is kept on error —
-    caller can check how many bubbles got translated.
-    """
+async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exception | None]:
     bubbles = [b for p in pages for b in p.bubbles]
     if not bubbles:
         return 0, None
 
-    state = _State(source={b.id: b for b in bubbles})
-
-    # ── Pass 1: text only ────────────────────────────────
+    key_map = assign_keys(bubbles, project_id=session.project_id, chapter=_chapter(session))
+    turns = 0
     try:
-        await _call(
-            state,
-            session,
-            user_msg=_build_pass1_user(bubbles, session),
-            pass_label="pass1",
-        )
+        brief, used = await build_chapter_brief(pages, session)
+        turns += used
+        turns += await _resolve_look_requests(session, brief, key_map, turn_base=turns)
+
+        for window in _page_windows(pages):
+            used = await _translate_window_until_done(session, brief, window, key_map, turns)
+            turns += used
+
+        await session.store.save_chapter_brief(session.project_id, _chapter(session), brief.to_dict())
+        return turns, None
     except Exception as e:
-        state.error = e
-        session.hook.on(PipelineError(stage="translate/pass1", error=e))
-
-    # ── Pass 2: image for unclear ────────────────────────
-    if state.unclear and state.error is None:
-        try:
-            await _call(
-                state,
-                session,
-                user_msg=_build_pass2_user(state, session),
-                pass_label="pass2",
-            )
-        except Exception as e:
-            state.error = e
-            session.hook.on(PipelineError(stage="translate/pass2", error=e))
-
-    # ── Pass 3: missing (rare) ───────────────────────────
-    missing = state.missing()
-    if missing and state.error is None:
-        try:
-            await _call(
-                state,
-                session,
-                user_msg=_build_pass3_user(missing, state, session),
-                pass_label="pass3",
-            )
-        except Exception as e:
-            state.error = e
-            session.hook.on(PipelineError(stage="translate/pass3", error=e))
-
-    # ── Write back ───────────────────────────────────────
-    for b in bubbles:
-        if b.id in state.translated:
-            b.translated_text = state.translated[b.id]
-
-    return state.turns, state.error
+        session.hook.on(PipelineError(stage="translate", error=e))
+        return turns, e
 
 
-# ── Single LLM call with streaming tool dispatch ────────────────────
-
-
-async def _call(
-    state: _State,
+async def _translate_window_until_done(
     session: Session,
-    user_msg: Message,
-    pass_label: str,
-) -> None:
-    state.turns += 1
-    hook = session.hook
-    provider = session.provider
-    system = _system_prompt(session)
-    tools = [submit_translations.definition]
-    messages = [Message.system(system), user_msg]
-
-    hook.on(LLMCall(agent=f"translate/{pass_label}", turn=state.turns))
-    t0 = time.monotonic()
-
-    if hasattr(provider, "stream") and callable(getattr(provider, "stream", None)):
-        resp = await _consume_stream(
-            provider, messages, tools, pass_label, state.turns, hook,
+    brief: ChapterBrief,
+    window: list[Bubble],
+    key_map: dict[str, Bubble],
+    turn_base: int,
+) -> int:
+    pending = {b.translation_key or "" for b in window}
+    feedback: dict[str, str] = {}
+    turns = 0
+    for _ in range(_MAX_REPAIR_TURNS + 1):
+        active_bubbles = [b for b in window if (b.translation_key or "") in pending]
+        if not active_bubbles:
+            break
+        turns += 1
+        accepted, need_look, invalid = await translate_window(
+            session,
+            brief=brief,
+            bubbles=active_bubbles,
+            key_map=key_map,
+            look_notes=brief.key_notes,
+            feedback=feedback,
+            turn=turn_base + turns,
         )
-    else:
-        resp = await provider.call(messages, tools)
+        for op in accepted:
+            b = key_map[op.key]
+            b.translation_status = op.status
+            b.translated_text = op.text if op.status == "ok" else ""
+            pending.discard(op.key)
+        if need_look:
+            grouped: dict[int, list[str]] = defaultdict(list)
+            for op in need_look:
+                grouped[key_map[op.key].page_index].append(op.key)
+            for page_index, keys in grouped.items():
+                notes = await look_at_page(
+                    session,
+                    page_index=page_index,
+                    keys=keys,
+                    query="Clarify speaker, tone, local order, and whether text is dialogue or SFX/noise.",
+                    source_by_key={k: key_map[k].source_text for k in keys},
+                    turn=turn_base + turns,
+                )
+                brief.key_notes.update(notes)
+        feedback = {k: invalid.get(k, "missing") for k in pending}
+    if pending:
+        raise RuntimeError(f"Untranslated keys: {', '.join(sorted(pending))}")
+    return turns
 
-    ms = (time.monotonic() - t0) * 1000
-    n_tools = len(resp.tool_calls) if resp.tool_calls else 0
-    hook.on(LLMResponse(
-        agent=f"translate/{pass_label}", turn=state.turns,
-        tool_calls=n_tools, ms=ms,
-    ))
 
-    if not resp.tool_calls:
-        return
-
-    for tc in resp.tool_calls:
-        _apply(tc, state)
-        hook.on(ToolResult(
-            agent=f"translate/{pass_label}", turn=state.turns,
-            tool=tc.name, result=f"{len(state.translated)}/{len(state.source)}",
-        ))
-
-
-def _apply(tc: ToolCallMsg, state: _State) -> None:
-    """Merge one submit_translations call into state. Tolerates malformed args."""
-    if tc.name != "submit_translations":
-        return
-    try:
-        args = SubmitArgs.model_validate_json(tc.arguments)
-    except Exception:
-        return  # skip corrupt call; missing-ids retry pass will catch it
-    for edit in args.edits:
-        if edit.id not in state.source:
+async def _resolve_look_requests(
+    session: Session,
+    brief: ChapterBrief,
+    key_map: dict[str, Bubble],
+    *,
+    turn_base: int,
+) -> int:
+    by_page: dict[int, list] = defaultdict(list)
+    for req in brief.look_requests:
+        by_page[req.page_index].append(req)
+    turn = turn_base
+    calls = 0
+    for page_index, reqs in by_page.items():
+        keys = sorted({k for req in reqs for k in req.keys if k in key_map})
+        if not keys:
             continue
-        if edit.unclear:
-            state.unclear.add(edit.id)
-            # don't commit text yet — pass 2 will replace
-        else:
-            state.translated[edit.id] = edit.text
-            state.unclear.discard(edit.id)
+        query = "\n".join(req.query for req in reqs if req.query)
+        turn += 1
+        calls += 1
+        notes = await look_at_page(
+            session,
+            page_index=page_index,
+            keys=keys,
+            query=query or "Clarify visual context for marked keys.",
+            source_by_key={k: key_map[k].source_text for k in keys},
+            turn=turn,
+        )
+        brief.key_notes.update(notes)
+    return calls
 
 
-# ── Streaming consumer (copy of llm.agent logic, standalone) ────────
+def _page_windows(pages: list[Page]) -> list[list[Bubble]]:
+    windows: list[list[Bubble]] = []
+    current: list[Bubble] = []
+    for page in pages:
+        if current and len(current) + len(page.bubbles) > _PAGE_WINDOW_MAX_KEYS:
+            windows.append(current)
+            current = []
+        current.extend(page.bubbles)
+        if len(current) >= _PAGE_WINDOW_MAX_KEYS:
+            windows.append(current)
+            current = []
+    if current:
+        windows.append(current)
+    return windows
 
 
-async def _consume_stream(
-    provider: Provider,
-    messages: list[Message],
-    tools: list,
-    agent_name: str,
-    turn: int,
-    hook: Hook,
-) -> CallResponse:
-    text_parts: list[str] = []
-    pending: dict[int, list] = {}  # tool_index -> [id, name, arg_chunks]
-
-    async for event in provider.stream(messages, tools):
-        match event.type:
-            case StreamEventType.THINKING_DELTA:
-                hook.on(LLMThinking(agent=agent_name, turn=turn, delta=event.text))
-            case StreamEventType.TEXT_DELTA:
-                text_parts.append(event.text)
-                hook.on(LLMText(agent=agent_name, turn=turn, delta=event.text))
-            case StreamEventType.TOOL_CALL_START:
-                pending[event.tool_index] = [event.tool_id, event.tool_name, []]
-                hook.on(ToolCallStart(
-                    agent=agent_name, turn=turn, tool_name=event.tool_name,
-                ))
-            case StreamEventType.TOOL_CALL_DELTA:
-                if event.tool_index in pending:
-                    pending[event.tool_index][2].append(event.text)
-            case StreamEventType.DONE:
-                break
-
-    tool_calls = [
-        ToolCallMsg(id=entry[0], name=entry[1], arguments="".join(entry[2]))
-        for _, entry in sorted(pending.items())
-    ]
-    text = "".join(text_parts) if text_parts else None
-    return CallResponse(tool_calls=tool_calls, text=text)
-
-
-# ── Prompt building ─────────────────────────────────────────────────
-
-
-def _system_prompt(s: Session) -> str:
-    return prompt.SYSTEM.format(
-        source_lang=s.source_lang,
-        target_lang=s.target_lang,
-        source_policy=prompt.load_policy(f"source_{s.source_lang}.md"),
-        target_policy=prompt.load_policy(f"target_{s.target_lang}.md"),
-    )
-
-
-def _build_pass1_user(bubbles: list[Bubble], s: Session) -> Message:
-    """Full bubble list with OCR text and confidence. No images."""
-    glossary_block = _glossary_block(s.glossary)
-    knowledge_block = _knowledge_block(s.knowledge)
-    bubble_list = "\n".join(_format_bubble(b) for b in bubbles)
-
-    text = prompt.PASS1_USER.format(
-        source_lang=s.source_lang,
-        target_lang=s.target_lang,
-        count=len(bubbles),
-        glossary_block=glossary_block,
-        knowledge_block=knowledge_block,
-        bubble_list=bubble_list,
-    )
-    return Message.user_text(text)
-
-
-def _build_pass2_user(state: _State, s: Session) -> Message:
-    """Follow-up: resolve unclear bubbles with image crops attached."""
-    unclear_ids = sorted(state.unclear)
-    # Show everything translated so far (context for disambiguation)
-    done_lines = [
-        f"[{bid}] \"{state.source[bid].source_text}\" → \"{state.translated[bid]}\""
-        for bid in sorted(state.translated)
-    ]
-    unclear_lines = [
-        f"[{bid}] \"{state.source[bid].source_text}\""
-        for bid in unclear_ids
-    ]
-
-    text = prompt.PASS2_USER.format(
-        source_lang=s.source_lang,
-        target_lang=s.target_lang,
-        done_count=len(state.translated),
-        unclear_count=len(unclear_ids),
-        done_block="\n".join(done_lines) if done_lines else "(none yet)",
-        unclear_block="\n".join(unclear_lines),
-    )
-
-    parts: list[ContentPart] = [ContentPart.of_text(text)]
-    # Attach bubble crops for each unclear id
-    source = s.source
-    if source is not None and hasattr(source, "load_page"):
-        for bid in unclear_ids:
-            b = state.source[bid]
-            try:
-                page_img = source.load_page(b.page_index)
-                parts.append(ContentPart.of_text(f"\nImage for [{bid}]:"))
-                parts.append(ContentPart.of_image(encode_bubble_jpeg(page_img, b.polygon)))
-            except Exception:
-                continue  # skip missing pages silently
-    return Message.user_parts(parts)
-
-
-def _build_pass3_user(missing: list[str], state: _State, s: Session) -> Message:
-    """Short retry for bubbles that slipped through passes 1+2."""
-    missing_lines = [
-        f"[{bid}] \"{state.source[bid].source_text}\""
-        for bid in missing
-    ]
-    text = prompt.PASS3_USER.format(
-        source_lang=s.source_lang,
-        target_lang=s.target_lang,
-        missing_count=len(missing),
-        missing_block="\n".join(missing_lines),
-    )
-    return Message.user_text(text)
-
-
-# ── Formatting ──────────────────────────────────────────────────────
-
-
-def _format_bubble(b: Bubble) -> str:
-    conf = f"{b.ocr_confidence:.0%}"
-    warn = " ⚠OCR" if b.ocr_confidence < _LOW_CONF else ""
-    return f"[{b.id} conf={conf}{warn}] \"{b.source_text}\""
-
-
-def _glossary_block(glossary: dict[str, str] | None) -> str:
-    if not glossary:
-        return ""
-    lines = [f"  {src} → {tgt}" for src, tgt in glossary.items()]
-    return "Glossary (use these exact translations):\n" + "\n".join(lines) + "\n"
-
-
-def _knowledge_block(knowledge: str | None) -> str:
-    if not knowledge:
-        return ""
-    return f"Series knowledge:\n{knowledge}\n"
+def _chapter(session: Session) -> float:
+    return float(getattr(session, "chapter", 0.0))
