@@ -22,6 +22,7 @@ class ContextAgent:
         self._brief: ChapterBrief | None = None
         self._pages = pages
         self._text_retries = 0
+        self._last_text = ""
 
     def name(self) -> str:
         return "translate/context"
@@ -55,6 +56,7 @@ class ContextAgent:
 
     def on_text(self, text: str | None) -> None:
         self._text_retries += 1
+        self._last_text = text or ""
 
     def is_done(self) -> bool:
         return self._brief is not None
@@ -128,5 +130,8 @@ async def build_chapter_brief(
     if result.error:
         raise result.error
     if result.output is None:
-        raise RuntimeError("Context agent did not submit chapter brief")
+        raise RuntimeError(
+            f"Context agent did not submit chapter brief. "
+            f"Last model text: {agent._last_text[:300]}"
+        )
     return result.output, result.turns

@@ -74,6 +74,8 @@ async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK, *, max_tu
         hook.on(LLMResponse(agent=name, turn=turns_used, tool_calls=n_tools, ms=ms))
 
         if not resp.tool_calls:
+            if resp.text:
+                hook.on(LLMText(agent=name, turn=turns_used, delta=f"[no tool] {resp.text[:300]}"))
             agent.on_text(resp.text)
             if agent.is_done():
                 break
