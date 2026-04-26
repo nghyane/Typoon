@@ -22,6 +22,7 @@ class ContextAgent:
         self._brief: ChapterBrief | None = None
         self._pages = pages
         self._text_retries = 0
+        self._tool_calls = 0
         self._last_text = ""
 
     def name(self) -> str:
@@ -126,7 +127,7 @@ async def build_chapter_brief(
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run
     agent = ContextAgent(pages, session, key_map)
-    result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=8)
+    result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=20)
     if result.error:
         raise result.error
     if result.output is None:
