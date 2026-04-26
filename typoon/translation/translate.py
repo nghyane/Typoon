@@ -10,7 +10,7 @@ from typoon.domain.bubble import Bubble, Page, Session
 from .brief import ChapterBrief
 from .context import build_chapter_brief
 from .keys import assign_keys
-from .look_at import look_at_page
+from .look_at import look_at as look_at_exec
 from .page import translate_window
 
 _PAGE_WINDOW_MAX_KEYS = 25
@@ -73,9 +73,9 @@ async def _translate_window(
             for op in need_look:
                 grouped[key_map[op.key].page_index].append(op.key)
             for page_index, keys in grouped.items():
-                notes = await look_at_page(
+                notes = await look_at_exec(
                     session,
-                    page_index=page_index,
+                    pages=[page_index],
                     keys=keys,
                     query="Clarify speaker, tone, and whether text is dialogue or SFX.",
                     source_by_key={k: key_map[k].source_text for k in keys},

@@ -7,7 +7,7 @@ from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
 from .brief import ChapterBrief, chapter_text
-from .look_at import look_at_page
+from .look_at import look_at as look_at_exec
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 from .tools.look_at_tool import LookAtArgs, look_at as look_at_tool
 from .tools.search_knowledge import SearchKnowledgeArgs, search_knowledge
@@ -86,9 +86,9 @@ class ContextAgent:
         except Exception as e:
             return ToolResponse(f"Error: {e}")
         source_by_key = {k: self._key_map[k].source_text for k in args.keys if k in self._key_map}
-        notes = await look_at_page(
+        notes = await look_at_exec(
             self._session,
-            page_index=args.page,
+            pages=args.pages,
             keys=args.keys,
             query=args.query,
             source_by_key=source_by_key,
