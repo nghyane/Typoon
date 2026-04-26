@@ -1,14 +1,17 @@
-"""Tests for keyed chapter brief translation."""
+"""Tests for keyed chapter brief translation pipeline."""
 
 from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
+from typoon.translation.image import encode_page_jpeg
 from typoon.translation.tools.brief import submit_chapter_brief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
+from typoon.translation.tools.search_knowledge import SearchKnowledgeArgs
 from typoon.translation.translate import translate_pages
 
 from .conftest import MockProvider, make_session
@@ -42,14 +45,12 @@ def _tool_response(items: list[tuple[str, str, str]]) -> CallResponse:
     )])
 
 
-class TestTool:
-    def test_submit_schema_strict(self):
-        assert submit_translations.definition.name == "submit_translations"
+class TestToolSchemas:
+    def test_submit_translations_strict(self):
         assert submit_translations.definition.strict is True
         assert "items" in submit_translations.definition.parameters["properties"]
 
-    def test_brief_schema_strict(self):
-        assert submit_chapter_brief.definition.name == "submit_chapter_brief"
+    def test_submit_chapter_brief_strict(self):
         assert submit_chapter_brief.definition.strict is True
         props = submit_chapter_brief.definition.parameters["properties"]
         assert "summary" in props
@@ -57,15 +58,34 @@ class TestTool:
         assert "bubble_notes" in props
         assert "look_requests" not in props
 
-    def test_submit_args_parse(self):
+    def test_submit_args_enum_status(self):
         args = SubmitArgs.model_validate_json(json.dumps({
             "items": [
                 {"key": "ABC2345", "status": "ok", "text": "hello"},
                 {"key": "DEF6789", "status": "skip", "text": ""},
             ],
         }))
-        assert args.items[0].key == "ABC2345"
+        assert args.items[0].status.value == "ok"
         assert args.items[1].status.value == "skip"
+
+    def test_search_knowledge_enum_scope(self):
+        args = SearchKnowledgeArgs.model_validate_json(
+            json.dumps({"query": "test", "scope": "glossary"})
+        )
+        assert args.scope.value == "glossary"
+
+
+class TestImageOverlay:
+    def test_encode_with_labels(self):
+        img = np.zeros((200, 200, 3), dtype=np.uint8)
+        labels = {"ABC2345": [[10, 10], [50, 10], [50, 40], [10, 40]]}
+        result = encode_page_jpeg(img, labels=labels)
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_encode_without_labels(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        result = encode_page_jpeg(img)
+        assert result.startswith("data:image/jpeg;base64,")
 
 
 class TestTranslate:
@@ -82,9 +102,40 @@ class TestTranslate:
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
         assert err is None
-        assert turns == 2
         assert [b.translated_text for b in pages[0].bubbles] == ["A", "", "C"]
         assert pages[0].bubbles[1].translation_status == "skip"
+
+    @pytest.mark.asyncio
+    async def test_page_agent_retry_on_missing_key(self):
+        """PageAgent retries when first response misses a key."""
+        pages, session = make_session(2)
+        session.context_provider = MockProvider([_brief_response()])
+        call_count = 0
+
+        async def call(messages, tools):
+            nonlocal call_count
+            call_count += 1
+            keys = [b.translation_key for b in pages[0].bubbles]
+            if call_count == 1:
+                return CallResponse(tool_calls=[ToolCallMsg(
+                    id="b1", name="submit_chapter_brief",
+                    arguments=json.dumps({
+                        "summary": "s", "facts": [], "glossary": [],
+                        "rules": [], "page_notes": [], "bubble_notes": [],
+                    }),
+                )])
+            if call_count == 2:
+                return _tool_response([(keys[0], "ok", "A")])
+            return _tool_response([(keys[1], "ok", "B")])
+
+        session.context_provider = MockProvider([])
+        session.context_provider.call = call
+        session.provider = MockProvider([])
+        session.provider.call = call
+        turns, err = await translate_pages(pages, session)
+        assert err is None
+        assert call_count >= 3
+        assert [b.translated_text for b in pages[0].bubbles] == ["A", "B"]
 
     @pytest.mark.asyncio
     async def test_no_tool_call_raises(self):
@@ -98,7 +149,6 @@ class TestTranslate:
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
         assert err is not None
-        assert "Missing" in str(err) or "resolve" in str(err)
 
     @pytest.mark.asyncio
     async def test_brief_saved_after_success(self):

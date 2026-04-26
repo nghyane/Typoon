@@ -41,6 +41,7 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
 
 
 def _page_windows(pages: list[Page]) -> list[list]:
+    """Group bubbles into windows, preferring page boundaries."""
     windows: list[list] = []
     current: list = []
     for page in pages:
@@ -48,9 +49,6 @@ def _page_windows(pages: list[Page]) -> list[list]:
             windows.append(current)
             current = []
         current.extend(page.bubbles)
-        if len(current) >= _PAGE_WINDOW_MAX_KEYS:
-            windows.append(current)
-            current = []
     if current:
         windows.append(current)
     return windows

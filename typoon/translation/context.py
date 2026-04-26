@@ -10,7 +10,7 @@ from .brief import ChapterBrief, chapter_text
 from .look_at import look_at
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 from .tools.look_at import LookAtArgs, look_at as look_at_tool
-from .tools.search_knowledge import SearchKnowledgeArgs, search_knowledge
+from .tools.search_knowledge import SearchKnowledgeArgs, SearchScope, search_knowledge
 
 
 class ContextAgent:
@@ -103,14 +103,14 @@ class ContextAgent:
             return ToolResponse(f"Error: {e}")
         store = self._session.store
         results: list[str] = []
-        scope = args.scope.lower()
-        if scope in ("all", "glossary"):
+        scope = args.scope
+        if scope in (SearchScope.all, SearchScope.glossary):
             for entry in await store.glossary_search(self._session.project_id, args.query):
                 results.append(f"{entry['source_term']} => {entry['target_term']}")
-        if scope in ("all", "briefs"):
+        if scope in (SearchScope.all, SearchScope.briefs):
             hits = await store.search_briefs(self._session.project_id, [args.query], limit=5)
             results.extend(hits)
-        if scope in ("all", "translations"):
+        if scope in (SearchScope.all, SearchScope.translations):
             hits = await store.search_context(self._session.project_id, [args.query], scope="translations", limit=5)
             results.extend(hits)
         return ToolResponse("\n".join(results) if results else "No results found.")
