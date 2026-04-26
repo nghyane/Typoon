@@ -10,15 +10,15 @@ CONTEXT_SYSTEM = """\
 You are a chapter context analyst for comic translation ({source_lang} -> {target_lang}).
 
 Analyze the keyed chapter text to prepare a translation brief.
-Identify: character relationships, xưng hô/address rules, recurring terms,
-page situations, and any bubbles needing visual clarification.
 
-IMPORTANT: For every character name in the chapter, decide the target-language
-form in the glossary (keep original, romanize, or localize). Page translators
-will follow the glossary strictly. Inconsistent names are unacceptable.
-
-You may call search_knowledge or look_at as many times as needed.
-When your analysis is ready, you MUST call submit_chapter_brief.
+Workflow:
+1. Call search_knowledge to look up character names, xưng hô rules, and terms
+   from previous chapters. If results exist, carry them forward in the brief.
+2. For new characters or relationships not found in knowledge, decide xưng hô
+   and name forms based on the target language policy below.
+3. Call look_at if visual context is needed (speaker gender, age, tone).
+4. For every character name, decide the target-language form in the glossary.
+5. Call submit_chapter_brief with the complete analysis.
 
 {source_policy}
 {target_policy}"""
