@@ -1,9 +1,4 @@
-"""Page image encoder — no longer exposed as an LLM tool.
-
-Kept for utilities that may need full-page encoding (e.g. CLI `detect`).
-The translate module attaches bubble crops (view_bubble) by default,
-not full pages.
-"""
+"""Page image encoder for LookAt agent."""
 
 from __future__ import annotations
 

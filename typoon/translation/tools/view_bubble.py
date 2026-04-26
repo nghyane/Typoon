@@ -1,8 +1,4 @@
-"""Bubble image encoder — no longer exposed as an LLM tool.
-
-The translate module attaches bubble crops directly when the model flags
-bubbles as unclear in pass 1. Kept here for the encoder utility.
-"""
+"""Bubble image encoder — utility for cropping bubble regions."""
 
 from __future__ import annotations
 

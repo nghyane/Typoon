@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typoon.app.events import PipelineError
-from typoon.domain.bubble import Bubble, Page, Session
+from typoon.domain.bubble import Page, Session
 
-from .brief import ChapterBrief
 from .context import build_chapter_brief
 from .keys import assign_keys
 from .page import translate_window
@@ -21,14 +20,14 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
     key_map = assign_keys(bubbles, project_id=session.project_id, chapter=session.chapter)
     turns = 0
     try:
-        brief, used = await build_chapter_brief(pages, session, key_map)
-        turns += used
+        brief, ctx_turns = await build_chapter_brief(pages, session, key_map)
+        turns += ctx_turns
 
         for window in _page_windows(pages):
-            accepted = await translate_window(
+            accepted, page_turns = await translate_window(
                 session, brief=brief, bubbles=window, key_map=key_map,
             )
-            turns += 1
+            turns += page_turns
             for op in accepted:
                 b = key_map[op.key]
                 b.translation_status = op.status
@@ -41,9 +40,9 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
         return turns, e
 
 
-def _page_windows(pages: list[Page]) -> list[list[Bubble]]:
-    windows: list[list[Bubble]] = []
-    current: list[Bubble] = []
+def _page_windows(pages: list[Page]) -> list[list]:
+    windows: list[list] = []
+    current: list = []
     for page in pages:
         if current and len(current) + len(page.bubbles) > _PAGE_WINDOW_MAX_KEYS:
             windows.append(current)

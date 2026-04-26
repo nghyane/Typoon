@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from typoon.domain.bubble import Bubble, Session
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
 from .brief import ChapterBrief, brief_slice
-from .protocol import TranslationOp, validate_ops
 from .tools.submit import SubmitArgs, submit_translations
+
+
+@dataclass(slots=True)
+class TranslationOp:
+    key: str
+    status: str  # ok | skip
+    text: str = ""
 
 
 class PageAgent:
@@ -56,17 +64,25 @@ class PageAgent:
             args = SubmitArgs.model_validate_json(call.arguments)
         except Exception as e:
             return ToolResponse(f"Invalid: {e}")
-        ops = [TranslationOp(key=it.key, status=it.status.value, text=it.text) for it in args.items]
-        result = validate_ops(ops, active=self._active, key_map=self._key_map)
-        for op in result.accepted:
-            self._accepted.append(op)
-            self._active.discard(op.key)
-        if not result.invalid and not self._active:
+        for item in args.items:
+            key, status, text = item.key, item.status.value, item.text.strip()
+            if key not in self._key_map:
+                continue
+            if key not in self._active:
+                continue
+            if status == "ok" and not text:
+                self._pending_feedback += f"#{key}: ok text was empty\n"
+                continue
+            if status == "ok" and (key in text or f"#{key}" in text):
+                self._pending_feedback += f"#{key}: translation contains key\n"
+                continue
+            self._accepted.append(TranslationOp(key=key, status=status, text=text if status == "ok" else ""))
+            self._active.discard(key)
+        if not self._active:
             return ToolResponse("ok")
-        parts = [f"#{k}: {r}" for k, r in result.invalid.items()]
-        missing = self._active - set(result.invalid)
-        if missing:
-            parts.append(f"Missing keys: {', '.join(sorted(missing))}")
+        parts = [self._pending_feedback] if self._pending_feedback else []
+        if self._active:
+            parts.append(f"Missing keys: {', '.join(sorted(self._active))}")
         self._pending_feedback = "\n".join(parts)
         return ToolResponse(f"Validation errors:\n{self._pending_feedback}")
 
@@ -88,13 +104,13 @@ class PageAgent:
 async def translate_window(
     session: Session, *, brief: ChapterBrief,
     bubbles: list[Bubble], key_map: dict[str, Bubble],
-) -> list[TranslationOp]:
-    """Run PageAgent and return accepted translations."""
+) -> tuple[list[TranslationOp], int]:
+    """Run PageAgent. Returns (accepted ops, turns used)."""
     from typoon.llm.agent import run as agent_run
     agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map)
     result = await agent_run(session.provider, agent, hook=session.hook)
     if result.error:
         raise result.error
     if agent._active:
-        raise RuntimeError(f"Page agent did not resolve all keys. Missing: {', '.join(sorted(agent._active))}")
-    return result.output or []
+        raise RuntimeError(f"Page agent incomplete. Missing: {', '.join(sorted(agent._active))}")
+    return result.output or [], result.turns

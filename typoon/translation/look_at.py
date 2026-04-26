@@ -54,15 +54,15 @@ class LookAtAgent:
         return [submit_visual_notes.definition]
 
     async def dispatch(self, call: ToolCallMsg) -> ToolResponse:
-        if call.name == "submit_visual_notes":
-            try:
-                args = VisualNotesArgs.model_validate_json(call.arguments)
-            except Exception as e:
-                return ToolResponse(f"Invalid: {e}")
-            allowed = set(self._keys)
-            self._notes = {n.key: n.note for n in args.notes if n.key in allowed}
-            return ToolResponse("ok")
-        return ToolResponse(f"Unknown tool: {call.name}")
+        if call.name != "submit_visual_notes":
+            return ToolResponse(f"Unknown tool: {call.name}")
+        try:
+            args = VisualNotesArgs.model_validate_json(call.arguments)
+        except Exception as e:
+            return ToolResponse(f"Invalid: {e}")
+        allowed = set(self._keys)
+        self._notes = {n.key: n.note for n in args.notes if n.key in allowed}
+        return ToolResponse("ok")
 
     def on_text(self, text: str | None) -> None:
         pass
@@ -81,7 +81,7 @@ class LookAtAgent:
 
 async def look_at(
     session: Session, *, pages: list[int], keys: list[str],
-    query: str, source_by_key: dict[str, str], turn: int,
+    query: str, source_by_key: dict[str, str],
 ) -> dict[str, str]:
     """Run LookAt agent and return keyed visual notes."""
     from typoon.llm.agent import run as agent_run

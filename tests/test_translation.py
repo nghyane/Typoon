@@ -98,7 +98,7 @@ class TestTranslate:
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
         assert err is not None
-        assert "submit_translations" in str(err)
+        assert "Missing" in str(err) or "resolve" in str(err)
 
     @pytest.mark.asyncio
     async def test_brief_saved_after_success(self):

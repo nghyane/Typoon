@@ -7,33 +7,22 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class LookRequest:
-    page_index: int
-    keys: list[str]
-    query: str
-
-
-@dataclass(slots=True)
 class ChapterBrief:
     summary: str = ""
     facts: list[str] = field(default_factory=list)
     glossary: dict[str, str] = field(default_factory=dict)
-    style_rules: list[str] = field(default_factory=list)
-    pronoun_rules: list[str] = field(default_factory=list)
+    rules: list[str] = field(default_factory=list)
     page_notes: dict[int, str] = field(default_factory=dict)
     key_notes: dict[str, str] = field(default_factory=dict)
-    look_requests: list[LookRequest] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "summary": self.summary,
             "facts": self.facts,
             "glossary": self.glossary,
-            "style_rules": self.style_rules,
-            "pronoun_rules": self.pronoun_rules,
+            "rules": self.rules,
             "page_notes": {str(k): v for k, v in self.page_notes.items()},
             "key_notes": self.key_notes,
-            "look_requests": [r.__dict__ for r in self.look_requests],
         }
 
 
@@ -54,9 +43,8 @@ def brief_slice(brief: ChapterBrief, page_indices: set[int], keys: list[str]) ->
         parts.append(f"Summary: {brief.summary}")
     if brief.glossary:
         parts.append("Glossary:\n" + "\n".join(f"- {k} => {v}" for k, v in brief.glossary.items()))
-    rules = brief.style_rules + brief.pronoun_rules
-    if rules:
-        parts.append("Rules:\n" + "\n".join(f"- {r}" for r in rules))
+    if brief.rules:
+        parts.append("Rules:\n" + "\n".join(f"- {r}" for r in brief.rules))
     notes = [brief.page_notes[p] for p in sorted(page_indices) if p in brief.page_notes]
     if notes:
         parts.append("Page notes:\n" + "\n".join(f"- {n}" for n in notes))

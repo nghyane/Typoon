@@ -7,14 +7,14 @@ from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
 from .brief import ChapterBrief, chapter_text
-from .look_at import look_at as look_at_exec
+from .look_at import look_at
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 from .tools.look_at_tool import LookAtArgs, look_at as look_at_tool
 from .tools.search_knowledge import SearchKnowledgeArgs, search_knowledge
 
 
 class ContextAgent:
-    """Reads chapter text, optionally calls LookAt, then submits ChapterBrief."""
+    """Analyzes chapter text, queries knowledge/images, submits ChapterBrief."""
 
     def __init__(self, pages: list[Page], session: Session, key_map: dict[str, Bubble]) -> None:
         self._session = session
@@ -42,13 +42,15 @@ class ContextAgent:
         return [search_knowledge.definition, look_at_tool.definition, submit_chapter_brief.definition]
 
     async def dispatch(self, call: ToolCallMsg) -> ToolResponse:
-        if call.name == "submit_chapter_brief":
-            return self._handle_brief(call)
-        if call.name == "look_at":
-            return await self._handle_look_at(call)
-        if call.name == "search_knowledge":
-            return await self._handle_search(call)
-        return ToolResponse(f"Unknown tool: {call.name}")
+        match call.name:
+            case "submit_chapter_brief":
+                return self._handle_brief(call)
+            case "look_at":
+                return await self._handle_look_at(call)
+            case "search_knowledge":
+                return await self._handle_search(call)
+            case _:
+                return ToolResponse(f"Unknown tool: {call.name}")
 
     def on_text(self, text: str | None) -> None:
         pass
@@ -73,8 +75,7 @@ class ContextAgent:
             summary=args.summary,
             facts=args.facts,
             glossary={g.source: g.target for g in args.glossary},
-            style_rules=args.rules,
-            pronoun_rules=[],
+            rules=args.rules,
             page_notes={pn.page: pn.note for pn in args.page_notes},
             key_notes={bn.key: bn.note for bn in args.bubble_notes},
         )
@@ -86,13 +87,9 @@ class ContextAgent:
         except Exception as e:
             return ToolResponse(f"Error: {e}")
         source_by_key = {k: self._key_map[k].source_text for k in args.keys if k in self._key_map}
-        notes = await look_at_exec(
-            self._session,
-            pages=args.pages,
-            keys=args.keys,
-            query=args.query,
-            source_by_key=source_by_key,
-            turn=0,
+        notes = await look_at(
+            self._session, pages=args.pages, keys=args.keys,
+            query=args.query, source_by_key=source_by_key,
         )
         if not notes:
             return ToolResponse("No visual notes returned.")
