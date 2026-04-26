@@ -26,11 +26,5 @@ class SubmitArgs(BaseModel):
 
 @tool(strict=True)
 async def submit_translations(args: SubmitArgs) -> str:
-    """Submit translations for a batch of bubbles.
-
-    Rules:
-    - Use each opaque key exactly as given.
-    - status=ok requires non-empty translated text.
-    - status=skip uses empty text for text that should not render.
-    """
+    """Submit translations for the active keys in this page window."""
     raise NotImplementedError("dispatch handles this")

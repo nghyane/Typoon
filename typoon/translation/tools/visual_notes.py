@@ -18,12 +18,5 @@ class VisualNotesArgs(BaseModel):
 
 @tool(strict=True)
 async def submit_visual_notes(args: VisualNotesArgs) -> str:
-    """Submit visual observations for the requested bubble keys.
-
-    Rules:
-    - Use exact keys from the request. Do not invent keys.
-    - Each note should be a short factual observation.
-    - Include: speaker identity, gender, emotion, SFX vs dialogue, reading order.
-    - Say 'uncertain' if the image is unclear.
-    """
+    """Submit visual observations for the requested bubble keys."""
     raise NotImplementedError("dispatch handles this")

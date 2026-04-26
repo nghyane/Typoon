@@ -33,15 +33,5 @@ class ChapterBriefArgs(BaseModel):
 
 @tool(strict=True)
 async def submit_chapter_brief(args: ChapterBriefArgs) -> str:
-    """Submit the chapter analysis brief.
-
-    Call this after gathering all needed context (including any look_at calls).
-
-    Rules:
-    - Use exact opaque keys from the chapter text. Do not invent keys.
-    - Page indices must be integers matching the [pN] labels.
-    - Glossary: source is the original term, target is the translation.
-    - Rules: include both style constraints and pronoun/address rules.
-    - Include visual context from look_at results in bubble_notes.
-    """
+    """Submit the chapter analysis brief after gathering all needed context."""
     raise NotImplementedError("dispatch handles this")

@@ -23,11 +23,5 @@ class SearchKnowledgeArgs(BaseModel):
 
 @tool(strict=True)
 async def search_knowledge(args: SearchKnowledgeArgs) -> str:
-    """Search stored project knowledge.
-
-    Use to look up:
-    - character names, terms, relationships from previous chapters
-    - glossary entries for consistent translation
-    - how a term was translated before
-    """
+    """Look up glossary, previous chapter briefs, or past translations."""
     raise NotImplementedError("dispatch handles this")
