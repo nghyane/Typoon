@@ -66,7 +66,7 @@ Inspect one full page image. The image may include light hash overlays near
 relevant text regions.
 Answer only the question. Do not translate the chapter. Do not invent names.
 If unsure, say uncertain.
-Return one short line per key: #KEY: visual note
+Call submit_visual_notes with your observations.
 """
 
 LOOKAT_USER = """\
