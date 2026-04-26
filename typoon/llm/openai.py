@@ -57,6 +57,11 @@ class OpenAIProvider:
             kwargs["reasoning_effort"] = self._reasoning_effort
 
         resp = await self._client.chat.completions.create(**kwargs)
+        if not resp.choices:
+            raise RuntimeError(
+                f"OpenAI returned empty response (no choices). "
+                f"Check endpoint/model config. model={self._model}"
+            )
         choice = resp.choices[0]
 
         tool_calls: list[ToolCallMsg] = []
