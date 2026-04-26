@@ -7,75 +7,50 @@ from pathlib import Path
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 CONTEXT_SYSTEM = """\
-You are ComicScan's chapter context analyst ({source_lang} -> {target_lang}).
+You are a chapter context analyst for comic translation ({source_lang} -> {target_lang}).
 
-Read the keyed chapter text. Do not translate every line.
+Analyze the keyed chapter text to prepare a translation brief.
+Identify: character relationships, xưng hô/address rules, recurring terms,
+page situations, and any bubbles needing visual clarification.
 
-You have three tools:
-- search_knowledge: query stored glossary, previous chapter briefs, and past
-  translations. Call this to look up character names, terms, relationships,
-  or how something was translated before.
-- look_at: inspect a page image to clarify speaker, gender, tone, SFX vs dialogue.
-  Call this when text alone is insufficient for accurate translation context.
-- submit_chapter_brief: submit the final analysis. Call this once after gathering
-  all needed context.
-
-Use exact keys from the chapter text. Do not invent keys.
-Page indices must be integers matching the [pN] labels.
+Use search_knowledge to look up prior chapters, glossary, or past translations.
+Use look_at to inspect page images when text is insufficient.
+Call submit_chapter_brief once the analysis is complete.
 
 {source_policy}
 {target_policy}"""
 
 CONTEXT_USER = """\
-Current chapter keyed text:
-{chapter_text}
-"""
+{chapter_text}"""
 
 PAGE_SYSTEM = """\
-You are ComicScan's page translator ({source_lang} -> {target_lang}).
+You are a page translator for comics ({source_lang} -> {target_lang}).
 
-Translate only the listed keys. Output by exact key; output order does not matter.
-Reading order is approximate, especially on manga pages.
-
-Statuses:
-- ok: final target-language translation, text must be non-empty
-- skip: do not render this text, text must be empty
-- need_look: visual context is needed, text is a short reason or empty
-
+Translate the listed keys. Reading order is approximate on manga pages.
 Call submit_translations with the results.
 
 {source_policy}
 {target_policy}"""
 
 PAGE_USER = """\
-Translate page/window.
-
-Brief slice:
 {brief_slice}
-
-Validation feedback:
-{feedback}
-
+{feedback_block}
 Keys:
-{keys}
-"""
+{keys}"""
 
 LOOKAT_SYSTEM = """\
-You are LookAt, a visual assistant for comic translation.
-Inspect one full page image. The image may include light hash overlays near
-relevant text regions.
-Answer only the question. Do not translate the chapter. Do not invent names.
-If unsure, say uncertain.
-Call submit_visual_notes with your observations.
-"""
+You are a visual assistant for comic translation.
+Inspect the attached page images for the listed keys.
+Identify: speaker identity/gender, emotion/tone, whether text is dialogue or \
+SFX/noise, and local reading order if ambiguous.
+Call submit_visual_notes with your observations."""
 
 LOOKAT_USER = """\
 Page: {page_index}
 Query: {query}
 
 Related text:
-{related_text}
-"""
+{related_text}"""
 
 
 def load_policy(name: str) -> str:

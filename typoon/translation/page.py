@@ -35,7 +35,7 @@ async def translate_window(
     )
     user = prompt.PAGE_USER.format(
         brief_slice=brief_slice(brief, page_indices, keys),
-        feedback=_format_feedback(feedback or {}),
+        feedback_block=_feedback_block(feedback or {}),
         keys="\n".join(f"#{b.translation_key} {b.source_text}" for b in bubbles),
     )
     hook = session.hook
@@ -58,7 +58,8 @@ async def translate_window(
     return result.accepted, result.need_look, result.invalid
 
 
-def _format_feedback(feedback: dict[str, str]) -> str:
+def _feedback_block(feedback: dict[str, str]) -> str:
     if not feedback:
-        return "(none)"
-    return "\n".join(f"#{k}: {v}" for k, v in feedback.items())
+        return ""
+    lines = "\n".join(f"#{k}: {v}" for k, v in feedback.items())
+    return f"\nValidation feedback:\n{lines}"
