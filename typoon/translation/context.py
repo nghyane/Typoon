@@ -1,4 +1,4 @@
-"""Chapter context stage."""
+"""Chapter context stage — uses submit_chapter_brief tool with text fallback."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from typoon.domain.bubble import Page, Session
 from typoon.llm.ir import Message
 
 from . import prompt
-from .brief import ChapterBrief, chapter_text
+from .brief import ChapterBrief, LookRequest, chapter_text
+from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 
 
 async def build_chapter_brief(pages: list[Page], session: Session) -> tuple[ChapterBrief, int]:
@@ -28,12 +29,43 @@ async def build_chapter_brief(pages: list[Page], session: Session) -> tuple[Chap
     hook.on(LLMCall(agent="translate/context", turn=1))
     t0 = time.monotonic()
     try:
-        resp = await session.context_provider.call([Message.system(system), Message.user_text(user)], tools=[])
+        resp = await session.context_provider.call(
+            [Message.system(system), Message.user_text(user)],
+            tools=[submit_chapter_brief.definition],
+        )
     except Exception as e:
         hook.on(PipelineError(stage="translate/context", error=e))
         raise
-    hook.on(LLMResponse(agent="translate/context", turn=1, tool_calls=0, ms=(time.monotonic() - t0) * 1000))
-    return ChapterBrief.from_json(resp.text or "{}"), 1
+    ms = (time.monotonic() - t0) * 1000
+    n_tools = len(resp.tool_calls) if resp.tool_calls else 0
+    hook.on(LLMResponse(agent="translate/context", turn=1, tool_calls=n_tools, ms=ms))
+
+    brief = _parse_tool(resp) or ChapterBrief.from_json(resp.text or "{}")
+    return brief, 1
+
+
+def _parse_tool(resp) -> ChapterBrief | None:
+    for tc in resp.tool_calls or []:
+        if tc.name != "submit_chapter_brief":
+            continue
+        try:
+            args = ChapterBriefArgs.model_validate_json(tc.arguments)
+        except Exception:
+            continue
+        return ChapterBrief(
+            summary=args.summary,
+            facts=args.facts,
+            glossary={g.key: g.note for g in args.glossary},
+            style_rules=args.style_rules,
+            pronoun_rules=args.pronoun_rules,
+            page_notes={pn.page: pn.note for pn in args.page_notes},
+            key_notes={kn.key: kn.note for kn in args.key_notes},
+            look_requests=[
+                LookRequest(page_index=lr.page_index, keys=lr.keys, query=lr.query)
+                for lr in args.look_requests
+            ],
+        )
+    return None
 
 
 def format_prior_context(recent_briefs: list[dict], search_hits: list[str]) -> str:

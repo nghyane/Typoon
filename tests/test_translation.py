@@ -8,6 +8,7 @@ import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
 from typoon.translation.brief import ChapterBrief
+from typoon.translation.tools.brief import submit_chapter_brief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
 from typoon.translation.translate import translate_pages
 
@@ -15,16 +16,20 @@ from .conftest import MockProvider, make_session, make_text_response
 
 
 def _brief_response() -> CallResponse:
-    return make_text_response(json.dumps({
-        "summary": "test chapter",
-        "facts": [],
-        "glossary": {},
-        "style_rules": [],
-        "pronoun_rules": [],
-        "page_notes": {},
-        "key_notes": {},
-        "look_requests": [],
-    }))
+    return CallResponse(tool_calls=[ToolCallMsg(
+        id="b1",
+        name="submit_chapter_brief",
+        arguments=json.dumps({
+            "summary": "test chapter",
+            "facts": [],
+            "glossary": [],
+            "style_rules": [],
+            "pronoun_rules": [],
+            "page_notes": [],
+            "key_notes": [],
+            "look_requests": [],
+        }),
+    )])
 
 
 def _tool_response(items: list[tuple[str, str, str]]) -> CallResponse:
@@ -46,6 +51,14 @@ class TestTool:
         assert submit_translations.definition.name == "submit_translations"
         assert submit_translations.definition.strict is True
         assert "items" in submit_translations.definition.parameters["properties"]
+
+    def test_brief_schema_strict(self):
+        assert submit_chapter_brief.definition.name == "submit_chapter_brief"
+        assert submit_chapter_brief.definition.strict is True
+        props = submit_chapter_brief.definition.parameters["properties"]
+        assert "summary" in props
+        assert "page_notes" in props
+        assert "look_requests" in props
 
     def test_submit_args_parse(self):
         args = SubmitArgs.model_validate_json(json.dumps({
