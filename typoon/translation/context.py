@@ -21,6 +21,7 @@ class ContextAgent:
         self._key_map = key_map
         self._brief: ChapterBrief | None = None
         self._pages = pages
+        self._text_retries = 0
 
     def name(self) -> str:
         return "translate/context"
@@ -53,15 +54,17 @@ class ContextAgent:
                 return ToolResponse(f"Unknown tool: {call.name}")
 
     def on_text(self, text: str | None) -> None:
-        pass
+        self._text_retries += 1
 
     def is_done(self) -> bool:
         return self._brief is not None
 
     def retry_prompt(self) -> str | None:
-        if self._brief is None:
-            return "You must call submit_chapter_brief to complete the analysis."
-        return None
+        if self._brief is not None:
+            return None
+        if self._text_retries >= 2:
+            return None  # stop loop, caller will raise
+        return "Do not respond with text. You must call one of the provided tools."
 
     def into_output(self) -> ChapterBrief | None:
         return self._brief

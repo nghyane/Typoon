@@ -25,6 +25,7 @@ class LookAtAgent:
         self._source_by_key = source_by_key
         self._polygon_by_key = polygon_by_key
         self._notes: dict[str, str] | None = None
+        self._text_retries = 0
 
     def name(self) -> str:
         return "translate/lookat"
@@ -69,15 +70,17 @@ class LookAtAgent:
         return ToolResponse("ok")
 
     def on_text(self, text: str | None) -> None:
-        pass
+        self._text_retries += 1
 
     def is_done(self) -> bool:
         return self._notes is not None
 
     def retry_prompt(self) -> str | None:
-        if self._notes is None:
-            return "You must call submit_visual_notes with your observations."
-        return None
+        if self._notes is not None:
+            return None
+        if self._text_retries >= 2:
+            return None
+        return "Do not respond with text. Call submit_visual_notes."
 
     def into_output(self) -> dict[str, str]:
         return self._notes or {}

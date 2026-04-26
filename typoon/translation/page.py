@@ -36,6 +36,7 @@ class PageAgent:
         self._active = set(self._keys)
         self._accepted: list[TranslationOp] = []
         self._pending_feedback: str = ""
+        self._text_retries = 0
 
     def name(self) -> str:
         return "translate/page"
@@ -91,15 +92,19 @@ class PageAgent:
         return ToolResponse(f"Validation errors:\n{self._pending_feedback}")
 
     def on_text(self, text: str | None) -> None:
-        pass
+        self._text_retries += 1
 
     def is_done(self) -> bool:
         return not self._active
 
     def retry_prompt(self) -> str | None:
-        if self._active:
+        if not self._active:
+            return None
+        if self._text_retries >= 2:
+            return None
+        if self._pending_feedback:
             return f"Fix these keys and call submit_translations again:\n{self._pending_feedback}"
-        return None
+        return "Do not respond with text. Call submit_translations."
 
     def into_output(self) -> list[TranslationOp]:
         return self._accepted
