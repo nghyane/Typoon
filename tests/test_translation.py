@@ -62,11 +62,11 @@ class TestToolSchemas:
         args = SubmitArgs.model_validate_json(json.dumps({
             "items": [
                 {"key": "ABC2345", "kind": "dialogue", "text": "hello"},
-                {"key": "DEF6789", "kind": "noise", "text": ""},
+                {"key": "DEF6789", "kind": "skip", "text": ""},
             ],
         }))
         assert args.items[0].kind.value == "dialogue"
-        assert args.items[1].kind.value == "noise"
+        assert args.items[1].kind.value == "skip"
 
     def test_search_knowledge_enum_scope(self):
         args = SearchKnowledgeArgs.model_validate_json(
@@ -96,14 +96,14 @@ class TestTranslate:
 
         async def call(messages, tools):
             keys = [b.translation_key for b in pages[0].bubbles]
-            return _tool_response([(keys[0], "dialogue", "A"), (keys[1], "noise", ""), (keys[2], "dialogue", "C")])
+            return _tool_response([(keys[0], "dialogue", "A"), (keys[1], "skip", ""), (keys[2], "dialogue", "C")])
 
         session.provider = MockProvider([])
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
         assert err is None
         assert [b.translated_text for b in pages[0].bubbles] == ["A", "", "C"]
-        assert pages[0].bubbles[1].translation_status == "noise"
+        assert pages[0].bubbles[1].translation_status == "skip"
 
     @pytest.mark.asyncio
     async def test_page_agent_retry_on_missing_key(self):

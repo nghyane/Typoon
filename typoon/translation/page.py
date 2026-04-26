@@ -9,7 +9,7 @@ from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
 from .brief import ChapterBrief, annotated_chapter_text, brief_slice
-from .tools.submit import SubmitArgs, submit_translations
+from .tools.submit import SubmitArgs, TextKind, submit_translations
 
 
 @dataclass(slots=True)
@@ -69,20 +69,20 @@ class PageAgent:
             return ToolResponse(f"Invalid: {e}")
         errors: list[str] = []
         for item in args.items:
-            key, kind, text = item.key, item.kind.value, item.text.strip()
+            key, kind, text = item.key, item.kind, item.text.strip()
             if key not in self._key_map:
                 errors.append(f"#{key}: unknown key")
                 continue
             if key not in self._active:
                 errors.append(f"#{key}: already accepted or not in active set")
                 continue
-            if kind in ("dialogue", "narration", "thought", "sfx", "system_text") and not text:
-                errors.append(f"#{key}: {kind} requires translated text")
+            if kind != TextKind.skip and not text:
+                errors.append(f"#{key}: {kind.value} requires translated text")
                 continue
             if text and (key in text or f"#{key}" in text):
                 errors.append(f"#{key}: translation contains key marker")
                 continue
-            self._accepted.append(TranslationOp(key=key, kind=kind, text=text))
+            self._accepted.append(TranslationOp(key=key, kind=kind.value, text=text if kind != TextKind.skip else ""))
             self._active.discard(key)
         if not self._active:
             return ToolResponse("ok")

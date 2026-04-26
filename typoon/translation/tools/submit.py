@@ -11,18 +11,14 @@ from typoon.llm.tool_dec import tool
 
 class TextKind(str, Enum):
     dialogue = "dialogue"
-    narration = "narration"
-    thought = "thought"
     sfx = "sfx"
-    system_text = "system_text"
-    noise = "noise"
-    meta = "meta"
+    skip = "skip"
 
 
 class TranslationEdit(BaseModel):
     key: str = Field(description="Opaque bubble key exactly as given")
-    kind: TextKind = Field(description="What this text is: dialogue, narration, sfx, noise, or meta")
-    text: str = Field(default="", description="Translation in target language; empty for noise/meta")
+    kind: TextKind = Field(description="dialogue: speech/narration/thought/signs, sfx: sound effects, skip: noise/credits/URLs")
+    text: str = Field(default="", description="Translation; empty for skip")
 
 
 class SubmitArgs(BaseModel):

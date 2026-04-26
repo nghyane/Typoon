@@ -34,8 +34,8 @@ Unmarked lines are read-only context. Translate only active keys.
 Reading order is approximate on manga pages.
 Follow the glossary exactly for names and terms.
 
-For each key, classify what the text is (dialogue, narration, sfx, noise, meta)
-and provide the translation. Code decides rendering based on the classification.
+For each key, classify as dialogue (speech/narration/thought/signs), sfx (sound
+effects), or skip (noise/credits/URLs), and provide the translation.
 Call submit_translations with the results.
 
 {source_policy}
