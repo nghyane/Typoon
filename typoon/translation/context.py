@@ -6,10 +6,11 @@ from typoon.domain.bubble import Bubble, Page, Session
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
-from .brief import ChapterBrief, LookRequest, chapter_text
+from .brief import ChapterBrief, chapter_text
 from .look_at import look_at_page
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 from .tools.look_at_tool import LookAtArgs, look_at as look_at_tool
+from .tools.search_knowledge import SearchKnowledgeArgs, search_knowledge
 
 
 class ContextAgent:
@@ -33,21 +34,20 @@ class ContextAgent:
         )
 
     def user_message(self) -> Message:
-        text = prompt.CONTEXT_USER.format(
-            prior_context=self._session.prior_context or "(none)",
-            glossary_block=_glossary_block(self._session.glossary),
+        return Message.user_text(prompt.CONTEXT_USER.format(
             chapter_text=chapter_text(self._pages),
-        )
-        return Message.user_text(text)
+        ))
 
     def tools(self) -> list[ToolDef]:
-        return [look_at_tool.definition, submit_chapter_brief.definition]
+        return [search_knowledge.definition, look_at_tool.definition, submit_chapter_brief.definition]
 
     async def dispatch(self, call: ToolCallMsg) -> ToolResponse:
         if call.name == "submit_chapter_brief":
             return self._handle_brief(call)
         if call.name == "look_at":
             return await self._handle_look_at(call)
+        if call.name == "search_knowledge":
+            return await self._handle_search(call)
         return ToolResponse(f"Unknown tool: {call.name}")
 
     def on_text(self, text: str | None) -> None:
@@ -98,6 +98,25 @@ class ContextAgent:
             return ToolResponse("No visual notes returned.")
         return ToolResponse("\n".join(f"#{k}: {v}" for k, v in notes.items()))
 
+    async def _handle_search(self, call: ToolCallMsg) -> ToolResponse:
+        try:
+            args = SearchKnowledgeArgs.model_validate_json(call.arguments)
+        except Exception as e:
+            return ToolResponse(f"Error: {e}")
+        store = self._session.store
+        results: list[str] = []
+        scope = args.scope.lower()
+        if scope in ("all", "glossary"):
+            for entry in await store.glossary_search(self._session.project_id, args.query):
+                results.append(f"{entry['source_term']} => {entry['target_term']}")
+        if scope in ("all", "briefs"):
+            hits = await store.search_briefs(self._session.project_id, [args.query], limit=5)
+            results.extend(hits)
+        if scope in ("all", "translations"):
+            hits = await store.search_context(self._session.project_id, [args.query], scope="translations", limit=5)
+            results.extend(hits)
+        return ToolResponse("\n".join(results) if results else "No results found.")
+
 
 async def build_chapter_brief(
     pages: list[Page], session: Session, key_map: dict[str, Bubble],
@@ -110,25 +129,3 @@ async def build_chapter_brief(
     if result.output is None:
         raise RuntimeError("Context agent did not submit chapter brief")
     return result.output, result.turns
-
-
-def format_prior_context(recent_briefs: list[dict], search_hits: list[str]) -> str:
-    parts: list[str] = []
-    for rec in recent_briefs:
-        chapter = rec.get("chapter")
-        summary = rec.get("summary") or ""
-        terms = rec.get("terms_text") or ""
-        facts = rec.get("facts_text") or ""
-        rules = rec.get("rules_text") or ""
-        body = "\n".join(x for x in [summary, terms, facts, rules] if x).strip()
-        if body:
-            parts.append(f"[Ch{chapter} brief]\n{body}")
-    if search_hits:
-        parts.append("Search hits:\n" + "\n".join(search_hits))
-    return "\n\n".join(parts) if parts else "(none)"
-
-
-def _glossary_block(glossary: dict[str, str]) -> str:
-    if not glossary:
-        return "(none)"
-    return "\n".join(f"- {k} => {v}" for k, v in glossary.items())

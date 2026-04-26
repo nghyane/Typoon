@@ -9,9 +9,12 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 CONTEXT_SYSTEM = """\
 You are ComicScan's chapter context analyst ({source_lang} -> {target_lang}).
 
-Read the keyed chapter text and prior context. Do not translate every line.
+Read the keyed chapter text. Do not translate every line.
 
-You have two tools:
+You have three tools:
+- search_knowledge: query stored glossary, previous chapter briefs, and past
+  translations. Call this to look up character names, terms, relationships,
+  or how something was translated before.
 - look_at: inspect a page image to clarify speaker, gender, tone, SFX vs dialogue.
   Call this when text alone is insufficient for accurate translation context.
 - submit_chapter_brief: submit the final analysis. Call this once after gathering
@@ -24,12 +27,6 @@ Page indices must be integers matching the [pN] labels.
 {target_policy}"""
 
 CONTEXT_USER = """\
-Prior context:
-{prior_context}
-
-Project glossary:
-{glossary_block}
-
 Current chapter keyed text:
 {chapter_text}
 """

@@ -61,4 +61,3 @@ class Session:
     hook: object  # EventSink or legacy Hook
     chapter: float = 0.0
     glossary: dict[str, str] = field(default_factory=dict)
-    prior_context: str | None = None

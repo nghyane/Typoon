@@ -66,26 +66,13 @@ async def _make_session(store, config, project_id, chapter, images, hook):
 
     source = _PageImageSource(images) if images else None
 
-    prior_context = await _load_prior_context(store, project_id, chapter)
-
     return Session(
         store=store, source=source, project_id=project_id,
         source_lang=sl, target_lang=tl,
         provider=make_translation_provider(config),
         context_provider=ctx, hook=hook, chapter=chapter,
         glossary=await store.get_glossary(project_id),
-        prior_context=prior_context,
     )
-
-
-async def _load_prior_context(store, project_id, chapter) -> str | None:
-    parts: list[str] = []
-    if hasattr(store, "get_recent_chapter_briefs"):
-        for rec in await store.get_recent_chapter_briefs(project_id, chapter, limit=3):
-            body = "\n".join(str(rec.get(k) or "") for k in ("summary", "terms_text", "facts_text", "rules_text")).strip()
-            if body:
-                parts.append(f"[Ch{rec.get('chapter')} brief]\n{body}")
-    return "\n\n".join(parts) if parts else None
 
 
 class _PageImageSource:
