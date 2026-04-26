@@ -121,7 +121,7 @@ async def build_chapter_brief(
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run
     agent = ContextAgent(pages, session, key_map)
-    result = await agent_run(session.context_provider, agent, hook=session.hook)
+    result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=8)
     if result.error:
         raise result.error
     if result.output is None:

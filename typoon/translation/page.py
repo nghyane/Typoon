@@ -66,26 +66,28 @@ class PageAgent:
             args = SubmitArgs.model_validate_json(call.arguments)
         except Exception as e:
             return ToolResponse(f"Invalid: {e}")
+        errors: list[str] = []
         for item in args.items:
             key, status, text = item.key, item.status.value, item.text.strip()
             if key not in self._key_map:
+                errors.append(f"#{key}: unknown key")
                 continue
             if key not in self._active:
+                errors.append(f"#{key}: already accepted or not in active set")
                 continue
             if status == "ok" and not text:
-                self._pending_feedback += f"#{key}: ok text was empty\n"
+                errors.append(f"#{key}: ok text was empty")
                 continue
             if status == "ok" and (key in text or f"#{key}" in text):
-                self._pending_feedback += f"#{key}: translation contains key\n"
+                errors.append(f"#{key}: translation contains key marker")
                 continue
             self._accepted.append(TranslationOp(key=key, status=status, text=text if status == "ok" else ""))
             self._active.discard(key)
         if not self._active:
             return ToolResponse("ok")
-        parts = [self._pending_feedback] if self._pending_feedback else []
         if self._active:
-            parts.append(f"Missing keys: {', '.join(sorted(self._active))}")
-        self._pending_feedback = "\n".join(parts)
+            errors.append(f"Missing keys: {', '.join(sorted(self._active))}")
+        self._pending_feedback = "\n".join(errors)
         return ToolResponse(f"Validation errors:\n{self._pending_feedback}")
 
     def on_text(self, text: str | None) -> None:
@@ -112,7 +114,7 @@ async def translate_window(
     from typoon.llm.agent import run as agent_run
     agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map,
                       all_pages=all_pages)
-    result = await agent_run(session.provider, agent, hook=session.hook)
+    result = await agent_run(session.provider, agent, hook=session.hook, max_turns=4)
     if result.error:
         raise result.error
     if agent._active:

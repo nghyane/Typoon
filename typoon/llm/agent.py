@@ -44,7 +44,7 @@ class RunResult:
     error: Exception | None = None
 
 
-async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK) -> RunResult:
+async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK, *, max_turns: int = SAFETY_MAX_TURNS) -> RunResult:
     """Generic agent loop. Uses stream() if available, falls back to call()."""
     messages = [Message.system(agent.system_prompt()), agent.user_message()]
     tools = agent.tools()
@@ -54,7 +54,7 @@ async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK) -> RunRes
 
     turns_used = 0
     error: Exception | None = None
-    for turn in range(SAFETY_MAX_TURNS):
+    for turn in range(max_turns):
         turns_used = turn + 1
         hook.on(LLMCall(agent=name, turn=turns_used))
 

@@ -96,5 +96,5 @@ async def look_at(
         query=query, source_by_key=source_by_key,
         polygon_by_key=polygon_by_key,
     )
-    result = await agent_run(session.context_provider, agent, hook=session.hook)
+    result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=2)
     return result.output or {}
