@@ -17,6 +17,11 @@ class KeyNote(BaseModel):
     note: str = Field(description="Short context note for this key")
 
 
+class GlossaryEntry(BaseModel):
+    source: str = Field(description="Source-language term")
+    target: str = Field(description="Target-language translation or note")
+
+
 class LookRequestItem(BaseModel):
     page_index: int = Field(description="Page index to inspect")
     keys: list[str] = Field(description="Keys on that page needing visual help")
@@ -26,7 +31,7 @@ class LookRequestItem(BaseModel):
 class ChapterBriefArgs(BaseModel):
     summary: str = Field(description="One-paragraph chapter summary")
     facts: list[str] = Field(default_factory=list, description="Notable plot/character facts")
-    glossary: list[KeyNote] = Field(default_factory=list, description="Source term -> target term pairs")
+    glossary: list[GlossaryEntry] = Field(default_factory=list, description="Source term -> target term pairs")
     style_rules: list[str] = Field(default_factory=list, description="Translation style constraints")
     pronoun_rules: list[str] = Field(default_factory=list, description="Speaker pronoun/address rules")
     page_notes: list[PageNote] = Field(default_factory=list, description="Per-page situation notes")
@@ -42,6 +47,6 @@ async def submit_chapter_brief(args: ChapterBriefArgs) -> str:
     - Use exact opaque keys from the chapter text.
     - Do not invent keys.
     - page indices must be integers matching the [pN] labels.
-    - glossary entries use key=source_term, note=target_term.
+    - glossary entries use source=source_term, target=target_term.
     """
     raise NotImplementedError("dispatch handles this")

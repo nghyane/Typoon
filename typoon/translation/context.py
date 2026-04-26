@@ -41,6 +41,8 @@ async def build_chapter_brief(pages: list[Page], session: Session) -> tuple[Chap
     hook.on(LLMResponse(agent="translate/context", turn=1, tool_calls=n_tools, ms=ms))
 
     brief = _parse_tool(resp) or ChapterBrief.from_json(resp.text or "{}")
+    if not brief.summary and not brief.glossary and not brief.page_notes:
+        hook.on(PipelineError(stage="translate/context", error=RuntimeError("empty chapter brief")))
     return brief, 1
 
 
@@ -55,7 +57,7 @@ def _parse_tool(resp) -> ChapterBrief | None:
         return ChapterBrief(
             summary=args.summary,
             facts=args.facts,
-            glossary={g.key: g.note for g in args.glossary},
+            glossary={g.source: g.target for g in args.glossary},
             style_rules=args.style_rules,
             pronoun_rules=args.pronoun_rules,
             page_notes={pn.page: pn.note for pn in args.page_notes},
