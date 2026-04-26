@@ -25,11 +25,13 @@ class PageAgent:
     def __init__(
         self, session: Session, *, brief: ChapterBrief,
         bubbles: list[Bubble], key_map: dict[str, Bubble],
+        chapter_text: str,
     ) -> None:
         self._session = session
         self._brief = brief
         self._bubbles = bubbles
         self._key_map = key_map
+        self._chapter_text = chapter_text
         self._keys = [b.translation_key or "" for b in bubbles]
         self._active = set(self._keys)
         self._accepted: list[TranslationOp] = []
@@ -50,6 +52,7 @@ class PageAgent:
         page_indices = {b.page_index for b in self._bubbles}
         return Message.user_text(prompt.PAGE_USER.format(
             brief_slice=brief_slice(self._brief, page_indices, self._keys),
+            chapter_text=self._chapter_text,
             feedback_block="",
             keys="\n".join(f"#{b.translation_key} {b.source_text}" for b in self._bubbles),
         ))
@@ -104,10 +107,12 @@ class PageAgent:
 async def translate_window(
     session: Session, *, brief: ChapterBrief,
     bubbles: list[Bubble], key_map: dict[str, Bubble],
+    chapter_text: str,
 ) -> tuple[list[TranslationOp], int]:
     """Run PageAgent. Returns (accepted ops, turns used)."""
     from typoon.llm.agent import run as agent_run
-    agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map)
+    agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map,
+                      chapter_text=chapter_text)
     result = await agent_run(session.provider, agent, hook=session.hook)
     if result.error:
         raise result.error
