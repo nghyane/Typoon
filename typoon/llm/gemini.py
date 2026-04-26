@@ -193,12 +193,22 @@ def _build_tools(tools: list[ToolDef]) -> types.Tool:
     """Build a single Gemini Tool with all function declarations."""
     declarations = []
     for t in tools:
+        params = _strip_additional_properties(t.parameters)
         declarations.append(types.FunctionDeclaration(
             name=t.name,
             description=t.description,
-            parameters=t.parameters,
+            parameters=params,
         ))
     return types.Tool(function_declarations=declarations)
+
+
+def _strip_additional_properties(node: dict | list | object) -> dict | list | object:
+    """Remove additionalProperties recursively — Gemini doesn't support it."""
+    if isinstance(node, dict):
+        return {k: _strip_additional_properties(v) for k, v in node.items() if k != "additionalProperties"}
+    if isinstance(node, list):
+        return [_strip_additional_properties(item) for item in node]
+    return node
 
 
 def _find_tool_name(messages: list[Message], tool_call_id: str | None) -> str:
