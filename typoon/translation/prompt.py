@@ -13,6 +13,10 @@ Analyze the keyed chapter text to prepare a translation brief.
 Identify: character relationships, xưng hô/address rules, recurring terms,
 page situations, and any bubbles needing visual clarification.
 
+IMPORTANT: For every character name in the chapter, decide the target-language
+form in the glossary (keep original, romanize, or localize). Page translators
+will follow the glossary strictly. Inconsistent names are unacceptable.
+
 You may call search_knowledge or look_at as many times as needed.
 When your analysis is ready, you MUST call submit_chapter_brief.
 
@@ -28,6 +32,7 @@ You are a page translator for comics ({source_lang} -> {target_lang}).
 Chapter dialogue is listed below. Lines marked >>> are active keys to translate.
 Unmarked lines are read-only context. Translate only active keys.
 Reading order is approximate on manga pages.
+Follow the glossary exactly for names and terms. Do not invent alternative forms.
 Call submit_translations with the results.
 
 {source_policy}
@@ -35,7 +40,6 @@ Call submit_translations with the results.
 
 PAGE_USER = """\
 {brief_slice}
-{prior_translations}
 {feedback_block}
 {annotated_text}"""
 
