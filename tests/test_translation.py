@@ -23,10 +23,9 @@ def _brief_response() -> CallResponse:
             "summary": "test chapter",
             "facts": [],
             "glossary": [],
-            "style_rules": [],
-            "pronoun_rules": [],
+            "rules": [],
             "page_notes": [],
-            "key_notes": [],
+            "bubble_notes": [],
             "look_requests": [],
         }),
     )])
@@ -41,7 +40,6 @@ def _tool_response(items: list[tuple[str, str, str]]) -> CallResponse:
                 {"key": key, "status": status, "text": text}
                 for key, status, text in items
             ],
-            "done": True,
         }),
     )])
 
@@ -57,7 +55,8 @@ class TestTool:
         assert submit_chapter_brief.definition.strict is True
         props = submit_chapter_brief.definition.parameters["properties"]
         assert "summary" in props
-        assert "page_notes" in props
+        assert "rules" in props
+        assert "bubble_notes" in props
         assert "look_requests" in props
 
     def test_submit_args_parse(self):
@@ -66,10 +65,9 @@ class TestTool:
                 {"key": "ABC2345", "status": "ok", "text": "hello"},
                 {"key": "DEF6789", "status": "skip", "text": ""},
             ],
-            "done": True,
         }))
         assert args.items[0].key == "ABC2345"
-        assert args.items[1].status == "skip"
+        assert args.items[1].status.value == "skip"
 
 
 class TestChapterBrief:

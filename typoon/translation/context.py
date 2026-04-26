@@ -58,12 +58,12 @@ def _parse_tool(resp) -> ChapterBrief | None:
             summary=args.summary,
             facts=args.facts,
             glossary={g.source: g.target for g in args.glossary},
-            style_rules=args.style_rules,
-            pronoun_rules=args.pronoun_rules,
+            style_rules=args.rules,
+            pronoun_rules=[],
             page_notes={pn.page: pn.note for pn in args.page_notes},
-            key_notes={kn.key: kn.note for kn in args.key_notes},
+            key_notes={bn.key: bn.note for bn in args.bubble_notes},
             look_requests=[
-                LookRequest(page_index=lr.page_index, keys=lr.keys, query=lr.query)
+                LookRequest(page_index=lr.page, keys=lr.keys, query=lr.query)
                 for lr in args.look_requests
             ],
         )

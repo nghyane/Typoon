@@ -112,7 +112,7 @@ def _parse_tools(resp: CallResponse) -> list[TranslationOp]:
         except Exception:
             continue
         for item in args.items:
-            ops.append(TranslationOp(key=item.key, status=item.status, text=item.text))
+            ops.append(TranslationOp(key=item.key, status=item.status.value, text=item.text))
     return ops
 
 
