@@ -9,15 +9,18 @@ from pydantic import BaseModel, Field
 from typoon.llm.tool_dec import tool
 
 
-class TranslationStatus(str, Enum):
-    ok = "ok"
-    skip = "skip"
+class TextKind(str, Enum):
+    dialogue = "dialogue"
+    narration = "narration"
+    sfx = "sfx"
+    noise = "noise"
+    meta = "meta"
 
 
 class TranslationEdit(BaseModel):
     key: str = Field(description="Opaque bubble key exactly as given")
-    status: TranslationStatus = Field(description="ok: final translation, skip: do not render")
-    text: str = Field(default="", description="Translated text for ok; empty for skip")
+    kind: TextKind = Field(description="What this text is: dialogue, narration, sfx, noise, or meta")
+    text: str = Field(default="", description="Translation in target language; empty for noise/meta")
 
 
 class SubmitArgs(BaseModel):

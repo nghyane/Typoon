@@ -15,7 +15,7 @@ from .tools.submit import SubmitArgs, submit_translations
 @dataclass(slots=True)
 class TranslationOp:
     key: str
-    status: str  # ok | skip
+    kind: str  # dialogue | narration | sfx | noise | meta
     text: str = ""
 
 
@@ -69,20 +69,20 @@ class PageAgent:
             return ToolResponse(f"Invalid: {e}")
         errors: list[str] = []
         for item in args.items:
-            key, status, text = item.key, item.status.value, item.text.strip()
+            key, kind, text = item.key, item.kind.value, item.text.strip()
             if key not in self._key_map:
                 errors.append(f"#{key}: unknown key")
                 continue
             if key not in self._active:
                 errors.append(f"#{key}: already accepted or not in active set")
                 continue
-            if status == "ok" and not text:
-                errors.append(f"#{key}: ok text was empty")
+            if kind in ("dialogue", "narration", "sfx") and not text:
+                errors.append(f"#{key}: {kind} requires translated text")
                 continue
-            if status == "ok" and (key in text or f"#{key}" in text):
+            if text and (key in text or f"#{key}" in text):
                 errors.append(f"#{key}: translation contains key marker")
                 continue
-            self._accepted.append(TranslationOp(key=key, status=status, text=text if status == "ok" else ""))
+            self._accepted.append(TranslationOp(key=key, kind=kind, text=text))
             self._active.discard(key)
         if not self._active:
             return ToolResponse("ok")

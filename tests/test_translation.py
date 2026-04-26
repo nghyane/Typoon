@@ -38,8 +38,8 @@ def _tool_response(items: list[tuple[str, str, str]]) -> CallResponse:
         name="submit_translations",
         arguments=json.dumps({
             "items": [
-                {"key": key, "status": status, "text": text}
-                for key, status, text in items
+                {"key": key, "kind": kind, "text": text}
+                for key, kind, text in items
             ],
         }),
     )])
@@ -58,15 +58,15 @@ class TestToolSchemas:
         assert "bubble_notes" in props
         assert "look_requests" not in props
 
-    def test_submit_args_enum_status(self):
+    def test_submit_args_enum_kind(self):
         args = SubmitArgs.model_validate_json(json.dumps({
             "items": [
-                {"key": "ABC2345", "status": "ok", "text": "hello"},
-                {"key": "DEF6789", "status": "skip", "text": ""},
+                {"key": "ABC2345", "kind": "dialogue", "text": "hello"},
+                {"key": "DEF6789", "kind": "noise", "text": ""},
             ],
         }))
-        assert args.items[0].status.value == "ok"
-        assert args.items[1].status.value == "skip"
+        assert args.items[0].kind.value == "dialogue"
+        assert args.items[1].kind.value == "noise"
 
     def test_search_knowledge_enum_scope(self):
         args = SearchKnowledgeArgs.model_validate_json(
@@ -96,14 +96,14 @@ class TestTranslate:
 
         async def call(messages, tools):
             keys = [b.translation_key for b in pages[0].bubbles]
-            return _tool_response([(keys[0], "ok", "A"), (keys[1], "skip", ""), (keys[2], "ok", "C")])
+            return _tool_response([(keys[0], "dialogue", "A"), (keys[1], "noise", ""), (keys[2], "dialogue", "C")])
 
         session.provider = MockProvider([])
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
         assert err is None
         assert [b.translated_text for b in pages[0].bubbles] == ["A", "", "C"]
-        assert pages[0].bubbles[1].translation_status == "skip"
+        assert pages[0].bubbles[1].translation_status == "noise"
 
     @pytest.mark.asyncio
     async def test_page_agent_retry_on_missing_key(self):
@@ -125,8 +125,8 @@ class TestTranslate:
                     }),
                 )])
             if call_count == 2:
-                return _tool_response([(keys[0], "ok", "A")])
-            return _tool_response([(keys[1], "ok", "B")])
+                return _tool_response([(keys[0], "dialogue", "A")])
+            return _tool_response([(keys[1], "dialogue", "B")])
 
         session.context_provider = MockProvider([])
         session.context_provider.call = call
@@ -157,7 +157,7 @@ class TestTranslate:
 
         async def call(messages, tools):
             key = pages[0].bubbles[0].translation_key
-            return _tool_response([(key, "ok", "A")])
+            return _tool_response([(key, "dialogue", "A")])
 
         session.provider = MockProvider([])
         session.provider.call = call
