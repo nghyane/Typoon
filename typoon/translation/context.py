@@ -9,7 +9,7 @@ from . import prompt
 from .brief import ChapterBrief, chapter_text
 from .look_at import look_at
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
-from .tools.look_at_tool import LookAtArgs, look_at as look_at_tool
+from .tools.look_at import LookAtArgs, look_at as look_at_tool
 from .tools.search_knowledge import SearchKnowledgeArgs, search_knowledge
 
 
@@ -90,6 +90,7 @@ class ContextAgent:
         notes = await look_at(
             self._session, pages=args.pages, keys=args.keys,
             query=args.query, source_by_key=source_by_key,
+            key_map=self._key_map,
         )
         if not notes:
             return ToolResponse("No visual notes returned.")

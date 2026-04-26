@@ -40,7 +40,7 @@ Keys:
 
 LOOKAT_SYSTEM = """\
 You are a visual assistant for comic translation.
-Inspect the attached page images for the listed keys.
+Inspect the attached page images. Key labels are overlaid near each bubble.
 Identify: speaker identity/gender, emotion/tone, whether text is dialogue or \
 SFX/noise, and local reading order if ambiguous.
 Call submit_visual_notes with your observations."""

@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
-from typoon.domain.bubble import Session
+from typoon.domain.bubble import Bubble, Session
 from typoon.llm.ir import ContentPart, Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
-from .tools.view_page import encode_page_jpeg
+from .image import encode_page_jpeg
 from .tools.visual_notes import VisualNotesArgs, submit_visual_notes
 
 
 class LookAtAgent:
-    """Inspects page images and submits keyed visual notes."""
+    """Inspects page images with key overlays and submits visual notes."""
 
     def __init__(
         self, session: Session, *, pages: list[int], keys: list[str],
         query: str, source_by_key: dict[str, str],
+        polygon_by_key: dict[str, list[list[float]]],
     ) -> None:
         self._session = session
         self._pages = pages
         self._keys = keys
         self._query = query
         self._source_by_key = source_by_key
+        self._polygon_by_key = polygon_by_key
         self._notes: dict[str, str] | None = None
 
     def name(self) -> str:
@@ -44,8 +46,10 @@ class LookAtAgent:
             for pi in self._pages:
                 try:
                     img = source.load_page(pi)
+                    labels = {k: self._polygon_by_key[k] for k in self._keys
+                              if k in self._polygon_by_key}
                     parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
-                    parts.append(ContentPart.of_image(encode_page_jpeg(img)))
+                    parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
                 except Exception:
                     continue
         return Message.user_parts(parts)
@@ -82,12 +86,15 @@ class LookAtAgent:
 async def look_at(
     session: Session, *, pages: list[int], keys: list[str],
     query: str, source_by_key: dict[str, str],
+    key_map: dict[str, Bubble],
 ) -> dict[str, str]:
-    """Run LookAt agent and return keyed visual notes."""
+    """Run LookAt agent with key overlays on page images."""
     from typoon.llm.agent import run as agent_run
+    polygon_by_key = {k: key_map[k].polygon for k in keys if k in key_map}
     agent = LookAtAgent(
         session, pages=pages, keys=keys,
         query=query, source_by_key=source_by_key,
+        polygon_by_key=polygon_by_key,
     )
     result = await agent_run(session.context_provider, agent, hook=session.hook)
     return result.output or {}
