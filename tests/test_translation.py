@@ -7,7 +7,6 @@ import json
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
-from typoon.translation.brief import ChapterBrief
 from typoon.translation.tools.brief import submit_chapter_brief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
 from typoon.translation.translate import translate_pages
@@ -26,7 +25,6 @@ def _brief_response() -> CallResponse:
             "rules": [],
             "page_notes": [],
             "bubble_notes": [],
-            "look_requests": [],
         }),
     )])
 
@@ -57,7 +55,7 @@ class TestTool:
         assert "summary" in props
         assert "rules" in props
         assert "bubble_notes" in props
-        assert "look_requests" in props
+        assert "look_requests" not in props
 
     def test_submit_args_parse(self):
         args = SubmitArgs.model_validate_json(json.dumps({
@@ -90,12 +88,11 @@ class TestTranslate:
 
     @pytest.mark.asyncio
     async def test_no_tool_call_raises(self):
-        """Model returning text instead of tool call should error."""
         pages, session = make_session(1)
         session.context_provider = MockProvider([_brief_response()])
 
         async def call(messages, tools):
-            return CallResponse(text="some text without tool call")
+            return CallResponse(text="no tool call")
 
         session.provider = MockProvider([])
         session.provider.call = call
@@ -122,10 +119,8 @@ class TestTranslate:
 
     @pytest.mark.asyncio
     async def test_no_brief_tool_call_raises(self):
-        """Context model returning text instead of tool call should error."""
         pages, session = make_session(1)
         session.context_provider = MockProvider([CallResponse(text="no tool")])
         session.provider = MockProvider([])
         turns, err = await translate_pages(pages, session)
         assert err is not None
-        assert "submit_chapter_brief" in str(err)

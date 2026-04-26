@@ -25,12 +25,11 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
     key_map = assign_keys(bubbles, project_id=session.project_id, chapter=_chapter(session))
     turns = 0
     try:
-        brief, used = await build_chapter_brief(pages, session)
+        brief, used = await build_chapter_brief(pages, session, key_map)
         turns += used
-        turns += await _resolve_look_requests(session, brief, key_map, turn_base=turns)
 
         for window in _page_windows(pages):
-            used = await _translate_window_until_done(session, brief, window, key_map, turns)
+            used = await _translate_window(session, brief, window, key_map, turns)
             turns += used
 
         await session.store.save_chapter_brief(session.project_id, _chapter(session), brief.to_dict())
@@ -40,7 +39,7 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
         return turns, e
 
 
-async def _translate_window_until_done(
+async def _translate_window(
     session: Session,
     brief: ChapterBrief,
     window: list[Bubble],
@@ -78,7 +77,7 @@ async def _translate_window_until_done(
                     session,
                     page_index=page_index,
                     keys=keys,
-                    query="Clarify speaker, tone, local order, and whether text is dialogue or SFX/noise.",
+                    query="Clarify speaker, tone, and whether text is dialogue or SFX.",
                     source_by_key={k: key_map[k].source_text for k in keys},
                     turn=turn_base + turns,
                 )
@@ -87,37 +86,6 @@ async def _translate_window_until_done(
     if pending:
         raise RuntimeError(f"Untranslated keys: {', '.join(sorted(pending))}")
     return turns
-
-
-async def _resolve_look_requests(
-    session: Session,
-    brief: ChapterBrief,
-    key_map: dict[str, Bubble],
-    *,
-    turn_base: int,
-) -> int:
-    by_page: dict[int, list] = defaultdict(list)
-    for req in brief.look_requests:
-        by_page[req.page_index].append(req)
-    turn = turn_base
-    calls = 0
-    for page_index, reqs in by_page.items():
-        keys = sorted({k for req in reqs for k in req.keys if k in key_map})
-        if not keys:
-            continue
-        query = "\n".join(req.query for req in reqs if req.query)
-        turn += 1
-        calls += 1
-        notes = await look_at_page(
-            session,
-            page_index=page_index,
-            keys=keys,
-            query=query or "Clarify visual context for marked keys.",
-            source_by_key={k: key_map[k].source_text for k in keys},
-            turn=turn,
-        )
-        brief.key_notes.update(notes)
-    return calls
 
 
 def _page_windows(pages: list[Page]) -> list[list[Bubble]]:
@@ -137,4 +105,4 @@ def _page_windows(pages: list[Page]) -> list[list[Bubble]]:
 
 
 def _chapter(session: Session) -> float:
-    return float(getattr(session, "chapter", 0.0))
+    return session.chapter
