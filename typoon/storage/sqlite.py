@@ -230,10 +230,13 @@ class SqliteStore:
         await self._db.commit()
 
     async def glossary_search(self, project_id: int, query: str) -> list[dict]:
+        safe = _fts_escape(query)
+        if not safe:
+            return []
         cur = await self._db.execute(
             "SELECT g.source_term, g.target_term, g.notes FROM glossary_fts f "
             "JOIN glossary g ON g.id = f.rowid WHERE f.source_term MATCH ? AND g.project_id=? LIMIT 10",
-            (query, project_id),
+            (safe, project_id),
         )
         return [dict(r) for r in await cur.fetchall()]
 
@@ -337,6 +340,9 @@ class SqliteStore:
         seen: set[str] = set()
 
         for query in queries:
+            safe = _fts_escape(query)
+            if not safe:
+                continue
             if scope in ("all", "translations"):
                 cur = await self._db.execute(
                     "SELECT t.source_text, t.translated_text, t.chapter, t.page "
@@ -344,7 +350,7 @@ class SqliteStore:
                     "JOIN translations t ON t.rowid = f.rowid "
                     "WHERE translations_fts MATCH ? AND t.project_id=? "
                     "ORDER BY rank LIMIT ?",
-                    (query, project_id, limit),
+                    (safe, project_id, limit),
                 )
                 for r in await cur.fetchall():
                     h = f"[Ch{r[2]} p{r[3]}] {r[0]} → {r[1]}"
@@ -372,3 +378,17 @@ class SqliteStore:
     async def list_projects(self) -> list[dict]:
         cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
         return [dict(r) for r in await cur.fetchall()]
+
+
+import re as _re
+
+_FTS_SPECIAL = _re.compile(r"[\"'\(\)\*\:\^\-\+\{\}\[\]~]")
+
+
+def _fts_escape(query: str) -> str:
+    """Sanitize a query string for FTS5 MATCH."""
+    clean = _FTS_SPECIAL.sub(" ", query).strip()
+    words = clean.split()
+    if not words:
+        return ""
+    return " ".join(f'"{w}"' for w in words)
