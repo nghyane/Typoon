@@ -1,12 +1,13 @@
 """Engine — vision compute. Preprocess, erase, render.
 
-Preprocess: per-page scan → boundary overlap check → stitch into ChapterImages.
-Erase/render: per-page from ChapterImages views. Stateless.
+Preprocess: stitch for scan → smart re-cut → lazy page provider.
+Erase/render: load one logical page at a time. Stateless.
 """
 
 from __future__ import annotations
 
 import time
+from itertools import accumulate
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +17,13 @@ from .app.events import Hook, ModelsUnloaded, PageErased, PageRendered, PageScan
 from .models import ModelHub
 from .ports import ChapterSource
 from .domain.bubble import Bubble, Page
-from .vision.chapter_images import ChapterImages
+from .vision.chapter_images import LazyPageProvider, StitchedStrip
 from .vision.erase import Eraser
-from .vision.types import TextMask
-from .vision.visual_group import offset_group
+from .vision.types import VisualTextGroup
+from .vision.visual_group import clip_group_to_slice
 
 _NO_HOOK = Hook()
-_BOUNDARY_OVERLAP = 500  # px scanned from each side of page boundary
-_MAX_PAGE_HEIGHT = 2500  # pages taller than this get split
+_MAX_PAGE_HEIGHT = 2500
 _CUT_TARGET_HEIGHT = 1800
 _CUT_MIN_HEIGHT = 800
 _TEXT_CUT_PENALTY = 1_000_000.0
@@ -65,7 +65,6 @@ class Engine:
             hub=hub,
             bubble_scope_imgsz=config.bubble_scope_imgsz,
         )
-
         return engine, config, paths
 
     # ── Model lifecycle ──────────────────────────────────────────
@@ -93,40 +92,40 @@ class Engine:
 
     def preprocess(
         self, source: ChapterSource, hook: Hook = _NO_HOOK,
-    ) -> tuple[list[Page], ChapterImages]:
-        """Per-page scan → boundary merge if needed → ChapterImages.
+    ) -> tuple[list[Page], LazyPageProvider]:
+        """Stitch → scan full strip → smart re-cut → lazy page provider.
 
-        Fast path (manga): per-page scan, no stitch. 7MB peak.
-        Slow path (manhwa): stitch boundary pairs only when split bubbles detected.
+        Stitches all source pages into one continuous strip so bubbles
+        at page boundaries are never split. Scans once on the full
+        strip (detector tiles internally), computes logical pages that
+        avoid cutting through bubbles, then releases the strip.
         """
         self.ensure_scan_models()
-        n = source.page_count()
 
-        # Phase 1: per-page scan
+        # Phase 1: stitch all source pages into one strip
         t0 = time.time()
-        page_results: list[tuple[list, np.ndarray]] = []  # (scanned_bubbles, image)
-        for i in range(n):
-            img = source.load_page(i)
-            scanned = self._scan_page(img)
-            page_results.append((scanned, img))
+        raw_images = [source.load_page(i) for i in range(source.page_count())]
+        strip = StitchedStrip.from_pages(raw_images)
+        full_img = strip.image
+        original_heights = strip.heights
+        del raw_images
 
-        # Phase 2: scan boundary overlap zones to catch split bubbles
-        page_results = self._scan_boundary_zones(page_results)
-
+        # Phase 2: scan on the full stitched strip
+        scanned = self._scan_page(full_img)
         t_scan = time.time() - t0
 
-        # Phase 3: split long pages into logical pages (~1800px)
-        logical = _split_long_pages(page_results)
+        # Phase 3: smart re-cut into logical pages
+        logical = _split_strip(full_img, scanned, original_heights)
+        page_ranges = [(y_start, y_end) for _, y_start, y_end in logical]
+        provider = LazyPageProvider(source, original_heights, strip.width, page_ranges)
+        del full_img
+        strip.free()
 
-        # Phase 4: build ChapterImages from logical pages
-        page_images = [img for _, img in logical]
-        images = ChapterImages.from_pages(page_images)
-
-        # Phase 5: map bubbles to logical pages
+        # Phase 4: map bubbles to logical pages
         pages: list[Page] = []
-        for i, (scanned, _) in enumerate(logical):
+        for i, (page_bubbles, _, _) in enumerate(logical):
             page = Page(index=i)
-            for sb in scanned:
+            for sb in page_bubbles:
                 page.bubbles.append(Bubble(
                     idx=len(page.bubbles),
                     page_index=i,
@@ -145,7 +144,7 @@ class Engine:
                 det_ms=t_scan * 1000 / n_logical if i == 0 else 0, ocr_ms=0,
             ))
 
-        return pages, images
+        return pages, provider
 
     def _get_yolo_model(self) -> Any | None:
         if self._yolo_model is None:
@@ -158,87 +157,21 @@ class Engine:
             self._yolo_model = load_yolo_model(path)
         return self._yolo_model
 
-    def scan_page(self, image: np.ndarray):
+    def scan_page(self, image: np.ndarray) -> list[VisualTextGroup]:
         """Scan a page into canonical visual text groups."""
         return self._scan_page(image)
 
-    def _scan_page(self, image: np.ndarray):
+    def _scan_page(self, image: np.ndarray) -> list[VisualTextGroup]:
         return self.scanner.scan(
             image,
             scope_model=self._get_yolo_model(),
             scope_imgsz=self._bubble_scope_imgsz,
         )
 
-    def _scan_boundary_zones(
-        self, page_results: list[tuple[list, np.ndarray]],
-    ) -> list[tuple[list, np.ndarray]]:
-        """Scan overlap zones between adjacent pages to catch split bubbles.
-
-        For each page pair, scans a small boundary zone (bottom of page N +
-        top of page N+1). If a bubble crosses the boundary, it replaces
-        the partial detections from per-page scanning.
-
-        Cost: ~250ms per boundary zone (690×1000px). Only runs N-1 times.
-        """
-        import cv2
-
-        n = len(page_results)
-        if n < 2:
-            return page_results
-
-        for i in range(n - 1):
-            scanned_a, img_a = page_results[i]
-            scanned_b, img_b = page_results[i + 1]
-            h_a, w_a = img_a.shape[:2]
-            h_b, w_b = img_b.shape[:2]
-
-            # Build boundary zone
-            target_w = min(w_a, w_b)
-            top_part = img_a[max(0, h_a - _BOUNDARY_OVERLAP):]
-            bot_part = img_b[:min(_BOUNDARY_OVERLAP, h_b)]
-            if top_part.shape[1] != target_w:
-                top_part = cv2.resize(top_part, (target_w, top_part.shape[0]))
-            if bot_part.shape[1] != target_w:
-                bot_part = cv2.resize(bot_part, (target_w, bot_part.shape[0]))
-
-            zone = np.concatenate([top_part, bot_part], axis=0)
-            split_y = top_part.shape[0]  # boundary within zone
-            zone_y_offset = h_a - top_part.shape[0]  # zone start in page A coords
-
-            zone_bubbles = self._scan_page(zone)
-
-            # Find bubbles that cross the boundary
-            for sb in zone_bubbles:
-                ys = [p[1] for p in sb.render_polygon]
-                if min(ys) < split_y and max(ys) > split_y:
-                    # Cross-boundary bubble — assign to page where center is
-                    cy = (min(ys) + max(ys)) / 2
-                    if cy < split_y:
-                        # Assign to page A, shift to page-A coords
-                        sb = offset_group(sb, zone_y_offset)
-                        scanned_a = [
-                            s for s in scanned_a
-                            if not _overlaps_y(s.render_polygon, sb.render_polygon)
-                        ]
-                        scanned_a.append(sb)
-                    else:
-                        # Assign to page B, shift to page-B coords
-                        sb = offset_group(sb, -split_y)
-                        scanned_b = [
-                            s for s in scanned_b
-                            if not _overlaps_y(s.render_polygon, sb.render_polygon)
-                        ]
-                        scanned_b.append(sb)
-
-            page_results[i] = (scanned_a, img_a)
-            page_results[i + 1] = (scanned_b, img_b)
-
-        return page_results
-
     # ── Erase + Render ───────────────────────────────────────────
 
     def erase_and_render(
-        self, pages: list[Page], images: ChapterImages, hook: Hook = _NO_HOOK,
+        self, pages: list[Page], images: LazyPageProvider, hook: Hook = _NO_HOOK,
     ) -> None:
         self.ensure_erase_models()
         import typoon_render
@@ -273,7 +206,7 @@ class Engine:
     # ── Erase only ───────────────────────────────────────────────
 
     def erase(
-        self, pages: list[Page], images: ChapterImages, hook: Hook = _NO_HOOK,
+        self, pages: list[Page], images: LazyPageProvider, hook: Hook = _NO_HOOK,
     ) -> None:
         self.ensure_erase_models()
         total = len(pages)
@@ -295,42 +228,69 @@ class Engine:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _split_long_pages(
-    page_results: list[tuple[list, np.ndarray]],
-) -> list[tuple[list, np.ndarray]]:
-    """Split pages taller than _MAX_PAGE_HEIGHT into logical pages.
+def _split_strip(
+    full_img: np.ndarray,
+    scanned: list[VisualTextGroup],
+    original_heights: list[int],
+) -> list[tuple[list[VisualTextGroup], int, int]]:
+    """Cut a stitched strip into logical pages that never cut bubbles.
 
-    Uses smart_split to find cut points that don't cut bubbles.
-    Short pages pass through unchanged.
+    Uses original page boundaries as preferred cut points, then
+    _choose_page_cuts for segments that are still too tall.
     """
+    h, w = full_img.shape[:2]
 
-    out: list[tuple[list, np.ndarray]] = []
+    # Original page boundaries as candidate cuts
+    orig_cuts = list(accumulate(original_heights[:-1]))
+    safe_cuts = [c for c in orig_cuts if not _cuts_bubble(c, scanned)]
 
-    for scanned, img in page_results:
-        h, w = img.shape[:2]
-        if h <= _MAX_PAGE_HEIGHT:
-            out.append((scanned, img))
+    # Build segments from safe original cuts
+    boundaries = [0] + safe_cuts + [h]
+    segments: list[tuple[int, int]] = list(zip(boundaries, boundaries[1:]))
+
+    # Sub-split any segment still taller than _MAX_PAGE_HEIGHT
+    final: list[tuple[int, int]] = []
+    for y_start, y_end in segments:
+        if y_end - y_start <= _MAX_PAGE_HEIGHT:
+            final.append((y_start, y_end))
             continue
+        seg_img = full_img[y_start:y_end]
+        seg_bubbles = _bubbles_in_range(scanned, y_start, y_end, w)
+        sub_cuts = _choose_page_cuts(seg_img, seg_bubbles)
+        sub_bounds = [y_start] + [y_start + c for c in sub_cuts] + [y_end]
+        final.extend(zip(sub_bounds, sub_bounds[1:]))
 
-        cuts = _choose_page_cuts(img, scanned)
-        if not cuts:
-            out.append((scanned, img))
-            continue
-
-        boundaries = [0] + cuts + [h]
-        for y_start, y_end in zip(boundaries, boundaries[1:]):
-            slice_img = img[y_start:y_end]
-            slice_bubbles = [
-                sliced
-                for sb in scanned
-                if (sliced := _slice_scanned_bubble(sb, y_start, y_end, page_w=w)) is not None
-            ]
-            out.append((slice_bubbles, slice_img))
-
+    # Clip bubbles per logical page
+    out: list[tuple[list[VisualTextGroup], int, int]] = []
+    for y_start, y_end in final:
+        slice_bubbles = [
+            sliced
+            for sb in scanned
+            if (sliced := clip_group_to_slice(sb, y_start, y_end, page_w=w)) is not None
+        ]
+        out.append((slice_bubbles, y_start, y_end))
     return out
 
 
-def _choose_page_cuts(img: np.ndarray, scanned: list) -> list[int]:
+def _cuts_bubble(y: int, scanned: list[VisualTextGroup]) -> bool:
+    for sb in scanned:
+        if _crosses(y, _fit_y_range(sb)):
+            return True
+    return False
+
+
+def _bubbles_in_range(
+    scanned: list[VisualTextGroup], y_start: int, y_end: int, page_w: int,
+) -> list[VisualTextGroup]:
+    """Return bubbles with coordinates clipped to segment-local."""
+    return [
+        sliced
+        for sb in scanned
+        if (sliced := clip_group_to_slice(sb, y_start, y_end, page_w)) is not None
+    ]
+
+
+def _choose_page_cuts(img: np.ndarray, scanned: list[VisualTextGroup]) -> list[int]:
     h = img.shape[0]
     edge_cost = _row_edge_cost(img)
     cuts: list[int] = []
@@ -349,7 +309,9 @@ def _choose_page_cuts(img: np.ndarray, scanned: list) -> list[int]:
     return cuts
 
 
-def _cut_cost(y: int, target: int, scanned: list, edge_cost: np.ndarray) -> float:
+def _cut_cost(
+    y: int, target: int, scanned: list[VisualTextGroup], edge_cost: np.ndarray,
+) -> float:
     cost = abs(y - target) * _DISTANCE_CUT_WEIGHT
     y0 = max(0, y - _CUT_BAND)
     y1 = min(len(edge_cost), y + _CUT_BAND + 1)
@@ -357,16 +319,13 @@ def _cut_cost(y: int, target: int, scanned: list, edge_cost: np.ndarray) -> floa
         cost += float(edge_cost[y0:y1].mean()) * _EDGE_CUT_WEIGHT
 
     for sb in scanned:
-        text_range = _polygon_y_range(sb.render_polygon)
-        if _crosses(y, text_range):
+        if _crosses(y, _polygon_y_range(sb.render_polygon)):
             cost += _TEXT_CUT_PENALTY
         if _crosses(y, _fit_y_range(sb)):
             cost += _FIT_CUT_PENALTY
-        scope = getattr(sb, "scope_bbox", None)
-        if scope is not None and _crosses(y, (float(scope[1]), float(scope[3]))):
+        if sb.scope_bbox is not None and _crosses(y, (float(sb.scope_bbox[1]), float(sb.scope_bbox[3]))):
             cost += _SCOPE_CUT_PENALTY
-        erase_bbox = getattr(sb, "erase_bbox", None)
-        if erase_bbox is not None and _crosses(y, (float(erase_bbox[1]), float(erase_bbox[3]))):
+        if _crosses(y, (float(sb.erase_bbox[1]), float(sb.erase_bbox[3]))):
             cost += _FIT_CUT_PENALTY
     return cost
 
@@ -385,7 +344,7 @@ def _polygon_y_range(polygon: list[list[float]]) -> tuple[float, float]:
     return min(p[1] for p in polygon), max(p[1] for p in polygon)
 
 
-def _fit_y_range(sb) -> tuple[float, float]:
+def _fit_y_range(sb: VisualTextGroup) -> tuple[float, float]:
     ranges = [_polygon_y_range(sb.render_polygon)]
     for mask in sb.erase_masks:
         ranges.append((float(mask.y), float(mask.y + mask.image.shape[0])))
@@ -393,21 +352,4 @@ def _fit_y_range(sb) -> tuple[float, float]:
 
 
 def _crosses(y: int, y_range: tuple[float, float]) -> bool:
-    y1, y2 = y_range
-    return y1 < y < y2
-
-
-def _slice_scanned_bubble(sb, y_start: int, y_end: int, page_w: int):
-    from .vision.visual_group import clip_group_to_slice
-    return clip_group_to_slice(sb, y_start, y_end, page_w)
-
-
-def _overlaps_y(poly_a: list[list[float]], poly_b: list[list[float]]) -> bool:
-    """Check if two polygons overlap vertically (>50% of shorter range)."""
-    a_min = min(p[1] for p in poly_a)
-    a_max = max(p[1] for p in poly_a)
-    b_min = min(p[1] for p in poly_b)
-    b_max = max(p[1] for p in poly_b)
-    overlap = max(0, min(a_max, b_max) - max(a_min, b_min))
-    shorter = min(a_max - a_min, b_max - b_min)
-    return overlap > shorter * 0.5 if shorter > 0 else False
+    return y_range[0] < y < y_range[1]

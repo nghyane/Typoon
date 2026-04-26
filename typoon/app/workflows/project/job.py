@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ....domain.bubble import Page
 from ....ports import ChapterSource
-from ....vision.chapter_images import ChapterImages
+from ....vision.chapter_images import LazyPageProvider
 
 
 @dataclass
@@ -17,5 +17,5 @@ class _Job:
     t0: float
     action: str
     pages: list[Page] | None = None
-    images: ChapterImages | None = None
+    images: LazyPageProvider | None = None
     pairs: list[tuple[str, str]] | None = None
