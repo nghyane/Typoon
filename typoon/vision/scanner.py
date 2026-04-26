@@ -1,30 +1,17 @@
-"""Page scanner — PP-OCR det + platform OCR.
+"""Page scanner — PP-OCR text units + optional scope grouping + OCR.
 
 Detection: PP-OCR det (shared, all platforms).
 Recognition: Apple Vision (macOS) or Tesseract (Win/Server).
-Both OCR backends work on whole-bubble crops.
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
-from .types import TextMask, TextRegion
-
-_PPOCR_MAX_TILE_HEIGHT = 2048
-
-
-@dataclass
-class ScannedBubble:
-    """A merged text bubble with recognized text."""
-
-    polygon: list[list[float]]
-    text: str
-    confidence: float
-    masks: list[TextMask] = field(default_factory=list)
+from .types import VisualTextGroup
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -33,58 +20,30 @@ class ScannedBubble:
 
 
 class _BaseScanner:
-    """PP-OCR det → merge → OCR (subclass). Shared detection logic."""
+    """PP-OCR det plus platform OCR. Grouping lives in text_grouping."""
 
     def __init__(self, detector) -> None:
         from .detect import TextDetector
         self._det: TextDetector = detector
 
-    def scan(self, image: np.ndarray) -> list[ScannedBubble]:
-        from .merge import group_lines
-        from .tiling import compute_tiles, deduplicate_regions, offset_regions
+    def scan(
+        self,
+        image: np.ndarray,
+        *,
+        scope_model: Any | None = None,
+        scope_imgsz: int = 640,
+        scope_conf: float = 0.3,
+    ) -> list[VisualTextGroup]:
+        """PP-OCR detect → YOLO scope → heuristic subgroup → OCR group crops."""
+        from .text_grouping import group_and_ocr
 
-        h, w = image.shape[:2]
-        tiles = compute_tiles(h, _PPOCR_MAX_TILE_HEIGHT)
-
-        all_regions: list[TextRegion] = []
-        all_probs: list[tuple[int, int, np.ndarray]] = []
-
-        for tile_y, tile_h in tiles:
-            tile_img = image[tile_y:tile_y + tile_h]
-            output = self._det.detect(tile_img)
-            if len(tiles) > 1:
-                offset_regions(output.regions, tile_y, image)
-            all_regions.extend(output.regions)
-            if output.prob_image is not None:
-                all_probs.append((tile_y, tile_h, output.prob_image))
-
-        if len(tiles) > 1:
-            all_regions = deduplicate_regions(all_regions)
-
-        prob_image = _composite_prob(all_probs, h, w)
-        merged = group_lines(all_regions, prob_image, image=image)
-
-        # Crop whole bubbles for OCR
-        bubble_crops = []
-        bubble_indices = []
-        for i, mb in enumerate(merged):
-            crop = _crop_bubble(image, mb.polygon)
-            if crop is not None:
-                bubble_crops.append(crop)
-                bubble_indices.append(i)
-
-        ocr_results = self._ocr_crops(bubble_crops)
-
-        result: list[ScannedBubble] = []
-        for idx, (text, conf) in zip(bubble_indices, ocr_results):
-            if not text.strip():
-                continue
-            mb = merged[idx]
-            result.append(ScannedBubble(
-                polygon=mb.polygon, text=text.strip(),
-                confidence=conf, masks=mb.masks,
-            ))
-        return result
+        return group_and_ocr(
+            self,
+            image,
+            yolo_model=scope_model,
+            yolo_imgsz=scope_imgsz,
+            yolo_conf=scope_conf,
+        )
 
     def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
         """Subclass implements: OCR a list of bubble crops."""
@@ -267,40 +226,6 @@ class TesseractScanner(_BaseScanner):
             conf = 0.9 if text else 0.0
             results.append((text, conf))
         return results
-
-
-# ═════════════════════════════════════════════════════════════════════
-# Helpers
-# ═════════════════════════════════════════════════════════════════════
-
-
-def _crop_bubble(image: np.ndarray, polygon: list[list[float]]) -> np.ndarray | None:
-    """Crop bubble region from image with small padding."""
-    h, w = image.shape[:2]
-    xs = [p[0] for p in polygon]
-    ys = [p[1] for p in polygon]
-    pad = int(max(max(xs) - min(xs), max(ys) - min(ys)) * 0.1)
-    x1 = max(0, int(min(xs)) - pad)
-    y1 = max(0, int(min(ys)) - pad)
-    x2 = min(w, int(max(xs)) + pad)
-    y2 = min(h, int(max(ys)) + pad)
-    if x2 - x1 < 5 or y2 - y1 < 5:
-        return None
-    return image[y1:y2, x1:x2]
-
-
-def _composite_prob(
-    probs: list[tuple[int, int, np.ndarray]], h: int, w: int,
-) -> np.ndarray | None:
-    if not probs:
-        return None
-    prob_image = np.zeros((h, w), dtype=np.uint8)
-    for tile_y, _, prob in probs:
-        ph, pw = prob.shape[:2]
-        prob_image[tile_y:tile_y + ph, :pw] = np.maximum(
-            prob_image[tile_y:tile_y + ph, :pw], prob[:, :pw],
-        )
-    return prob_image
 
 
 def _tesseract_available() -> bool:

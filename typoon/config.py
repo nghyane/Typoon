@@ -46,6 +46,7 @@ class Config(BaseSettings):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     translation: TranslationConfig = TranslationConfig()
     context_agent: ContextAgentConfig = ContextAgentConfig()
+    bubble_scope_imgsz: int = 640
 
 
 # ── Loading ──────────────────────────────────────────────────────

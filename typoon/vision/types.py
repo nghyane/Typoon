@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -44,4 +44,29 @@ class MergedBubble:
     masks: list[TextMask]
 
 
+@dataclass
+class VisualTextGroup:
+    """Canonical source of truth for one accepted visual text group.
 
+    No compatibility aliases. Callers use explicit field names:
+    - render_polygon for render geometry
+    - erase_masks for inpaint masks
+    - text_polygon / text_masks for OCR/debug geometry
+    """
+
+    text: str
+    confidence: float
+    text_polygon: list[list[float]]
+    render_polygon: list[list[float]]
+    text_bbox: list[int]
+    mask_bbox: list[int]
+    fit_bbox: list[int]
+    erase_bbox: list[int]
+    scope_bbox: list[int] | None = None
+    scope_confidence: float | None = None
+    text_masks: list[TextMask] = field(default_factory=list)
+    erase_masks: list[TextMask] = field(default_factory=list)
+    source: str = "unknown"
+    unit_indices: list[int] = field(default_factory=list)
+    accepted: bool = True
+    reject_reason: str | None = None

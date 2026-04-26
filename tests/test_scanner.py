@@ -14,13 +14,13 @@ import numpy as np
 import pytest
 
 from typoon.vision.scanner import (
-    ScannedBubble,
     TesseractScanner,
     VisionScanner,
     _tesseract_available,
     _vision_available,
     create_scanner,
 )
+from typoon.vision.types import VisualTextGroup
 from .conftest import FIXTURES_DIR, MODELS_DIR, skip_no_ppocr_det
 
 
@@ -51,10 +51,20 @@ skip_no_tesseract = pytest.mark.skipif(not _tesseract_available(), reason="Tesse
 # ── Types + factory ──────────────────────────────────────────────
 
 def test_scanned_bubble_defaults():
-    b = ScannedBubble(polygon=[[0, 0], [100, 0], [100, 50], [0, 50]], text="hi", confidence=0.9)
+    polygon = [[0, 0], [100, 0], [100, 50], [0, 50]]
+    b = VisualTextGroup(
+        text="hi",
+        confidence=0.9,
+        text_polygon=polygon,
+        render_polygon=polygon,
+        text_bbox=[0, 0, 100, 50],
+        mask_bbox=[0, 0, 100, 50],
+        fit_bbox=[0, 0, 100, 50],
+        erase_bbox=[0, 0, 100, 50],
+    )
     assert b.text == "hi"
     assert b.confidence == 0.9
-    assert b.masks == []
+    assert b.erase_masks == []
 
 
 def test_create_scanner_needs_hub():
@@ -74,12 +84,12 @@ class TestVisionScanner:
         bubbles = _make_scanner(VisionScanner).scan(img)
         assert len(bubbles) >= 1
         for b in bubbles:
-            assert isinstance(b, ScannedBubble)
-            assert len(b.polygon) >= 4
+            assert isinstance(b, VisualTextGroup)
+            assert len(b.render_polygon) >= 4
             assert b.text.strip()
             assert b.confidence > 0
             h, w = img.shape[:2]
-            for p in b.polygon:
+            for p in b.render_polygon:
                 assert 0 <= p[0] <= w + 1
                 assert 0 <= p[1] <= h + 1
 

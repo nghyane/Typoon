@@ -36,11 +36,6 @@ class Bubble:
     def id(self) -> str:
         return f"p{self.page_index}_b{self.idx}"
 
-    @property
-    def masks(self) -> list[TextMask]:
-        """Erase masks — used by Eraser and renderer."""
-        return self.erase_masks
-
 
 @dataclass
 class Page:

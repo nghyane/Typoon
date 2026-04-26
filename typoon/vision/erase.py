@@ -1,7 +1,7 @@
-"""Text erasure — median fill + AOT-GAN inpainting.
+"""Text erasure — AOT-GAN inpainting (primary) with median fill fallback.
 
-Dual-path: flat background → fast median fill, complex → AOT-GAN via ONNX Runtime.
 AOT-GAN: 22.7MB model, CoreML/ANE accelerated on Mac, CUDA/CPU on other platforms.
+Median fill used only when AOT model is unavailable or inference fails.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ _MIN_CONTEXT_PAD = 64
 _INPAINT_MAX_DIM = 512
 _CONTEXT_RATIO = 0.5
 _CLUSTER_MARGIN = 16
-_FLAT_BG_MAX_RANGE = 2  # max per-channel range (max-min) of bg pixels; ≤ = safe to median fill
 
 
 # ── Eraser ───────────────────────────────────────────────────────────
@@ -37,7 +36,7 @@ class Eraser:
             self._inpainter = AOTInpainter(models_dir)
 
     def erase(self, canvas: np.ndarray, masks: list[TextMask]) -> np.ndarray:
-        """Erase text from RGBA canvas. Flat bg → fast median fill, complex → LaMa."""
+        """Erase text from RGBA canvas. AOT-first if available, median fallback."""
         if not masks:
             return canvas
 
@@ -48,16 +47,8 @@ class Eraser:
                 _erase_with_median(canvas, m)
             return canvas
 
-        # Single-pass: classify each mask and fill flat ones immediately
-        complex_masks: list[TextMask] = []
-        for m in masks:
-            color = _classify_and_fill(canvas, m, ch, cw)
-            if color is None:
-                complex_masks.append(m)
-
-        if complex_masks:
-            for cluster in _cluster_masks(complex_masks):
-                self._erase_with_inpaint(canvas, cluster, cw, ch)
+        for cluster in _cluster_masks(masks):
+            self._erase_with_inpaint(canvas, cluster, cw, ch)
 
         return canvas
 
@@ -68,8 +59,7 @@ class Eraser:
         cw: int,
         ch: int,
     ) -> None:
-        # Light dilation to catch residual text edges
-        cluster = [_dilate_mask(m, fraction=0.03) for m in cluster]
+        # Erase masks arrive pre-dilated from build_erase_masks(); no extra dilation needed.
         crop_x1, crop_y1, crop_x2, crop_y2 = _cluster_crop(cluster, cw, ch)
         crop_w, crop_h = crop_x2 - crop_x1, crop_y2 - crop_y1
 
@@ -105,48 +95,6 @@ class Eraser:
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
-
-
-def _classify_and_fill(
-    canvas: np.ndarray, mask: TextMask,
-    ch: int, cw: int,
-) -> np.ndarray | None:
-    """Classify mask bg and fill if flat. Returns fill color, or None if complex.
-
-    Flat = per-channel range ≤ _FLAT_BG_MAX_RANGE for ALL channels.
-    When flat, fills immediately with the median color (single pass,
-    no redundant bg sampling).
-    """
-    mh, mw = mask.image.shape[:2]
-    y1 = max(mask.y, 0)
-    y2 = min(mask.y + mh, ch)
-    x1 = max(mask.x, 0)
-    x2 = min(mask.x + mw, cw)
-    if y1 >= y2 or x1 >= x2:
-        return np.array([255, 255, 255, 255], dtype=np.uint8)
-
-    region = canvas[y1:y2, x1:x2, :3]
-    mask_crop = mask.image[:y2 - y1, :x2 - x1]
-    bg = region[mask_crop == 0]
-
-    if len(bg) < 10:
-        return np.array([255, 255, 255, 255], dtype=np.uint8)
-
-    # Quick check: per-channel range
-    for c in range(3):
-        if int(bg[:, c].max()) - int(bg[:, c].min()) > _FLAT_BG_MAX_RANGE:
-            return None  # complex → needs LaMa
-
-    # Flat bg — compute median color and fill in one shot
-    color = np.empty(4, dtype=np.uint8)
-    color[:3] = np.median(bg, axis=0).astype(np.uint8)
-    color[3] = 255
-
-    # Dilated fill (~5% expansion for edge coverage)
-    pad = mh // 20
-    apply = _dilate_into_larger(mask, pad) if pad > 0 else mask
-    _apply_color(canvas, apply, color)
-    return color
 
 
 def _context_pad(mask_w: int, mask_h: int) -> int:

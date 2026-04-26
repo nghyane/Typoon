@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -18,19 +19,37 @@ from .domain.bubble import Bubble, Page
 from .vision.chapter_images import ChapterImages
 from .vision.erase import Eraser
 from .vision.types import TextMask
+from .vision.visual_group import offset_group
 
 _NO_HOOK = Hook()
 _BOUNDARY_OVERLAP = 500  # px scanned from each side of page boundary
 _MAX_PAGE_HEIGHT = 2500  # pages taller than this get split
+_CUT_TARGET_HEIGHT = 1800
+_CUT_MIN_HEIGHT = 800
+_TEXT_CUT_PENALTY = 1_000_000.0
+_SCOPE_CUT_PENALTY = 100_000.0
+_FIT_CUT_PENALTY = 50_000.0
+_DISTANCE_CUT_WEIGHT = 0.35
+_EDGE_CUT_WEIGHT = 12.0
+_CUT_BAND = 8
 
 
 class Engine:
     """Vision compute: preprocess, erase, render. Stateless."""
 
-    def __init__(self, scanner, eraser: Eraser) -> None:
+    def __init__(
+        self,
+        scanner,
+        eraser: Eraser,
+        hub: ModelHub,
+        *,
+        bubble_scope_imgsz: int = 640,
+    ) -> None:
         self.scanner = scanner
         self.eraser = eraser
-        self._hub: ModelHub | None = None
+        self._hub = hub
+        self._bubble_scope_imgsz = bubble_scope_imgsz
+        self._yolo_model = None
 
     @staticmethod
     def from_config(config=None, paths=None):
@@ -42,17 +61,10 @@ class Engine:
         hub = ModelHub(Path(config.models_dir))
         engine = Engine(
             scanner=create_scanner(hub=hub),
-            eraser=Eraser(config.models_dir),
+            eraser=Eraser(str(hub.dir)),
+            hub=hub,
+            bubble_scope_imgsz=config.bubble_scope_imgsz,
         )
-        engine._hub = hub
-
-        # Preload CoreML models (eliminates ~2s cold start on first page)
-        if hasattr(engine.scanner, '_det') and hasattr(engine.scanner._det, '_backend'):
-            backend = engine.scanner._det._backend
-            if hasattr(backend, '_impl') and hasattr(backend._impl, '_ensure_loaded'):
-                backend._impl._ensure_loaded()
-        if engine.eraser._inpainter is not None:
-            engine.eraser._inpainter._ensure_loaded()
 
         return engine, config, paths
 
@@ -69,17 +81,13 @@ class Engine:
     def ensure_scan_models(self) -> None:
         if self.scanner is not None:
             return
-        if self._hub is None:
-            raise RuntimeError("Cannot reload models: Engine not created via from_config()")
         from .vision.scanner import create_scanner
         self.scanner = create_scanner(hub=self._hub)
 
     def ensure_erase_models(self) -> None:
         if self.eraser is not None:
             return
-        if self._hub is None:
-            raise RuntimeError("Cannot reload models: Engine not created via from_config()")
-        self.eraser = Eraser(self._hub._dir)
+        self.eraser = Eraser(str(self._hub.dir))
 
     # ── Preprocess ───────────────────────────────────────────────
 
@@ -99,7 +107,7 @@ class Engine:
         page_results: list[tuple[list, np.ndarray]] = []  # (scanned_bubbles, image)
         for i in range(n):
             img = source.load_page(i)
-            scanned = self.scanner.scan(img)
+            scanned = self._scan_page(img)
             page_results.append((scanned, img))
 
         # Phase 2: scan boundary overlap zones to catch split bubbles
@@ -122,8 +130,9 @@ class Engine:
                 page.bubbles.append(Bubble(
                     idx=len(page.bubbles),
                     page_index=i,
-                    polygon=sb.polygon,
-                    masks=sb.masks,
+                    polygon=sb.render_polygon,
+                    erase_masks=sb.erase_masks,
+                    text_masks=sb.text_masks,
                     source_text=sb.text,
                     ocr_confidence=sb.confidence,
                 ))
@@ -137,6 +146,28 @@ class Engine:
             ))
 
         return pages, images
+
+    def _get_yolo_model(self) -> Any | None:
+        if self._yolo_model is None:
+            from .vision.bubble_scope import load_yolo_model
+            import sys
+            if sys.platform == "darwin":
+                path = self._hub.resolve("bubble-scope-yolov8m.mlpackage")
+            else:
+                path = self._hub.resolve("bubble-scope-yolov8m.pt")
+            self._yolo_model = load_yolo_model(path)
+        return self._yolo_model
+
+    def scan_page(self, image: np.ndarray):
+        """Scan a page into canonical visual text groups."""
+        return self._scan_page(image)
+
+    def _scan_page(self, image: np.ndarray):
+        return self.scanner.scan(
+            image,
+            scope_model=self._get_yolo_model(),
+            scope_imgsz=self._bubble_scope_imgsz,
+        )
 
     def _scan_boundary_zones(
         self, page_results: list[tuple[list, np.ndarray]],
@@ -174,31 +205,28 @@ class Engine:
             split_y = top_part.shape[0]  # boundary within zone
             zone_y_offset = h_a - top_part.shape[0]  # zone start in page A coords
 
-            zone_bubbles = self.scanner.scan(zone)
+            zone_bubbles = self._scan_page(zone)
 
             # Find bubbles that cross the boundary
             for sb in zone_bubbles:
-                ys = [p[1] for p in sb.polygon]
+                ys = [p[1] for p in sb.render_polygon]
                 if min(ys) < split_y and max(ys) > split_y:
                     # Cross-boundary bubble — assign to page where center is
                     cy = (min(ys) + max(ys)) / 2
                     if cy < split_y:
                         # Assign to page A, shift to page-A coords
-                        sb.polygon = [[p[0], p[1] + zone_y_offset] for p in sb.polygon]
-                        sb.masks = [TextMask(x=m.x, y=m.y + zone_y_offset, image=m.image) for m in sb.masks]
-                        # Remove any partial bubble near bottom of page A
+                        sb = offset_group(sb, zone_y_offset)
                         scanned_a = [
                             s for s in scanned_a
-                            if not _overlaps_y(s.polygon, sb.polygon)
+                            if not _overlaps_y(s.render_polygon, sb.render_polygon)
                         ]
                         scanned_a.append(sb)
                     else:
                         # Assign to page B, shift to page-B coords
-                        sb.polygon = [[p[0], p[1] - split_y] for p in sb.polygon]
-                        sb.masks = [TextMask(x=m.x, y=m.y - split_y, image=m.image) for m in sb.masks]
+                        sb = offset_group(sb, -split_y)
                         scanned_b = [
                             s for s in scanned_b
-                            if not _overlaps_y(s.polygon, sb.polygon)
+                            if not _overlaps_y(s.render_polygon, sb.render_polygon)
                         ]
                         scanned_b.append(sb)
 
@@ -222,7 +250,7 @@ class Engine:
             t0 = time.time()
             h, w = img.shape[:2]
             canvas = np.dstack([img, np.full((h, w), 255, dtype=np.uint8)])
-            masks = [m for b in page.bubbles for m in b.masks]
+            masks = [m for b in page.bubbles for m in b.erase_masks]
             self.eraser.erase(canvas, masks)
             erased = canvas[:, :, :3]
             del canvas
@@ -255,7 +283,7 @@ class Engine:
             t0 = time.time()
             h, w = img.shape[:2]
             canvas = np.dstack([img, np.full((h, w), 255, dtype=np.uint8)])
-            masks = [m for b in page.bubbles for m in b.masks]
+            masks = [m for b in page.bubbles for m in b.erase_masks]
             self.eraser.erase(canvas, masks)
             page.erased = canvas[:, :, :3]
             del canvas
@@ -275,50 +303,103 @@ def _split_long_pages(
     Uses smart_split to find cut points that don't cut bubbles.
     Short pages pass through unchanged.
     """
-    from .vision.paginate import smart_split
 
     out: list[tuple[list, np.ndarray]] = []
 
     for scanned, img in page_results:
-        h = img.shape[0]
+        h, w = img.shape[:2]
         if h <= _MAX_PAGE_HEIGHT:
             out.append((scanned, img))
             continue
 
-        # Find cut points
-        bubble_y_ranges = [
-            (min(p[1] for p in sb.polygon), max(p[1] for p in sb.polygon))
-            for sb in scanned
-        ]
-        cuts = smart_split(h, [h], bubble_y_ranges)
+        cuts = _choose_page_cuts(img, scanned)
         if not cuts:
             out.append((scanned, img))
             continue
 
-        # Slice image and distribute bubbles
         boundaries = [0] + cuts + [h]
-        for si in range(len(boundaries) - 1):
-            y_start = boundaries[si]
-            y_end = boundaries[si + 1]
+        for y_start, y_end in zip(boundaries, boundaries[1:]):
             slice_img = img[y_start:y_end]
-
-            # Assign bubbles whose center falls in this slice
-            slice_bubbles = []
-            for sb in scanned:
-                cy = (min(p[1] for p in sb.polygon) + max(p[1] for p in sb.polygon)) / 2
-                if y_start <= cy < y_end:
-                    # Shift to slice-local coordinates
-                    sb_copy = type(sb)(
-                        polygon=[[p[0], p[1] - y_start] for p in sb.polygon],
-                        text=sb.text,
-                        confidence=sb.confidence,
-                        masks=[TextMask(x=m.x, y=m.y - y_start, image=m.image) for m in sb.masks],
-                    )
-                    slice_bubbles.append(sb_copy)
-
+            slice_bubbles = [
+                sliced
+                for sb in scanned
+                if (sliced := _slice_scanned_bubble(sb, y_start, y_end, page_w=w)) is not None
+            ]
             out.append((slice_bubbles, slice_img))
 
     return out
+
+
+def _choose_page_cuts(img: np.ndarray, scanned: list) -> list[int]:
+    h = img.shape[0]
+    edge_cost = _row_edge_cost(img)
+    cuts: list[int] = []
+    y = 0
+    while y + _MAX_PAGE_HEIGHT < h:
+        lo = y + _CUT_MIN_HEIGHT
+        hi = min(y + _MAX_PAGE_HEIGHT, h)
+        target = min(y + _CUT_TARGET_HEIGHT, hi)
+        candidates = range(lo, hi + 1)
+        cut = min(
+            candidates,
+            key=lambda cand: _cut_cost(cand, target, scanned, edge_cost),
+        )
+        cuts.append(cut)
+        y = cut
+    return cuts
+
+
+def _cut_cost(y: int, target: int, scanned: list, edge_cost: np.ndarray) -> float:
+    cost = abs(y - target) * _DISTANCE_CUT_WEIGHT
+    y0 = max(0, y - _CUT_BAND)
+    y1 = min(len(edge_cost), y + _CUT_BAND + 1)
+    if y1 > y0:
+        cost += float(edge_cost[y0:y1].mean()) * _EDGE_CUT_WEIGHT
+
+    for sb in scanned:
+        text_range = _polygon_y_range(sb.render_polygon)
+        if _crosses(y, text_range):
+            cost += _TEXT_CUT_PENALTY
+        if _crosses(y, _fit_y_range(sb)):
+            cost += _FIT_CUT_PENALTY
+        scope = getattr(sb, "scope_bbox", None)
+        if scope is not None and _crosses(y, (float(scope[1]), float(scope[3]))):
+            cost += _SCOPE_CUT_PENALTY
+        erase_bbox = getattr(sb, "erase_bbox", None)
+        if erase_bbox is not None and _crosses(y, (float(erase_bbox[1]), float(erase_bbox[3]))):
+            cost += _FIT_CUT_PENALTY
+    return cost
+
+
+def _row_edge_cost(img: np.ndarray) -> np.ndarray:
+    gray = img.mean(axis=2).astype(np.float32) if img.ndim == 3 else img.astype(np.float32)
+    if gray.shape[0] <= 1:
+        return np.zeros(gray.shape[0], dtype=np.float32)
+    vertical_delta = np.abs(np.diff(gray, axis=0)).mean(axis=1)
+    cost = np.concatenate([vertical_delta[:1], vertical_delta])
+    max_cost = float(cost.max())
+    return cost / max_cost if max_cost > 0 else cost
+
+
+def _polygon_y_range(polygon: list[list[float]]) -> tuple[float, float]:
+    return min(p[1] for p in polygon), max(p[1] for p in polygon)
+
+
+def _fit_y_range(sb) -> tuple[float, float]:
+    ranges = [_polygon_y_range(sb.render_polygon)]
+    for mask in sb.erase_masks:
+        ranges.append((float(mask.y), float(mask.y + mask.image.shape[0])))
+    return min(r[0] for r in ranges), max(r[1] for r in ranges)
+
+
+def _crosses(y: int, y_range: tuple[float, float]) -> bool:
+    y1, y2 = y_range
+    return y1 < y < y2
+
+
+def _slice_scanned_bubble(sb, y_start: int, y_end: int, page_w: int):
+    from .vision.visual_group import clip_group_to_slice
+    return clip_group_to_slice(sb, y_start, y_end, page_w)
 
 
 def _overlaps_y(poly_a: list[list[float]], poly_b: list[list[float]]) -> bool:
