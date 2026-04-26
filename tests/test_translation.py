@@ -7,6 +7,7 @@ import json
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
+from typoon.translation.brief import ChapterBrief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
 from typoon.translation.translate import translate_pages
 
@@ -56,6 +57,19 @@ class TestTool:
         }))
         assert args.items[0].key == "ABC2345"
         assert args.items[1].status == "skip"
+
+
+class TestChapterBrief:
+    def test_accepts_model_page_labels(self):
+        brief = ChapterBrief.from_json(json.dumps({
+            "page_notes": {"p0": "intro", "page 12": "fight"},
+            "look_requests": [
+                {"page_index": "p0", "keys": ["ABC2345"], "query": "speaker?"},
+            ],
+        }))
+        assert brief.page_notes[0] == "intro"
+        assert brief.page_notes[12] == "fight"
+        assert brief.look_requests[0].page_index == 0
 
 
 class TestTranslate:

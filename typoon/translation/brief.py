@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,11 +46,11 @@ class ChapterBrief:
             glossary={str(k): str(v) for k, v in (data.get("glossary", {}) or {}).items()},
             style_rules=[str(x) for x in data.get("style_rules", []) or []],
             pronoun_rules=[str(x) for x in data.get("pronoun_rules", []) or []],
-            page_notes={int(k): str(v) for k, v in (data.get("page_notes", {}) or {}).items()},
+            page_notes={_page_index(k): str(v) for k, v in (data.get("page_notes", {}) or {}).items()},
             key_notes={str(k): str(v) for k, v in (data.get("key_notes", {}) or {}).items()},
             look_requests=[
                 LookRequest(
-                    page_index=int(x.get("page_index", 0)),
+                    page_index=_page_index(x.get("page_index", 0)),
                     keys=[str(k) for k in x.get("keys", [])],
                     query=str(x.get("query", "")),
                 )
@@ -103,3 +104,12 @@ def _extract_json(text: str) -> dict:
     if start >= 0 and end > start:
         return json.loads(s[start:end + 1])
     return {}
+
+
+def _page_index(value: object) -> int:
+    """Parse model page labels such as 0, "0", "p0", or "page 0"."""
+    if isinstance(value, int):
+        return value
+    s = str(value).strip().lower()
+    m = re.search(r"-?\d+", s)
+    return int(m.group(0)) if m else 0
