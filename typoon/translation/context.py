@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from typoon.app.events import LLMCall, LLMResponse, PipelineError
+from typoon.app.events import LLMCall, LLMResponse
 from typoon.domain.bubble import Page, Session
 from typoon.llm.ir import Message
 
@@ -28,21 +28,20 @@ async def build_chapter_brief(pages: list[Page], session: Session) -> tuple[Chap
     hook = session.hook
     hook.on(LLMCall(agent="translate/context", turn=1))
     t0 = time.monotonic()
-    try:
-        resp = await session.context_provider.call(
-            [Message.system(system), Message.user_text(user)],
-            tools=[submit_chapter_brief.definition],
-        )
-    except Exception as e:
-        hook.on(PipelineError(stage="translate/context", error=e))
-        raise
+    resp = await session.context_provider.call(
+        [Message.system(system), Message.user_text(user)],
+        tools=[submit_chapter_brief.definition],
+    )
     ms = (time.monotonic() - t0) * 1000
     n_tools = len(resp.tool_calls) if resp.tool_calls else 0
     hook.on(LLMResponse(agent="translate/context", turn=1, tool_calls=n_tools, ms=ms))
 
-    brief = _parse_tool(resp) or ChapterBrief.from_json(resp.text or "{}")
-    if not brief.summary and not brief.glossary and not brief.page_notes:
-        hook.on(PipelineError(stage="translate/context", error=RuntimeError("empty chapter brief")))
+    brief = _parse_tool(resp)
+    if brief is None:
+        raise RuntimeError(
+            f"Context model did not call submit_chapter_brief. "
+            f"Text: {(resp.text or '')[:200]}"
+        )
     return brief, 1
 
 

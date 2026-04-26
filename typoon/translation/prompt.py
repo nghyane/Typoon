@@ -39,8 +39,7 @@ Statuses:
 - skip: do not render this text, text must be empty
 - need_look: visual context is needed, text is a short reason or empty
 
-Prefer calling submit_translations. If tools are unavailable, output lines:
-#KEY | status | text
+Call submit_translations with the results.
 
 {source_policy}
 {target_policy}"""

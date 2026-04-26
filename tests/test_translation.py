@@ -12,7 +12,7 @@ from typoon.translation.tools.brief import submit_chapter_brief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
 from typoon.translation.translate import translate_pages
 
-from .conftest import MockProvider, make_session, make_text_response
+from .conftest import MockProvider, make_session
 
 
 def _brief_response() -> CallResponse:
@@ -70,57 +70,38 @@ class TestTool:
         assert args.items[1].status.value == "skip"
 
 
-class TestChapterBrief:
-    def test_accepts_model_page_labels(self):
-        brief = ChapterBrief.from_json(json.dumps({
-            "page_notes": {"p0": "intro", "page 12": "fight"},
-            "look_requests": [
-                {"page_index": "p0", "keys": ["ABC2345"], "query": "speaker?"},
-            ],
-        }))
-        assert brief.page_notes[0] == "intro"
-        assert brief.page_notes[12] == "fight"
-        assert brief.look_requests[0].page_index == 0
-
-
 class TestTranslate:
     @pytest.mark.asyncio
     async def test_keyed_tool_translation(self):
         pages, session = make_session(3)
         session.context_provider = MockProvider([_brief_response()])
-        session.provider = MockProvider([])
-
-        original_call = session.provider.call
 
         async def call(messages, tools):
             keys = [b.translation_key for b in pages[0].bubbles]
             return _tool_response([(keys[0], "ok", "A"), (keys[1], "skip", ""), (keys[2], "ok", "C")])
 
+        session.provider = MockProvider([])
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
-        assert original_call is not None
         assert err is None
         assert turns == 2
         assert [b.translated_text for b in pages[0].bubbles] == ["A", "", "C"]
         assert pages[0].bubbles[1].translation_status == "skip"
 
     @pytest.mark.asyncio
-    async def test_keyed_text_fallback_shuffled(self):
-        pages, session = make_session(3)
+    async def test_no_tool_call_raises(self):
+        """Model returning text instead of tool call should error."""
+        pages, session = make_session(1)
         session.context_provider = MockProvider([_brief_response()])
 
         async def call(messages, tools):
-            keys = [b.translation_key for b in pages[0].bubbles]
-            return make_text_response(
-                f"#{keys[2]} | ok | C\n#{keys[0]} | ok | A\n#{keys[1]} | ok | B"
-            )
+            return CallResponse(text="some text without tool call")
 
         session.provider = MockProvider([])
         session.provider.call = call
         turns, err = await translate_pages(pages, session)
-        assert err is None
-        assert turns == 2
-        assert [b.translated_text for b in pages[0].bubbles] == ["A", "B", "C"]
+        assert err is not None
+        assert "submit_translations" in str(err)
 
     @pytest.mark.asyncio
     async def test_brief_saved_after_success(self):
@@ -129,7 +110,7 @@ class TestTranslate:
 
         async def call(messages, tools):
             key = pages[0].bubbles[0].translation_key
-            return make_text_response(f"#{key} | ok | A")
+            return _tool_response([(key, "ok", "A")])
 
         session.provider = MockProvider([])
         session.provider.call = call
@@ -138,3 +119,13 @@ class TestTranslate:
         saved = await session.store.get_recent_chapter_briefs(session.project_id, 99, limit=1)
         assert saved
         assert saved[0]["brief"]["summary"] == "test chapter"
+
+    @pytest.mark.asyncio
+    async def test_no_brief_tool_call_raises(self):
+        """Context model returning text instead of tool call should error."""
+        pages, session = make_session(1)
+        session.context_provider = MockProvider([CallResponse(text="no tool")])
+        session.provider = MockProvider([])
+        turns, err = await translate_pages(pages, session)
+        assert err is not None
+        assert "submit_chapter_brief" in str(err)

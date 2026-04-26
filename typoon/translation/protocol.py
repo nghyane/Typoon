@@ -1,8 +1,7 @@
-"""Keyed translation protocol parsing and validation."""
+"""Keyed translation protocol: tool-call parsing and validation."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from typoon.domain.bubble import Bubble
@@ -10,14 +9,11 @@ from typoon.llm.ir import CallResponse
 
 from .tools.submit import SubmitArgs
 
-_LINE_RE = re.compile(r"^\s*#?([A-Z2-9]{6,8})\s*\|\s*(ok|skip|need_look)\s*\|?\s*(.*)$", re.I)
-_LEGACY_RE = re.compile(r"^\s*#?([A-Z2-9]{6,8})\s*:\s*(.*)$")
-
 
 @dataclass(slots=True)
 class TranslationOp:
     key: str
-    status: str
+    status: str  # ok | skip | need_look
     text: str = ""
 
 
@@ -29,30 +25,22 @@ class ValidationResult:
 
 
 def parse_response(resp: CallResponse) -> list[TranslationOp]:
-    ops = _parse_tools(resp)
-    if ops:
-        return ops
-    return parse_text(resp.text or "")
-
-
-def parse_text(text: str) -> list[TranslationOp]:
+    """Parse submit_translations tool calls. Raises if no valid tool call."""
     ops: list[TranslationOp] = []
-    for line in text.splitlines():
-        m = _LINE_RE.match(line)
-        if m:
-            key, status, value = m.group(1), m.group(2).lower(), m.group(3).strip()
-            ops.append(TranslationOp(key=key, status=status, text=_strip_quotes(value)))
+    for tc in resp.tool_calls or []:
+        if tc.name != "submit_translations":
             continue
-        m = _LEGACY_RE.match(line)
-        if m:
-            key, value = m.group(1), _strip_quotes(m.group(2).strip())
-            marker = value.lower()
-            if marker == "[skip]":
-                ops.append(TranslationOp(key=key, status="skip"))
-            elif marker == "[need_look]":
-                ops.append(TranslationOp(key=key, status="need_look"))
-            elif value:
-                ops.append(TranslationOp(key=key, status="ok", text=value))
+        try:
+            args = SubmitArgs.model_validate_json(tc.arguments)
+        except Exception:
+            continue
+        for item in args.items:
+            ops.append(TranslationOp(key=item.key, status=item.status.value, text=item.text))
+    if not ops:
+        raise ValueError(
+            f"Model did not call submit_translations. "
+            f"Text response: {(resp.text or '')[:200]}"
+        )
     return ops
 
 
@@ -100,23 +88,3 @@ def validate_ops(
                 continue
             need_look.append(TranslationOp(key=key, status="need_look", text=text))
     return ValidationResult(accepted=accepted, need_look=need_look, invalid=invalid)
-
-
-def _parse_tools(resp: CallResponse) -> list[TranslationOp]:
-    ops: list[TranslationOp] = []
-    for tc in resp.tool_calls or []:
-        if tc.name != "submit_translations":
-            continue
-        try:
-            args = SubmitArgs.model_validate_json(tc.arguments)
-        except Exception:
-            continue
-        for item in args.items:
-            ops.append(TranslationOp(key=item.key, status=item.status.value, text=item.text))
-    return ops
-
-
-def _strip_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1].strip()
-    return value
