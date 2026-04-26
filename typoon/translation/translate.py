@@ -32,7 +32,7 @@ async def translate_pages(pages: list[Page], session: Session) -> tuple[int, Exc
             for op in accepted:
                 b = key_map[op.key]
                 b.translation_status = op.kind
-                b.translated_text = op.text if op.kind in ("dialogue", "narration", "sfx") else ""
+                b.translated_text = op.text if op.kind not in ("noise", "meta") else ""
 
         await session.store.save_chapter_brief(session.project_id, session.chapter, brief.to_dict())
         return turns, None

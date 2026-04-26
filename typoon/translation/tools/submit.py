@@ -12,7 +12,9 @@ from typoon.llm.tool_dec import tool
 class TextKind(str, Enum):
     dialogue = "dialogue"
     narration = "narration"
+    thought = "thought"
     sfx = "sfx"
+    system_text = "system_text"
     noise = "noise"
     meta = "meta"
 

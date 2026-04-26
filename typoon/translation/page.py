@@ -76,7 +76,7 @@ class PageAgent:
             if key not in self._active:
                 errors.append(f"#{key}: already accepted or not in active set")
                 continue
-            if kind in ("dialogue", "narration", "sfx") and not text:
+            if kind in ("dialogue", "narration", "thought", "sfx", "system_text") and not text:
                 errors.append(f"#{key}: {kind} requires translated text")
                 continue
             if text and (key in text or f"#{key}" in text):
