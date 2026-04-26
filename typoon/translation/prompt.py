@@ -13,9 +13,8 @@ Analyze the keyed chapter text to prepare a translation brief.
 Identify: character relationships, xưng hô/address rules, recurring terms,
 page situations, and any bubbles needing visual clarification.
 
-You may call search_knowledge or look_at if needed, but limit research to
-2-3 calls. Then you MUST call submit_chapter_brief with your analysis.
-Do not keep researching indefinitely.
+You may call search_knowledge or look_at as many times as needed.
+When your analysis is ready, you MUST call submit_chapter_brief.
 
 {source_policy}
 {target_policy}"""
