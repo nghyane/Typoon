@@ -199,5 +199,43 @@ Each phase:
 Single binary: `comicscan`
 - `comicscan detect <path>` — vision only
 - `comicscan translate <path>` — full pipeline
-- `comicscan serve` — API server
+- `comicscan serve` — local web UI + API server
 - ~20MB binary + model files (~50MB)
+
+## Distribution Model
+
+Self-hosted desktop app. User downloads binary, runs `comicscan serve`,
+opens browser at localhost:8080.
+
+### Hybrid monetization
+
+**Free tier (BYOK):** User provides own LLM API key (OpenAI/Gemini).
+App calls LLM directly. Zero cost for us. Unlimited usage.
+
+**Paid tier (Cloud):** User subscribes ($5/mo). App routes LLM calls
+through `api.comicscan.com` proxy. No API key needed. We markup LLM
+cost (~$0.02/chapter → $0.05).
+
+### Proxy server
+
+Lightweight — only forwards LLM requests, no vision compute:
+
+```
+App (local) → api.comicscan.com → OpenAI/Gemini
+               ├─ Verify subscription (license key)
+               ├─ Forward request
+               └─ Track usage per user
+```
+
+Single VPS ($5-20/mo) handles thousands of users.
+
+### API changes for hybrid
+
+```
+PUT /api/config
+  { "mode": "cloud", "license_key": "cs_..." }
+  or
+  { "mode": "byok", "provider": "openai", "api_key": "sk-..." }
+```
+
+App switches LLM endpoint based on mode. Vision always runs local.
