@@ -167,11 +167,22 @@ Request
 - `prompt.rs` — string templates
 - `session.rs` — chapter translation orchestration
 
-### Phase 4: Storage + API
+### Phase 4: CLI + Web UI (ship Free tier)
+- `cli/` — clap, `comicscan translate <path>`, `comicscan serve`
+- Web UI — Svelte/React, embed via rust-embed
 - `sqlite.rs` — port from Python sqlite store
-- `api/` — axum server, handlers
+- **This is the product. Ship here.**
 
-### Phase 5: CLI
+### Phase 5: Pro tier proxy
+- `api.comicscan.com` — lightweight proxy VPS
+- License key verification
+- LLM request forwarding + usage tracking
+- **This is revenue. Ship when Free tier has users.**
+
+### Phase 6: Cloud tier (deferred)
+- Serverless vision workers (CPU, Modal/RunPod)
+- S3 storage, auth, billing
+- **Ship when 50+ Pro users ask for it.**
 - `cli/` — clap, replaces typer CLI
 
 Each phase is independently testable. Phase 1 can be validated
@@ -249,9 +260,10 @@ App switches LLM endpoint based on mode. Vision always runs local
 | Pro | Local | Cloud proxy | Download binary | $5/mo |
 | Cloud | Server (GPU) | Server | Browser only | $15/mo |
 
-### Cloud tier
+### Cloud tier (Phase 6 — deferred)
 
 Full SaaS — user opens `app.comicscan.com`, no install.
+Deferred until 50+ Pro users request it.
 
 Same codebase, different deployment:
 
