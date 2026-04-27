@@ -238,4 +238,59 @@ PUT /api/config
   { "mode": "byok", "provider": "openai", "api_key": "sk-..." }
 ```
 
-App switches LLM endpoint based on mode. Vision always runs local.
+App switches LLM endpoint based on mode. Vision always runs local
+(Free/Pro tiers).
+
+## Pricing Tiers
+
+| Tier | Vision | Translation | User needs | Price |
+|---|---|---|---|---|
+| Free | Local | BYOK (own API key) | Download binary + LLM key | $0 |
+| Pro | Local | Cloud proxy | Download binary | $5/mo |
+| Cloud | Server (GPU) | Server | Browser only | $15/mo |
+
+### Cloud tier
+
+Full SaaS — user opens `app.comicscan.com`, no install.
+
+Same codebase, different deployment:
+
+```bash
+comicscan serve                # Free/Pro: local, localhost:8080
+comicscan serve --cloud        # Cloud: production, auth required
+```
+
+Cloud-specific modules behind feature flag:
+
+```rust
+#[cfg(feature = "cloud")]
+mod auth;          // JWT/session verification
+#[cfg(feature = "cloud")]
+mod s3_storage;    // source images + rendered output on S3
+```
+
+Vision pipeline, translation, render — identical across all tiers.
+
+### Cloud infrastructure
+
+```
+Browser → app.comicscan.com
+            ├─ API server (axum)
+            ├─ Vision workers (GPU instances, T4/A10)
+            ├─ LLM proxy
+            └─ Storage (S3)
+```
+
+Minimal viable:
+- 1 GPU instance (T4): $150-300/mo — ~50 concurrent users
+- 1 VPS (API + proxy): $20/mo
+- S3: ~$5/mo
+- Total: ~$200-350/mo
+- Break even: 25 Cloud users × $15 = $375/mo
+
+### Cost per chapter (Cloud tier)
+
+- GPU scan+render: ~$0.002 (5-10s GPU time)
+- LLM translation: ~$0.02
+- Total: ~$0.025/chapter
+- $15/mo budget: ~600 chapters/user/mo
