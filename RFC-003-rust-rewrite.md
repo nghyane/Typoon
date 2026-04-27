@@ -273,20 +273,26 @@ Vision pipeline, translation, render — identical across all tiers.
 
 ### Cloud infrastructure
 
+Serverless GPU — pay per request, $0 when idle.
+
 ```
-Browser → app.comicscan.com
-            ├─ API server (axum)
-            ├─ Vision workers (GPU instances, T4/A10)
-            ├─ LLM proxy
-            └─ Storage (S3)
+Browser → app.comicscan.com (VPS $5/mo — API + static files)
+            │
+            ├─ LLM: forward to OpenAI/Gemini (stateless)
+            │
+            └─ Vision: serverless GPU (Modal / RunPod)
+                ├─ Upload source images
+                ├─ Container spins up (~5s cold start)
+                ├─ Scan + render (~10s)
+                ├─ Return rendered pages
+                └─ Container shuts down (stop billing)
 ```
 
-Minimal viable:
-- 1 GPU instance (T4): $150-300/mo — ~50 concurrent users
-- 1 VPS (API + proxy): $20/mo
-- S3: ~$5/mo
-- Total: ~$200-350/mo
-- Break even: 25 Cloud users × $15 = $375/mo
+Cost scaling:
+- 0 users: $5/mo (VPS only)
+- 100 chapters/day: ~$6/mo GPU + $5 VPS = $11/mo
+- 1000 chapters/day: ~$60/mo GPU + $5 VPS = $65/mo
+- Keep-warm 1 instance during peak hours: +$14/mo (eliminates cold start)
 
 ### Cost per chapter (Cloud tier)
 
