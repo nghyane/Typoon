@@ -38,7 +38,12 @@ class LazyPageProvider:
         return len(self._ranges)
 
     def page(self, index: int) -> np.ndarray:
-        """Load and return one logical page image."""
+        """Load and return one logical page image.
+
+        Wide source pages (wider than scan target) are resized down to
+        match scan coordinates. Narrow pages are returned at original
+        width — no white padding.
+        """
         if not self._alive:
             raise RuntimeError(f"Page {index} image already freed")
         y_start, y_end = self._ranges[index]
@@ -48,13 +53,19 @@ class LazyPageProvider:
             src_end = src_y + src_h
             if src_end <= y_start or src_y >= y_end:
                 continue
-            img = _normalize_page(self._source.load_page(src_i), self.width, src_h)
+            img = self._source.load_page(src_i)
+            if img.shape[1] > self.width:
+                img = _normalize_page(img, self.width, src_h)
             crop_y1 = max(y_start, src_y) - src_y
             crop_y2 = min(y_end, src_end) - src_y
             parts.append(img[crop_y1:crop_y2])
         if not parts:
             raise IndexError(f"No image data for logical page {index}")
-        return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=0)
+        if len(parts) == 1:
+            return parts[0]
+        max_w = max(p.shape[1] for p in parts)
+        aligned = [_normalize_page(p, max_w) if p.shape[1] != max_w else p for p in parts]
+        return np.concatenate(aligned, axis=0)
 
     def page_height(self, index: int) -> int:
         return self._ranges[index][1] - self._ranges[index][0]
