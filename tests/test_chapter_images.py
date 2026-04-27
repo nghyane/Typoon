@@ -24,12 +24,10 @@ def test_lazy_page_provider_matches_stitched_crop():
     ]
     strip = StitchedStrip.from_pages(images)
     total_h = sum(strip.heights)
-    lazy = LazyPageProvider(
-        _Source(images),
-        strip.heights,
-        strip.width,
+    provider = LazyPageProvider.build(
+        _Source(images), strip.heights, strip.width,
         [(5, 18), (18, total_h)],
     )
 
-    np.testing.assert_array_equal(lazy.page(0), strip.image[5:18])
-    np.testing.assert_array_equal(lazy.page(1), strip.image[18:total_h])
+    np.testing.assert_array_equal(provider.page(0), strip.image[5:18])
+    np.testing.assert_array_equal(provider.page(1), strip.image[18:total_h])

@@ -7,63 +7,68 @@ at a time from source images + cut plan. No chapter-sized buffer in RAM.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import cv2
 import numpy as np
 
 
+@dataclass(frozen=True)
+class _Slice:
+    """One source page contribution to a logical page."""
+    src_index: int
+    crop_y1: int
+    crop_y2: int
+
 
 class LazyPageProvider:
-    """Loads and crops logical pages from source images on demand."""
+    """Reconstructs logical pages on demand from source + cut plan."""
 
-    __slots__ = ("_source", "_plan", "width", "_alive")
+    __slots__ = ("_source", "_pages", "_target_w", "_alive")
 
     def __init__(
-        self,
-        source,
-        source_heights: list[int],
-        target_width: int,
-        page_ranges: list[tuple[int, int]],
+        self, source, target_w: int, pages: list[list[_Slice]],
     ) -> None:
         self._source = source
-        self.width = target_width
+        self._target_w = target_w
+        self._pages = pages
         self._alive = True
-        # Precompute: for each logical page, which source pages to load and how to crop
-        self._plan: list[list[tuple[int, int, int]]] = []
-        offsets: list[int] = []
-        y = 0
-        for h in source_heights:
-            offsets.append(y)
-            y += h
+
+    @staticmethod
+    def build(
+        source, source_heights: list[int], target_w: int,
+        page_ranges: list[tuple[int, int]],
+    ) -> LazyPageProvider:
+        offsets = _cumulative_offsets(source_heights)
+        pages: list[list[_Slice]] = []
         for y_start, y_end in page_ranges:
-            parts: list[tuple[int, int, int]] = []
-            for src_i, src_y in enumerate(offsets):
-                src_end = src_y + source_heights[src_i]
-                if src_end <= y_start or src_y >= y_end:
+            slices: list[_Slice] = []
+            for i, off in enumerate(offsets):
+                src_end = off + source_heights[i]
+                if src_end <= y_start or off >= y_end:
                     continue
-                crop_y1 = max(y_start, src_y) - src_y
-                crop_y2 = min(y_end, src_end) - src_y
-                parts.append((src_i, crop_y1, crop_y2))
-            self._plan.append(parts)
+                slices.append(_Slice(
+                    src_index=i,
+                    crop_y1=max(y_start, off) - off,
+                    crop_y2=min(y_end, src_end) - off,
+                ))
+            pages.append(slices)
+        return LazyPageProvider(source, target_w, pages)
 
     def page_count(self) -> int:
-        return len(self._plan)
+        return len(self._pages)
 
     def page(self, index: int) -> np.ndarray:
         if not self._alive:
             raise RuntimeError(f"Page {index} image already freed")
-        parts: list[np.ndarray] = []
-        for src_i, y1, y2 in self._plan[index]:
-            img = self._source.load_page(src_i)
-            if img.shape[1] > self.width:
-                img = _normalize_page(img, self.width)
-            parts.append(img[y1:y2])
+        parts = [self._load_slice(s) for s in self._pages[index]]
         if len(parts) == 1:
             return parts[0]
-        max_w = max(p.shape[1] for p in parts)
-        aligned = [_normalize_page(p, max_w) if p.shape[1] != max_w else p for p in parts]
-        return np.concatenate(aligned, axis=0)
+        w = max(p.shape[1] for p in parts)
+        return np.concatenate([_pad_width(p, w) for p in parts], axis=0)
 
     def page_height(self, index: int) -> int:
-        return sum(y2 - y1 for _, y1, y2 in self._plan[index])
+        return sum(s.crop_y2 - s.crop_y1 for s in self._pages[index])
 
     def free(self) -> None:
         self._alive = False
@@ -72,6 +77,11 @@ class LazyPageProvider:
     def alive(self) -> bool:
         return self._alive
 
+    def _load_slice(self, s: _Slice) -> np.ndarray:
+        img = self._source.load_page(s.src_index)
+        if img.shape[1] > self._target_w:
+            img = _resize_width(img, self._target_w)
+        return img[s.crop_y1:s.crop_y2]
 
 
 class StitchedStrip:
@@ -86,7 +96,6 @@ class StitchedStrip:
 
     @staticmethod
     def from_pages(images: list[np.ndarray]) -> StitchedStrip:
-        """Stitch page images into one vertical strip."""
         if len(images) == 1:
             return StitchedStrip(buffer=images[0], heights=[images[0].shape[0]])
         try:
@@ -106,6 +115,38 @@ class StitchedStrip:
         self._buffer = None
 
 
+def _cumulative_offsets(heights: list[int]) -> list[int]:
+    offsets = []
+    y = 0
+    for h in heights:
+        offsets.append(y)
+        y += h
+    return offsets
+
+
+def _resize_width(img: np.ndarray, target_w: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    new_h = int(round(h * target_w / w))
+    return cv2.resize(img, (target_w, new_h))
+
+
+def _pad_width(img: np.ndarray, target_w: int) -> np.ndarray:
+    w = img.shape[1]
+    if w >= target_w:
+        return img
+    pad = np.full((img.shape[0], target_w - w, 3), 255, dtype=np.uint8)
+    return np.concatenate([img, pad], axis=1)
+
+
+def _normalize_page(img: np.ndarray, target_w: int) -> np.ndarray:
+    """Normalize width for stitching: resize wide, pad narrow."""
+    w = img.shape[1]
+    if w == target_w:
+        return img
+    if w > target_w:
+        return _resize_width(img, target_w)
+    return _pad_width(img, target_w)
+
 
 def _stitch_rust(images: list[np.ndarray]) -> StitchedStrip:
     import typoon_render
@@ -122,31 +163,7 @@ def _stitch_numpy(images: list[np.ndarray]) -> StitchedStrip:
     if len(images) == 1:
         return StitchedStrip(buffer=images[0], heights=[images[0].shape[0]])
 
-    widths = [img.shape[1] for img in images]
-    target_w = int(median(widths))
-
+    target_w = int(median(img.shape[1] for img in images))
     normalized = [_normalize_page(img, target_w) for img in images]
     heights = [img.shape[0] for img in normalized]
-    buffer = np.concatenate(normalized, axis=0)
-    return StitchedStrip(buffer=buffer, heights=heights)
-
-
-def _normalize_page(img: np.ndarray, target_w: int, target_h: int | None = None) -> np.ndarray:
-    """Single source of truth for width normalization.
-
-    Matches Rust stitch_pages logic: wider pages bilinear-resized down,
-    narrower pages white-padded on the right.
-    """
-    import cv2
-
-    h, w = img.shape[:2]
-    if w == target_w:
-        return img[:target_h] if target_h is not None else img
-    if w > target_w:
-        new_h = target_h if target_h is not None else int(round(h * target_w / w))
-        return cv2.resize(img, (target_w, new_h))
-    if target_h is not None and target_h != h:
-        img = cv2.resize(img, (w, target_h))
-        h = target_h
-    pad = np.full((h, target_w - w, 3), 255, dtype=np.uint8)
-    return np.concatenate([img, pad], axis=1)
+    return StitchedStrip(buffer=np.concatenate(normalized, axis=0), heights=heights)

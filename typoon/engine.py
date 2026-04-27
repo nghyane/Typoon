@@ -113,7 +113,7 @@ class Engine:
         # Phase 3: smart re-cut into logical pages
         logical = _split_strip(full_img, scanned, original_heights)
         page_ranges = [(y_start, y_end) for _, y_start, y_end in logical]
-        provider = LazyPageProvider(source, original_heights, strip.width, page_ranges)
+        provider = LazyPageProvider.build(source, original_heights, strip.width, page_ranges)
         del full_img
         strip.free()
 
