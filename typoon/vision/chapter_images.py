@@ -14,7 +14,7 @@ import numpy as np
 class LazyPageProvider:
     """Loads and crops logical pages from source images on demand."""
 
-    __slots__ = ("_source", "_offsets", "_heights", "_ranges", "width", "_alive")
+    __slots__ = ("_source", "_plan", "width", "_alive")
 
     def __init__(
         self,
@@ -24,43 +24,38 @@ class LazyPageProvider:
         page_ranges: list[tuple[int, int]],
     ) -> None:
         self._source = source
-        self._heights = source_heights
-        self._ranges = page_ranges
         self.width = target_width
         self._alive = True
-        self._offsets: list[int] = []
+        # Precompute: for each logical page, which source pages to load and how to crop
+        self._plan: list[list[tuple[int, int, int]]] = []
+        offsets: list[int] = []
         y = 0
         for h in source_heights:
-            self._offsets.append(y)
+            offsets.append(y)
             y += h
+        for y_start, y_end in page_ranges:
+            parts: list[tuple[int, int, int]] = []
+            for src_i, src_y in enumerate(offsets):
+                src_end = src_y + source_heights[src_i]
+                if src_end <= y_start or src_y >= y_end:
+                    continue
+                crop_y1 = max(y_start, src_y) - src_y
+                crop_y2 = min(y_end, src_end) - src_y
+                parts.append((src_i, crop_y1, crop_y2))
+            self._plan.append(parts)
 
     def page_count(self) -> int:
-        return len(self._ranges)
+        return len(self._plan)
 
     def page(self, index: int) -> np.ndarray:
-        """Load and return one logical page image.
-
-        Wide source pages (wider than scan target) are resized down to
-        match scan coordinates. Narrow pages are returned at original
-        width — no white padding.
-        """
         if not self._alive:
             raise RuntimeError(f"Page {index} image already freed")
-        y_start, y_end = self._ranges[index]
         parts: list[np.ndarray] = []
-        for src_i, src_y in enumerate(self._offsets):
-            src_h = self._heights[src_i]
-            src_end = src_y + src_h
-            if src_end <= y_start or src_y >= y_end:
-                continue
+        for src_i, y1, y2 in self._plan[index]:
             img = self._source.load_page(src_i)
             if img.shape[1] > self.width:
-                img = _normalize_page(img, self.width, src_h)
-            crop_y1 = max(y_start, src_y) - src_y
-            crop_y2 = min(y_end, src_end) - src_y
-            parts.append(img[crop_y1:crop_y2])
-        if not parts:
-            raise IndexError(f"No image data for logical page {index}")
+                img = _normalize_page(img, self.width)
+            parts.append(img[y1:y2])
         if len(parts) == 1:
             return parts[0]
         max_w = max(p.shape[1] for p in parts)
@@ -68,7 +63,7 @@ class LazyPageProvider:
         return np.concatenate(aligned, axis=0)
 
     def page_height(self, index: int) -> int:
-        return self._ranges[index][1] - self._ranges[index][0]
+        return sum(y2 - y1 for _, y1, y2 in self._plan[index])
 
     def free(self) -> None:
         self._alive = False
