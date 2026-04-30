@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from .draw import CYAN, GREEN, PALETTE, RED, YELLOW, hstack, label, rect, write_rgb
-from .text_grouping import PageScanState
+from .types import PageScanState
 
 
 def write_inspection(out_dir: Path, page_index: int, image: np.ndarray, state: PageScanState, eraser) -> None:

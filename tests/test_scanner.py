@@ -1,9 +1,4 @@
-"""End-to-end scanner tests (detect → merge → OCR).
-
-Unit-testing the PP-OCR detector directly is not useful — it's a thin
-adapter over CoreML/MLX/ONNX. The scanner pipeline is where our logic
-lives, so we exercise it through real fixtures.
-"""
+"""End-to-end scanner tests (detect → group → OCR)."""
 
 from __future__ import annotations
 
@@ -13,18 +8,16 @@ import cv2
 import numpy as np
 import pytest
 
-from typoon.vision.scanner import (
-    TesseractScanner,
-    VisionScanner,
+from typoon.vision.ocr_backend import (
+    AppleVisionBackend,
+    TesseractBackend,
     _tesseract_available,
     _vision_available,
-    create_scanner,
 )
+from typoon.vision.scanner import Scanner, create_scanner
 from typoon.vision.types import VisualTextGroup
 from .conftest import FIXTURES_DIR, MODELS_DIR, skip_no_ppocr_det
 
-
-# ── Fixtures ─────────────────────────────────────────────────────
 
 def _load_page(name: str = "ch013/03.webp") -> np.ndarray:
     path = FIXTURES_DIR / "ctrlaltresign" / name
@@ -34,33 +27,27 @@ def _load_page(name: str = "ch013/03.webp") -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-def _make_scanner(cls):
+def _make_scanner(ocr_cls, **ocr_kwargs) -> Scanner:
     from typoon.vision.detect import TextDetector
     det_path = MODELS_DIR / "ppocr-det.safetensors"
     cfg_path = MODELS_DIR / "ppocr-det-config.json"
     if not det_path.exists():
         pytest.skip("PP-OCR det model not found")
     detector = TextDetector(str(det_path), str(cfg_path))
-    return cls(detector=detector) if cls is TesseractScanner else cls(detector=detector, languages=["en-US"])
+    return Scanner(detector=detector, ocr=ocr_cls(**ocr_kwargs))
 
 
 skip_no_vision = pytest.mark.skipif(not _vision_available(), reason="macOS Vision not available")
 skip_no_tesseract = pytest.mark.skipif(not _tesseract_available(), reason="Tesseract not available")
 
 
-# ── Types + factory ──────────────────────────────────────────────
-
 def test_scanned_bubble_defaults():
     polygon = [[0, 0], [100, 0], [100, 50], [0, 50]]
     b = VisualTextGroup(
-        text="hi",
-        confidence=0.9,
-        text_polygon=polygon,
-        render_polygon=polygon,
-        text_bbox=[0, 0, 100, 50],
-        mask_bbox=[0, 0, 100, 50],
-        fit_bbox=[0, 0, 100, 50],
-        erase_bbox=[0, 0, 100, 50],
+        text="hi", confidence=0.9,
+        text_polygon=polygon, render_polygon=polygon,
+        text_bbox=[0, 0, 100, 50], mask_bbox=[0, 0, 100, 50],
+        fit_bbox=[0, 0, 100, 50], erase_bbox=[0, 0, 100, 50],
     )
     assert b.text == "hi"
     assert b.confidence == 0.9
@@ -72,16 +59,13 @@ def test_create_scanner_needs_hub():
         create_scanner(hub=None)
 
 
-# ── End-to-end ───────────────────────────────────────────────────
-
 @skip_no_vision
 @skip_no_ppocr_det
 class TestVisionScanner:
 
     def test_scan_manga_page(self):
-        """Full pipeline on a real manga page — tiling, detect, merge, OCR."""
         img = _load_page("ch013/14.webp")
-        bubbles = _make_scanner(VisionScanner).scan(img)
+        bubbles = _make_scanner(AppleVisionBackend, languages=["en-US"]).scan(img)
         assert len(bubbles) >= 1
         for b in bubbles:
             assert isinstance(b, VisualTextGroup)
@@ -94,14 +78,15 @@ class TestVisionScanner:
                 assert 0 <= p[1] <= h + 1
 
     def test_scan_empty_image(self):
-        assert _make_scanner(VisionScanner).scan(np.full((200, 300, 3), 255, dtype=np.uint8)) == []
+        assert _make_scanner(AppleVisionBackend, languages=["en-US"]).scan(
+            np.full((200, 300, 3), 255, dtype=np.uint8)
+        ) == []
 
 
 @skip_no_tesseract
 @skip_no_ppocr_det
 def test_tesseract_scanner_smoke():
-    """Tesseract path is a fallback — smoke test only."""
     img = _load_page()
-    bubbles = _make_scanner(TesseractScanner).scan(img)
+    bubbles = _make_scanner(TesseractBackend).scan(img)
     assert len(bubbles) > 0
     assert all(b.text for b in bubbles)

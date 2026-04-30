@@ -87,6 +87,27 @@ CREATE TRIGGER IF NOT EXISTS glossary_au AFTER UPDATE ON glossary BEGIN
     INSERT INTO glossary_fts(rowid, source_term) VALUES (new.id, new.source_term);
 END;
 
+-- FTS for brief search
+CREATE VIRTUAL TABLE IF NOT EXISTS chapter_briefs_fts USING fts5(
+    summary, terms_text, facts_text, rules_text,
+    content='chapter_briefs', content_rowid='rowid',
+    tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS briefs_ai AFTER INSERT ON chapter_briefs BEGIN
+    INSERT INTO chapter_briefs_fts(rowid, summary, terms_text, facts_text, rules_text)
+    VALUES (new.rowid, new.summary, new.terms_text, new.facts_text, new.rules_text);
+END;
+CREATE TRIGGER IF NOT EXISTS briefs_ad AFTER DELETE ON chapter_briefs BEGIN
+    INSERT INTO chapter_briefs_fts(chapter_briefs_fts, rowid, summary, terms_text, facts_text, rules_text)
+    VALUES ('delete', old.rowid, old.summary, old.terms_text, old.facts_text, old.rules_text);
+END;
+CREATE TRIGGER IF NOT EXISTS briefs_au AFTER UPDATE ON chapter_briefs BEGIN
+    INSERT INTO chapter_briefs_fts(chapter_briefs_fts, rowid, summary, terms_text, facts_text, rules_text)
+    VALUES ('delete', old.rowid, old.summary, old.terms_text, old.facts_text, old.rules_text);
+    INSERT INTO chapter_briefs_fts(rowid, summary, terms_text, facts_text, rules_text)
+    VALUES (new.rowid, new.summary, new.terms_text, new.facts_text, new.rules_text);
+END;
+
 -- FTS for translation search
 CREATE VIRTUAL TABLE IF NOT EXISTS translations_fts USING fts5(
     source_text, translated_text, content='translations', content_rowid=rowid,
@@ -291,12 +312,16 @@ class SqliteStore:
         results: list[str] = []
         seen: set[str] = set()
         for query in queries:
-            like = f"%{query}%"
+            safe = _fts_escape(query)
+            if not safe:
+                continue
             cur = await self._db.execute(
-                "SELECT chapter, summary, terms_text, facts_text, rules_text FROM chapter_briefs "
-                "WHERE project_id=? AND (summary LIKE ? OR terms_text LIKE ? OR facts_text LIKE ? OR rules_text LIKE ?) "
-                "ORDER BY chapter DESC LIMIT ?",
-                (project_id, like, like, like, like, limit),
+                "SELECT cb.chapter, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
+                "FROM chapter_briefs_fts f "
+                "JOIN chapter_briefs cb ON cb.rowid = f.rowid "
+                "WHERE chapter_briefs_fts MATCH ? AND cb.project_id=? "
+                "ORDER BY rank LIMIT ?",
+                (safe, project_id, limit),
             )
             for r in await cur.fetchall():
                 text = "\n".join(
