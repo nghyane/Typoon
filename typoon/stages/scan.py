@@ -1,68 +1,109 @@
-"""Scan stage — vision pipeline over a PreparedChapter → list[Page]."""
+"""Scan stage — PreparedChapter + VisionRuntime → ScanResult."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
+from typoon.adapters.mask_store import BubbleMasks, MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
-from typoon.domain.bubble import Bubble, Page
 from typoon.domain.prepared import PreparedChapter
+from typoon.domain.scan import (
+    BubbleGeometry,
+    ScannedBubble,
+    ScannedChapter,
+    ScannedPage,
+)
 from typoon.runs.artifacts import ArtifactSink
 from typoon.vision.draw import CYAN, GREEN, PALETTE, RED, YELLOW, label, rect
 from typoon.vision.inspect import state_to_dict
 from typoon.vision.types import PageScanState, VisualTextGroup
 
 
+@dataclass(frozen=True)
+class ScanResult:
+    """Output of scan_chapter: typed chapter + pixel masks decoupled."""
+
+    chapter: ScannedChapter
+    masks:   MaskStore
+
+
 def scan_chapter(
-    chapter: PreparedChapter,
+    prepared: PreparedChapter,
     runtime: VisionRuntime,
     *,
     artifacts: ArtifactSink | None = None,
-) -> list[Page]:
-    """Run vision pipeline on every prepared page and return scanned pages.
+) -> ScanResult:
+    """Run vision pipeline on every prepared page.
 
-    Each returned Page has Bubble objects populated with source_text, masks,
-    and render geometry. Pages with no detected text have an empty bubble list.
+    Returns ScanResult with immutable ScannedChapter and a MaskStore
+    holding erase/text masks keyed by (page_index, bubble_idx).
+    Masks are not part of the domain — they are consumed by render stage only.
     """
-    pages: list[Page] = []
+    scanned_pages: list[ScannedPage] = []
+    masks = MaskStore()
     all_ocr: list[dict] = []
 
-    for index in range(chapter.page_count):
-        image = _load_rgb(chapter.page_path(index))
+    for index in range(prepared.page_count):
+        image = _load_rgb(prepared.page_path(index))
         state = runtime.scan_page_state(image)
-        bubbles = _bubbles_from_state(index, state)
+        h, w = image.shape[:2]
+
+        bubbles, page_masks = _extract_page(index, state)
+
+        for sb, bm in zip(bubbles, page_masks):
+            masks.put(sb.page_index, sb.idx, bm)
+
+        scanned_pages.append(ScannedPage(
+            index=index, width=w, height=h,
+            bubbles=tuple(bubbles),
+        ))
 
         if artifacts is not None:
-            _write_page_artifacts(artifacts, index, image, state, runtime)
+            _write_page_artifacts(artifacts, index, image, state)
             all_ocr.append(_ocr_dict(index, bubbles))
-
-        pages.append(Page(index=index, bubbles=bubbles))
 
     if artifacts is not None:
         artifacts.write_json("04_ocr", "ocr.json", {"pages": all_ocr})
 
-    return pages
+    chapter = ScannedChapter(prepared=prepared, pages=tuple(scanned_pages))
+    return ScanResult(chapter=chapter, masks=masks)
 
 
 # ── Conversion ───────────────────────────────────────────────────────
 
 
-def _bubbles_from_state(page_index: int, state: PageScanState) -> list[Bubble]:
+def _extract_page(
+    page_index: int,
+    state: PageScanState,
+) -> tuple[list[ScannedBubble], list[BubbleMasks]]:
     from typoon.vision.text_grouping import to_visual_text_groups
     groups = to_visual_text_groups(state)
-    return [_to_bubble(i, page_index, g) for i, g in enumerate(groups)]
+    bubbles = []
+    page_masks = []
+    for i, g in enumerate(groups):
+        bubbles.append(_to_scanned_bubble(i, page_index, g))
+        page_masks.append(BubbleMasks(
+            erase_masks=tuple(g.erase_masks),
+            text_masks=tuple(g.text_masks),
+        ))
+    return bubbles, page_masks
 
 
-def _to_bubble(i: int, page_index: int, group: VisualTextGroup) -> Bubble:
-    return Bubble(
+def _to_scanned_bubble(i: int, page_index: int, g: VisualTextGroup) -> ScannedBubble:
+    return ScannedBubble(
         idx=i,
         page_index=page_index,
-        polygon=group.render_polygon,
-        erase_masks=group.erase_masks,
-        text_masks=group.text_masks,
-        source_text=group.text,
-        ocr_confidence=group.confidence,
+        source_text=g.text,
+        confidence=g.confidence,
+        geometry=BubbleGeometry(
+            polygon=g.render_polygon,
+            fit_bbox=g.fit_bbox,
+            erase_bbox=g.erase_bbox,
+            text_bbox=g.text_bbox,
+        ),
     )
 
 
@@ -74,32 +115,25 @@ def _write_page_artifacts(
     index: int,
     image: np.ndarray,
     state: PageScanState,
-    runtime: VisionRuntime,
 ) -> None:
     tag = f"page_{index:04d}"
-
-    # 02_detect — unit boxes overlay
     artifacts.write_image("02_detect", f"{tag}_boxes.png", _draw_boxes(image, state))
-
-    # 03_group — group polygons + scope boxes
     artifacts.write_image("03_group", f"{tag}_groups.png", _draw_groups(image, state))
     artifacts.write_json("03_group", f"{tag}_groups.json", state_to_dict(index, tag, state))
-
-    # 04_ocr — erase mask highlight (no inpainting — that belongs to render stage)
     artifacts.write_image("04_ocr", f"{tag}_masks.png", _draw_mask_highlight(image, state))
 
 
-def _ocr_dict(page_index: int, bubbles: list[Bubble]) -> dict:
+def _ocr_dict(page_index: int, bubbles: list[ScannedBubble]) -> dict:
     return {
         "page": page_index,
         "bubbles": [
-            {"idx": b.idx, "text": b.source_text, "confidence": b.ocr_confidence}
+            {"idx": b.idx, "text": b.source_text, "confidence": b.confidence}
             for b in bubbles
         ],
     }
 
 
-# ── Drawing helpers ──────────────────────────────────────────────────
+# ── Drawing ──────────────────────────────────────────────────────────
 
 
 def _draw_boxes(image: np.ndarray, state: PageScanState) -> np.ndarray:
@@ -135,10 +169,8 @@ def _draw_mask_highlight(image: np.ndarray, state: PageScanState) -> np.ndarray:
             if mask is None:
                 continue
             h, w = mask.image.shape[:2]
-            y1 = max(0, mask.y)
-            y2 = min(out.shape[0], mask.y + h)
-            x1 = max(0, mask.x)
-            x2 = min(out.shape[1], mask.x + w)
+            y1, y2 = max(0, mask.y), min(out.shape[0], mask.y + h)
+            x1, x2 = max(0, mask.x), min(out.shape[1], mask.x + w)
             if y2 <= y1 or x2 <= x1:
                 continue
             crop = mask.image[y1 - mask.y:y2 - mask.y, x1 - mask.x:x2 - mask.x]

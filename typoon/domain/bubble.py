@@ -1,30 +1,28 @@
-"""Domain types — bubble and page."""
+"""Legacy bridge types — Bubble and Page.
+
+These are used only by translation agents (context.py, page.py) while
+they are being migrated to work with ScannedBubble/TranslatedBubble.
+New code must not add fields here. Pixel data (masks, erased, rendered)
+belongs in adapters/mask_store.py and domain/render.py respectively.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
-
-from ..vision.types import TextMask
-
 
 @dataclass
 class Bubble:
-    """A text bubble — fields filled progressively by each pipeline stage."""
+    """Translation agent bridge — scan identity + translation fields only."""
 
-    idx: int
-    page_index: int
-    polygon: list[list[float]]
-    erase_masks: list[TextMask] = field(default_factory=list, repr=False)
-    text_masks: list[TextMask] = field(default_factory=list, repr=False)
-    source_text: str = ""
-    ocr_confidence: float = 1.0
-    translated_text: str | None = None
-    translation_key: str | None = None
-    translation_status: str = "ok"
-    font_size: int = 0
-    overflow: bool = False
+    idx:                int
+    page_index:         int
+    polygon:            list[list[float]]
+    source_text:        str = ""
+    ocr_confidence:     float = 1.0
+    translated_text:    str | None = None
+    translation_key:    str | None = None
+    translation_status: str = "dialogue"
 
     @property
     def id(self) -> str:
@@ -33,10 +31,7 @@ class Bubble:
 
 @dataclass
 class Page:
-    """A comic page — accumulates results through the pipeline."""
+    """Translation agent bridge — index + bubbles only."""
 
-    index: int
+    index:   int
     bubbles: list[Bubble] = field(default_factory=list)
-    erased: np.ndarray | None = field(default=None, repr=False)
-    rendered: np.ndarray | None = field(default=None, repr=False)
-
