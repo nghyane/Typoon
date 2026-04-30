@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _MIN_CONTEXT_PAD = 64
 _INPAINT_MAX_DIM = 512
 _CONTEXT_RATIO = 0.5
-_CLUSTER_MARGIN = 16
+_CLUSTER_MAX_DIM = _INPAINT_MAX_DIM * 2  # max cluster bbox before quality degrades
 
 
 # ── Eraser ───────────────────────────────────────────────────────────
@@ -90,8 +90,7 @@ class Eraser:
         if scale is not None:
             result = cv2.resize(result, (crop_w, crop_h))
 
-        for m in cluster:
-            _blend_inpainted(canvas, result, m, crop_x1, crop_y1, crop_w, crop_h)
+        _blend_inpainted_cluster(canvas, result, combined, crop_x1, crop_y1, crop_w, crop_h)
 
 
 # ── Internal helpers ─────────────────────────────────────────────────
@@ -101,41 +100,52 @@ def _context_pad(mask_w: int, mask_h: int) -> int:
     return max(int(max(mask_w, mask_h) * _CONTEXT_RATIO), _MIN_CONTEXT_PAD)
 
 
+def _mask_bbox(m: TextMask) -> tuple[int, int, int, int]:
+    mh, mw = m.image.shape[:2]
+    return m.x, m.y, m.x + mw, m.y + mh
+
+
+def _union_bbox(
+    bboxes: list[tuple[int, int, int, int]],
+) -> tuple[int, int, int, int]:
+    return (
+        min(b[0] for b in bboxes), min(b[1] for b in bboxes),
+        max(b[2] for b in bboxes), max(b[3] for b in bboxes),
+    )
+
+
+def _bbox_gap(a: tuple[int,int,int,int], b: tuple[int,int,int,int]) -> int:
+    """Pixel gap between two bboxes (0 if overlapping)."""
+    dx = max(0, max(a[0], b[0]) - min(a[2], b[2]))
+    dy = max(0, max(a[1], b[1]) - min(a[3], b[3]))
+    return dx + dy
+
+
 def _cluster_masks(masks: list[TextMask]) -> list[list[TextMask]]:
-    """Union-find clustering of masks whose expanded bboxes overlap."""
-    n = len(masks)
-    if n == 0:
+    """Agglomerative clustering: repeatedly merge nearest pair whose combined
+    bbox fits within _CLUSTER_MAX_DIM. Nearest = smallest bbox gap."""
+    if not masks:
         return []
 
-    bboxes = []
-    for m in masks:
-        mh, mw = m.image.shape[:2]
-        bboxes.append((
-            m.x - _CLUSTER_MARGIN, m.y - _CLUSTER_MARGIN,
-            m.x + mw + _CLUSTER_MARGIN, m.y + mh + _CLUSTER_MARGIN,
-        ))
+    clusters: list[list[TextMask]] = [[m] for m in masks]
+    bboxes: list[tuple[int,int,int,int]] = [_mask_bbox(m) for m in masks]
 
-    parent = list(range(n))
+    while len(clusters) > 1:
+        best_gap, best_i, best_j = None, -1, -1
+        for i in range(len(clusters)):
+            for j in range(i + 1, len(clusters)):
+                combined = _union_bbox([bboxes[i], bboxes[j]])
+                if max(combined[2]-combined[0], combined[3]-combined[1]) > _CLUSTER_MAX_DIM:
+                    continue
+                gap = _bbox_gap(bboxes[i], bboxes[j])
+                if best_gap is None or gap < best_gap:
+                    best_gap, best_i, best_j = gap, i, j
+        if best_i == -1:
+            break
+        clusters[best_i] = clusters[best_i] + clusters.pop(best_j)
+        bboxes[best_i] = _union_bbox([bboxes[best_i], bboxes.pop(best_j)])
 
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            ax1, ay1, ax2, ay2 = bboxes[i]
-            bx1, by1, bx2, by2 = bboxes[j]
-            if ax1 < bx2 and ax2 > bx1 and ay1 < by2 and ay2 > by1:
-                ri, rj = find(i), find(j)
-                if ri != rj:
-                    parent[ri] = rj
-
-    groups: dict[int, list[TextMask]] = {}
-    for i in range(n):
-        groups.setdefault(find(i), []).append(masks[i])
-    return list(groups.values())
+    return clusters
 
 
 def _sample_background(img: np.ndarray, mask: TextMask) -> tuple[np.ndarray, int]:
@@ -258,31 +268,34 @@ def _blit_mask(
     target[oy + sy:oy + ey, ox + sx:ox + ex] |= mask.image[sy:ey, sx:ex]
 
 
-def _blend_inpainted(
+def _blend_inpainted_cluster(
     canvas: np.ndarray,
     inpainted: np.ndarray,
-    mask: TextMask,
+    combined_mask: np.ndarray,
     crop_x: int, crop_y: int,
     crop_w: int, crop_h: int,
 ) -> None:
-    ch, cw = canvas.shape[:2]
-    mh, mw = mask.image.shape[:2]
-    ox, oy = mask.x - crop_x, mask.y - crop_y
+    """Blit inpainted result into canvas for the entire cluster in one pass.
 
-    lx1 = max(-ox, 0)
-    ly1 = max(-oy, 0)
-    lx2 = min(mw, crop_w - ox, cw - mask.x)
-    ly2 = min(mh, crop_h - oy, ch - mask.y)
-    if lx1 >= lx2 or ly1 >= ly2:
+    combined_mask is crop-local (same origin as inpainted). Using the union
+    mask here avoids reading canvas while it is being written, which caused
+    double-blend artifacts when individual masks overlapped.
+    """
+    ch, cw = canvas.shape[:2]
+    # Clamp crop region to canvas bounds
+    cx1 = max(crop_x, 0)
+    cy1 = max(crop_y, 0)
+    cx2 = min(crop_x + crop_w, cw)
+    cy2 = min(crop_y + crop_h, ch)
+    if cx1 >= cx2 or cy1 >= cy2:
         return
 
-    where = mask.image[ly1:ly2, lx1:lx2] == 255
-    py1, py2 = mask.y + ly1, mask.y + ly2
-    px1, px2 = mask.x + lx1, mask.x + lx2
-    cy1, cy2 = oy + ly1, oy + ly2
-    cx1, cx2 = ox + lx1, ox + lx2
+    # Corresponding slice in crop-local coords
+    lx1, ly1 = cx1 - crop_x, cy1 - crop_y
+    lx2, ly2 = cx2 - crop_x, cy2 - crop_y
 
-    inp = inpainted[cy1:cy2, cx1:cx2]
-    region = canvas[py1:py2, px1:px2]
+    where = combined_mask[ly1:ly2, lx1:lx2] == 255
+    region = canvas[cy1:cy2, cx1:cx2]
+    inp = inpainted[ly1:ly2, lx1:lx2]
     region[where, :3] = inp[where]
     region[where, 3] = 255

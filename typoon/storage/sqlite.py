@@ -248,7 +248,7 @@ class SqliteStore:
         terms = brief.get("glossary", {}) or {}
         terms_text = "\n".join(f"{k} -> {v}" for k, v in terms.items())
         facts_text = "\n".join(str(x) for x in brief.get("facts", []) or [])
-        rules = list(brief.get("style_rules", []) or []) + list(brief.get("pronoun_rules", []) or [])
+        rules = list(brief.get("rules", []) or [])
         rules_text = "\n".join(str(x) for x in rules)
         await self._db.execute(
             "INSERT OR REPLACE INTO chapter_briefs "

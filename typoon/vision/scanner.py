@@ -132,11 +132,14 @@ class VisionScanner(_BaseScanner):
             return [_ocr_one(c) for c in crops]
 
         # Parallel OCR — Apple Vision is thread-safe
-        results = [None] * len(crops)
+        results: list[tuple[str, float]] = [("", 0.0)] * len(crops)
         with ThreadPoolExecutor(max_workers=min(4, len(crops))) as pool:
             futures = {pool.submit(_ocr_one, crop): i for i, crop in enumerate(crops)}
             for f in as_completed(futures):
-                results[futures[f]] = f.result()
+                try:
+                    results[futures[f]] = f.result()
+                except Exception:
+                    pass  # fallback ("", 0.0) already in place
         return results
 
 
