@@ -35,16 +35,6 @@ class DetectionOutput:
 
 
 @dataclass
-class MergedBubble:
-    """A bubble with grouped text lines, ready for OCR + concat."""
-
-    polygon: list[list[float]]
-    lines: list[TextRegion]
-    confidence: float
-    masks: list[TextMask]
-
-
-@dataclass
 class VisualTextGroup:
     """Canonical source of truth for one accepted visual text group.
 
@@ -70,3 +60,54 @@ class VisualTextGroup:
     unit_indices: list[int] = field(default_factory=list)
     accepted: bool = True
     reject_reason: str | None = None
+
+
+# ── Page scan state types ─────────────────────────────────────────────
+
+
+@dataclass
+class TextUnit:
+    idx: int
+    region: TextRegion
+    bbox: list[int]
+    unit_ocr_text: str = ""
+    unit_ocr_conf: float = 0.0
+    is_noise: bool = False
+    noise_reason: str | None = None
+    scope_idx: int | None = None
+
+
+@dataclass
+class Scope:
+    idx: int
+    bbox: list[int]
+    confidence: float
+
+
+@dataclass
+class TextGroup:
+    idx: int
+    unit_indices: list[int]
+    scoped: bool
+    scope_idx: int | None
+    raw_bbox: list[int]
+    ocr_bbox: list[int]
+    fit_bbox: list[int]
+    ocr_text: str = ""
+    ocr_conf: float = 0.0
+    accepted: bool = False
+    reject_reason: str | None = None
+    scope_bbox: list[int] | None = None
+    median_angle: float = 0.0
+
+
+@dataclass
+class PageScanState:
+    """Intermediate state for one page through the full scan pipeline."""
+
+    image: np.ndarray
+    width: int
+    height: int
+    units: list[TextUnit] = field(default_factory=list)
+    scopes: list[Scope] = field(default_factory=list)
+    groups: list[TextGroup] = field(default_factory=list)

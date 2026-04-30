@@ -8,7 +8,6 @@ runtime, preview, and debugging.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
 import re
 from typing import Protocol
 
@@ -16,7 +15,15 @@ import cv2
 import numpy as np
 
 from .tiling import compute_tiles, deduplicate_regions, offset_regions
-from .types import TextMask, TextRegion, VisualTextGroup
+from .types import (
+    PageScanState,
+    Scope,
+    TextGroup,
+    TextMask,
+    TextRegion,
+    TextUnit,
+    VisualTextGroup,
+)
 
 PPOCR_MAX_TILE_HEIGHT = 2048
 CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]")
@@ -26,51 +33,6 @@ class _GroupingScanner(Protocol):
     _det: object
 
     def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]: ...
-
-
-@dataclass
-class TextUnit:
-    idx: int
-    region: TextRegion
-    bbox: list[int]
-    unit_ocr_text: str = ""
-    unit_ocr_conf: float = 0.0
-    is_noise: bool = False
-    noise_reason: str | None = None
-    scope_idx: int | None = None
-
-
-@dataclass
-class Scope:
-    idx: int
-    bbox: list[int]
-    confidence: float
-
-
-@dataclass
-class TextGroup:
-    idx: int
-    unit_indices: list[int]
-    scoped: bool
-    scope_idx: int | None
-    raw_bbox: list[int]
-    ocr_bbox: list[int]
-    fit_bbox: list[int]
-    ocr_text: str = ""
-    ocr_conf: float = 0.0
-    accepted: bool = False
-    reject_reason: str | None = None
-    scope_bbox: list[int] | None = None
-
-
-@dataclass
-class PageScanState:
-    image: np.ndarray
-    width: int
-    height: int
-    units: list[TextUnit] = field(default_factory=list)
-    scopes: list[Scope] = field(default_factory=list)
-    groups: list[TextGroup] = field(default_factory=list)
 
 
 # ── Geometry helpers ─────────────────────────────────────────────
@@ -104,6 +66,45 @@ def fit_padding(boxes: list[list[int]], page_w: int, page_h: int) -> int:
     if page_h / max(1, page_w) > 2.5:
         return int(max(4, min(med_h * 0.18, 18)))
     return int(max(2, min(med_h * 0.12, 10)))
+
+
+def _balance_fit_in_scope(fit: list[int], scope: list[int], pad: int) -> list[int]:
+    """Expand fit_bbox toward the side that has more room inside the scope.
+
+    Only fires when ALL three conditions hold for a given axis:
+      1. imbalance >= 8 px  (skew is meaningful)
+      2. smaller gap <= pad  (that side is genuinely tight against detected text;
+                              if the gap is already larger than the normal padding
+                              the text just isn't there — don't expand)
+      3. larger gap > pad   (the other side actually has room worth filling)
+
+    We expand only the tight side outward to match the roomy side, capped at
+    the scope boundary.  We never shrink any side.
+    """
+    x1, y1, x2, y2 = fit
+    sx1, sy1, sx2, sy2 = scope
+
+    # Horizontal
+    left_gap = x1 - sx1
+    right_gap = sx2 - x2
+    if (abs(left_gap - right_gap) >= 8
+            and min(left_gap, right_gap) <= pad
+            and max(left_gap, right_gap) > pad):
+        target = max(left_gap, right_gap)
+        x1 = max(sx1, x1 - max(0, target - left_gap))
+        x2 = min(sx2, x2 + max(0, target - right_gap))
+
+    # Vertical
+    top_gap = y1 - sy1
+    bottom_gap = sy2 - y2
+    if (abs(top_gap - bottom_gap) >= 8
+            and min(top_gap, bottom_gap) <= pad
+            and max(top_gap, bottom_gap) > pad):
+        target = max(top_gap, bottom_gap)
+        y1 = max(sy1, y1 - max(0, target - top_gap))
+        y2 = min(sy2, y2 + max(0, target - bottom_gap))
+
+    return [x1, y1, x2, y2]
 
 
 def _ox(a, b):
@@ -145,15 +146,16 @@ def _containment(a, b):
 
 
 def detect_raw_text_units(scanner: _GroupingScanner, image: np.ndarray) -> list[TextRegion]:
-    h = image.shape[0]
-    units: list[TextRegion] = []
-    for tile_y, tile_h in compute_tiles(h, PPOCR_MAX_TILE_HEIGHT):
-        tile = image[tile_y:tile_y + tile_h]
+    from .tiling import compute_tiles_2d, offset_regions_2d
+    h, w = image.shape[:2]
+    all_regions: list[TextRegion] = []
+    for tx, ty, tw, th in compute_tiles_2d(h, w):
+        tile = image[ty:ty + th, tx:tx + tw]
         out = scanner._det.detect(tile)  # type: ignore[attr-defined]
-        if tile_y:
-            offset_regions(out.regions, tile_y, image)
-        units.extend(out.regions)
-    return deduplicate_regions(units)
+        if tx or ty:
+            offset_regions_2d(out.regions, tx, ty, image)
+        all_regions.extend(out.regions)
+    return deduplicate_regions(all_regions)
 
 
 def unit_quality(unit: TextRegion, box: list[int], ocr_text: str, ocr_conf: float, *, filter_cjk: bool = False) -> tuple[bool, str | None]:
@@ -196,6 +198,131 @@ def filter_units(state: PageScanState) -> None:
         u.noise_reason = reason
 
 
+_SPLIT_MIN_COVERAGE = 0.25  # each part must cover >= 25% of unit width
+
+
+def split_units_crossing_scopes(state: PageScanState) -> None:
+    """Split horizontal units that span across 2+ YOLO scope boundaries."""
+    if not state.scopes:
+        return
+    if not state.units:
+        return
+
+    widths = [max(1, u.bbox[2] - u.bbox[0]) for u in state.units]
+    median_w = float(np.median(widths)) if widths else 1.0
+
+    new_units: list[TextUnit] = []
+    idx = 0
+    for u in state.units:
+        ux1, uy1, ux2, uy2 = u.bbox
+        uw = max(1, ux2 - ux1)
+
+        # Only attempt split for wide units
+        if uw < median_w * 1.5:
+            u.idx = idx
+            new_units.append(u)
+            idx += 1
+            continue
+
+        # Find scopes with >= 25% horizontal coverage of this unit
+        qualifying: list[tuple[int, int, int]] = []  # (scope_idx, overlap_x1, overlap_x2)
+        for si, s in enumerate(state.scopes):
+            sx1, _, sx2, _ = s.bbox
+            ox1, ox2 = max(ux1, sx1), min(ux2, sx2)
+            if ox2 <= ox1:
+                continue
+            if (ox2 - ox1) / uw >= _SPLIT_MIN_COVERAGE:
+                qualifying.append((si, ox1, ox2))
+
+        # Drop any scope that is fully contained within another qualifying scope —
+        # nested scopes share the same text, splitting on them is incorrect.
+        if len(qualifying) >= 2:
+            def _x_range(q): return (state.scopes[q[0]].bbox[0], state.scopes[q[0]].bbox[2])
+            filtered = []
+            for qi in range(len(qualifying)):
+                si = qualifying[qi][0]
+                si_x1, _, si_x2, _ = state.scopes[si].bbox
+                dominated = False
+                for qj in range(len(qualifying)):
+                    if qi == qj:
+                        continue
+                    sj_x1, _, sj_x2, _ = state.scopes[qualifying[qj][0]].bbox
+                    if sj_x1 <= si_x1 and si_x2 <= sj_x2:
+                        dominated = True
+                        break
+                if not dominated:
+                    filtered.append(qualifying[qi])
+            qualifying = filtered
+
+        if len(qualifying) < 2:
+            u.idx = idx
+            new_units.append(u)
+            idx += 1
+            continue
+
+        # Sort by x position and split at boundaries between consecutive scopes
+        qualifying.sort(key=lambda t: t[1])
+        crop = u.region.crop
+        ch = crop.shape[0]
+
+        prev_x2 = None
+        for qi, (si, ox1, ox2) in enumerate(qualifying):
+            if prev_x2 is None:
+                sub_x1 = ux1
+            else:
+                sub_x1 = (prev_x2 + ox1) // 2
+            sub_x2 = ox2 if qi == len(qualifying) - 1 else (ox2 + qualifying[qi + 1][1]) // 2
+            sub_x2 = min(sub_x2, ux2)
+
+            if sub_x2 - sub_x1 < 10:
+                prev_x2 = ox2
+                continue
+
+            # Crop slice
+            c1 = max(0, sub_x1 - ux1)
+            c2 = min(crop.shape[1], sub_x2 - ux1)
+            sub_crop = crop[:, c1:c2] if c2 > c1 else crop
+
+            # Clip polygon
+            sub_poly = [
+                [min(max(float(p[0]), float(sub_x1)), float(sub_x2)), float(p[1])]
+                for p in u.region.polygon
+            ]
+
+            # Clip mask
+            sub_mask = None
+            if u.region.mask is not None:
+                m = u.region.mask
+                mh, mw = m.image.shape[:2]
+                mc1 = max(0, sub_x1 - m.x)
+                mc2 = min(mw, sub_x2 - m.x)
+                if mc2 > mc1:
+                    sub_mask = TextMask(x=m.x + mc1, y=m.y, image=m.image[:, mc1:mc2].copy())
+
+            from .types import TextRegion
+            sub_region = TextRegion(
+                polygon=sub_poly,
+                crop=sub_crop,
+                confidence=u.region.confidence,
+                mask=sub_mask,
+            )
+            sub_bbox = [sub_x1, uy1, sub_x2, uy2]
+            sub_unit = TextUnit(
+                idx=idx,
+                region=sub_region,
+                bbox=sub_bbox,
+                unit_ocr_text=u.unit_ocr_text,
+                unit_ocr_conf=u.unit_ocr_conf,
+                is_noise=u.is_noise,
+                noise_reason=u.noise_reason,
+            )
+            new_units.append(sub_unit)
+            idx += 1
+            prev_x2 = ox2
+
+    state.units = new_units
+
+
 # ── Grouping ─────────────────────────────────────────────────────
 
 
@@ -220,6 +347,14 @@ def subgroup_text_blocks(indices: list[int], boxes: list[list[int]], container_b
         union_w = max(1, text_union[2] - text_union[0])
         union_h = max(1, text_union[3] - text_union[1])
         n = len(indices)
+        # All units inside scope → trust scope as boundary, keep together
+        all_inside = all(
+            (container_box[0] <= (boxes[i][0]+boxes[i][2])/2 <= container_box[2] and
+             container_box[1] <= (boxes[i][1]+boxes[i][3])/2 <= container_box[3])
+            for i in indices
+        )
+        if all_inside:
+            return [list(indices)]
         compact = n <= 6 and union_h / ch < 0.85 and union_w / cw < 0.98 and large_gaps == 0
         if compact:
             return [list(indices)]
@@ -284,13 +419,29 @@ def assign_units_to_scopes(state: PageScanState) -> None:
         u.scope_idx = scope_idx
 
 
-def _ocr_crop_box(group_box: list[int], group_indices: set[int], all_boxes: list[list[int]], page_w: int, page_h: int) -> list[int]:
+def _ocr_crop_box(group_box: list[int], group_indices: set[int], all_boxes: list[list[int]], page_w: int, page_h: int, scope_bbox: list[int] | None = None) -> list[int]:
     x1, y1, x2, y2 = group_box
     pad = int(max(x2 - x1, y2 - y1) * 0.10)
     left = max(0, x1 - pad)
     top = max(0, y1 - pad)
     right = min(page_w, x2 + pad)
     bottom = min(page_h, y2 + pad)
+
+    # Expand asymmetrically toward scope edges where text may be under-detected
+    if scope_bbox is not None:
+        sx1, sy1, sx2, sy2 = scope_bbox
+        left_margin = x1 - sx1
+        right_margin = sx2 - x2
+        top_margin = y1 - sy1
+        bottom_margin = sy2 - y2
+        if right_margin > left_margin:
+            right = min(sx2, x2 + min(right_margin, max(pad, left_margin * 2)))
+        if left_margin > right_margin:
+            left = max(sx1, x1 - min(left_margin, max(pad, right_margin * 2)))
+        if bottom_margin > top_margin:
+            bottom = min(sy2, y2 + min(bottom_margin, max(pad, top_margin * 2)))
+        if top_margin > bottom_margin:
+            top = max(sy1, y1 - min(top_margin, max(pad, bottom_margin * 2)))
 
     for i, other in enumerate(all_boxes):
         if i in group_indices:
@@ -312,9 +463,52 @@ def _ocr_crop_box(group_box: list[int], group_indices: set[int], all_boxes: list
     return [min(left, x1), min(top, y1), max(right, x2), max(bottom, y2)]
 
 
+def _polygon_angle(polygon: list[list[float]]) -> float:
+    """Angle of text line in degrees [-90, 90] from horizontal."""
+    import math
+    if len(polygon) < 4:
+        return 0.0
+    bl, br = polygon[3], polygon[2]
+    dx = br[0] - bl[0]
+    dy = br[1] - bl[1]
+    return math.degrees(math.atan2(dy, dx))
+
+
+def _cluster_by_angle(
+    indices: list[int],
+    angles: list[float],
+    threshold: float = 20.0,
+) -> list[list[int]]:
+    """Split indices into clusters where angle difference <= threshold degrees."""
+    if not indices:
+        return []
+    clusters: list[list[int]] = [[indices[0]]]
+    cluster_angles: list[float] = [angles[indices[0]]]
+    for i in indices[1:]:
+        ang = angles[i]
+        placed = False
+        for ci, ca in enumerate(cluster_angles):
+            if _angle_diff(ang, ca) <= threshold:
+                clusters[ci].append(i)
+                # Update cluster representative angle (mean)
+                cluster_angles[ci] = (ca * (len(clusters[ci]) - 1) + ang) / len(clusters[ci])
+                placed = True
+                break
+        if not placed:
+            clusters.append([i])
+            cluster_angles.append(ang)
+    return clusters
+
+
+def _angle_diff(a: float, b: float) -> float:
+    diff = abs(a - b) % 180
+    return min(diff, 180 - diff)
+
+
 def build_groups(state: PageScanState) -> None:
     active = [u.idx for u in state.units if not u.is_noise]
     boxes = [u.bbox for u in state.units]
+    angles = [_polygon_angle(state.units[i].region.polygon) for i in range(len(state.units))]
     by_scope: dict[int, list[int]] = defaultdict(list)
     free: list[int] = []
     for i in active:
@@ -325,20 +519,49 @@ def build_groups(state: PageScanState) -> None:
             by_scope[scope_idx].append(i)
 
     raw_groups: list[tuple[list[int], bool, int | None]] = []
+
+    # For scoped groups: split by angle before subgrouping.
+    # Units whose angle differs from the majority in the scope are moved to free.
     for scope_idx, indices in by_scope.items():
-        for g in subgroup_text_blocks(indices, boxes, state.scopes[scope_idx].bbox):
-            raw_groups.append((g, True, scope_idx))
-    for g in subgroup_text_blocks(free, boxes, None):
-        raw_groups.append((g, False, None))
+        angle_clusters = _cluster_by_angle(indices, angles)
+        if len(angle_clusters) == 1:
+            for g in subgroup_text_blocks(indices, boxes, state.scopes[scope_idx].bbox):
+                raw_groups.append((g, True, scope_idx))
+        else:
+            # Keep the largest angle cluster in this scope, demote rest to free
+            largest = max(angle_clusters, key=len)
+            for cluster in angle_clusters:
+                if cluster is largest:
+                    for g in subgroup_text_blocks(cluster, boxes, state.scopes[scope_idx].bbox):
+                        raw_groups.append((g, True, scope_idx))
+                else:
+                    free.extend(cluster)
+
+    # For free groups: also split by angle
+    angle_clusters = _cluster_by_angle(free, angles)
+    for cluster in angle_clusters:
+        for g in subgroup_text_blocks(cluster, boxes, None):
+            raw_groups.append((g, False, None))
 
     state.groups = []
     for gi, (indices, scoped, scope_idx) in enumerate(raw_groups):
         group_boxes = [boxes[i] for i in indices]
         raw = union_boxes(group_boxes)
-        ocr = _ocr_crop_box(raw, set(indices), boxes, state.width, state.height)
-        fit = expand(raw, fit_padding(group_boxes, state.width, state.height), state.width, state.height)
         scope_bbox = state.scopes[scope_idx].bbox if scope_idx is not None else None
-        state.groups.append(TextGroup(gi, indices, scoped, scope_idx, raw, ocr, fit, scope_bbox=scope_bbox))
+        ocr = _ocr_crop_box(raw, set(indices), boxes, state.width, state.height, scope_bbox)
+        pad = fit_padding(group_boxes, state.width, state.height)
+        fit = expand(raw, pad, state.width, state.height)
+        if scope_bbox is not None:
+            fit = [
+                max(fit[0], scope_bbox[0]),
+                max(fit[1], scope_bbox[1]),
+                min(fit[2], scope_bbox[2]),
+                min(fit[3], scope_bbox[3]),
+            ]
+            fit = _balance_fit_in_scope(fit, scope_bbox, pad)
+        group_angles = [angles[i] for i in indices]
+        med_angle = float(np.median(group_angles)) if group_angles else 0.0
+        state.groups.append(TextGroup(gi, indices, scoped, scope_idx, raw, ocr, fit, scope_bbox=scope_bbox, median_angle=med_angle))
 
 
 def _is_uppercase_heavy(text: str) -> bool:
@@ -356,6 +579,28 @@ def _looks_like_system_card(group: TextGroup, text: str, width_ratio: float, hei
     if len(words) < 4:
         return False
     return _is_uppercase_heavy(text)
+
+
+def _looks_like_narration(text: str, ocr_conf: float) -> bool:
+    """True for caption/narration text that is wide but clearly not SFX.
+
+    Narration boxes outside bubbles are typically: high confidence, multiple
+    distinct words, meaningful length, high alnum density.  SFX tend to be
+    short repeated glyphs with low word variety.
+    """
+    if ocr_conf < 0.70:
+        return False
+    words = [w for w in re.split(r"\s+", text.strip()) if w]
+    if len(words) < 3:
+        return False
+    alnum = sum(ch.isalnum() for ch in text)
+    if alnum < 10:
+        return False
+    if alnum / max(1, len(text)) < 0.55:
+        return False
+    # SFX often repeat the same glyph — require enough distinct words
+    distinct = len(set(w.lower() for w in words))
+    return distinct >= min(3, len(words))
 
 
 def _dilate_text_mask(mask: TextMask, pad: int) -> TextMask:
@@ -408,12 +653,18 @@ def _skip_final_group(group: TextGroup, page_w: int, page_h: int) -> tuple[bool,
     if not group.scoped:
         if _looks_like_system_card(group, text, width_ratio, height_ratio):
             return False, None
-        if len(group.unit_indices) == 1 and group.ocr_conf < 0.35:
-            return True, "free_singleton_low_conf"
+        if abs(group.median_angle) > 20.0:
+            return True, "free_skewed"
+        if _looks_like_narration(text, group.ocr_conf):
+            return False, None
+        if group.ocr_conf < 0.35:
+            return True, "free_low_conf"
         if area_ratio > 0.025 or width_ratio > 0.24 or height_ratio > 0.16:
             return True, "free_large_sfx_like"
         if len(text) <= 2 and group.ocr_conf < 0.80:
             return True, "free_short_low_conf"
+        if bw < 20 or bh < 20:
+            return True, "free_tiny"
     return False, None
 
 
@@ -495,6 +746,7 @@ def build_page_scan_state(
     ocr_units_for_filtering(state, scanner)
     filter_units(state)
     detect_scopes(state, yolo_model, yolo_imgsz, yolo_conf)
+    split_units_crossing_scopes(state)
     assign_units_to_scopes(state)
     build_groups(state)
     ocr_groups(state, scanner)
