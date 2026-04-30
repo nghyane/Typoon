@@ -7,7 +7,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from typoon.domain.bubble import Bubble
+from typoon.storage.records import TranslationRecord
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -310,13 +310,8 @@ class SqliteStore:
 
     # ── Translations (Store port) ────────────────────────────────
 
-    async def save_translations(self, project_id: int, chapter: float, bubbles: list[Bubble]) -> None:
-        rows = [
-            (project_id, chapter, b.page_index, b.idx, b.translation_key or b.id,
-             b.source_text, b.translated_text or "", b.translation_status,
-             json.dumps(b.polygon), b.font_size)
-            for b in bubbles
-        ]
+    async def save_translations(self, project_id: int, chapter: float, records: list[TranslationRecord]) -> None:
+        rows = [r.as_tuple() for r in records]
         await self._db.executemany(
             "INSERT OR REPLACE INTO translations "
             "(project_id, chapter, page, idx, key, source_text, translated_text, status, polygon, font_size_px) "

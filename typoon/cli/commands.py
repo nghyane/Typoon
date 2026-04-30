@@ -129,9 +129,9 @@ def scan(
     artifacts = FileArtifactSink(debug_dir, run_id)
 
     runtime, _, _ = VisionRuntime.from_config()
-    pages = scan_chapter(chapter, runtime, artifacts=artifacts)
+    result = scan_chapter(chapter, runtime, artifacts=artifacts)
 
-    total_bubbles = sum(len(p.bubbles) for p in pages)
+    total_bubbles = sum(len(p.bubbles) for p in result.chapter.pages)
     console.print(f"[green]✓ Scanned[/] {chapter.page_count} pages, {total_bubbles} bubbles")
     console.print(f"  Debug run: [cyan]{artifacts.root}[/]")
 
