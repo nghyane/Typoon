@@ -1,9 +1,11 @@
-"""ChapterBrief model and formatting helpers."""
+"""ChapterBrief model and text formatting helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+
+from typoon.domain.scan import ScannedBubble
 
 
 @dataclass(slots=True)
@@ -26,27 +28,28 @@ class ChapterBrief:
         }
 
 
-def chapter_text(pages: list) -> str:
-    lines = []
-    for page in pages:
-        for b in page.bubbles:
-            key = b.translation_key
-            if key is None:
-                raise ValueError(f"Bubble {b.id} has no translation key")
-            lines.append(f"[p{b.page_index}] #{key} {b.source_text}")
+def _sorted_items(
+    key_map: dict[str, ScannedBubble],
+) -> list[tuple[str, ScannedBubble]]:
+    return sorted(key_map.items(), key=lambda kv: (kv[1].page_index, kv[1].idx))
+
+
+def chapter_text(key_map: dict[str, ScannedBubble]) -> str:
+    lines = [
+        f"[p{b.page_index}] #{key} {b.source_text}"
+        for key, b in _sorted_items(key_map)
+    ]
     return "\n".join(lines)
 
 
-def annotated_chapter_text(pages: list, active_keys: set[str]) -> str:
-    """Chapter text with >>> markers on active keys to translate."""
+def annotated_chapter_text(
+    key_map: dict[str, ScannedBubble],
+    active_keys: set[str],
+) -> str:
     lines = []
-    for page in pages:
-        for b in page.bubbles:
-            key = b.translation_key
-            if key is None:
-                raise ValueError(f"Bubble {b.id} has no translation key")
-            prefix = ">>> " if key in active_keys else "    "
-            lines.append(f"{prefix}[p{b.page_index}] #{key} {b.source_text}")
+    for key, b in _sorted_items(key_map):
+        prefix = ">>> " if key in active_keys else "    "
+        lines.append(f"{prefix}[p{b.page_index}] #{key} {b.source_text}")
     return "\n".join(lines)
 
 

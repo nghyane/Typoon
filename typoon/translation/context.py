@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from typoon.adapters.session import Session
-from typoon.domain.bubble import Bubble, Page
+from typoon.domain.prepared import PreparedChapter
+from typoon.domain.scan import ScannedBubble
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
@@ -17,13 +18,17 @@ from .tools.search_knowledge import SearchKnowledgeArgs, SearchScope, search_kno
 class ContextAgent:
     """Analyzes chapter text, queries knowledge/images, submits ChapterBrief."""
 
-    def __init__(self, pages: list[Page], session: Session, key_map: dict[str, Bubble]) -> None:
+    def __init__(
+        self,
+        session: Session,
+        prepared: PreparedChapter,
+        key_map: dict[str, ScannedBubble],
+    ) -> None:
         self._session = session
+        self._prepared = prepared
         self._key_map = key_map
         self._brief: ChapterBrief | None = None
-        self._pages = pages
         self._text_retries = 0
-        self._tool_calls = 0
         self._last_text = ""
 
     def name(self) -> str:
@@ -39,7 +44,7 @@ class ContextAgent:
 
     def user_message(self) -> Message:
         return Message.user_text(prompt.CONTEXT_USER.format(
-            chapter_text=chapter_text(self._pages),
+            chapter_text=chapter_text(self._key_map),
         ))
 
     def tools(self) -> list[ToolDef]:
@@ -67,7 +72,7 @@ class ContextAgent:
         if self._brief is not None:
             return None
         if self._text_retries >= 2:
-            return None  # stop loop, caller will raise
+            return None
         return "Do not respond with text. You must call one of the provided tools."
 
     def into_output(self) -> ChapterBrief | None:
@@ -93,11 +98,10 @@ class ContextAgent:
             args = LookAtArgs.model_validate_json(call.arguments)
         except Exception as e:
             return ToolResponse(f"Error: {e}")
-        source_by_key = {k: self._key_map[k].source_text for k in args.keys if k in self._key_map}
         notes = await look_at(
-            self._session, pages=args.pages, keys=args.keys,
-            query=args.query, source_by_key=source_by_key,
-            key_map=self._key_map,
+            self._session, self._prepared,
+            pages=args.pages, keys=args.keys,
+            query=args.query, key_map=self._key_map,
         )
         if not notes:
             return ToolResponse("No visual notes returned.")
@@ -124,10 +128,12 @@ class ContextAgent:
 
 
 async def build_chapter_brief(
-    pages: list[Page], session: Session, key_map: dict[str, Bubble],
+    session: Session,
+    prepared: PreparedChapter,
+    key_map: dict[str, ScannedBubble],
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run
-    agent = ContextAgent(pages, session, key_map)
+    agent = ContextAgent(session, prepared, key_map)
     result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=20)
     if result.error:
         raise result.error

@@ -49,7 +49,8 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
 from typoon.runs.events import Hook
 from typoon.adapters.session import Session
-from typoon.domain.bubble import Bubble, Page
+from typoon.domain.prepared import PreparedChapter, PreparedPage
+from typoon.domain.scan import BubbleGeometry, ScannedBubble, ScannedChapter, ScannedPage
 
 
 class MockProvider:
@@ -83,7 +84,7 @@ class MockStore:
                 rows.append({"chapter": ch, "brief": brief, "summary": brief.get("summary", "")})
         return rows[:limit]
     async def search_briefs(self, pid, queries, limit=10): return []
-    async def save_translations(self, pid, ch, bubbles): self._translations[(pid, ch)] = bubbles
+    async def save_translations(self, pid, ch, records): self._translations[(pid, ch)] = records
     async def get_chapter_translations(self, pid, ch): return []
     async def glossary_search(self, pid, q): return []
     async def glossary_upsert(self, pid, s, t, n): self.glossary[s] = t
@@ -97,35 +98,54 @@ class MockStore:
     async def set_chapter_status(self, pid, idx, status): pass
 
 
-class MockSource:
-    """Fake chapter source."""
-    def __init__(self, page_count: int = 0):
-        self._page_count = page_count
-    def page_count(self): return self._page_count
-    def load_page(self, index): return np.zeros((100, 100, 3), dtype=np.uint8)
-    async def fetch(self): pass
+_POLY = [[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]
+_GEOM = BubbleGeometry(
+    polygon=_POLY,
+    fit_bbox=[0, 0, 100, 50],
+    erase_bbox=[0, 0, 100, 50],
+    text_bbox=[5, 5, 95, 45],
+)
+_PREPARED = PreparedChapter(
+    root=Path("/tmp/test_chapter"),
+    source="test",
+    pages=(PreparedPage(index=0, file="page_0000.png", width=800, height=1200),),
+)
+
+
+def make_scanned_chapter(n_bubbles: int = 3) -> ScannedChapter:
+    bubbles = tuple(
+        ScannedBubble(
+            idx=i, page_index=0,
+            source_text=f"text_{i}",
+            confidence=0.9,
+            geometry=_GEOM,
+        )
+        for i in range(n_bubbles)
+    )
+    page = ScannedPage(index=0, width=800, height=1200, bubbles=bubbles)
+    return ScannedChapter(prepared=_PREPARED, pages=(page,))
 
 
 def make_session(
     n_bubbles: int = 3,
     provider_responses: list[CallResponse] | None = None,
     glossary: dict[str, str] | None = None,
-) -> tuple[list[Page], Session]:
-    """Create test pages + session with mock provider."""
-    bubbles = [
-        Bubble(idx=i, page_index=0, source_text=f"text_{i}",
-               polygon=[[0, 0], [100, 0], [100, 50], [0, 50]])
-        for i in range(n_bubbles)
-    ]
-    pages = [Page(index=0, bubbles=bubbles)]
+) -> tuple[ScannedChapter, Session]:
+    """Create a ScannedChapter + Session with mock provider."""
+    scanned = make_scanned_chapter(n_bubbles)
     provider = MockProvider(provider_responses)
     session = Session(
-        store=MockStore(), source=MockSource(), project_id=1,
-        source_lang="en", target_lang="vi",
-        provider=provider, context_provider=provider, hook=Hook(),
+        store=MockStore(),
+        source=None,
+        project_id=1,
+        source_lang="en",
+        target_lang="vi",
+        provider=provider,
+        context_provider=provider,
+        hook=Hook(),
         glossary=glossary or {},
     )
-    return pages, session
+    return scanned, session
 
 
 def make_text_response(text: str) -> CallResponse:

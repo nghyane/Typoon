@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from typoon.adapters.session import Session
-from typoon.domain.bubble import Bubble
+from typoon.domain.scan import ScannedBubble
+from typoon.domain.prepared import PreparedChapter
 from typoon.llm.ir import ContentPart, Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
@@ -15,11 +16,18 @@ class LookAtAgent:
     """Inspects page images with key overlays and submits visual notes."""
 
     def __init__(
-        self, session: Session, *, pages: list[int], keys: list[str],
-        query: str, source_by_key: dict[str, str],
+        self,
+        session: Session,
+        prepared: PreparedChapter,
+        *,
+        pages: list[int],
+        keys: list[str],
+        query: str,
+        source_by_key: dict[str, str],
         polygon_by_key: dict[str, list[list[float]]],
     ) -> None:
         self._session = session
+        self._prepared = prepared
         self._pages = pages
         self._keys = keys
         self._query = query
@@ -43,17 +51,21 @@ class LookAtAgent:
             page_index=page_label, query=self._query, related_text=related,
         )
         parts: list[ContentPart] = [ContentPart.of_text(text)]
-        source = self._session.source
-        if source is not None and hasattr(source, "load_page"):
-            for pi in self._pages:
-                try:
-                    img = source.load_page(pi)
-                    labels = {k: self._polygon_by_key[k] for k in self._keys
-                              if k in self._polygon_by_key}
-                    parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
-                    parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
-                except Exception:
+        for pi in self._pages:
+            try:
+                import cv2
+                import numpy as np
+                path = self._prepared.page_path(pi)
+                bgr = cv2.imread(str(path))
+                if bgr is None:
                     continue
+                img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                labels = {k: self._polygon_by_key[k] for k in self._keys
+                          if k in self._polygon_by_key}
+                parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
+                parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
+            except Exception:
+                continue
         return Message.user_parts(parts)
 
     def tools(self) -> list[ToolDef]:
@@ -88,15 +100,21 @@ class LookAtAgent:
 
 
 async def look_at(
-    session: Session, *, pages: list[int], keys: list[str],
-    query: str, source_by_key: dict[str, str],
-    key_map: dict[str, Bubble],
+    session: Session,
+    prepared: PreparedChapter,
+    *,
+    pages: list[int],
+    keys: list[str],
+    query: str,
+    key_map: dict[str, ScannedBubble],
 ) -> dict[str, str]:
     """Run LookAt agent with key overlays on page images."""
     from typoon.llm.agent import run as agent_run
-    polygon_by_key = {k: key_map[k].polygon for k in keys if k in key_map}
+    source_by_key = {k: key_map[k].source_text for k in keys if k in key_map}
+    polygon_by_key = {k: key_map[k].geometry.polygon for k in keys if k in key_map}
     agent = LookAtAgent(
-        session, pages=pages, keys=keys,
+        session, prepared,
+        pages=pages, keys=keys,
         query=query, source_by_key=source_by_key,
         polygon_by_key=polygon_by_key,
     )

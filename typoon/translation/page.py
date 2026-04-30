@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from typoon.adapters.session import Session
-from typoon.domain.bubble import Bubble
+from typoon.domain.scan import ScannedBubble
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
@@ -16,7 +16,7 @@ from .tools.submit import SubmitArgs, TextKind, submit_translations
 @dataclass(slots=True)
 class TranslationOp:
     key: str
-    kind: str  # dialogue | sfx | skip
+    kind: str   # dialogue | sfx | skip
     text: str = ""
 
 
@@ -24,17 +24,18 @@ class PageAgent:
     """Translates a page-window of keyed bubbles."""
 
     def __init__(
-        self, session: Session, *, brief: ChapterBrief,
-        bubbles: list[Bubble], key_map: dict[str, Bubble],
-        all_pages: list,
+        self,
+        session: Session,
+        *,
+        brief: ChapterBrief,
+        window_keys: list[str],
+        key_map: dict[str, ScannedBubble],
     ) -> None:
         self._session = session
         self._brief = brief
-        self._bubbles = bubbles
         self._key_map = key_map
-        self._all_pages = all_pages
-        self._keys = [b.translation_key or "" for b in bubbles]
-        self._active = set(self._keys)
+        self._keys = window_keys
+        self._active = set(window_keys)
         self._accepted: list[TranslationOp] = []
         self._pending_feedback: str = ""
         self._text_retries = 0
@@ -51,11 +52,11 @@ class PageAgent:
         )
 
     def user_message(self) -> Message:
-        page_indices = {b.page_index for b in self._bubbles}
+        page_indices = {self._key_map[k].page_index for k in self._keys if k in self._key_map}
         return Message.user_text(prompt.PAGE_USER.format(
             brief_slice=brief_slice(self._brief, page_indices, self._keys),
             feedback_block="",
-            annotated_text=annotated_chapter_text(self._all_pages, self._active),
+            annotated_text=annotated_chapter_text(self._key_map, self._active),
         ))
 
     def tools(self) -> list[ToolDef]:
@@ -83,10 +84,8 @@ class PageAgent:
             if text and (key in text or f"#{key}" in text):
                 errors.append(f"#{key}: translation contains key marker")
                 continue
-            self._accepted.append(TranslationOp(
-                key=key, kind=kind.value,
-                text=text if kind != TextKind.skip else "",
-            ))
+            self._accepted.append(TranslationOp(key=key, kind=kind.value,
+                                                 text=text if kind != TextKind.skip else ""))
             self._active.discard(key)
         if self._active:
             errors.append(f"Missing keys: {', '.join(sorted(self._active))}")
@@ -114,14 +113,15 @@ class PageAgent:
 
 
 async def translate_window(
-    session: Session, *, brief: ChapterBrief,
-    bubbles: list[Bubble], key_map: dict[str, Bubble],
-    all_pages: list,
+    session: Session,
+    *,
+    brief: ChapterBrief,
+    window_keys: list[str],
+    key_map: dict[str, ScannedBubble],
 ) -> tuple[list[TranslationOp], int]:
     """Run PageAgent. Returns (accepted ops, turns used)."""
     from typoon.llm.agent import run as agent_run
-    agent = PageAgent(session, brief=brief, bubbles=bubbles, key_map=key_map,
-                      all_pages=all_pages)
+    agent = PageAgent(session, brief=brief, window_keys=window_keys, key_map=key_map)
     result = await agent_run(session.provider, agent, hook=session.hook, max_turns=4)
     if result.error:
         raise result.error

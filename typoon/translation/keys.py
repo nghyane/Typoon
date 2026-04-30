@@ -1,18 +1,23 @@
-"""Opaque translation key generation."""
+"""Opaque translation key generation — pure, no side effects."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 
-from typoon.domain.bubble import Bubble
+from typoon.domain.scan import ScannedBubble
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-def assign_keys(bubbles: list[Bubble], *, project_id: int, chapter: float) -> dict[str, Bubble]:
-    """Assign stable opaque keys to bubbles and return key -> bubble."""
-    out: dict[str, Bubble] = {}
+def assign_keys(
+    bubbles: list[ScannedBubble],
+    *,
+    project_id: int,
+    chapter: float,
+) -> dict[str, ScannedBubble]:
+    """Return stable opaque key → bubble mapping. Does not mutate bubbles."""
+    out: dict[str, ScannedBubble] = {}
     used: set[str] = set()
     for b in bubbles:
         salt = 0
@@ -22,19 +27,21 @@ def assign_keys(bubbles: list[Bubble], *, project_id: int, chapter: float) -> di
                 break
             salt += 1
         used.add(key)
-        b.translation_key = key
         out[key] = b
     return out
 
 
-def _make_key(b: Bubble, *, project_id: int, chapter: float, salt: int) -> str:
+def _make_key(b: ScannedBubble, *, project_id: int, chapter: float, salt: int) -> str:
     payload = {
         "project": project_id,
         "chapter": chapter,
         "page": b.page_index,
         "idx": b.idx,
         "text": " ".join(b.source_text.split()),
-        "polygon": [[round(float(x), 1), round(float(y), 1)] for x, y in b.polygon],
+        "polygon": [
+            [round(float(x), 1), round(float(y), 1)]
+            for x, y in b.geometry.polygon
+        ],
         "salt": salt,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")

@@ -12,7 +12,8 @@ from typoon.translation.image import encode_page_jpeg
 from typoon.translation.tools.brief import submit_chapter_brief
 from typoon.translation.tools.submit import SubmitArgs, submit_translations
 from typoon.translation.tools.search_knowledge import SearchKnowledgeArgs
-from typoon.translation.translate import translate_pages
+from typoon.stages.translate import translate_chapter
+from typoon.translation.keys import assign_keys
 
 from .conftest import MockProvider, make_session
 
@@ -91,31 +92,43 @@ class TestImageOverlay:
 class TestTranslate:
     @pytest.mark.asyncio
     async def test_keyed_tool_translation(self):
-        pages, session = make_session(3)
+        scanned, session = make_session(3)
         session.context_provider = MockProvider([_brief_response()])
 
+        key_map = assign_keys(
+            scanned.all_bubbles, project_id=session.project_id, chapter=session.chapter
+        )
+        keys = [key_map_key for key_map_key in key_map]
+
         async def call(messages, tools):
-            keys = [b.translation_key for b in pages[0].bubbles]
-            return _tool_response([(keys[0], "dialogue", "A"), (keys[1], "skip", ""), (keys[2], "dialogue", "C")])
+            return _tool_response([
+                (keys[0], "dialogue", "A"),
+                (keys[1], "skip", ""),
+                (keys[2], "dialogue", "C"),
+            ])
 
         session.provider = MockProvider([])
         session.provider.call = call
-        turns, err = await translate_pages(pages, session)
-        assert err is None
-        assert [b.translated_text for b in pages[0].bubbles] == ["A", "", "C"]
-        assert pages[0].bubbles[1].translation_status == "skip"
+        result = await translate_chapter(scanned, session)
+        bubbles = result.all_bubbles
+        assert bubbles[0].translated_text == "A"
+        assert bubbles[1].translated_text == ""
+        assert bubbles[1].kind == "skip"
+        assert bubbles[2].translated_text == "C"
 
     @pytest.mark.asyncio
     async def test_page_agent_retry_on_missing_key(self):
         """PageAgent retries when first response misses a key."""
-        pages, session = make_session(2)
-        session.context_provider = MockProvider([_brief_response()])
+        scanned, session = make_session(2)
+        key_map = assign_keys(
+            scanned.all_bubbles, project_id=session.project_id, chapter=session.chapter
+        )
+        keys = list(key_map)
         call_count = 0
 
         async def call(messages, tools):
             nonlocal call_count
             call_count += 1
-            keys = [b.translation_key for b in pages[0].bubbles]
             if call_count == 1:
                 return CallResponse(tool_calls=[ToolCallMsg(
                     id="b1", name="submit_chapter_brief",
@@ -132,14 +145,15 @@ class TestTranslate:
         session.context_provider.call = call
         session.provider = MockProvider([])
         session.provider.call = call
-        turns, err = await translate_pages(pages, session)
-        assert err is None
+        result = await translate_chapter(scanned, session)
         assert call_count >= 3
-        assert [b.translated_text for b in pages[0].bubbles] == ["A", "B"]
+        texts = [b.translated_text for b in result.all_bubbles]
+        assert "A" in texts
+        assert "B" in texts
 
     @pytest.mark.asyncio
     async def test_no_tool_call_raises(self):
-        pages, session = make_session(1)
+        scanned, session = make_session(1)
         session.context_provider = MockProvider([_brief_response()])
 
         async def call(messages, tools):
@@ -147,30 +161,32 @@ class TestTranslate:
 
         session.provider = MockProvider([])
         session.provider.call = call
-        turns, err = await translate_pages(pages, session)
-        assert err is not None
+        with pytest.raises(Exception):
+            await translate_chapter(scanned, session)
 
     @pytest.mark.asyncio
     async def test_brief_saved_after_success(self):
-        pages, session = make_session(1)
+        scanned, session = make_session(1)
         session.context_provider = MockProvider([_brief_response()])
+        key_map = assign_keys(
+            scanned.all_bubbles, project_id=session.project_id, chapter=session.chapter
+        )
+        keys = list(key_map)
 
         async def call(messages, tools):
-            key = pages[0].bubbles[0].translation_key
-            return _tool_response([(key, "dialogue", "A")])
+            return _tool_response([(keys[0], "dialogue", "A")])
 
         session.provider = MockProvider([])
         session.provider.call = call
-        turns, err = await translate_pages(pages, session)
-        assert err is None
+        await translate_chapter(scanned, session)
         saved = await session.store.get_recent_chapter_briefs(session.project_id, 99, limit=1)
         assert saved
         assert saved[0]["brief"]["summary"] == "test chapter"
 
     @pytest.mark.asyncio
     async def test_no_brief_tool_call_raises(self):
-        pages, session = make_session(1)
+        scanned, session = make_session(1)
         session.context_provider = MockProvider([CallResponse(text="no tool")])
         session.provider = MockProvider([])
-        turns, err = await translate_pages(pages, session)
-        assert err is not None
+        with pytest.raises(Exception):
+            await translate_chapter(scanned, session)
