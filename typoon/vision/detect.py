@@ -24,7 +24,7 @@ except ImportError:
 
 # ── PP-OCR detection constants ───────────────────────────────────────
 
-_DET_RESIZE_LONG = 960
+_DET_RESIZE_LONG = 1280
 _DET_RESIZE_LONG_SMALL = 1280
 _DET_SMALL_THRESH = 960
 _DET_MIN_WIDTH = 768

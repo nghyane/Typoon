@@ -29,8 +29,9 @@ def test_cluster_nearby():
 
 
 def test_cluster_distant():
+    # combined bbox 1100x1100 > _CLUSTER_MAX_DIM=1024 → separate
     m1 = make_mask(0, 0, 10, 10)
-    m2 = make_mask(200, 200, 10, 10)
+    m2 = make_mask(1100, 1100, 10, 10)
     assert len(_cluster_masks([m1, m2])) == 2
 
 
