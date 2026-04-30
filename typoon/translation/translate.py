@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typoon.app.events import PipelineError
-from typoon.domain.bubble import Bubble, Page, Session
+from typoon.runs.events import PipelineError
+from typoon.adapters.session import Session
+from typoon.domain.bubble import Bubble, Page
 
 from .context import build_chapter_brief
 from .keys import assign_keys

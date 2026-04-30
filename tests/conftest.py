@@ -47,8 +47,9 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 # ── LLM + Translation shared fixtures ────────────────────────────
 
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
-from typoon.app.events import Hook
-from typoon.domain.bubble import Bubble, Page, Session
+from typoon.runs.events import Hook
+from typoon.adapters.session import Session
+from typoon.domain.bubble import Bubble, Page
 
 
 class MockProvider:

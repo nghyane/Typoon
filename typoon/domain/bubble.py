@@ -1,18 +1,12 @@
-"""Domain types — bubble, page, session."""
+"""Domain types — bubble and page."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ..vision.types import TextMask
-
-if TYPE_CHECKING:
-    from ..app.events import EventSink
-    from ..llm.ir import Provider
-    from ..ports import Store
 
 
 @dataclass
@@ -46,18 +40,3 @@ class Page:
     erased: np.ndarray | None = field(default=None, repr=False)
     rendered: np.ndarray | None = field(default=None, repr=False)
 
-
-@dataclass
-class Session:
-    """Carries everything agents need. Created once per chapter."""
-
-    store: Store
-    source: object
-    project_id: int
-    source_lang: str
-    target_lang: str
-    provider: Provider
-    context_provider: Provider
-    hook: object  # EventSink or legacy Hook
-    chapter: float = 0.0
-    glossary: dict[str, str] = field(default_factory=dict)

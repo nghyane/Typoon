@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typoon.domain.bubble import Bubble, Session
+from typoon.adapters.session import Session
+from typoon.domain.bubble import Bubble
 from typoon.llm.ir import ContentPart, Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
