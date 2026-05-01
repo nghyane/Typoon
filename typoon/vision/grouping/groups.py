@@ -316,7 +316,9 @@ def _ocr_crop_box(
     page_w: int, page_h: int, scope_bbox: list[int] | None = None,
 ) -> list[int]:
     x1, y1, x2, y2 = group_box
-    l, t, r, b = x1, y1, x2, y2
+    pad = 0
+    l, t = x1, y1
+    r, b = x2, y2
 
     # Clip to scope boundary if available
     if scope_bbox is not None:
