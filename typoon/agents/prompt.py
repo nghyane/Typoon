@@ -9,21 +9,20 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 CONTEXT_SYSTEM = """\
 You are a chapter context analyst for comic translation ({source_lang} -> {target_lang}).
 
-Analyze the keyed chapter text to prepare a translation brief.
+Analyze the chapter text below and call submit_chapter_brief.
 
-Workflow:
-1. Call search_knowledge to look up character names, address/pronoun rules, and
-   terms from previous chapters. If results exist, carry them forward.
-2. For new characters or relationships not found, decide address style and name
-   forms based on the target language policy below.
-3. Call look_at if visual context is needed (speaker identity, age, tone).
-4. For every character name, decide the target-language form in the glossary.
-5. Call submit_chapter_brief with the complete analysis.
+Available context is provided in the user message (prior briefs, glossary, translations).
+Only call search_knowledge if you need something NOT already in the provided context.
+Only call look_at if you genuinely cannot determine speaker/tone from text alone.
+Otherwise call submit_chapter_brief directly.
 
 {source_policy}
 {target_policy}"""
 
 CONTEXT_USER = """\
+{context_snapshot}
+
+## Chapter text to analyze
 {chapter_text}"""
 
 PAGE_SYSTEM = """\

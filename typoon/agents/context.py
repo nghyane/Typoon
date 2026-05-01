@@ -16,17 +16,19 @@ from .tools.search_knowledge import SearchKnowledgeArgs, SearchScope, search_kno
 
 
 class ContextAgent:
-    """Analyzes chapter text, queries knowledge/images, submits ChapterBrief."""
+    """Analyzes chapter text with pre-loaded context, submits ChapterBrief."""
 
     def __init__(
         self,
         session: Session,
         prepared: Chapter,
         key_map: dict[str, ScannedBubble],
+        context_snapshot: str,
     ) -> None:
         self._session = session
         self._prepared = prepared
         self._key_map = key_map
+        self._context_snapshot = context_snapshot
         self._brief: ChapterBrief | None = None
         self._text_retries = 0
         self._last_text = ""
@@ -44,6 +46,7 @@ class ContextAgent:
 
     def user_message(self) -> Message:
         return Message.user_text(prompt.CONTEXT_USER.format(
+            context_snapshot=self._context_snapshot,
             chapter_text=chapter_text(self._key_map),
         ))
 
@@ -133,7 +136,11 @@ async def build_chapter_brief(
     key_map: dict[str, ScannedBubble],
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run
-    agent = ContextAgent(session, prepared, key_map)
+
+    # Pre-load context so agent can decide immediately whether to search
+    context_snapshot = await _load_context_snapshot(session)
+
+    agent = ContextAgent(session, prepared, key_map, context_snapshot)
     result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=20)
     if result.error:
         raise result.error
@@ -143,3 +150,40 @@ async def build_chapter_brief(
             f"Last model text: {agent._last_text[:300]}"
         )
     return result.output, result.turns
+
+
+async def _load_context_snapshot(session: Session) -> str:
+    """Load glossary + recent briefs into a text block for the agent."""
+    store = session.store
+    parts: list[str] = []
+
+    # Glossary
+    glossary = await store.get_glossary(session.project_id) if hasattr(store, 'get_glossary') else {}
+    if not glossary:
+        # Fall back to glossary_search with empty query isn't practical;
+        # use session glossary if pre-loaded
+        glossary = session.glossary or {}
+    if glossary:
+        lines = "\n".join(f"  {k} → {v}" for k, v in list(glossary.items())[:30])
+        parts.append(f"## Glossary ({len(glossary)} terms)\n{lines}")
+
+    # Recent chapter briefs
+    recent = await store.get_recent_chapter_briefs(
+        session.project_id, before_chapter=session.chapter, limit=3
+    )
+    if recent:
+        brief_texts = []
+        for r in recent:
+            b = r.get("brief", {})
+            summary = b.get("summary", "")
+            facts = b.get("facts", [])
+            ch = r.get("chapter", "?")
+            text = f"Ch{ch}: {summary}"
+            if facts:
+                text += "\n  Facts: " + "; ".join(facts[:3])
+            brief_texts.append(text)
+        parts.append("## Prior chapter context\n" + "\n".join(brief_texts))
+    else:
+        parts.append("## Prior chapter context\nNone — this appears to be chapter 1 or first translation.")
+
+    return "\n\n".join(parts) if parts else "No prior context available."

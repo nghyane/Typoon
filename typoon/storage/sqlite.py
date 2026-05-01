@@ -232,6 +232,12 @@ class SqliteStore:
 
     # ── Glossary ──────────────────────────────────────────────────
 
+    async def get_glossary(self, project_id: int) -> dict[str, str]:
+        cur = await self._db.execute(
+            "SELECT source_term, target_term FROM glossary WHERE project_id=?", (project_id,),
+        )
+        return {r["source_term"]: r["target_term"] for r in await cur.fetchall()}
+
     async def glossary_search(self, project_id: int, query: str) -> list[dict]:
         safe = _fts_escape(query)
         if not safe:
