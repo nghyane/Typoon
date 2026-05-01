@@ -128,6 +128,12 @@ class OpenAIProvider:
                         )
 
             if choice.finish_reason is not None:
+                if choice.finish_reason == "length":
+                    from .ir import StreamTruncatedError
+                    raise StreamTruncatedError(
+                        f"Stream truncated (finish_reason=length). "
+                        f"Incomplete tool calls: {list(pending.keys())}"
+                    )
                 for idx, (tid, tname) in sorted(pending.items()):
                     yield StreamEvent(
                         type=StreamEventType.TOOL_CALL_DONE,

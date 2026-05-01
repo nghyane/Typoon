@@ -135,6 +135,10 @@ class CallResponse:
 # ── Stream events ────────────────────────────────────────────────────
 
 
+class StreamTruncatedError(RuntimeError):
+    """Raised when a stream ends with finish_reason='length' (output truncated)."""
+
+
 class StreamEventType(Enum):
     THINKING_DELTA = auto()
     TEXT_DELTA = auto()
