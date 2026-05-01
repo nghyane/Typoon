@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..runs.events import Hook
+from ..adapters.project_service import FatalError
 from .events import render as render_event
 
 app = typer.Typer(name="typoon", help="Manga translation pipeline.")
@@ -79,7 +80,11 @@ async def _pull(target: str, url: str | None, target_lang: str, from_ch: float, 
             if not selected:
                 return
             console.print(f"  {len(selected)} chapter(s) selected\n")
-            await service.pull_more(slug, url, selected, ConsoleHook(), redo)
+            try:
+                await service.pull_more(slug, url, selected, ConsoleHook(), redo)
+            except FatalError as e:
+                console.print(f"\n[red bold]Fatal error — stopping:[/] {e}")
+                raise typer.Exit(1)
         else:
             # typoon pull <url> — new project or existing by source_url
             pull_url = target
@@ -89,7 +94,11 @@ async def _pull(target: str, url: str | None, target_lang: str, from_ch: float, 
             if not selected:
                 return
             console.print(f"  {len(selected)} chapter(s) selected\n")
-            slug = await service.pull_new(info, pull_url, selected, target_lang, ConsoleHook(), redo)
+            try:
+                slug = await service.pull_new(info, pull_url, selected, target_lang, ConsoleHook(), redo)
+            except FatalError as e:
+                console.print(f"\n[red bold]Fatal error — stopping:[/] {e}")
+                raise typer.Exit(1)
             console.print(f"\n[dim]Project slug: [bold]{slug}[/][/]")
     finally:
         await service.close()
@@ -130,7 +139,11 @@ async def _add(target: str, folder: Path | None, target_lang: str, source_lang: 
             if not src.is_dir():
                 console.print(f"[red]Not a directory:[/] {src}")
                 raise typer.Exit(2)
-            await service.add_more(slug, src, ConsoleHook(), redo)
+            try:
+                await service.add_more(slug, src, ConsoleHook(), redo)
+            except FatalError as e:
+                console.print(f"\n[red bold]Fatal error — stopping:[/] {e}")
+                raise typer.Exit(1)
         else:
             # typoon add <folder> — new project (or existing by slug)
             src = Path(target)
@@ -138,7 +151,11 @@ async def _add(target: str, folder: Path | None, target_lang: str, source_lang: 
                 console.print(f"[red]Not a directory:[/] {src}")
                 raise typer.Exit(2)
             title = name or src.name
-            slug = await service.add_new(src, title, source_lang, target_lang, ConsoleHook(), redo)
+            try:
+                slug = await service.add_new(src, title, source_lang, target_lang, ConsoleHook(), redo)
+            except FatalError as e:
+                console.print(f"\n[red bold]Fatal error — stopping:[/] {e}")
+                raise typer.Exit(1)
             console.print(f"\n[dim]Project slug: [bold]{slug}[/][/]")
     finally:
         await service.close()
@@ -178,6 +195,9 @@ async def _translate(slug: str, from_ch: float, to_ch: float, redo: str | None) 
             hi = to_ch or all_chs[-1]["idx"]
             indices = [c["idx"] for c in all_chs if lo <= c["idx"] <= hi]
         await service.translate(slug, indices, ConsoleHook(), redo)
+    except FatalError as e:
+        console.print(f"\n[red bold]Fatal error — stopping:[/] {e}")
+        raise typer.Exit(1)
     finally:
         await service.close()
 

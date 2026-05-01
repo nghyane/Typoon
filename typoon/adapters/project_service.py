@@ -40,6 +40,10 @@ class ProjectStatus:
     chapters:    tuple[ChapterStatus, ...]
 
 
+class FatalError(Exception):
+    """Infrastructure error that should stop the entire pipeline run."""
+
+
 # ── Service ───────────────────────────────────────────────────────────
 
 
@@ -309,6 +313,8 @@ class ProjectService:
             hook.on(ChapterDone(idx=cp.idx, bubble_count=_count_bubbles(cp), render_dir=str(cp.render)))
         except Exception as e:
             await self._db.set_chapter_status(proj["id"], cp.idx, "error")
+            if _is_fatal(e):
+                raise FatalError(str(e)) from e
             hook.on(ChapterFailed(idx=cp.idx, stage="pipeline", error=e))
 
 
@@ -354,3 +360,32 @@ def _count_bubbles(cp: ChapterPaths) -> int:
         return 0
     from typoon.domain.translate import Chapter as TC
     return len(TC.load(cp).all_bubbles)
+
+
+def _is_fatal(exc: Exception) -> bool:
+    """True for infrastructure errors that affect all chapters — stop immediately."""
+    try:
+        import openai
+        if isinstance(exc, (
+            openai.AuthenticationError,   # no API key / bad key
+            openai.PermissionDeniedError, # no access to model
+            openai.APIConnectionError,    # network unreachable
+        )):
+            return True
+        if isinstance(exc, openai.APIStatusError) and exc.status_code in (401, 403, 503):
+            return True
+    except ImportError:
+        pass
+    try:
+        import anthropic
+        if isinstance(exc, (
+            anthropic.AuthenticationError,
+            anthropic.PermissionDeniedError,
+            anthropic.APIConnectionError,
+        )):
+            return True
+        if isinstance(exc, anthropic.APIStatusError) and exc.status_code in (401, 403, 503):
+            return True
+    except ImportError:
+        pass
+    return False
