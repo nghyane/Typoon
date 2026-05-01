@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typoon.adapters.session import Session
 from typoon.domain.scan import Bubble as ScannedBubble
 from typoon.llm.ir import Message
+from typoon.runs.events import LLMCall, LLMResponse
 
 from . import prompt
 from .brief import ChapterBrief, brief_slice
@@ -30,6 +31,8 @@ async def translate_window(
     brief: ChapterBrief,
     window_keys: list[str],
     key_map: dict[str, ScannedBubble],
+    window_num: int = 0,
+    total_windows: int = 0,
 ) -> tuple[list[TranslationOp], int]:
     """Translate a window of keys in one call with surrounding context."""
     # Auto-skip before sending to LLM — no need to waste tokens
@@ -76,10 +79,21 @@ async def translate_window(
         user = _build_user(ctx, context_keys, remaining, key_map)
         messages = [Message.system(system), Message.user_text(user)]
 
+        t0 = time.monotonic()
+        session.hook.on(LLMCall(agent="translate", turn=window_num + 1))
         resp = await session.provider.call(messages, [])
+        ms = (time.monotonic() - t0) * 1000
         text = resp.text or ""
 
         ops, errors = _parse_xml(text, remaining, key_map)
+        resolved = len([op for op in ops if op.key in remaining])
+        session.hook.on(LLMResponse(
+            agent=f"translate w{window_num + 1}/{total_windows}",
+            turn=attempt + 1,
+            tool_calls=resolved,
+            ms=ms,
+        ))
+
         for op in ops:
             all_ops.append(op)
             remaining.discard(op.key)

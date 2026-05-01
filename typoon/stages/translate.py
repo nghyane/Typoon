@@ -31,9 +31,12 @@ async def translate_chapter(
         brief, _ = await build_chapter_brief(session, scanned.prepared, key_map)
 
         ops: dict[str, TranslationOp] = {}
-        for window_keys in _windows(key_map, scanned):
+        windows = list(_windows(key_map, scanned))
+        total = len(windows)
+        for i, window_keys in enumerate(windows):
             accepted, _ = await translate_window(
                 session, brief=brief, window_keys=window_keys, key_map=key_map,
+                window_num=i, total_windows=total,
             )
             for op in accepted:
                 ops[op.key] = op

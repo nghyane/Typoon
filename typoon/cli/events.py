@@ -8,7 +8,7 @@ from rich.console import Console
 
 from typoon.runs.events import (
     ChapterDone, ChapterDownloaded, ChapterFailed,
-    ChapterSkipped, Event, StageDone, StageStarted, StageFailed,
+    ChapterSkipped, Event, LLMCall, LLMResponse, StageDone, StageStarted, StageFailed,
 )
 
 console = Console()
@@ -53,3 +53,14 @@ def _(event: ChapterDone) -> None:
 @render.register
 def _(event: ChapterFailed) -> None:
     console.print(f"  [red]✗[/] ch{event.idx:03.0f}  {event.stage}: {event.error}")
+
+
+@render.register
+def _(event: LLMCall) -> None:
+    console.print(f"  [dim]  LLM {event.agent} t{event.turn}…[/]", end="")
+
+
+@render.register
+def _(event: LLMResponse) -> None:
+    status = "[green]✓[/]" if event.tool_calls > 0 else "[yellow]–[/]"
+    console.print(f" {status} {event.tool_calls} resolved, {event.ms:.0f}ms")

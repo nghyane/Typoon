@@ -56,8 +56,16 @@ class ToolResult(Event):
 
 
 @dataclass
-class ModelsUnloaded(Event):
-    stage: str = ""
+class TranslationWindow(Event):
+    """One translate_window call started/done."""
+    chapter: float = 0.0
+    window: int = 0
+    total_windows: int = 0
+    active_keys: int = 0
+    status: str = "started"  # started | done | retry
+    ms: float = 0.0
+    turns: int = 0
+    missing: int = 0
 
 
 @dataclass
