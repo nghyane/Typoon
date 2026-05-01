@@ -22,3 +22,4 @@ projects/
 *.db-shm
 *.db-wal
 debug/
+.pipeline/
