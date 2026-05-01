@@ -107,6 +107,13 @@ class ChapterFailed(Event):
     error: Exception | None = None
 
 
+@dataclass
+class StageFailed(Event):
+    idx:   float = 0.0
+    stage: str = ""
+    error: Exception | None = None
+
+
 class Hook:
     quit_requested: bool = False
 

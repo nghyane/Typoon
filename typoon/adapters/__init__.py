@@ -1,1 +1,1 @@
-"""Adapters — concrete implementations of ports."""
+"""Adapters — vision runtime, text rendering, mask storage, session."""

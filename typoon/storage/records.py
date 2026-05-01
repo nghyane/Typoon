@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass
 
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter
-from typoon.translation.brief import ChapterBrief
+from typoon.agents.brief import ChapterBrief
 
 
 @dataclass(frozen=True)

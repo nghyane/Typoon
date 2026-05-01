@@ -1,131 +1,144 @@
-"""Pipeline orchestrator — resume-aware, runs all stages for one chapter."""
+"""Pipeline stage execution with resume support."""
 
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+from enum import Enum
+from typing import AsyncIterator
 
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.session import Session
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
-from typoon.runs.events import Hook
+from typoon.runs.events import (
+    Event, StageDone, StageStarted, StageFailed,
+)
 
 
-async def run_chapter(
+class Stage(str, Enum):
+    PREPARE   = "prepare"
+    SCAN      = "scan"
+    TRANSLATE = "translate"
+    RENDER    = "render"
+
+    def is_done(self, cp: ChapterPaths) -> bool:
+        return {
+            Stage.PREPARE:   cp.is_prepared,
+            Stage.SCAN:      cp.is_scanned,
+            Stage.TRANSLATE: cp.is_translated,
+            Stage.RENDER:    cp.is_rendered,
+        }[self]
+
+    def outputs(self, cp: ChapterPaths) -> list:
+        return {
+            Stage.PREPARE:   [cp.manifest],
+            Stage.SCAN:      [cp.scan, cp.masks],
+            Stage.TRANSLATE: [cp.translate],
+            Stage.RENDER:    [cp.render],
+        }[self]
+
+
+def redo_from(cp: ChapterPaths, stage: Stage | str | None) -> None:
+    """Delete output files for stage and all subsequent stages."""
+    if stage is None:
+        return
+    if isinstance(stage, str):
+        stage = Stage(stage)
+    stages = list(Stage)
+    for s in stages[stages.index(stage):]:
+        for path in s.outputs(cp):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.is_file():
+                path.unlink(missing_ok=True)
+
+
+async def run(
     cp: ChapterPaths,
     session: Session,
     runtime: VisionRuntime,
     *,
-    redo_from: str | None = None,
+    redo: Stage | str | None = None,
     artifacts: ArtifactSink | None = None,
-    hook: Hook | None = None,
-) -> None:
-    """Run pipeline for one chapter, skipping completed stages.
+) -> AsyncIterator[Event]:
+    """Run pipeline stages for one chapter, yielding events. Skips completed stages."""
+    redo_from(cp, redo)
 
-    redo_from: force re-run from this stage onward.
-      Values: "prepare" | "scan" | "translate" | "render"
-    """
-    _redo_from(cp, redo_from)
-
-    await _stage_prepare(cp, artifacts)
-    await _stage_scan(cp, runtime, artifacts)
-    await _stage_translate(cp, session, artifacts)
-    _stage_render(cp, runtime, artifacts)
+    async for event in _run_prepare(cp, artifacts):
+        yield event
+    async for event in _run_scan(cp, runtime, artifacts):
+        yield event
+    async for event in _run_translate(cp, session, artifacts):
+        yield event
+    async for event in _run_render(cp, runtime, artifacts):
+        yield event
 
 
 # ── Stage runners ─────────────────────────────────────────────────────
 
 
-def _stage_prepare(cp: ChapterPaths, artifacts: ArtifactSink | None) -> None:
-    if cp.is_prepared:
+async def _run_prepare(cp: ChapterPaths, artifacts: ArtifactSink | None) -> AsyncIterator[Event]:
+    if Stage.PREPARE.is_done(cp):
         return
-    from typoon.adapters.local_source import LocalSource
-    from typoon.stages.prepare import prepare_chapter
-    prepare_chapter(LocalSource(cp.pages), cp.root,
-                    source_label=str(cp.pages), artifacts=artifacts)
+    yield StageStarted(idx=cp.idx, stage=Stage.PREPARE.value)
+    try:
+        from typoon.sources.local import LocalSource
+        from typoon.stages.prepare import prepare_chapter
+        prepare_chapter(LocalSource(cp.pages), cp.root,
+                        source_label=str(cp.pages), artifacts=artifacts)
+    except Exception as e:
+        yield StageFailed(idx=cp.idx, stage=Stage.PREPARE.value, error=e)
+        raise
+    yield StageDone(idx=cp.idx, stage=Stage.PREPARE.value)
 
 
-async def _stage_scan(
-    cp: ChapterPaths,
-    runtime: VisionRuntime,
-    artifacts: ArtifactSink | None,
-) -> None:
-    if cp.is_scanned:
+async def _run_scan(
+    cp: ChapterPaths, runtime: VisionRuntime, artifacts: ArtifactSink | None,
+) -> AsyncIterator[Event]:
+    if Stage.SCAN.is_done(cp):
         return
-    from typoon.domain.prepared import Chapter
-    from typoon.stages.scan import scan_chapter
+    yield StageStarted(idx=cp.idx, stage=Stage.SCAN.value)
+    try:
+        from typoon.domain.prepared import Chapter
+        from typoon.stages.scan import scan_chapter
+        result = scan_chapter(Chapter.load(cp.root), runtime, artifacts=artifacts)
+        result.chapter.save(cp)
+        result.masks.save(cp)
+    except Exception as e:
+        yield StageFailed(idx=cp.idx, stage=Stage.SCAN.value, error=e)
+        raise
+    yield StageDone(idx=cp.idx, stage=Stage.SCAN.value)
 
-    prepared = Chapter.load(cp.root)
-    result = scan_chapter(prepared, runtime, artifacts=artifacts)
-    result.chapter.save(cp)
-    result.masks.save(cp)
 
-
-async def _stage_translate(
-    cp: ChapterPaths,
-    session: Session,
-    artifacts: ArtifactSink | None,
-) -> None:
-    if cp.is_translated:
+async def _run_translate(
+    cp: ChapterPaths, session: Session, artifacts: ArtifactSink | None,
+) -> AsyncIterator[Event]:
+    if Stage.TRANSLATE.is_done(cp):
         return
-    from typoon.domain.scan import Chapter as ScannedChapter
-    from typoon.stages.translate import translate_chapter
+    yield StageStarted(idx=cp.idx, stage=Stage.TRANSLATE.value)
+    try:
+        from typoon.domain.scan import Chapter as ScannedChapter
+        from typoon.stages.translate import translate_chapter
+        translated = await translate_chapter(ScannedChapter.load(cp), session, artifacts=artifacts)
+        translated.save(cp)
+    except Exception as e:
+        yield StageFailed(idx=cp.idx, stage=Stage.TRANSLATE.value, error=e)
+        raise
+    yield StageDone(idx=cp.idx, stage=Stage.TRANSLATE.value)
 
-    scanned = ScannedChapter.load(cp)
-    translated = await translate_chapter(scanned, session, artifacts=artifacts)
-    translated.save(cp)
 
-
-def _stage_render(
-    cp: ChapterPaths,
-    runtime: VisionRuntime,
-    artifacts: ArtifactSink | None,
-) -> None:
-    if cp.is_rendered:
+async def _run_render(
+    cp: ChapterPaths, runtime: VisionRuntime, artifacts: ArtifactSink | None,
+) -> AsyncIterator[Event]:
+    if Stage.RENDER.is_done(cp):
         return
-    from typoon.domain.translate import Chapter as TranslatedChapter
-    from typoon.stages.render import render_chapter
-
-    translated = TranslatedChapter.load(cp)
-    masks = MaskStore.load(cp)
-    render_chapter(translated, masks, runtime, out_dir=cp.root, artifacts=artifacts)
-
-
-# ── Redo logic ────────────────────────────────────────────────────────
-
-def _already_done(cp: ChapterPaths, stage: str) -> bool:
-    return {
-        "prepare":   cp.is_prepared,
-        "scan":      cp.is_scanned,
-        "translate": cp.is_translated,
-        "render":    cp.is_rendered,
-    }[stage]
-
-
-_STAGE_ORDER = ["prepare", "scan", "translate", "render"]
-
-
-def _redo_from(cp: ChapterPaths, stage: str | None) -> None:
-    """Delete output files for stage and all subsequent stages."""
-    if stage is None:
-        return
-    if stage not in _STAGE_ORDER:
-        raise ValueError(f"Unknown stage: {stage!r}. Must be one of {_STAGE_ORDER}")
-
-    idx = _STAGE_ORDER.index(stage)
-    if idx <= 0:  # prepare
-        if cp.manifest.exists():
-            cp.manifest.unlink()
-    if idx <= 1:  # scan
-        if cp.scan.exists():
-            cp.scan.unlink()
-        if cp.masks.exists():
-            shutil.rmtree(cp.masks)
-    if idx <= 2:  # translate
-        if cp.translate.exists():
-            cp.translate.unlink()
-    if idx <= 3:  # render
-        if cp.render.exists():
-            shutil.rmtree(cp.render)
+    yield StageStarted(idx=cp.idx, stage=Stage.RENDER.value)
+    try:
+        from typoon.domain.translate import Chapter as TranslatedChapter
+        from typoon.stages.render import render_chapter
+        render_chapter(TranslatedChapter.load(cp), MaskStore.load(cp), runtime, out_dir=cp.root)
+    except Exception as e:
+        yield StageFailed(idx=cp.idx, stage=Stage.RENDER.value, error=e)
+        raise
+    yield StageDone(idx=cp.idx, stage=Stage.RENDER.value)

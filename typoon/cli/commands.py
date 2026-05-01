@@ -9,33 +9,16 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..runs.events import (
-    ChapterDone, ChapterDownloaded, ChapterFailed,
-    ChapterSkipped, Hook, StageDone, StageStarted,
-)
+from ..runs.events import Hook
+from .events import render as render_event
 
 app = typer.Typer(name="typoon", help="Manga translation pipeline.")
 console = Console()
 
 
 class ConsoleHook(Hook):
-    """Renders pipeline events to the terminal."""
-
     def on(self, event) -> None:
-        match event:
-            case ChapterDownloaded():
-                console.print(f"  [cyan]↓[/] ch{event.idx:03.0f}  {event.page_count} pages")
-            case ChapterSkipped():
-                console.print(f"  [dim]–[/] ch{event.idx:03.0f}  {event.reason}")
-            case StageStarted():
-                console.print(f"    [dim]{event.stage}…[/]", end="")
-            case StageDone():
-                console.print(" [green]✓[/]")
-            case ChapterDone():
-                console.print(f"  [green]✓[/] ch{event.idx:03.0f}  {event.bubble_count} bubbles")
-                console.print(f"    [dim]{event.render_dir}[/]")
-            case ChapterFailed():
-                console.print(f"  [red]✗[/] ch{event.idx:03.0f}  {event.stage}: {event.error}")
+        render_event(event)
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -47,8 +30,8 @@ def auth(site: str = typer.Argument(..., help="Site to authenticate (e.g. comix.
     asyncio.run(_auth(site))
 
 
-async def _auth(site: str):
-    from ..adapters.connectors import get_connectors
+async def _auth(site: str) -> None:
+    from ..sources.connectors import get_connectors
     connector = next((c for c in get_connectors() if site in c.site_name or c.site_name in site), None)
     if connector is None:
         console.print(f"[red]Unknown site:[/] {site}")
@@ -65,15 +48,15 @@ async def _auth(site: str):
 def pull(
     url: str = typer.Argument(..., help="Manga or chapter URL"),
     target_lang: str = typer.Option("vi", "--target-lang", "-t"),
-    from_ch: float = typer.Option(0, "--from", help="First chapter (0 = ask interactively)"),
+    from_ch: float = typer.Option(0, "--from", help="First chapter (0 = ask)"),
     to_ch: float = typer.Option(0, "--to", help="Last chapter"),
-    redo: str = typer.Option(None, "--redo", help="Re-run from stage: scan|translate|render"),
+    redo: str = typer.Option(None, "--redo", help="Re-run from: scan|translate|render"),
 ):
     """Download chapters from a URL and translate."""
     asyncio.run(_pull(url, target_lang, from_ch, to_ch, redo))
 
 
-async def _pull(url: str, target_lang: str, from_ch: float, to_ch: float, redo: str | None):
+async def _pull(url: str, target_lang: str, from_ch: float, to_ch: float, redo: str | None) -> None:
     from ..adapters.project_service import ProjectService
 
     service = await ProjectService.open()
@@ -87,7 +70,7 @@ async def _pull(url: str, target_lang: str, from_ch: float, to_ch: float, redo: 
             return
         console.print(f"  {len(selected)} chapter(s) selected\n")
 
-        await service.pull(url, selected, target_lang, ConsoleHook(), redo)
+        await service.pull(info, url, selected, target_lang, ConsoleHook(), redo)
     finally:
         await service.close()
 
@@ -107,7 +90,7 @@ def add(
     asyncio.run(_add(folder, target_lang, source_lang, project, redo))
 
 
-async def _add(folder: Path, target_lang: str, source_lang: str, project_name: str | None, redo: str | None):
+async def _add(folder: Path, target_lang: str, source_lang: str, project_name: str | None, redo: str | None) -> None:
     from ..adapters.project_service import ProjectService
 
     if not folder.is_dir():
@@ -131,23 +114,26 @@ def translate(
     redo: str = typer.Option(None, "--redo"),
 ):
     """Translate pending chapters."""
-    asyncio.run(_translate_cmd(project, chapter, redo))
+    asyncio.run(_translate(project, chapter, redo))
 
 
-async def _translate_cmd(project_name: str | None, chapter_num: float | None, redo: str | None):
+async def _translate(project_name: str | None, chapter_num: float | None, redo: str | None) -> None:
     from ..adapters.project_service import ProjectService
 
     service = await ProjectService.open()
     try:
         all_status = await service.get_status()
-        projects = all_status if not project_name else [
-            p for p in all_status if p["slug"] == project_name or p["title"] == project_name
-        ]
+        projects = (
+            all_status if not project_name
+            else [p for p in all_status if p.slug == project_name or p.title == project_name]
+        )
         for proj in projects:
-            indices = ([chapter_num] if chapter_num is not None
-                       else [c["idx"] for c in proj["chapters"] if c["status"] == "pending"])
+            indices = (
+                [chapter_num] if chapter_num is not None
+                else [c.idx for c in proj.chapters if c.status == "pending"]
+            )
             if indices:
-                await service.translate(proj["id"], indices, ConsoleHook(), redo)
+                await service.translate(proj.project_id, indices, ConsoleHook(), redo)
     finally:
         await service.close()
 
@@ -163,7 +149,7 @@ def status(
     asyncio.run(_status(project))
 
 
-async def _status(project_name: str | None):
+async def _status(project_name: str | None) -> None:
     from ..adapters.project_service import ProjectService
 
     service = await ProjectService.open()
@@ -173,24 +159,24 @@ async def _status(project_name: str | None):
             console.print("[dim]No projects yet. Run: typoon pull <url>[/]")
             return
         for proj in all_status:
-            if project_name and proj["slug"] != project_name and proj["title"] != project_name:
+            if project_name and proj.slug != project_name and proj.title != project_name:
                 continue
-            console.print(f"\n[bold]{proj['title']}[/] [dim]({proj['slug']})[/]  {proj['source_lang']} → {proj['target_lang']}")
-            if not proj["chapters"]:
-                console.print("  [dim]No chapters imported[/]")
+            console.print(f"\n[bold]{proj.title}[/] [dim]({proj.slug})[/]  {proj.source_lang} → {proj.target_lang}")
+            if not proj.chapters:
+                console.print("  [dim]No chapters[/]")
                 continue
             t = Table(show_header=False, box=None, padding=(0, 1))
-            for ch in proj["chapters"]:
+            for ch in proj.chapters:
                 icon = {"done": "[green]✓[/]", "translating": "[yellow]⟳[/]",
-                        "error": "[red]✗[/]", "pending": "[dim]○[/]"}.get(ch["status"], "?")
-                info = f"[dim]{ch['render_count']} pages → {ch['cp'].render}[/]" if ch["render_count"] else ""
-                t.add_row(icon, f"ch{ch['idx']:03.0f}", ch["status"], info)
+                        "error": "[red]✗[/]", "pending": "[dim]○[/]"}.get(ch.status, "?")
+                info = f"[dim]{ch.render_count} pages → {ch.render_path}[/]" if ch.render_count else ""
+                t.add_row(icon, f"ch{ch.idx:03.0f}", ch.status, info)
             console.print(t)
     finally:
         await service.close()
 
 
-# ── UI helpers ────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────
 
 
 def _select_chapters(chapters, from_ch: float, to_ch: float) -> list:
