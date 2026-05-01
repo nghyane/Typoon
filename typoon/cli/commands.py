@@ -51,7 +51,7 @@ def prepare(
     run_id: str = typer.Option("latest", "--run-id", help="Debug run id"),
     debug_root: Path | None = typer.Option(None, "--debug-root", help="Debug runs root"),
 ):
-    """Prepare raw images into a chapter workspace."""
+    """Prepare raw images into a chapter directory."""
     from ..adapters.local_source import LocalSource
     from ..runs import FileArtifactSink
     from ..stages import prepare_chapter
@@ -84,11 +84,11 @@ def prepare(
 
 @app.command()
 def scan(
-    input: Path = typer.Argument(..., help="Chapter workspace directory"),
+    input: Path = typer.Argument(..., help="Prepared chapter directory (output of typoon prepare)"),
     run_id: str = typer.Option("latest", "--run-id", help="Debug run id"),
     debug_root: Path | None = typer.Option(None, "--debug-root", help="Debug runs root"),
 ):
-    """Run vision scan on a prepared chapter workspace."""
+    """Run vision scan on a prepared chapter."""
     from ..adapters.mask_store import MaskStore
     from ..adapters.vision_runtime import VisionRuntime
     from ..domain.prepared import Chapter
@@ -117,7 +117,7 @@ def scan(
 
 @app.command()
 def translate(
-    input: Path = typer.Argument(..., help="Chapter workspace directory (must have scan/ output)"),
+    input: Path = typer.Argument(..., help="Prepared chapter directory (must have scan/ output)"),
     project_id: int = typer.Option(1, "--project-id", "-p", help="Project ID in database"),
     chapter: float = typer.Option(1.0, "--chapter", "-c", help="Chapter number"),
     source_lang: str = typer.Option("ko", "--source-lang", "-s", help="Source language"),
@@ -129,7 +129,7 @@ def translate(
 
 
 async def _translate(
-    workspace: Path,
+    chapter_dir: Path,
     project_id: int,
     chapter_num: float,
     source_lang: str,
@@ -142,17 +142,17 @@ async def _translate(
     from ..stages import translate_chapter
     from ..storage.sqlite import SqliteStore
 
-    scan_dir = workspace / "scan"
+    scan_dir = chapter_dir / "scan"
     if not (scan_dir / "manifest.json").exists():
         console.print(f"[red]No scan output found at {scan_dir}[/]")
-        console.print("[dim]Run: typoon scan <workspace>[/]")
+        console.print("[dim]Run: typoon scan <chapter_dir>[/]")
         raise typer.Exit(2)
 
     db_path = db_path or home() / "typoon.db"
     store = await SqliteStore.open(db_path)
 
     try:
-        scanned = ScannedChapter.load(workspace)
+        scanned = ScannedChapter.load(chapter_dir)
         session = make_session(
             project_id=project_id,
             chapter=chapter_num,
@@ -160,22 +160,20 @@ async def _translate(
             target_lang=target_lang,
             store=store,
         )
-
         console.print(f"[dim]Translating {scanned.page_count} pages, "
                       f"{len(scanned.all_bubbles)} bubbles…[/]")
         translated = await translate_chapter(scanned, session)
-        translated.save(workspace)
-
+        translated.save(chapter_dir)
         non_skip = sum(1 for b in translated.all_bubbles if b.kind != "skip")
         console.print(f"[green]✓ Translated[/] {non_skip}/{len(translated.all_bubbles)} bubbles")
-        console.print(f"  Output: [cyan]{workspace}/translate/[/]")
+        console.print(f"  Output: [cyan]{chapter_dir}/translate/[/]")
     finally:
         await store.close()
 
 
 @app.command()
 def render(
-    input: Path = typer.Argument(..., help="Chapter workspace directory (must have translate/ output)"),
+    input: Path = typer.Argument(..., help="Prepared chapter directory (must have translate/ output)"),
 ):
     """Render translated chapter — erase source text, draw translations."""
     from ..adapters.mask_store import MaskStore
@@ -186,7 +184,7 @@ def render(
     translate_dir = input / "translate"
     if not (translate_dir / "manifest.json").exists():
         console.print(f"[red]No translate output found at {translate_dir}[/]")
-        console.print("[dim]Run: typoon translate <workspace>[/]")
+        console.print("[dim]Run: typoon translate <chapter_dir>[/]")
         raise typer.Exit(2)
 
     translated = TranslatedChapter.load(input)
@@ -205,7 +203,7 @@ def render(
 @app.command()
 def run(
     input: Path = typer.Argument(..., help="Raw chapter image folder"),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Workspace output directory"),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Chapter directory (default: <input>/prepared)"),
     project_id: int = typer.Option(1, "--project-id", "-p"),
     chapter: float = typer.Option(1.0, "--chapter", "-c"),
     source_lang: str = typer.Option("ko", "--source-lang", "-s"),
@@ -226,54 +224,51 @@ async def _run(
     db_path: Path | None,
 ):
     from ..adapters.local_source import LocalSource
-    from ..adapters.mask_store import MaskStore
     from ..adapters.session import make_session
     from ..adapters.vision_runtime import VisionRuntime
     from ..paths import home
     from ..stages import prepare_chapter, render_chapter, scan_chapter, translate_chapter
     from ..storage.sqlite import SqliteStore
 
-    workspace = out or _default_prepared_dir(raw_dir)
+    chapter_dir = out or _default_prepared_dir(raw_dir)
     db_path = db_path or home() / "typoon.db"
 
-    # Prepare
     console.print(f"[dim]Preparing {raw_dir.name}…[/]")
-    chapter = prepare_chapter(LocalSource(raw_dir), workspace, source_label=str(raw_dir))
+    chapter = prepare_chapter(LocalSource(raw_dir), chapter_dir, source_label=str(raw_dir))
     console.print(f"  [green]✓[/] prepare  {chapter.page_count} pages")
 
-    # Scan
     console.print("[dim]Scanning…[/]")
     runtime, _, _ = VisionRuntime.from_config()
     scan_out = scan_chapter(chapter, runtime)
-    scan_out.chapter.save(workspace)
-    scan_out.masks.save(workspace)
-    total_bubbles = len(scan_out.chapter.all_bubbles)
-    console.print(f"  [green]✓[/] scan     {total_bubbles} bubbles")
+    scan_out.chapter.save(chapter_dir)
+    scan_out.masks.save(chapter_dir)
+    console.print(f"  [green]✓[/] scan     {len(scan_out.chapter.all_bubbles)} bubbles")
 
-    # Translate
     console.print("[dim]Translating…[/]")
     store = await SqliteStore.open(db_path)
     try:
         session = make_session(
-            project_id=project_id,
-            chapter=chapter_num,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            store=store,
+            project_id=project_id, chapter=chapter_num,
+            source_lang=source_lang, target_lang=target_lang, store=store,
         )
         translated = await translate_chapter(scan_out.chapter, session)
-        translated.save(workspace)
+        translated.save(chapter_dir)
         non_skip = sum(1 for b in translated.all_bubbles if b.kind != "skip")
-        console.print(f"  [green]✓[/] translate {non_skip}/{total_bubbles} bubbles")
+        console.print(f"  [green]✓[/] translate {non_skip}/{len(translated.all_bubbles)} bubbles")
     finally:
         await store.close()
 
+    console.print("[dim]Rendering…[/]")
+    result = render_chapter(translated, scan_out.masks, runtime, out_dir=chapter_dir)
+    console.print(f"  [green]✓[/] render   {result.page_count} pages")
+    console.print(f"\n[bold green]Done.[/] Output: [cyan]{chapter_dir}/render/[/]")
+
     # Render
     console.print("[dim]Rendering…[/]")
-    result = render_chapter(translated, scan_out.masks, runtime, out_dir=workspace)
+    result = render_chapter(translated, scan_out.masks, runtime, out_dir=chapter_dir)
     console.print(f"  [green]✓[/] render   {result.page_count} pages")
 
-    console.print(f"\n[bold green]Done.[/] Output: [cyan]{workspace}/render/[/]")
+    console.print(f"\n[bold green]Done.[/] Output: [cyan]{chapter_dir}/render/[/]")
 
 
 @app.command()
