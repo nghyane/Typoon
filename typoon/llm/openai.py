@@ -42,10 +42,12 @@ class OpenAIProvider:
         self._client = openai.AsyncOpenAI(**kwargs)
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._max_tokens = 4096
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {
             "messages": [_serialize_message(m) for m in messages],
+            "max_tokens": self._max_tokens,
         }
         # model="" lets gateway auto-route (Cloudflare, etc.)
         if self._model:
@@ -79,6 +81,7 @@ class OpenAIProvider:
         kwargs: dict = {
             "messages": [_serialize_message(m) for m in messages],
             "stream": True,
+            "max_tokens": self._max_tokens,
         }
         if self._model:
             kwargs["model"] = self._model
@@ -145,9 +148,7 @@ def _serialize_message(msg: Message) -> dict:
         case Role.USER:
             return {"role": "user", "content": _serialize_parts(msg.parts)}
         case Role.ASSISTANT:
-            m: dict = {"role": "assistant"}
-            if msg.text:
-                m["content"] = msg.text
+            m: dict = {"role": "assistant", "content": msg.text or ""}
             if msg.tool_calls:
                 m["tool_calls"] = [
                     {
