@@ -38,6 +38,12 @@ class ContextAgentConfig(BaseModel):
     reasoning_effort: str | None = None
 
 
+class VisionAgentConfig(BaseModel):
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    reasoning_effort: str | None = None
+
+
 class Config(BaseSettings):
     model_config = {"extra": "ignore"}
 
@@ -46,6 +52,7 @@ class Config(BaseSettings):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     translation: TranslationConfig = TranslationConfig()
     context_agent: ContextAgentConfig = ContextAgentConfig()
+    vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
 
 

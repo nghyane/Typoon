@@ -19,6 +19,7 @@ class Session:
     target_lang:      str
     provider:         "Provider"
     context_provider: "Provider"
+    vision_provider:  "Provider"
     hook:             object
     chapter:          float = 0.0
     glossary:         dict[str, str] = field(default_factory=dict)
@@ -34,7 +35,7 @@ def make_session(
     config=None,
 ) -> Session:
     from typoon.config import load_config
-    from typoon.providers import make_context_provider, make_translation_provider
+    from typoon.providers import make_context_provider, make_translation_provider, make_vision_provider
     from typoon.runs.events import Hook
 
     if config is None:
@@ -47,6 +48,7 @@ def make_session(
         target_lang=target_lang,
         provider=make_translation_provider(config),
         context_provider=make_context_provider(config),
+        vision_provider=make_vision_provider(config),
         hook=Hook(),
         chapter=chapter,
     )

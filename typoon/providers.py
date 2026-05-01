@@ -24,6 +24,14 @@ def make_context_provider(config: Config) -> Provider:
     return _build_provider(pcfg, config.context_agent.model, config.context_agent.reasoning_effort)
 
 
+def make_vision_provider(config: Config) -> Provider:
+    name = config.vision_agent.provider
+    pcfg = config.providers.get(name)
+    if pcfg is None:
+        raise ValueError(f"Provider '{name}' not found in [providers]")
+    return _build_provider(pcfg, config.vision_agent.model, config.vision_agent.reasoning_effort)
+
+
 def _resolve_api_key(pcfg: ProviderConfig) -> str | None:
     """Return API key: explicit value (even empty string), env var, or fallback."""
     # Explicitly set (including empty string for no-auth gateways)
