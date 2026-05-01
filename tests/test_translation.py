@@ -47,12 +47,10 @@ def _tool_response(items: list[tuple[str, str, str]]) -> CallResponse:
 
 
 class TestToolSchemas:
-    def test_submit_translations_strict(self):
-        assert submit_translations.definition.strict is True
+    def test_submit_translations_schema(self):
         assert "items" in submit_translations.definition.parameters["properties"]
 
-    def test_submit_chapter_brief_strict(self):
-        assert submit_chapter_brief.definition.strict is True
+    def test_submit_chapter_brief_schema(self):
         props = submit_chapter_brief.definition.parameters["properties"]
         assert "summary" in props
         assert "rules" in props

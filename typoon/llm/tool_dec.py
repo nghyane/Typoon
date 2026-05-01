@@ -1,18 +1,4 @@
-"""@tool decorator — auto-generate ToolDef from Pydantic model + docstring.
-
-Usage:
-    class TranslateArgs(BaseModel):
-        translations: list[Item]
-
-    @tool(strict=True)
-    async def translate(args: TranslateArgs) -> str:
-        '''Submit translations for one or more bubbles.'''
-        ...
-
-    translate.definition   # → ToolDef
-    translate.args_model   # → TranslateArgs
-    await translate(args)  # → calls the function
-"""
+"""@tool decorator — auto-generate ToolDef from Pydantic model + docstring."""
 
 from __future__ import annotations
 
@@ -42,13 +28,11 @@ class ToolFunc:
         return self.args_model.model_validate_json(raw_json)
 
 
-def tool(*, strict: bool = False) -> Any:
-    """Decorator factory: @tool(strict=True)"""
+def tool() -> Any:
+    """Decorator: @tool() — generate ToolDef from Pydantic model + docstring."""
 
     def decorator(fn: Any) -> ToolFunc:
         hints = get_type_hints(fn)
-
-        # Find the Pydantic model from the first parameter
         params = list(inspect.signature(fn).parameters.values())
         args_model: type[BaseModel] | None = None
         for p in params:
@@ -60,22 +44,19 @@ def tool(*, strict: bool = False) -> Any:
         if args_model is None:
             raise TypeError(f"@tool function {fn.__name__} must have a Pydantic BaseModel parameter")
 
-        schema = _clean_schema(args_model.model_json_schema(), strict=strict)
+        schema = _build_schema(args_model)
         doc = textwrap.dedent(fn.__doc__ or "").strip()
-
-        return ToolFunc(fn, ToolDef(fn.__name__, doc, schema, strict), args_model)
+        return ToolFunc(fn, ToolDef(fn.__name__, doc, schema), args_model)
 
     return decorator
 
 
-def _clean_schema(schema: dict, strict: bool = False) -> dict:
-    """Resolve $ref, inline $defs, strip title, add additionalProperties for strict mode."""
+def _build_schema(model: type[BaseModel]) -> dict:
+    """Build JSON schema from Pydantic model: resolve $ref, strip title."""
+    schema = model.model_json_schema()
     defs = schema.pop("$defs", None) or schema.pop("definitions", None) or {}
     resolved = _resolve(schema, defs) if defs else schema
     _strip_keys(resolved, {"title"})
-    if strict:
-        _add_additional_properties_false(resolved)
-        _force_all_required(resolved)
     return resolved
 
 
@@ -91,7 +72,6 @@ def _resolve(node: Any, defs: dict) -> Any:
 
 
 def _strip_keys(node: Any, keys: set[str]) -> None:
-    """Remove keys in-place, recursively."""
     if isinstance(node, dict):
         for k in keys:
             node.pop(k, None)
@@ -100,32 +80,3 @@ def _strip_keys(node: Any, keys: set[str]) -> None:
     elif isinstance(node, list):
         for item in node:
             _strip_keys(item, keys)
-
-
-def _add_additional_properties_false(node: Any) -> None:
-    """Add additionalProperties: false to all object schemas (required by OpenAI strict mode)."""
-    if isinstance(node, dict):
-        if node.get("type") == "object" and "properties" in node:
-            node.setdefault("additionalProperties", False)
-        for v in node.values():
-            _add_additional_properties_false(v)
-    elif isinstance(node, list):
-        for item in node:
-            _add_additional_properties_false(item)
-
-
-def _force_all_required(node: Any) -> None:
-    """OpenAI strict mode: every key in `properties` must appear in `required`.
-
-    Pydantic omits fields with defaults from `required`; strict mode rejects
-    that (error: 'Missing <field>' in tools[N].function.parameters). Override
-    by setting required = list(properties.keys()) on every object schema.
-    """
-    if isinstance(node, dict):
-        if node.get("type") == "object" and "properties" in node:
-            node["required"] = list(node["properties"].keys())
-        for v in node.values():
-            _force_all_required(v)
-    elif isinstance(node, list):
-        for item in node:
-            _force_all_required(item)

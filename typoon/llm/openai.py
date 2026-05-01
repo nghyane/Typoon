@@ -35,7 +35,6 @@ class OpenAIProvider:
         model: str = "gpt-4o-mini",
         reasoning_effort: str | None = None,
         extra_headers: dict[str, str] | None = None,
-        supports_strict: bool = True,
     ) -> None:
         kwargs: dict = {"api_key": api_key, "base_url": base_url, "timeout": _TIMEOUT}
         if extra_headers:
@@ -43,7 +42,6 @@ class OpenAIProvider:
         self._client = openai.AsyncOpenAI(**kwargs)
         self._model = model
         self._reasoning_effort = reasoning_effort
-        self._supports_strict = supports_strict
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {
@@ -53,7 +51,7 @@ class OpenAIProvider:
         if self._model:
             kwargs["model"] = self._model
         if tools:
-            kwargs["tools"] = [_serialize_tool(t, self._supports_strict) for t in tools]
+            kwargs["tools"] = [_serialize_tool(t) for t in tools]
             kwargs["parallel_tool_calls"] = True
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
@@ -85,7 +83,7 @@ class OpenAIProvider:
         if self._model:
             kwargs["model"] = self._model
         if tools:
-            kwargs["tools"] = [_serialize_tool(t, self._supports_strict) for t in tools]
+            kwargs["tools"] = [_serialize_tool(t) for t in tools]
             kwargs["parallel_tool_calls"] = True
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
@@ -184,30 +182,9 @@ def _serialize_parts(parts: list[ContentPart]) -> str | list[dict]:
     return result
 
 
-def _serialize_tool(tool: ToolDef, supports_strict: bool = True) -> dict:
-    func: dict = {
+def _serialize_tool(tool: ToolDef) -> dict:
+    return {"type": "function", "function": {
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.parameters if supports_strict else _strip_strict_params(tool.parameters),
-    }
-    if tool.strict and supports_strict:
-        func["strict"] = True
-    return {"type": "function", "function": func}
-
-
-def _strip_strict_params(params: dict) -> dict:
-    """Remove additionalProperties from schema for providers that don't support strict mode."""
-    import copy
-    p = copy.deepcopy(params)
-    _remove_key(p, "additionalProperties")
-    return p
-
-
-def _remove_key(node: dict | list, key: str) -> None:
-    if isinstance(node, dict):
-        node.pop(key, None)
-        for v in node.values():
-            _remove_key(v, key)
-    elif isinstance(node, list):
-        for item in node:
-            _remove_key(item, key)
+        "parameters": tool.parameters,
+    }}

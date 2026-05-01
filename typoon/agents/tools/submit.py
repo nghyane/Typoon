@@ -25,7 +25,7 @@ class SubmitArgs(BaseModel):
     items: list[TranslationEdit] = Field(description="Keyed translation operations")
 
 
-@tool(strict=True)
+@tool()
 async def submit_translations(args: SubmitArgs) -> str:
     """Submit translations for the active keys in this page window."""
     raise NotImplementedError("dispatch handles this")

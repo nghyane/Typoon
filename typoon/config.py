@@ -24,7 +24,6 @@ class ProviderConfig(BaseModel):
     endpoint: str = ""
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
-    strict: bool = True  # set False for providers that don't support OpenAI strict mode
 
 
 class TranslationConfig(BaseModel):

@@ -31,7 +31,7 @@ class ChapterBriefArgs(BaseModel):
     bubble_notes: list[BubbleNote] = Field(default_factory=list, description="Per-bubble context notes")
 
 
-@tool(strict=True)
+@tool()
 async def submit_chapter_brief(args: ChapterBriefArgs) -> str:
     """Submit the chapter analysis brief after gathering all needed context."""
     raise NotImplementedError("dispatch handles this")

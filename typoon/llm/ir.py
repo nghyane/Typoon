@@ -47,10 +47,9 @@ class ToolCallMsg:
 class ToolDef:
     """A tool definition exposed to the LLM."""
 
-    name: str
+    name:        str
     description: str
-    parameters: dict[str, Any]  # JSON Schema
-    strict: bool = False
+    parameters:  dict[str, Any]  # JSON Schema
 
 
 class ToolResponse:

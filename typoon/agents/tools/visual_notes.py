@@ -16,7 +16,7 @@ class VisualNotesArgs(BaseModel):
     notes: list[VisualNote] = Field(description="Visual notes per requested key")
 
 
-@tool(strict=True)
+@tool()
 async def submit_visual_notes(args: VisualNotesArgs) -> str:
     """Submit visual observations for the requested bubble keys."""
     raise NotImplementedError("dispatch handles this")

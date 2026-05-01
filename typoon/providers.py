@@ -55,5 +55,4 @@ def _build_provider(pcfg: ProviderConfig, model: str, reasoning_effort: str | No
                 model=model,
                 reasoning_effort=reasoning_effort,
                 extra_headers=extra,
-                supports_strict=pcfg.strict,
             )

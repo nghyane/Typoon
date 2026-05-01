@@ -21,7 +21,7 @@ class SearchKnowledgeArgs(BaseModel):
     scope: SearchScope = Field(default=SearchScope.all, description="What to search")
 
 
-@tool(strict=True)
+@tool()
 async def search_knowledge(args: SearchKnowledgeArgs) -> str:
     """Look up glossary, previous chapter briefs, or past translations."""
     raise NotImplementedError("dispatch handles this")

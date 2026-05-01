@@ -39,12 +39,13 @@ class TestOpenAI:
         out = _serialize_message(Message.tool_result_text("c1", "ok (3 bubbles)"))
         assert out == {"role": "tool", "tool_call_id": "c1", "content": "ok (3 bubbles)"}
 
-    def test_tool_def_strict(self):
+    def test_tool_serialize(self):
         from typoon.llm.openai import _serialize_tool
-        t = ToolDef(name="translate", description="Submit", parameters={"type": "object", "properties": {}}, strict=True)
+        t = ToolDef(name="translate", description="Submit", parameters={"type": "object", "properties": {}})
         out = _serialize_tool(t)
         assert out["type"] == "function"
-        assert out["function"]["strict"] is True
+        assert out["function"]["name"] == "translate"
+        assert "strict" not in out["function"]
 
 
 class TestAnthropic:

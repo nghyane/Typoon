@@ -13,7 +13,7 @@ class LookAtArgs(BaseModel):
     query: str = Field(description="What to clarify visually")
 
 
-@tool(strict=True)
+@tool()
 async def look_at(args: LookAtArgs) -> str:
     """Inspect page images to clarify visual context for specific bubbles.
 
