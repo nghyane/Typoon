@@ -15,9 +15,8 @@ from typoon.runs.events import (
     ChapterDone, ChapterDownloaded, ChapterFailed,
     ChapterSkipped, Event, Hook, StageDone, StageStarted, StageFailed,
 )
+from typoon.sources.constants import IMAGE_EXTS
 from typoon.storage.sqlite import SqliteStore
-
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
 
 # ── Status data ───────────────────────────────────────────────────────
@@ -254,11 +253,11 @@ def _has_pages(cp: ChapterPaths) -> bool:
 
 
 def _chapter_dirs(folder: Path) -> list[Path]:
-    if any(f.suffix.lower() in _IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
+    if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
         return [folder]
     return sorted(
         d for d in folder.iterdir()
-        if d.is_dir() and any(f.suffix.lower() in _IMAGE_EXTS for f in d.iterdir() if f.is_file())
+        if d.is_dir() and any(f.suffix.lower() in IMAGE_EXTS for f in d.iterdir() if f.is_file())
     )
 
 
@@ -269,7 +268,7 @@ def _parse_idx(name: str) -> float | None:
 
 def _copy_images(src: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    files = sorted(f for f in src.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS)
+    files = sorted(f for f in src.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS)
     for i, f in enumerate(files):
         shutil.copy2(f, dest / f"{i + 1:03d}{f.suffix.lower()}")
 

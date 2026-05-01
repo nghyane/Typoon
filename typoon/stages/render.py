@@ -29,12 +29,12 @@ def render_chapter(
     masks: MaskStore,
     runtime: VisionRuntime,
     *,
-    out_dir: Path | None = None,
+    render_dir: Path | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> RenderedChapter:
-    """Erase source text, render translations, write PNGs."""
-    if out_dir is not None:
-        render_dir = Path(out_dir) / "render" if not str(out_dir).endswith("render") else Path(out_dir)
+    """Erase source text, render translations, write PNGs to render_dir."""
+    if render_dir is not None:
+        render_dir = Path(render_dir)
         render_dir.mkdir(parents=True, exist_ok=True)
 
     rendered_pages = []
@@ -66,10 +66,8 @@ def render_chapter(
 
         result = canvas[:, :, :3]
 
-        # Write PNG
-        if out_dir is not None:
-            tag = f"page_{tp.index:04d}.png"
-            _write_rgb(render_dir / tag, result)
+        if render_dir is not None:
+            _write_rgb(render_dir / f"page_{tp.index:04d}.png", result)
 
         if artifacts is not None:
             artifacts.write_image("06_render", f"page_{tp.index:04d}_rendered.png", result)

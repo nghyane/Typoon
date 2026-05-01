@@ -113,10 +113,10 @@ class ProjectPaths:
 class Paths:
     """All app paths resolved from home directory."""
 
-    root: Path
+    root: Path = None  # type: ignore[assignment]
 
-    def __init__(self, root: Path | None = None) -> None:
-        object.__setattr__(self, "root", (root or home()).resolve())
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "root", (self.root or home()).resolve())
 
     @property
     def config_file(self) -> Path: return self.root / "config.toml"

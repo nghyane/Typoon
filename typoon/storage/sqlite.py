@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 from pathlib import Path
 
 import aiosqlite
@@ -123,13 +124,13 @@ END;
 
 
 class SqliteStore:
-    """SQLite implementation of Store port."""
+    """SQLite storage for projects, chapters, glossary, briefs, and translations."""
 
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db = db
 
     @staticmethod
-    async def open(path: str | Path) -> SqliteStore:
+    async def open(path: str | Path) -> "SqliteStore":
         db = await aiosqlite.connect(str(path))
         db.row_factory = aiosqlite.Row
         await db.execute("PRAGMA journal_mode=WAL")
@@ -138,13 +139,13 @@ class SqliteStore:
         return SqliteStore(db)
 
     @staticmethod
-    async def open_memory() -> SqliteStore:
+    async def open_memory() -> "SqliteStore":
         return await SqliteStore.open(":memory:")
 
     async def close(self) -> None:
         await self._db.close()
 
-    # ── Projects ─────────────────────────────────────────────────
+    # ── Projects ──────────────────────────────────────────────────
 
     async def get_or_create_project(
         self,
@@ -154,7 +155,7 @@ class SqliteStore:
         target_lang: str,
         source_url: str | None = None,
     ) -> int:
-        """Return existing project_id or create new one. Slug is stable identifier."""
+        """Return existing project_id (matched by slug or source_url) or create new."""
         cur = await self._db.execute("SELECT id FROM projects WHERE slug=?", (slug,))
         row = await cur.fetchone()
         if row:
@@ -166,17 +167,17 @@ class SqliteStore:
                 return row["id"]
         return await self.add_project(slug, title, source_lang, target_lang, source_url)
 
-    async def list_projects(self) -> list[dict]:
-        cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
-        return [dict(r) for r in await cur.fetchall()]
-
     async def add_project(
-        self, slug: str, title: str, source_lang: str = "en", target_lang: str = "vi",
-        source_url: str | None = None, auto_update: bool = False,
+        self,
+        slug: str,
+        title: str,
+        source_lang: str = "en",
+        target_lang: str = "vi",
+        source_url: str | None = None,
     ) -> int:
         cur = await self._db.execute(
-            "INSERT INTO projects (slug, title, source_lang, target_lang, source_url, auto_update) VALUES (?,?,?,?,?,?)",
-            (slug, title, source_lang, target_lang, source_url, int(auto_update)),
+            "INSERT INTO projects (slug, title, source_lang, target_lang, source_url) VALUES (?,?,?,?,?)",
+            (slug, title, source_lang, target_lang, source_url),
         )
         await self._db.commit()
         return cur.lastrowid  # type: ignore
@@ -186,20 +187,16 @@ class SqliteStore:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def get_project_by_title(self, title: str) -> dict | None:
-        cur = await self._db.execute("SELECT * FROM projects WHERE title=?", (title,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
+    async def list_projects(self) -> list[dict]:
+        cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
+        return [dict(r) for r in await cur.fetchall()]
 
-    async def get_project_by_url(self, source_url: str) -> dict | None:
-        cur = await self._db.execute("SELECT * FROM projects WHERE source_url=?", (source_url,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
-    # ── Chapters ─────────────────────────────────────────────────
+    # ── Chapters ──────────────────────────────────────────────────
 
     async def add_chapter(
-        self, project_id: int, idx: float,
+        self,
+        project_id: int,
+        idx: float,
         source_url: str | None = None,
         source_name: str | None = None,
     ) -> int:
@@ -210,25 +207,6 @@ class SqliteStore:
         await self._db.commit()
         return cur.lastrowid  # type: ignore
 
-    async def get_pending_chapters(self, project_id: int) -> list[dict]:
-        cur = await self._db.execute(
-            "SELECT * FROM chapters WHERE project_id=? AND status='pending' ORDER BY idx",
-            (project_id,),
-        )
-        return [dict(r) for r in await cur.fetchall()]
-
-    async def get_all_chapters(self, project_id: int) -> list[dict]:
-        cur = await self._db.execute(
-            "SELECT * FROM chapters WHERE project_id=? ORDER BY idx",
-            (project_id,),
-        )
-        return [dict(r) for r in await cur.fetchall()]
-
-    async def get_project_by_slug(self, slug: str) -> dict | None:
-        cur = await self._db.execute("SELECT * FROM projects WHERE slug=?", (slug,))
-        row = await cur.fetchone()
-        return dict(row) if row else None
-
     async def set_chapter_status(self, project_id: int, idx: float, status: str) -> None:
         await self._db.execute(
             "UPDATE chapters SET status=? WHERE project_id=? AND idx=?",
@@ -236,37 +214,14 @@ class SqliteStore:
         )
         await self._db.commit()
 
-    async def get_chapters(self, project_id: int) -> list[dict]:
+    async def get_all_chapters(self, project_id: int) -> list[dict]:
         cur = await self._db.execute(
             "SELECT * FROM chapters WHERE project_id=? ORDER BY idx", (project_id,),
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_chapter_status(self, project_id: int, idx: float) -> str | None:
-        cur = await self._db.execute(
-            "SELECT status FROM chapters WHERE project_id=? AND idx=?",
-            (project_id, idx),
-        )
-        row = await cur.fetchone()
-        return row["status"] if row else None
-
-    async def get_chapter_retry_count(self, project_id: int, idx: float) -> int:
-        cur = await self._db.execute(
-            "SELECT retry_count FROM chapters WHERE project_id=? AND idx=?",
-            (project_id, idx),
-        )
-        row = await cur.fetchone()
-        return row["retry_count"] if row else 0
-
-    async def increment_retry_count(self, project_id: int, idx: float) -> None:
-        await self._db.execute(
-            "UPDATE chapters SET retry_count = retry_count + 1 WHERE project_id=? AND idx=?",
-            (project_id, idx),
-        )
-        await self._db.commit()
-
     async def delete_chapter_data(self, project_id: int, idx: float) -> None:
-        """Remove translations + chapter brief for a chapter (for re-translate)."""
+        """Remove translations and brief for a chapter (to allow re-translate)."""
         await self._db.execute(
             "DELETE FROM translations WHERE project_id=? AND chapter=?", (project_id, idx),
         )
@@ -275,23 +230,7 @@ class SqliteStore:
         )
         await self._db.commit()
 
-    # ── Glossary (Store port) ────────────────────────────────────
-
-    async def get_glossary(self, project_id: int) -> dict[str, str]:
-        cur = await self._db.execute(
-            "SELECT source_term, target_term FROM glossary WHERE project_id=?", (project_id,),
-        )
-        return {r["source_term"]: r["target_term"] for r in await cur.fetchall()}
-
-    async def glossary_upsert(
-        self, project_id: int, source_term: str, target_term: str, notes: str | None = None,
-    ) -> None:
-        await self._db.execute(
-            "INSERT INTO glossary (project_id, source_term, target_term, notes) VALUES (?,?,?,?) "
-            "ON CONFLICT(project_id, source_term) DO UPDATE SET target_term=excluded.target_term, notes=excluded.notes",
-            (project_id, source_term, target_term, notes),
-        )
-        await self._db.commit()
+    # ── Glossary ──────────────────────────────────────────────────
 
     async def glossary_search(self, project_id: int, query: str) -> list[dict]:
         safe = _fts_escape(query)
@@ -304,21 +243,22 @@ class SqliteStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    # ── Chapter briefs / context ─────────────────────────────────
+    # ── Chapter briefs ────────────────────────────────────────────
 
     async def save_chapter_brief(self, project_id: int, chapter: float, brief: dict) -> None:
-        brief_json = json.dumps(brief, ensure_ascii=False)
-        summary = str(brief.get("summary", ""))
         terms = brief.get("glossary", {}) or {}
-        terms_text = "\n".join(f"{k} -> {v}" for k, v in terms.items())
-        facts_text = "\n".join(str(x) for x in brief.get("facts", []) or [])
-        rules = list(brief.get("rules", []) or [])
-        rules_text = "\n".join(str(x) for x in rules)
         await self._db.execute(
             "INSERT OR REPLACE INTO chapter_briefs "
             "(project_id, chapter, brief_json, summary, terms_text, facts_text, rules_text, updated_at) "
             "VALUES (?,?,?,?,?,?,?,datetime('now'))",
-            (project_id, chapter, brief_json, summary, terms_text, facts_text, rules_text),
+            (
+                project_id, chapter,
+                json.dumps(brief, ensure_ascii=False),
+                str(brief.get("summary", "")),
+                "\n".join(f"{k} -> {v}" for k, v in terms.items()),
+                "\n".join(str(x) for x in brief.get("facts", []) or []),
+                "\n".join(str(x) for x in brief.get("rules", []) or []),
+            ),
         )
         await self._db.commit()
 
@@ -340,8 +280,7 @@ class SqliteStore:
     ) -> list[dict]:
         cur = await self._db.execute(
             "SELECT chapter, brief_json, summary, terms_text, facts_text, rules_text "
-            "FROM chapter_briefs WHERE project_id=? AND chapter<? "
-            "ORDER BY chapter DESC LIMIT ?",
+            "FROM chapter_briefs WHERE project_id=? AND chapter<? ORDER BY chapter DESC LIMIT ?",
             (project_id, before_chapter, limit),
         )
         rows = []
@@ -362,46 +301,31 @@ class SqliteStore:
                 "SELECT cb.chapter, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
                 "FROM chapter_briefs_fts f "
                 "JOIN chapter_briefs cb ON cb.rowid = f.rowid "
-                "WHERE chapter_briefs_fts MATCH ? AND cb.project_id=? "
-                "ORDER BY rank LIMIT ?",
+                "WHERE chapter_briefs_fts MATCH ? AND cb.project_id=? ORDER BY rank LIMIT ?",
                 (safe, project_id, limit),
             )
             for r in await cur.fetchall():
-                text = "\n".join(
-                    str(r[k] or "") for k in ("summary", "terms_text", "facts_text", "rules_text")
-                ).strip()
+                text = "\n".join(str(r[k] or "") for k in ("summary", "terms_text", "facts_text", "rules_text")).strip()
                 hit = f"[Ch{r['chapter']} brief] {text}"
                 if text and hit not in seen:
                     seen.add(hit)
                     results.append(hit)
         return results[:limit]
 
-    # ── Translations (Store port) ────────────────────────────────
+    # ── Translations ──────────────────────────────────────────────
 
     async def save_translations(self, project_id: int, chapter: float, records: list[TranslationRecord]) -> None:
-        rows = [r.as_tuple() for r in records]
         await self._db.executemany(
             "INSERT OR REPLACE INTO translations "
             "(project_id, chapter, page, idx, key, source_text, translated_text, status, polygon, font_size_px) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            rows,
+            [r.as_tuple() for r in records],
         )
         await self._db.commit()
-
-    async def get_chapter_translations(self, project_id: int, chapter: float) -> list[dict]:
-        cur = await self._db.execute(
-            "SELECT page, idx, key, source_text, translated_text, status FROM translations "
-            "WHERE project_id=? AND chapter=? ORDER BY page, idx",
-            (project_id, chapter),
-        )
-        return [dict(r) for r in await cur.fetchall()]
-
-    # ── Context search ───────────────────────────────────────────
 
     async def search_context(self, project_id: int, queries: list[str], scope: str = "all", limit: int = 12) -> list[str]:
         results: list[str] = []
         seen: set[str] = set()
-
         for query in queries:
             safe = _fts_escape(query)
             if not safe:
@@ -411,8 +335,7 @@ class SqliteStore:
                     "SELECT t.source_text, t.translated_text, t.chapter, t.page "
                     "FROM translations_fts f "
                     "JOIN translations t ON t.rowid = f.rowid "
-                    "WHERE translations_fts MATCH ? AND t.project_id=? "
-                    "ORDER BY rank LIMIT ?",
+                    "WHERE translations_fts MATCH ? AND t.project_id=? ORDER BY rank LIMIT ?",
                     (safe, project_id, limit),
                 )
                 for r in await cur.fetchall():
@@ -420,38 +343,13 @@ class SqliteStore:
                     if h not in seen:
                         seen.add(h)
                         results.append(h)
-
         return results[:limit]
 
-    async def get_chapter_pairs(self, project_id: int, chapter: float) -> list[tuple[str, str]]:
-        cur = await self._db.execute(
-            "SELECT source_text, translated_text FROM translations "
-            "WHERE project_id=? AND chapter=? ORDER BY page, idx",
-            (project_id, chapter),
-        )
-        return [(r[0], r[1]) for r in await cur.fetchall()]
-
-    async def update_bubble(self, project_id: int, chapter: float, page: int, idx: int, text: str) -> None:
-        await self._db.execute(
-            "UPDATE translations SET translated_text=? "
-            "WHERE project_id=? AND chapter=? AND page=? AND idx=?",
-            (text, project_id, chapter, page, idx))
-        await self._db.commit()
-
-    async def list_projects(self) -> list[dict]:
-        cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
-        return [dict(r) for r in await cur.fetchall()]
-
-
-import re as _re
 
 _FTS_SPECIAL = _re.compile(r"[\"'\(\)\*\:\^\-\+\{\}\[\]~]")
 
 
 def _fts_escape(query: str) -> str:
-    """Sanitize a query string for FTS5 MATCH."""
     clean = _FTS_SPECIAL.sub(" ", query).strip()
     words = clean.split()
-    if not words:
-        return ""
-    return " ".join(f'"{w}"' for w in words)
+    return " ".join(f'"{w}"' for w in words) if words else ""

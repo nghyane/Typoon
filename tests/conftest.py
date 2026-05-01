@@ -136,7 +136,6 @@ def make_session(
     provider = MockProvider(provider_responses)
     session = Session(
         store=MockStore(),
-        source=None,
         project_id=1,
         source_lang="en",
         target_lang="vi",

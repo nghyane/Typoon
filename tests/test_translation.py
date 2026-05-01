@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
-from typoon.translation.image import encode_page_jpeg
-from typoon.translation.tools.brief import submit_chapter_brief
-from typoon.translation.tools.submit import SubmitArgs, submit_translations
-from typoon.translation.tools.search_knowledge import SearchKnowledgeArgs
+from typoon.agents.image import encode_page_jpeg
+from typoon.agents.tools.brief import submit_chapter_brief
+from typoon.agents.tools.submit import SubmitArgs, submit_translations
+from typoon.agents.tools.search_knowledge import SearchKnowledgeArgs
 from typoon.stages.translate import translate_chapter
-from typoon.translation.keys import assign_keys
+from typoon.agents.keys import assign_keys
 
 from .conftest import MockProvider, make_session
 

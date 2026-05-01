@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+from typoon.sources.constants import IMAGE_EXTS
 
 
 class LocalSource:
@@ -19,7 +19,7 @@ class LocalSource:
         if self._files is None:
             self._files = sorted(
                 f for f in self._path.iterdir()
-                if f.suffix.lower() in _IMAGE_EXTS
+                if f.suffix.lower() in IMAGE_EXTS
             )
             if not self._files:
                 raise FileNotFoundError(f"No images found in {self._path}")

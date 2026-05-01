@@ -137,7 +137,7 @@ async def _run_render(
     try:
         from typoon.domain.translate import Chapter as TranslatedChapter
         from typoon.stages.render import render_chapter
-        render_chapter(TranslatedChapter.load(cp), MaskStore.load(cp), runtime, out_dir=cp.root)
+        render_chapter(TranslatedChapter.load(cp), MaskStore.load(cp), runtime, render_dir=cp.render)
     except Exception as e:
         yield StageFailed(idx=cp.idx, stage=Stage.RENDER.value, error=e)
         raise

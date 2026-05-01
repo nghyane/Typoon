@@ -13,16 +13,15 @@ if TYPE_CHECKING:
 class Session:
     """Created once per chapter. Passed through all translation sub-stages."""
 
-    store: object
-    source: object
-    project_id: int
-    source_lang: str
-    target_lang: str
-    provider: "Provider"
+    store:            object
+    project_id:       int
+    source_lang:      str
+    target_lang:      str
+    provider:         "Provider"
     context_provider: "Provider"
-    hook: object
-    chapter: float = 0.0
-    glossary: dict[str, str] = field(default_factory=dict)
+    hook:             object
+    chapter:          float = 0.0
+    glossary:         dict[str, str] = field(default_factory=dict)
 
 
 def make_session(
@@ -34,7 +33,6 @@ def make_session(
     *,
     config=None,
 ) -> Session:
-    """Build a Session from config. Loads providers from config.toml."""
     from typoon.config import load_config
     from typoon.providers import make_context_provider, make_translation_provider
     from typoon.runs.events import Hook
@@ -44,7 +42,6 @@ def make_session(
 
     return Session(
         store=store,
-        source=None,
         project_id=project_id,
         source_lang=source_lang,
         target_lang=target_lang,
@@ -52,5 +49,4 @@ def make_session(
         context_provider=make_context_provider(config),
         hook=Hook(),
         chapter=chapter,
-        glossary={},
     )
