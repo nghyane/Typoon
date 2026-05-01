@@ -164,16 +164,44 @@ def build_groups(state: ScanState) -> None:
 
 
 def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
-    """Run full OCR on each group crop."""
+    """Run full OCR on each group crop, with rotation retry for angled text."""
+    # Pass 1: OCR all crops at detected angle
     crops, groups = [], []
     for g in state.groups:
         x1, y1, x2, y2 = g.ocr_bbox
         if x2 - x1 >= 5 and y2 - y1 >= 5:
-            crops.append(state.image[y1:y2, x1:x2])
+            crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle))
             groups.append(g)
     for g, (text, conf) in zip(groups, scanner._ocr_crops(crops) if crops else []):
         g.text = (text or "").strip()
         g.confidence = float(conf)
+
+    # Pass 2: retry low-confidence angled groups with candidate angle offsets
+    retry_groups, retry_crops = [], []
+    for g in groups:
+        if g.confidence >= 0.8 or abs(g.median_angle) < 3:
+            continue
+        x1, y1, x2, y2 = g.ocr_bbox
+        base = state.image[y1:y2, x1:x2]
+        for offset in (-12, -8, -4, 4, 8, 12):
+            retry_groups.append(g)
+            retry_crops.append(_rotate_crop(base, g.median_angle + offset))
+
+    if retry_crops:
+        for g, (text, conf) in zip(retry_groups, scanner._ocr_crops(retry_crops)):
+            text = (text or "").strip()
+            if conf > g.confidence:
+                g.text = text
+                g.confidence = float(conf)
+
+
+def _rotate_crop(crop: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate crop to straighten text. No-op if angle < 3°."""
+    if abs(angle) < 3:
+        return crop
+    ch, cw = crop.shape[:2]
+    M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
+    return cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
 
 
 def filter_groups(state: ScanState) -> None:
@@ -288,18 +316,17 @@ def _ocr_crop_box(
     page_w: int, page_h: int, scope_bbox: list[int] | None = None,
 ) -> list[int]:
     x1, y1, x2, y2 = group_box
-    pad = int(max(x2 - x1, y2 - y1) * 0.10)
-    l, t = max(0, x1 - pad), max(0, y1 - pad)
-    r, b = min(page_w, x2 + pad), min(page_h, y2 + pad)
+    l, t, r, b = x1, y1, x2, y2
 
+    # Clip to scope boundary if available
     if scope_bbox is not None:
         sx1, sy1, sx2, sy2 = scope_bbox
-        lm, rm, tm, bm = x1 - sx1, sx2 - x2, y1 - sy1, sy2 - y2
-        if rm > lm: r = min(sx2, x2 + min(rm, max(pad, lm * 2)))
-        if lm > rm: l = max(sx1, x1 - min(lm, max(pad, rm * 2)))
-        if bm > tm: b = min(sy2, y2 + min(bm, max(pad, tm * 2)))
-        if tm > bm: t = max(sy1, y1 - min(tm, max(pad, bm * 2)))
+        l = max(l, sx1)
+        t = max(t, sy1)
+        r = min(r, sx2)
+        b = min(b, sy2)
 
+    # Clip away neighboring bubbles
     for i, other in enumerate(all_boxes):
         if i in group_indices:
             continue
