@@ -13,13 +13,13 @@ from typoon.domain.project import DiscoveredChapter, SourceInfo
 from typoon.paths import ChapterPaths, Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDone, ChapterDownloaded, ChapterFailed,
-    ChapterSkipped, Event, Hook, StageDone, StageStarted, StageFailed,
+    ChapterSkipped, Hook, StageDone, StageStarted, StageFailed,
 )
 from typoon.sources.constants import IMAGE_EXTS
 from typoon.storage.sqlite import SqliteStore
 
 
-# ── Status data ───────────────────────────────────────────────────────
+# ── Status dataclasses ────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -44,9 +44,13 @@ class ProjectStatus:
 
 
 class ProjectService:
-    """Orchestrates discovery, import, and translation pipeline.
+    """Orchestrates project creation, chapter import, and translation pipeline.
 
-    Runtime is lazy-loaded — status queries do not load vision models.
+    Two modes for each import command:
+      *_new  — create project from metadata, then import
+      *_more — project already exists (identified by slug), just import
+
+    Runtime lazy-loaded — status queries never load vision models.
     """
 
     def __init__(self, db: SqliteStore, paths: Paths, config=None) -> None:
@@ -73,14 +77,33 @@ class ProjectService:
     async def close(self) -> None:
         await self._db.close()
 
+    # ── Project lookup ────────────────────────────────────────────────
+
+    async def get_project_by_slug(self, slug: str) -> dict | None:
+        """Return project dict or None if not found."""
+        for proj in await self._db.list_projects():
+            if proj["slug"] == slug:
+                return proj
+        return None
+
+    async def require_project(self, slug: str) -> dict:
+        """Return project dict. Raises ValueError if not found."""
+        proj = await self.get_project_by_slug(slug)
+        if proj is None:
+            raise ValueError(
+                f"Project '{slug}' not found.\n"
+                f"Run 'typoon status' to see existing projects."
+            )
+        return proj
+
     # ── discover ──────────────────────────────────────────────────────
 
     async def discover(self, url: str) -> SourceInfo:
         return await _connector(url).discover(url)
 
-    # ── pull ──────────────────────────────────────────────────────────
+    # ── pull: create project from URL, then download ──────────────────
 
-    async def pull(
+    async def pull_new(
         self,
         info: SourceInfo,
         url: str,
@@ -88,45 +111,38 @@ class ProjectService:
         target_lang: str,
         hook: Hook,
         redo: str | None = None,
-    ) -> None:
-        """Download selected chapters and run pipeline. Emits events via hook."""
+    ) -> str:
+        """Create project from SourceInfo, download chapters. Returns slug."""
         slug = slugify(info.suggested_title, url)
         project_id = await self._db.get_or_create_project(
-            slug=slug, title=info.suggested_title,
-            source_lang=info.suggested_lang, target_lang=target_lang,
+            slug=slug,
+            title=info.suggested_title,
+            source_lang=info.suggested_lang,
+            target_lang=target_lang,
             source_url=url,
         )
         proj = await self._db.get_project(project_id)
-        proj_paths = ProjectPaths(self._paths.projects, slug)
-        proj_paths.ensure()
-        connector = _connector(url)
+        ProjectPaths(self._paths.projects, slug).ensure()
+        await self._download_and_run(proj, selected, _connector(url), hook, redo)
+        return slug
 
-        for ch in selected:
-            cp = proj_paths.chapter(ch.number)
-            cp.ensure()
+    # ── pull: add chapters to existing project ────────────────────────
 
-            # Register chapter in DB before any I/O
-            await self._db.add_chapter(project_id, ch.number, source_url=ch.best_variant.url)
+    async def pull_more(
+        self,
+        slug: str,
+        url: str,
+        selected: list[DiscoveredChapter],
+        hook: Hook,
+        redo: str | None = None,
+    ) -> None:
+        """Download chapters into an existing project."""
+        proj = await self.require_project(slug)
+        await self._download_and_run(proj, selected, _connector(url), hook, redo)
 
-            if _has_pages(cp):
-                hook.on(ChapterSkipped(idx=ch.number, reason="images_exist"))
-            else:
-                await self._db.set_chapter_status(project_id, ch.number, "downloading")
-                try:
-                    from typoon.downloader import download_images
-                    page_urls = await connector.get_page_urls(ch)
-                    await download_images(page_urls, cp.pages)
-                    hook.on(ChapterDownloaded(idx=ch.number, page_count=len(page_urls)))
-                except Exception as e:
-                    await self._db.set_chapter_status(project_id, ch.number, "error")
-                    hook.on(ChapterFailed(idx=ch.number, stage="download", error=e))
-                    continue
+    # ── add: create project from local folder ────────────────────────
 
-            await self._run_chapter(cp, proj, hook, redo)
-
-    # ── add ───────────────────────────────────────────────────────────
-
-    async def add(
+    async def add_new(
         self,
         folder: Path,
         title: str,
@@ -134,43 +150,48 @@ class ProjectService:
         target_lang: str,
         hook: Hook,
         redo: str | None = None,
-    ) -> None:
-        """Import local folder and run pipeline."""
+    ) -> str:
+        """Create project from local folder. Returns slug."""
         slug = slugify(title)
         project_id = await self._db.get_or_create_project(
             slug=slug, title=title,
             source_lang=source_lang, target_lang=target_lang,
         )
         proj = await self._db.get_project(project_id)
-        proj_paths = ProjectPaths(self._paths.projects, slug)
-        proj_paths.ensure()
+        ProjectPaths(self._paths.projects, slug).ensure()
+        await self._import_folder(proj, folder, hook, redo)
+        return slug
 
-        for i, src_dir in enumerate(_chapter_dirs(folder), start=1):
-            ch_num = _parse_idx(src_dir.name) or float(i)
-            cp = proj_paths.chapter(ch_num)
-            cp.ensure()
-            await self._db.add_chapter(project_id, ch_num)
+    # ── add: add chapters to existing project ────────────────────────
 
-            if _has_pages(cp):
-                hook.on(ChapterSkipped(idx=ch_num, reason="images_exist"))
-            else:
-                _copy_images(src_dir, cp.pages)
-                hook.on(ChapterDownloaded(idx=ch_num, page_count=len(list(cp.pages.iterdir()))))
-
-            await self._run_chapter(cp, proj, hook, redo)
+    async def add_more(
+        self,
+        slug: str,
+        folder: Path,
+        hook: Hook,
+        redo: str | None = None,
+    ) -> None:
+        """Copy chapters from folder into an existing project."""
+        proj = await self.require_project(slug)
+        await self._import_folder(proj, folder, hook, redo)
 
     # ── translate ─────────────────────────────────────────────────────
 
     async def translate(
         self,
-        project_id: int,
-        indices: list[float],
+        slug: str,
+        indices: list[float] | None,
         hook: Hook,
         redo: str | None = None,
     ) -> None:
-        """Run pipeline for specific chapters."""
-        proj = await self._db.get_project(project_id)
+        """Run pipeline for pending (or specified) chapters of a project."""
+        proj = await self.require_project(slug)
         proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
+
+        if indices is None:
+            chapters = await self._db.get_all_chapters(proj["id"])
+            indices = [c["idx"] for c in chapters if c["status"] == "pending"]
+
         for idx in indices:
             cp = proj_paths.chapter(idx)
             cp.ensure()
@@ -178,10 +199,14 @@ class ProjectService:
 
     # ── status ────────────────────────────────────────────────────────
 
-    async def get_status(self) -> list[ProjectStatus]:
-        """Return project and chapter status. Does not load vision models."""
+    async def get_status(self, slug: str | None = None) -> list[ProjectStatus]:
+        """Return status for all projects or a specific one. No model loading."""
+        projects = await self._db.list_projects()
+        if slug:
+            projects = [p for p in projects if p["slug"] == slug]
+
         result = []
-        for proj in await self._db.list_projects():
+        for proj in projects:
             proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
             chapters = []
             for ch in await self._db.get_all_chapters(proj["id"]):
@@ -205,6 +230,60 @@ class ProjectService:
 
     # ── internal ──────────────────────────────────────────────────────
 
+    async def _download_and_run(
+        self,
+        proj: dict,
+        selected: list[DiscoveredChapter],
+        connector,
+        hook: Hook,
+        redo: str | None,
+    ) -> None:
+        proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
+
+        for ch in selected:
+            cp = proj_paths.chapter(ch.number)
+            cp.ensure()
+            await self._db.add_chapter(proj["id"], ch.number, source_url=ch.best_variant.url)
+
+            if _has_pages(cp):
+                hook.on(ChapterSkipped(idx=ch.number, reason="images_exist"))
+            else:
+                await self._db.set_chapter_status(proj["id"], ch.number, "downloading")
+                try:
+                    from typoon.downloader import download_images
+                    page_urls = await connector.get_page_urls(ch)
+                    await download_images(page_urls, cp.pages)
+                    hook.on(ChapterDownloaded(idx=ch.number, page_count=len(page_urls)))
+                except Exception as e:
+                    await self._db.set_chapter_status(proj["id"], ch.number, "error")
+                    hook.on(ChapterFailed(idx=ch.number, stage="download", error=e))
+                    continue
+
+            await self._run_chapter(cp, proj, hook, redo)
+
+    async def _import_folder(
+        self,
+        proj: dict,
+        folder: Path,
+        hook: Hook,
+        redo: str | None,
+    ) -> None:
+        proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
+
+        for i, src_dir in enumerate(_chapter_dirs(folder), start=1):
+            ch_num = _parse_idx(src_dir.name) or float(i)
+            cp = proj_paths.chapter(ch_num)
+            cp.ensure()
+            await self._db.add_chapter(proj["id"], ch_num)
+
+            if _has_pages(cp):
+                hook.on(ChapterSkipped(idx=ch_num, reason="images_exist"))
+            else:
+                _copy_images(src_dir, cp.pages)
+                hook.on(ChapterDownloaded(idx=ch_num, page_count=len(list(cp.pages.iterdir()))))
+
+            await self._run_chapter(cp, proj, hook, redo)
+
     async def _run_chapter(
         self,
         cp: ChapterPaths,
@@ -226,18 +305,14 @@ class ProjectService:
             )
             async for event in pipeline.run(cp, session, self.runtime, redo=redo):
                 hook.on(event)
-
             await self._db.set_chapter_status(proj["id"], cp.idx, "done")
-
-            bubble_count = _count_bubbles(cp)
-            hook.on(ChapterDone(idx=cp.idx, bubble_count=bubble_count, render_dir=str(cp.render)))
-
+            hook.on(ChapterDone(idx=cp.idx, bubble_count=_count_bubbles(cp), render_dir=str(cp.render)))
         except Exception as e:
             await self._db.set_chapter_status(proj["id"], cp.idx, "error")
             hook.on(ChapterFailed(idx=cp.idx, stage="pipeline", error=e))
 
 
-# ── Module-level helpers ──────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────
 
 
 def _connector(url: str):
@@ -253,6 +328,7 @@ def _has_pages(cp: ChapterPaths) -> bool:
 
 
 def _chapter_dirs(folder: Path) -> list[Path]:
+    """Return list of image directories. Single chapter or multi-chapter."""
     if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
         return [folder]
     return sorted(
