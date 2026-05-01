@@ -49,8 +49,8 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
 from typoon.runs.events import Hook
 from typoon.adapters.session import Session
-from typoon.domain.prepared import PreparedChapter, PreparedPage
-from typoon.domain.scan import BubbleGeometry, ScannedBubble, ScannedChapter, ScannedPage
+from typoon.domain.prepared import Chapter as PreparedChapter, Page as PreparedPage
+from typoon.domain.scan import Box, Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
 
 
 class MockProvider:
@@ -99,11 +99,11 @@ class MockStore:
 
 
 _POLY = [[0.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0]]
-_GEOM = BubbleGeometry(
+_BOX = Box(
     polygon=_POLY,
-    fit_bbox=[0, 0, 100, 50],
-    erase_bbox=[0, 0, 100, 50],
-    text_bbox=[5, 5, 95, 45],
+    fit=[0, 0, 100, 50],
+    erase=[0, 0, 100, 50],
+    text=[5, 5, 95, 45],
 )
 _PREPARED = PreparedChapter(
     root=Path("/tmp/test_chapter"),
@@ -118,7 +118,7 @@ def make_scanned_chapter(n_bubbles: int = 3) -> ScannedChapter:
             idx=i, page_index=0,
             source_text=f"text_{i}",
             confidence=0.9,
-            geometry=_GEOM,
+            box=_BOX,
         )
         for i in range(n_bubbles)
     )

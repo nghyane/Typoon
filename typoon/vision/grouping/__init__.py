@@ -1,58 +1,59 @@
 """Vision grouping pipeline — public API.
 
 Entry points:
-  build_page_scan_state(scanner, image, ...) -> PageScanState
-  to_visual_text_groups(state)              -> list[VisualTextGroup]
+  scan_page(scanner, image, ...)  -> ScanState
+  export_groups(state)            -> list[DetectedGroup]
+  build_erase_masks(masks, ...)   -> list[TextMask]
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from typoon.vision.types import PageScanState, VisualTextGroup
+from typoon.vision.types import DetectedGroup, ScanState
 
-from .groups import (
-    build_erase_masks,
-    build_groups,
-    final_filter_groups,
-    ocr_groups,
-    to_visual_text_groups,
-)
+from .groups import build_erase_masks, build_groups, export_groups, filter_groups, ocr_groups
 from .units import (
-    assign_units_to_scopes,
+    assign_scopes,
     detect_scopes,
     detect_units,
     filter_units,
-    ocr_units_for_filtering,
-    split_units_crossing_scopes,
+    ocr_units,
+    split_units,
 )
 
 __all__ = [
-    "build_page_scan_state",
-    "to_visual_text_groups",
+    "scan_page",
+    "export_groups",
     "build_erase_masks",
 ]
 
 
-def build_page_scan_state(
+def scan_page(
     scanner,
     image: np.ndarray,
     *,
     yolo_model=None,
     yolo_imgsz: int = 640,
     yolo_conf: float = 0.3,
-) -> PageScanState:
+) -> ScanState:
+    """Run full grouping pipeline: detect → filter → scope → group → OCR → filter."""
     h, w = image.shape[:2]
-    state = PageScanState(image=image, width=w, height=h)
+    state = ScanState(image=image, width=w, height=h)
     detect_units(state, scanner)
     if not state.units:
         return state
-    ocr_units_for_filtering(state, scanner)
+    ocr_units(state, scanner)
     filter_units(state)
     detect_scopes(state, yolo_model, yolo_imgsz, yolo_conf)
-    split_units_crossing_scopes(state)
-    assign_units_to_scopes(state)
+    split_units(state)
+    assign_scopes(state)
     build_groups(state)
     ocr_groups(state, scanner)
-    final_filter_groups(state)
+    filter_groups(state)
     return state
+
+
+# Backward-compat aliases used by shim and any remaining old callers
+build_page_scan_state = scan_page
+to_visual_text_groups = export_groups

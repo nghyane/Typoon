@@ -1,9 +1,4 @@
-"""Render stage output types — carries pixel data, not a pure domain type.
-
-RenderedPage holds the final composited image alongside its source metadata.
-Pixel data lives here intentionally — render is the last stage and this is
-the output artifact consumed by file writing / UI display.
-"""
+"""Render stage output types."""
 
 from __future__ import annotations
 
@@ -11,12 +6,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .translate import TranslatedBubble, TranslatedChapter, TranslatedPage
+from .translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 
 
 @dataclass(frozen=True)
-class RenderedBubble:
-    """One bubble after text layout — geometry and render metadata only."""
+class Bubble:
+    """One bubble after text layout."""
 
     source:    TranslatedBubble
     font_size: int
@@ -40,12 +35,12 @@ class RenderedBubble:
 
 
 @dataclass
-class RenderedPage:
-    """One page after full render — pixel image + rendered bubble metadata."""
+class Page:
+    """One page after full render — pixel image + bubble metadata."""
 
     source:  TranslatedPage
-    bubbles: tuple[RenderedBubble, ...]
-    image:   np.ndarray = field(repr=False)   # RGB uint8 (H, W, 3)
+    bubbles: tuple[Bubble, ...]
+    image:   np.ndarray = field(repr=False)  # RGB uint8 (H, W, 3)
 
     @property
     def index(self) -> int:
@@ -53,12 +48,18 @@ class RenderedPage:
 
 
 @dataclass(frozen=True)
-class RenderedChapter:
+class Chapter:
     """Full render output — final pipeline boundary."""
 
     source: TranslatedChapter
-    pages:  tuple[RenderedPage, ...]
+    pages:  tuple[Page, ...]
 
     @property
     def page_count(self) -> int:
         return len(self.pages)
+
+
+# Backward-compat aliases
+RenderedBubble = Bubble
+RenderedPage = Page
+RenderedChapter = Chapter

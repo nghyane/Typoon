@@ -17,7 +17,7 @@ import numpy as np
 
 from typoon.adapters.mask_store import BubbleMasks, MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
-from typoon.domain.render import RenderedBubble, RenderedChapter, RenderedPage
+from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
 from typoon.domain.translate import TranslatedBubble, TranslatedChapter
 from typoon.runs.artifacts import ArtifactSink
 

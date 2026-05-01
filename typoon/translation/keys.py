@@ -40,7 +40,7 @@ def _make_key(b: ScannedBubble, *, project_id: int, chapter: float, salt: int) -
         "text": " ".join(b.source_text.split()),
         "polygon": [
             [round(float(x), 1), round(float(y), 1)]
-            for x, y in b.geometry.polygon
+            for x, y in b.box.polygon
         ],
         "salt": salt,
     }

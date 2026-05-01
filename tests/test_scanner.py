@@ -15,7 +15,7 @@ from typoon.vision.ocr_backend import (
     _vision_available,
 )
 from typoon.vision.scanner import Scanner, create_scanner
-from typoon.vision.types import VisualTextGroup
+from typoon.vision.types import DetectedGroup
 from .conftest import FIXTURES_DIR, MODELS_DIR, skip_no_ppocr_det
 
 
@@ -43,11 +43,11 @@ skip_no_tesseract = pytest.mark.skipif(not _tesseract_available(), reason="Tesse
 
 def test_scanned_bubble_defaults():
     polygon = [[0, 0], [100, 0], [100, 50], [0, 50]]
-    b = VisualTextGroup(
+    b = DetectedGroup(
         text="hi", confidence=0.9,
         text_polygon=polygon, render_polygon=polygon,
-        text_bbox=[0, 0, 100, 50], mask_bbox=[0, 0, 100, 50],
-        fit_bbox=[0, 0, 100, 50], erase_bbox=[0, 0, 100, 50],
+        text_box=[0, 0, 100, 50], mask_box=[0, 0, 100, 50],
+        fit_box=[0, 0, 100, 50], erase_box=[0, 0, 100, 50],
     )
     assert b.text == "hi"
     assert b.confidence == 0.9
@@ -68,7 +68,7 @@ class TestVisionScanner:
         bubbles = _make_scanner(AppleVisionBackend, languages=["en-US"]).scan(img)
         assert len(bubbles) >= 1
         for b in bubbles:
-            assert isinstance(b, VisualTextGroup)
+            assert isinstance(b, DetectedGroup)
             assert len(b.render_polygon) >= 4
             assert b.text.strip()
             assert b.confidence > 0

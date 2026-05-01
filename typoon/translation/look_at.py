@@ -111,7 +111,7 @@ async def look_at(
     """Run LookAt agent with key overlays on page images."""
     from typoon.llm.agent import run as agent_run
     source_by_key = {k: key_map[k].source_text for k in keys if k in key_map}
-    polygon_by_key = {k: key_map[k].geometry.polygon for k in keys if k in key_map}
+    polygon_by_key = {k: key_map[k].box.polygon for k in keys if k in key_map}
     agent = LookAtAgent(
         session, prepared,
         pages=pages, keys=keys,

@@ -44,7 +44,7 @@ class TranslationRecord:
             source_text=b.source_text,
             translated_text=b.translated_text,
             status=b.kind,
-            polygon_json=json.dumps(b.source.geometry.polygon),
+            polygon_json=json.dumps(b.source.box.polygon),
             font_size=font_size,
         )
 

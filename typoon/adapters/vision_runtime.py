@@ -79,12 +79,9 @@ class VisionRuntime:
         return self._yolo_model
 
     def scan_page_state(self, image: np.ndarray):
-        """Run full vision pipeline and return intermediate PageScanState.
-
-        Use this when you need unit/scope/group detail for artifacts or debugging.
-        """
-        from typoon.vision.text_grouping import build_page_scan_state
-        return build_page_scan_state(
+        """Run full vision pipeline and return ScanState for artifact writing."""
+        from typoon.vision.grouping import scan_page
+        return scan_page(
             self.scanner,
             image,
             yolo_model=self._get_yolo_model(),
@@ -92,5 +89,5 @@ class VisionRuntime:
         )
 
     def scan_page(self, image: np.ndarray) -> list[VisualTextGroup]:
-        from typoon.vision.text_grouping import to_visual_text_groups
-        return to_visual_text_groups(self.scan_page_state(image))
+        from typoon.vision.grouping import export_groups
+        return export_groups(self.scan_page_state(image))

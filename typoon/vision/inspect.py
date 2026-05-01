@@ -11,10 +11,10 @@ import cv2
 import numpy as np
 
 from .draw import CYAN, GREEN, PALETTE, RED, YELLOW, hstack, label, rect, write_rgb
-from .types import PageScanState
+from .types import ScanState
 
 
-def write_inspection(out_dir: Path, page_index: int, image: np.ndarray, state: PageScanState, eraser) -> None:
+def write_inspection(out_dir: Path, page_index: int, image: np.ndarray, state: ScanState, eraser) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     panels = [
         _draw_text_boxes(image, state),
@@ -36,7 +36,7 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", "utf-8")
 
 
-def state_to_dict(page_index: int, image_file: str, state: PageScanState) -> dict[str, Any]:
+def state_to_dict(page_index: int, image_file: str, state: ScanState) -> dict[str, Any]:
     return {
         "page": page_index,
         "file": image_file,
@@ -46,8 +46,8 @@ def state_to_dict(page_index: int, image_file: str, state: PageScanState) -> dic
             {
                 "idx": u.idx,
                 "bbox": u.bbox,
-                "text": u.unit_ocr_text,
-                "confidence": u.unit_ocr_conf,
+                "text": u.text,
+                "confidence": u.confidence,
                 "noise": u.is_noise,
                 "noise_reason": u.noise_reason,
                 "scope_idx": u.scope_idx,
@@ -65,8 +65,8 @@ def state_to_dict(page_index: int, image_file: str, state: PageScanState) -> dic
                 "raw_bbox": g.raw_bbox,
                 "fit_bbox": g.fit_bbox,
                 "ocr_bbox": g.ocr_bbox,
-                "text": g.ocr_text,
-                "confidence": g.ocr_conf,
+                "text": g.text,
+                "confidence": g.confidence,
                 "accepted": g.accepted,
                 "reject_reason": g.reject_reason,
                 "scoped": g.scoped,
@@ -77,37 +77,37 @@ def state_to_dict(page_index: int, image_file: str, state: PageScanState) -> dic
     }
 
 
-def _draw_text_boxes(image: np.ndarray, state: PageScanState) -> np.ndarray:
+def _draw_text_boxes(image: np.ndarray, state: ScanState) -> np.ndarray:
     out = image.copy()
-    for unit in state.units:
-        color = RED if unit.is_noise else CYAN
-        rect(out, unit.bbox, color, 2)
-        label(out, unit.bbox[0], unit.bbox[1], f"u{unit.idx} {unit.unit_ocr_conf:.2f}", color)
+    for u in state.units:
+        color = RED if u.is_noise else CYAN
+        rect(out, u.bbox, color, 2)
+        label(out, u.bbox[0], u.bbox[1], f"u{u.idx} {u.confidence:.2f}", color)
     return out
 
 
-def _draw_groups(image: np.ndarray, state: PageScanState) -> np.ndarray:
+def _draw_groups(image: np.ndarray, state: ScanState) -> np.ndarray:
     out = image.copy()
-    for scope in state.scopes:
-        rect(out, scope.bbox, YELLOW, 2)
-        label(out, scope.bbox[0], scope.bbox[1], f"s{scope.idx} {scope.confidence:.2f}", YELLOW)
-    for group in state.groups:
-        if not group.accepted:
+    for s in state.scopes:
+        rect(out, s.bbox, YELLOW, 2)
+        label(out, s.bbox[0], s.bbox[1], f"s{s.idx} {s.confidence:.2f}", YELLOW)
+    for g in state.groups:
+        if not g.accepted:
             continue
-        rect(out, group.fit_bbox, GREEN, 3)
-        text = group.ocr_text[:24].replace("\n", " ")
-        label(out, group.fit_bbox[0], group.fit_bbox[1], f"g{group.idx} {group.ocr_conf:.2f} {text}", GREEN)
+        rect(out, g.fit_bbox, GREEN, 3)
+        text = g.text[:24].replace("\n", " ")
+        label(out, g.fit_bbox[0], g.fit_bbox[1], f"g{g.idx} {g.confidence:.2f} {text}", GREEN)
     return out
 
 
-def _draw_masks(image: np.ndarray, state: PageScanState) -> np.ndarray:
+def _draw_masks(image: np.ndarray, state: ScanState) -> np.ndarray:
     out = image.copy()
     overlay = out.copy()
     accepted = [g for g in state.groups if g.accepted]
-    for gi, group in enumerate(accepted):
+    for gi, g in enumerate(accepted):
         color = PALETTE[gi % len(PALETTE)]
-        for unit_idx in group.unit_indices:
-            mask = state.units[unit_idx].region.mask
+        for ui in g.unit_indices:
+            mask = state.units[ui].region.mask
             if mask is None:
                 continue
             h, w = mask.image.shape[:2]
@@ -117,17 +117,16 @@ def _draw_masks(image: np.ndarray, state: PageScanState) -> np.ndarray:
                 continue
             crop = mask.image[y1 - mask.y:y2 - mask.y, x1 - mask.x:x2 - mask.x]
             overlay[y1:y2, x1:x2][crop > 0] = color
-        rect(out, group.fit_bbox, color, 2)
+        rect(out, g.fit_bbox, color, 2)
     cv2.addWeighted(overlay, 0.55, out, 0.45, 0, out)
-    for gi, group in enumerate(accepted):
-        rect(out, group.fit_bbox, PALETTE[gi % len(PALETTE)], 2)
+    for gi, g in enumerate(accepted):
+        rect(out, g.fit_bbox, PALETTE[gi % len(PALETTE)], 2)
     return out
 
 
-def _draw_erased(image: np.ndarray, state: PageScanState, eraser) -> np.ndarray:
-    from .text_grouping import to_visual_text_groups
-    groups = to_visual_text_groups(state)
-    all_masks = [m for g in groups for m in g.erase_masks]
+def _draw_erased(image: np.ndarray, state: ScanState, eraser) -> np.ndarray:
+    from .grouping import export_groups
+    all_masks = [m for g in export_groups(state) for m in g.erase_masks]
     if not all_masks:
         return image.copy()
     h, w = image.shape[:2]

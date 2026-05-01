@@ -4,19 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .scan import ScannedBubble, ScannedChapter, ScannedPage
+from .scan import Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
 
 
 @dataclass(frozen=True)
-class TranslatedBubble:
-    """One bubble after translation — carries scan output as immutable reference."""
+class Bubble:
+    """One bubble after translation."""
 
-    source:             ScannedBubble
-    translation_key:    str
-    translated_text:    str
-    kind:               str     # "dialogue" | "sfx" | "skip"
+    source:           ScannedBubble
+    translation_key:  str
+    translated_text:  str
+    kind:             str   # "dialogue" | "sfx" | "skip"
 
-    # Convenience pass-throughs so callers don't need to reach into source.
     @property
     def idx(self) -> int:
         return self.source.idx
@@ -31,11 +30,11 @@ class TranslatedBubble:
 
 
 @dataclass(frozen=True)
-class TranslatedPage:
+class Page:
     """One page after translation."""
 
     source:  ScannedPage
-    bubbles: tuple[TranslatedBubble, ...]
+    bubbles: tuple[Bubble, ...]
 
     @property
     def index(self) -> int:
@@ -43,12 +42,18 @@ class TranslatedPage:
 
 
 @dataclass(frozen=True)
-class TranslatedChapter:
+class Chapter:
     """Full translate output — typed boundary between translate and render stages."""
 
     scan:  ScannedChapter
-    pages: tuple[TranslatedPage, ...]
+    pages: tuple[Page, ...]
 
     @property
-    def all_bubbles(self) -> list[TranslatedBubble]:
+    def all_bubbles(self) -> list[Bubble]:
         return [b for p in self.pages for b in p.bubbles]
+
+
+# Backward-compat aliases
+TranslatedBubble = Bubble
+TranslatedPage = Page
+TranslatedChapter = Chapter

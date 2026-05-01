@@ -26,22 +26,10 @@ class Scanner:
     def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
         return self._ocr.recognize(crops)
 
-    def scan(
-        self,
-        image: np.ndarray,
-        *,
-        scope_model=None,
-        scope_imgsz: int = 640,
-        scope_conf: float = 0.3,
-    ) -> list[VisualTextGroup]:
-        from .grouping import build_page_scan_state, to_visual_text_groups
-        state = build_page_scan_state(
-            self, image,
-            yolo_model=scope_model,
-            yolo_imgsz=scope_imgsz,
-            yolo_conf=scope_conf,
-        )
-        return to_visual_text_groups(state)
+    def scan(self, image, *, scope_model=None, scope_imgsz=640, scope_conf=0.3):
+        from typoon.vision.grouping import export_groups, scan_page
+        return export_groups(scan_page(self, image, yolo_model=scope_model,
+                                       yolo_imgsz=scope_imgsz, yolo_conf=scope_conf))
 
 
 def create_scanner(hub=None, languages: list[str] | None = None) -> Scanner:

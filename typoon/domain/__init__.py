@@ -1,15 +1,18 @@
-"""Domain — pure data types. No dependencies outside stdlib."""
+"""Domain — pure data types. No dependencies outside stdlib.
 
-from .prepared import PreparedChapter, PreparedPage
+Import pattern for stage types:
+    from typoon.domain import scan, translate, render
+    scan.Bubble, translate.Page, render.Chapter
+"""
+
+from typoon.domain import prepared, scan, translate, render
+from .prepared import Chapter as PreparedChapter, Page as PreparedPage
 from .project import ChapterVariant, DiscoveredChapter, SourceInfo
-from .render import RenderedBubble, RenderedChapter, RenderedPage
-from .scan import BubbleGeometry, ScannedBubble, ScannedChapter, ScannedPage
-from .translate import TranslatedBubble, TranslatedChapter, TranslatedPage
 
 __all__ = [
+    # Sub-modules (preferred import style)
+    "prepared", "scan", "translate", "render",
+    # Convenience top-level exports
     "PreparedChapter", "PreparedPage",
     "ChapterVariant", "DiscoveredChapter", "SourceInfo",
-    "BubbleGeometry", "ScannedBubble", "ScannedChapter", "ScannedPage",
-    "TranslatedBubble", "TranslatedChapter", "TranslatedPage",
-    "RenderedBubble", "RenderedChapter", "RenderedPage",
 ]

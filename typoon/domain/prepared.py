@@ -9,18 +9,18 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class PreparedPage:
-    index: int
-    file: str
-    width: int
+class Page:
+    index:  int
+    file:   str
+    width:  int
     height: int
 
 
 @dataclass(frozen=True)
-class PreparedChapter:
-    root: Path
+class Chapter:
+    root:   Path
     source: str
-    pages: tuple[PreparedPage, ...]
+    pages:  tuple[Page, ...]
     version: int = 1
 
     @property
@@ -35,24 +35,36 @@ class PreparedChapter:
             "version": self.version,
             "source": self.source,
             "page_count": self.page_count,
-            "pages": [page.__dict__ for page in self.pages],
+            "pages": [p.__dict__ for p in self.pages],
         }
 
+    def save(self) -> Path:
+        out = self.root / "manifest.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(self.to_manifest(), ensure_ascii=False, indent=2) + "\n", "utf-8")
+        return out
 
-def write_prepared_chapter(chapter: PreparedChapter) -> Path:
-    out = chapter.root / "manifest.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(chapter.to_manifest(), ensure_ascii=False, indent=2) + "\n", "utf-8")
-    return out
+    @classmethod
+    def load(cls, root: Path) -> "Chapter":
+        root = Path(root)
+        data = json.loads((root / "manifest.json").read_text("utf-8"))
+        pages = tuple(Page(**p) for p in data["pages"])
+        return cls(
+            root=root,
+            source=data.get("source", ""),
+            pages=pages,
+            version=int(data.get("version", 1)),
+        )
 
 
-def load_prepared_chapter(root: Path) -> PreparedChapter:
-    root = Path(root)
-    data = json.loads((root / "manifest.json").read_text("utf-8"))
-    pages = tuple(PreparedPage(**page) for page in data["pages"])
-    return PreparedChapter(
-        root=root,
-        source=data.get("source", ""),
-        pages=pages,
-        version=int(data.get("version", 1)),
-    )
+# Backward-compat aliases and module-level functions
+PreparedPage = Page
+PreparedChapter = Chapter
+
+
+def write_prepared_chapter(chapter: Chapter) -> Path:
+    return chapter.save()
+
+
+def load_prepared_chapter(root: Path) -> Chapter:
+    return Chapter.load(root)
