@@ -74,6 +74,10 @@ class BriefRecord:
         chapter: float,
         brief: ChapterBrief,
     ) -> "BriefRecord":
+        address_text = "\n".join(
+            f"{r.speaker} → {r.listener}: {r.self_ref}/{r.other_ref}"
+            for r in brief.address
+        )
         return cls(
             project_id=project_id,
             chapter=chapter,
@@ -81,7 +85,7 @@ class BriefRecord:
             summary=brief.summary,
             terms_text="\n".join(f"{k} -> {v}" for k, v in brief.glossary.items()),
             facts_text="\n".join(brief.facts),
-            rules_text="\n".join(brief.rules),     # correct key — enforced here
+            rules_text=address_text + "\n" + "\n".join(brief.style_notes),
         )
 
 

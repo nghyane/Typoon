@@ -1,4 +1,4 @@
-"""Chapter context agent — implements Agent protocol."""
+"""Chapter context agent — Agent protocol + tools."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typoon.domain.scan import Bubble as ScannedBubble
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
-from .brief import ChapterBrief, chapter_text
+from .brief import AddressRule, ChapterBrief, chapter_text
 from .look_at import look_at
 from .tools.brief import ChapterBriefArgs, submit_chapter_brief
 from .tools.look_at import LookAtArgs, look_at as look_at_tool
@@ -16,7 +16,7 @@ from .tools.search_knowledge import SearchKnowledgeArgs, SearchScope, search_kno
 
 
 class ContextAgent:
-    """Analyzes chapter text with pre-loaded context, submits ChapterBrief."""
+    """Analyzes chapter text, uses tools, submits ChapterBrief via tool call."""
 
     def __init__(
         self,
@@ -74,9 +74,12 @@ class ContextAgent:
     def retry_prompt(self) -> str | None:
         if self._brief is not None:
             return None
-        if self._text_retries >= 2:
+        if self._text_retries >= 3:
             return None
-        return "Do not respond with text. You must call one of the provided tools."
+        return (
+            "You must call submit_chapter_brief now. "
+            "Do not write any text. Call the tool directly with your analysis."
+        )
 
     def into_output(self) -> ChapterBrief | None:
         return self._brief
@@ -90,7 +93,17 @@ class ContextAgent:
             summary=args.summary,
             facts=args.facts,
             glossary={g.source: g.target for g in args.glossary},
-            rules=args.rules,
+            address=[
+                AddressRule(
+                    speaker=a.speaker,
+                    listener=a.listener,
+                    self_ref=a.self_ref,
+                    other_ref=a.other_ref,
+                    note=a.note,
+                )
+                for a in args.address
+            ],
+            style_notes=args.style_notes,
             page_notes={pn.page: pn.note for pn in args.page_notes},
             key_notes={bn.key: bn.note for bn in args.bubble_notes},
         )
@@ -137,9 +150,7 @@ async def build_chapter_brief(
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run
 
-    # Pre-load context so agent can decide immediately whether to search
     context_snapshot = await _load_context_snapshot(session)
-
     agent = ContextAgent(session, prepared, key_map, context_snapshot)
     result = await agent_run(session.context_provider, agent, hook=session.hook, max_turns=20)
     if result.error:
@@ -153,37 +164,33 @@ async def build_chapter_brief(
 
 
 async def _load_context_snapshot(session: Session) -> str:
-    """Load glossary + recent briefs into a text block for the agent."""
     store = session.store
     parts: list[str] = []
 
-    # Glossary
-    glossary = await store.get_glossary(session.project_id) if hasattr(store, 'get_glossary') else {}
+    glossary = await store.get_glossary(session.project_id) if hasattr(store, "get_glossary") else {}
     if not glossary:
-        # Fall back to glossary_search with empty query isn't practical;
-        # use session glossary if pre-loaded
         glossary = session.glossary or {}
     if glossary:
-        lines = "\n".join(f"  {k} → {v}" for k, v in list(glossary.items())[:30])
-        parts.append(f"## Glossary ({len(glossary)} terms)\n{lines}")
+        parts.append(
+            f"## Glossary\n{len(glossary)} terms available. "
+            f"Call search_knowledge(scope=glossary, query=<term>) to look up."
+        )
+    else:
+        parts.append("## Glossary\nEmpty.")
 
-    # Recent chapter briefs
     recent = await store.get_recent_chapter_briefs(
-        session.project_id, before_chapter=session.chapter, limit=3
+        session.project_id, before_chapter=session.chapter, limit=10
     )
     if recent:
-        brief_texts = []
-        for r in recent:
-            b = r.get("brief", {})
-            summary = b.get("summary", "")
-            facts = b.get("facts", [])
-            ch = r.get("chapter", "?")
-            text = f"Ch{ch}: {summary}"
-            if facts:
-                text += "\n  Facts: " + "; ".join(facts[:3])
-            brief_texts.append(text)
-        parts.append("## Prior chapter context\n" + "\n".join(brief_texts))
+        lines = [
+            f"  Ch{r.get('chapter','?')}: {(r.get('brief') or {}).get('summary','')[:120]}"
+            for r in recent
+        ]
+        parts.append(
+            "## Prior chapters (briefs available)\n" + "\n".join(lines) +
+            "\nCall search_knowledge(scope=briefs, query=<topic>) for details."
+        )
     else:
-        parts.append("## Prior chapter context\nNone — this appears to be chapter 1 or first translation.")
+        parts.append("## Prior chapters\nNone.")
 
-    return "\n\n".join(parts) if parts else "No prior context available."
+    return "\n\n".join(parts)

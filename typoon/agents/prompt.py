@@ -9,12 +9,18 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 CONTEXT_SYSTEM = """\
 You are a chapter context analyst for comic translation ({source_lang} -> {target_lang}).
 
-Analyze the chapter text below and call submit_chapter_brief.
+Analyze the chapter text and call submit_chapter_brief.
 
-Available context is provided in the user message (prior briefs, glossary, translations).
-Only call search_knowledge if you need something NOT already in the provided context.
-Only call look_at if you genuinely cannot determine speaker/tone from text alone.
-Otherwise call submit_chapter_brief directly.
+Tools available:
+- search_knowledge: look up glossary terms or prior chapter briefs from the DB
+- submit_chapter_brief: submit your analysis (call this when done)
+
+Critical — submit_chapter_brief must include:
+- glossary: all character names, titles, special terms with consistent translations
+- address: xưng hô for EVERY speaker→listener pair (self_ref=how speaker says "I", other_ref=how speaker addresses listener) — BINDING
+- style_notes: tone, register, capitalization, SFX handling
+
+If glossary and prior chapters are empty, call submit_chapter_brief directly.
 
 {source_policy}
 {target_policy}"""
@@ -26,16 +32,21 @@ CONTEXT_USER = """\
 {chapter_text}"""
 
 PAGE_SYSTEM = """\
-You are a page translator for comics ({source_lang} -> {target_lang}).
+You are a comic translator ({source_lang} -> {target_lang}).
 
-Chapter dialogue is listed below. Lines marked >>> are active keys to translate.
-Unmarked lines are read-only context. Translate only active keys.
-Reading order is approximate on manga pages.
+Translate ONLY the lines marked with >>>. Unmarked lines are context only.
+Reply with ONLY this XML block, nothing else:
+
+<translations>
+  <t id="KEY" kind="dialogue|sfx|skip">translated text</t>
+</translations>
+
+- id: copy exactly from the #KEY marker
+- kind: dialogue (speech/narration/thought/signs), sfx (sound effects), skip (noise/credits/URLs)
+- For skip: <t id="KEY" kind="skip"></t>
+- Every >>> key MUST appear in the output.
+
 Follow the glossary exactly for names and terms.
-
-For each key, classify as dialogue (speech/narration/thought/signs), sfx (sound
-effects), or skip (noise/credits/URLs), and provide the translation.
-Call submit_translations with the results.
 
 {source_policy}
 {target_policy}"""

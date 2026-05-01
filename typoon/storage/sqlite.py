@@ -253,6 +253,12 @@ class SqliteStore:
 
     async def save_chapter_brief(self, project_id: int, chapter: float, brief: dict) -> None:
         terms = brief.get("glossary", {}) or {}
+        style = brief.get("style_notes", brief.get("rules", [])) or []
+        address = brief.get("address", []) or []
+        address_text = "\n".join(
+            f"{a.get('speaker','')} → {a.get('listener','')}: {a.get('self_ref','')}/{a.get('other_ref','')}"
+            for a in address
+        )
         await self._db.execute(
             "INSERT OR REPLACE INTO chapter_briefs "
             "(project_id, chapter, brief_json, summary, terms_text, facts_text, rules_text, updated_at) "
@@ -263,9 +269,16 @@ class SqliteStore:
                 str(brief.get("summary", "")),
                 "\n".join(f"{k} -> {v}" for k, v in terms.items()),
                 "\n".join(str(x) for x in brief.get("facts", []) or []),
-                "\n".join(str(x) for x in brief.get("rules", []) or []),
+                address_text + "\n" + "\n".join(str(x) for x in style),
             ),
         )
+        # Upsert glossary terms into project-level glossary table.
+        # Later chapters overwrite earlier ones — newer briefs are more accurate.
+        if terms:
+            await self._db.executemany(
+                "INSERT OR REPLACE INTO glossary (project_id, source_term, target_term) VALUES (?,?,?)",
+                [(project_id, src, tgt) for src, tgt in terms.items()],
+            )
         await self._db.commit()
 
     async def get_chapter_brief(self, project_id: int, chapter: float) -> dict | None:
