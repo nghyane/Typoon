@@ -44,6 +44,7 @@ Reply with ONLY this XML block, nothing else:
 - id: copy exactly from the #KEY marker
 - kind: dialogue (speech/narration/thought/signs), sfx (sound effects), skip (noise/credits/URLs)
 - For skip: <t id="KEY" kind="skip"></t>
+- skip includes: standalone numbers, single letters, page markers, credits, URLs
 - Every >>> key MUST appear in the output.
 
 Follow the glossary exactly for names and terms.

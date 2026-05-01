@@ -9,7 +9,7 @@ from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import PipelineError
 from typoon.agents import ChapterBrief, assign_keys, TranslationOp, translate_window, build_chapter_brief
 
-_PAGE_WINDOW_MAX_KEYS = 25
+_WINDOW_CHAR_BUDGET = 300  # max source chars of active keys per window
 
 
 async def translate_chapter(
@@ -91,20 +91,20 @@ def _windows(
     key_map: dict[str, ScannedBubble],
     scanned: ScannedChapter,
 ) -> list[list[str]]:
-    """Group keys into page-bounded windows of max _PAGE_WINDOW_MAX_KEYS."""
-    # Build page → [key] map preserving bubble order
-    page_keys: dict[int, list[str]] = {}
-    for key, b in sorted(key_map.items(), key=lambda kv: (kv[1].page_index, kv[1].idx)):
-        page_keys.setdefault(b.page_index, []).append(key)
+    """Group keys into windows bounded by source char budget."""
+    ordered = sorted(key_map.items(), key=lambda kv: (kv[1].page_index, kv[1].idx))
 
     windows: list[list[str]] = []
     current: list[str] = []
-    for sp in scanned.pages:
-        keys_on_page = page_keys.get(sp.index, [])
-        if current and len(current) + len(keys_on_page) > _PAGE_WINDOW_MAX_KEYS:
+    current_chars = 0
+    for key, b in ordered:
+        key_chars = len(b.source_text)
+        if current and current_chars + key_chars > _WINDOW_CHAR_BUDGET:
             windows.append(current)
             current = []
-        current.extend(keys_on_page)
+            current_chars = 0
+        current.append(key)
+        current_chars += key_chars
     if current:
         windows.append(current)
     return windows
