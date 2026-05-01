@@ -62,6 +62,10 @@ async def run(provider: Provider, agent: Agent, hook: Hook = _NO_HOOK, *, max_tu
         try:
             if has_stream:
                 resp = await _consume_stream(provider, messages, tools, name, turns_used, hook)
+                # Cloudflare Gateway models hang on streaming; the generator may
+                # return empty. Fall back to call() when the stream is useless.
+                if not resp.tool_calls and not resp.text:
+                    resp = await provider.call(messages, tools)
             else:
                 resp = await provider.call(messages, tools)
         except Exception as e:

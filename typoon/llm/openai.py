@@ -44,6 +44,7 @@ class OpenAIProvider:
         self._model = model
         self._reasoning_effort = reasoning_effort
         self._max_tokens = max_tokens
+        self._base_url = base_url
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {
@@ -79,6 +80,12 @@ class OpenAIProvider:
         return CallResponse(tool_calls=tool_calls, text=choice.message.content)
 
     async def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
+        # Cloudflare Gateway models (GLM, Qwen, etc.) hang on streaming —
+        # the async generator never yields. Fall back to call() silently.
+        if self._base_url and ("cloudflare" in self._base_url or "gateway" in self._base_url):
+            # Yield nothing; agent loop will see empty stream and fall back
+            return
+
         kwargs: dict = {
             "messages": [_serialize_message(m) for m in messages],
             "stream": True,
