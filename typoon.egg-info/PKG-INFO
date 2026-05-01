@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: typoon
+Version: 0.1.0
+Requires-Python: >=3.11
+Provides-Extra: onnx
+Requires-Dist: onnxruntime>=1.17; extra == "onnx"
+Provides-Extra: cuda
+Requires-Dist: onnxruntime-gpu>=1.17; extra == "cuda"

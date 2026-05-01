@@ -1,0 +1,6 @@
+
+[cuda]
+onnxruntime-gpu>=1.17
+
+[onnx]
+onnxruntime>=1.17

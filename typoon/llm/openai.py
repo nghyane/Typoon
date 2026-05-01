@@ -35,6 +35,7 @@ class OpenAIProvider:
         model: str = "gpt-4o-mini",
         reasoning_effort: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_tokens: int = 16384,
     ) -> None:
         kwargs: dict = {"api_key": api_key, "base_url": base_url, "timeout": _TIMEOUT}
         if extra_headers:
@@ -42,7 +43,7 @@ class OpenAIProvider:
         self._client = openai.AsyncOpenAI(**kwargs)
         self._model = model
         self._reasoning_effort = reasoning_effort
-        self._max_tokens = 4096
+        self._max_tokens = max_tokens
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {

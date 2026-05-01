@@ -29,18 +29,21 @@ class ProviderConfig(BaseModel):
 class TranslationConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o-mini"
+    max_tokens: int = 16384
     reasoning_effort: str | None = None
 
 
 class ContextAgentConfig(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5"
+    max_tokens: int | None = 8192
     reasoning_effort: str | None = None
 
 
 class VisionAgentConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o-mini"
+    max_tokens: int | None = 4096
     reasoning_effort: str | None = None
 
 
