@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
 
 from .translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 
 
 @dataclass(frozen=True)
 class Bubble:
-    """One bubble after text layout."""
+    """One bubble after text layout — font metrics only."""
 
     source:    TranslatedBubble
     font_size: int
@@ -34,13 +33,13 @@ class Bubble:
         return self.source.kind
 
 
-@dataclass
+@dataclass(frozen=True)
 class Page:
-    """One page after full render — pixel image + bubble metadata."""
+    """One page after render — path to output PNG + bubble metrics."""
 
-    source:  TranslatedPage
-    bubbles: tuple[Bubble, ...]
-    image:   np.ndarray = field(repr=False)  # RGB uint8 (H, W, 3)
+    source:     TranslatedPage
+    bubbles:    tuple[Bubble, ...]
+    image_path: Path | None = None   # None when no render_dir was given
 
     @property
     def index(self) -> int:
@@ -49,7 +48,7 @@ class Page:
 
 @dataclass(frozen=True)
 class Chapter:
-    """Full render output — final pipeline boundary."""
+    """Full render output."""
 
     source: TranslatedChapter
     pages:  tuple[Page, ...]
@@ -57,5 +56,3 @@ class Chapter:
     @property
     def page_count(self) -> int:
         return len(self.pages)
-
-

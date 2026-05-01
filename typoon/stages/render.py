@@ -2,11 +2,10 @@
 
 Pipeline per page:
   1. Load prepared page image (RGB)
-  2. Convert to RGBA canvas
-  3. Erase source text via MaskStore + VisionRuntime.eraser
-  4. Render translated text with TextRenderer
-  5. Write PNG to out_dir/render/
-  6. Return RenderedChapter
+  2. Erase source text via MaskStore + VisionRuntime.eraser → clean RGB
+  3. Render translated text via typoon_render.render()
+  4. Write PNG to render_dir/
+  5. Return RenderedChapter with per-bubble font metrics
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import cv2
 import numpy as np
 
 from typoon.adapters.mask_store import MaskStore
-from typoon.adapters.text_renderer import render_text
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter
@@ -37,43 +35,58 @@ def render_chapter(
         render_dir = Path(render_dir)
         render_dir.mkdir(parents=True, exist_ok=True)
 
+    import typoon_render
+
     rendered_pages = []
 
     for tp in translated.pages:
-        image = _load_rgb(translated.scan.prepared.page_path(tp.index))
-        canvas = _to_rgba(image)
+        original = _load_rgb(translated.scan.prepared.page_path(tp.index))
+        canvas   = _to_rgba(original)
 
-        # Erase
-        erase_masks = []
-        for tb in tp.bubbles:
-            if tb.kind == "skip":
-                continue
-            bm = masks.get(tb.page_index, tb.idx)
-            if bm is not None:
-                erase_masks.extend(bm.erase_masks)
+        # Collect erase masks for accepted bubbles
+        erase_masks = [
+            m
+            for tb in tp.bubbles
+            if tb.kind != "skip"
+            for bm in [masks.get(tb.page_index, tb.idx)]
+            if bm is not None
+            for m in bm.erase_masks
+        ]
         if erase_masks and runtime.eraser is not None:
-            runtime.eraser.erase(canvas, list(erase_masks))
+            runtime.eraser.erase(canvas, erase_masks)
 
-        # Render text
-        rendered_bubbles = []
-        for tb in tp.bubbles:
-            font_size, overflow = 0, False
-            if tb.kind != "skip" and tb.translated_text.strip():
-                font_size, overflow = render_text(
-                    canvas, tb.translated_text, tb.source.box.fit
-                )
-            rendered_bubbles.append(RenderedBubble(source=tb, font_size=font_size, overflow=overflow))
+        clean = canvas[:, :, :3]
 
-        result = canvas[:, :, :3]
+        # Render text — only non-skip bubbles with actual translation
+        active = [tb for tb in tp.bubbles if tb.kind != "skip" and tb.translated_text.strip()]
+        polygons = [tb.source.box.polygon for tb in active]
+        texts    = [tb.translated_text for tb in active]
 
+        result = typoon_render.typoon_render.render(
+            original, clean, polygons, texts, original.shape[1]
+        )
+
+        # Map render results back to all bubbles
+        active_info = dict(zip((tb.idx for tb in active), result.bubbles))
+        rendered_bubbles = tuple(
+            RenderedBubble(
+                source=tb,
+                font_size=active_info[tb.idx].font_size_px if tb.idx in active_info else 0,
+                overflow=active_info[tb.idx].overflow if tb.idx in active_info else False,
+            )
+            for tb in tp.bubbles
+        )
+
+        image_path = None
         if render_dir is not None:
-            _write_rgb(render_dir / f"page_{tp.index:04d}.png", result)
+            image_path = render_dir / f"page_{tp.index:04d}.png"
+            _write_rgb(image_path, result.image)
 
         if artifacts is not None:
-            artifacts.write_image("06_render", f"page_{tp.index:04d}_rendered.png", result)
+            artifacts.write_image("06_render", f"page_{tp.index:04d}_rendered.png", result.image)
 
         rendered_pages.append(RenderedPage(
-            source=tp, bubbles=tuple(rendered_bubbles), image=result,
+            source=tp, bubbles=rendered_bubbles, image_path=image_path,
         ))
 
     return RenderedChapter(source=translated, pages=tuple(rendered_pages))

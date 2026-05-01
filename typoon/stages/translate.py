@@ -7,10 +7,7 @@ from typoon.domain.scan import Bubble as ScannedBubble, Chapter as ScannedChapte
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import PipelineError
-from typoon.agents.brief import ChapterBrief
-from typoon.agents.context import build_chapter_brief
-from typoon.agents.keys import assign_keys
-from typoon.agents.page import TranslationOp, translate_window
+from typoon.agents import ChapterBrief, assign_keys, TranslationOp, translate_window, build_chapter_brief
 
 _PAGE_WINDOW_MAX_KEYS = 25
 
