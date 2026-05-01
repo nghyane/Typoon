@@ -40,13 +40,9 @@ class MaskStore:
     def __len__(self) -> int:
         return len(self._data)
 
-    def save(self, base_dir: Path) -> Path:
-        """Serialize masks to <base_dir>/scan/masks/.
-
-        Each bubble: one .npz file containing erase and text mask arrays
-        plus x/y offsets as metadata.
-        """
-        masks_dir = Path(base_dir) / "scan" / "masks"
+    def save(self, cp) -> Path:
+        """Serialize masks to cp.masks/. cp is a ChapterPaths instance."""
+        masks_dir = cp.masks
         masks_dir.mkdir(parents=True, exist_ok=True)
 
         index: list[dict] = []
@@ -74,9 +70,9 @@ class MaskStore:
         return masks_dir
 
     @classmethod
-    def load(cls, base_dir: Path) -> "MaskStore":
-        """Load from <base_dir>/scan/masks/."""
-        masks_dir = Path(base_dir) / "scan" / "masks"
+    def load(cls, cp) -> "MaskStore":
+        """Load from cp.masks/. cp is a ChapterPaths instance."""
+        masks_dir = cp.masks
         index_path = masks_dir / "index.json"
         store = cls()
         if not index_path.exists():

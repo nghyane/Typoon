@@ -27,22 +27,64 @@ class Paths:
     @property
     def models(self) -> Path: return self.root / "models"
     @property
-    def cache(self) -> Path: return self.root / "cache"
-    @property
-    def output(self) -> Path: return self.root / "output"
-    @property
     def projects(self) -> Path: return self.root / "projects"
 
     def ensure(self) -> None:
-        """Create all directories."""
-        for d in (self.root, self.cache, self.output, self.projects):
+        for d in (self.root, self.projects):
             d.mkdir(parents=True, exist_ok=True)
+
+
+class ChapterPaths:
+    """All paths for one chapter — derived from project slug + chapter index."""
+
+    def __init__(self, projects_root: Path, slug: str, idx: float) -> None:
+        self.root     = projects_root / slug / _ch_label(idx)
+        self.pages    = self.root / "pages"
+        self.manifest = self.root / "manifest.json"
+        self.scan     = self.root / "scan.json"
+        self.masks    = self.root / "masks"
+        self.translate = self.root / "translate.json"
+        self.render   = self.root / "render"
+
+    def ensure(self) -> None:
+        for d in (self.pages, self.masks, self.render):
+            d.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def is_prepared(self) -> bool:
+        return self.manifest.exists()
+
+    @property
+    def is_scanned(self) -> bool:
+        return self.scan.exists()
+
+    @property
+    def is_translated(self) -> bool:
+        return self.translate.exists()
+
+    @property
+    def is_rendered(self) -> bool:
+        return self.render.exists() and any(self.render.iterdir())
+
+
+class ProjectPaths:
+    """Paths for one project."""
+
+    def __init__(self, projects_root: Path, slug: str) -> None:
+        self.root = projects_root / slug
+        self.slug = slug
+
+    def chapter(self, idx: float) -> ChapterPaths:
+        return ChapterPaths(self.root.parent, self.slug, idx)
+
+    def ensure(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
 
 
 # ── Slug / chapter labels ─────────────────────────────────────────
 
 
-def _slugify(title: str, url: str = "") -> str:
+def slugify(title: str, url: str = "") -> str:
     """Filesystem-safe slug with optional collision-resistant hash."""
     base = title.lower().strip()
     base = _re.sub(r"[^\w\s-]", "", base)
@@ -56,32 +98,12 @@ def _slugify(title: str, url: str = "") -> str:
 
 
 def _ch_label(ch: float) -> str:
-    """Chapter directory label, e.g. ch001 or ch0001.5."""
     return f"ch{int(ch):03d}" if ch == int(ch) else f"ch{ch:06.1f}"
 
 
-# ── Per-project workspace ─────────────────────────────────────────
+def ch_label(ch: float) -> str:
+    return _ch_label(ch)
 
 
-class ProjectPaths:
-    """Isolated source cache and output dirs for one project."""
-
-    def __init__(self, projects_root: Path, title: str, source_url: str = "") -> None:
-        self._slug = _slugify(title, source_url)
-        self.root = projects_root / self._slug
-        self.source = self.root / "source"
-        self.output_dir = self.root / "output"
-
-    @property
-    def slug(self) -> str:
-        return self._slug
-
-    def chapter_source(self, ch: float) -> Path:
-        return self.source / _ch_label(ch)
-
-    def chapter_output(self, ch: float) -> Path:
-        return self.output_dir / _ch_label(ch)
-
-    def ensure(self) -> None:
-        for d in (self.root, self.source, self.output_dir):
-            d.mkdir(parents=True, exist_ok=True)
+# ── Backward compat ───────────────────────────────────────────────
+_slugify = slugify

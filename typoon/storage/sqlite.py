@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS chapters (
     id            INTEGER PRIMARY KEY,
     project_id    INTEGER NOT NULL REFERENCES projects(id),
     idx           REAL NOT NULL,
-    local_path    TEXT,
     source_url    TEXT,
     source_name   TEXT,
     status        TEXT NOT NULL DEFAULT 'pending',
@@ -146,6 +145,27 @@ class SqliteStore:
 
     # ── Projects ─────────────────────────────────────────────────
 
+    async def get_or_create_project(
+        self,
+        title: str,
+        source_lang: str,
+        target_lang: str,
+        source_url: str | None = None,
+    ) -> int:
+        """Return existing project_id or create new one."""
+        if source_url:
+            row = await self.get_project_by_url(source_url)
+            if row:
+                return row["id"]
+        row = await self.get_project_by_title(title)
+        if row:
+            return row["id"]
+        return await self.add_project(title, source_lang, target_lang, source_url)
+
+    async def list_projects(self) -> list[dict]:
+        cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
+        return [dict(r) for r in await cur.fetchall()]
+
     async def add_project(
         self, title: str, source_lang: str = "en", target_lang: str = "vi",
         source_url: str | None = None, auto_update: bool = False,
@@ -176,15 +196,34 @@ class SqliteStore:
 
     async def add_chapter(
         self, project_id: int, idx: float,
-        local_path: str | None = None, source_url: str | None = None,
+        source_url: str | None = None,
         source_name: str | None = None,
     ) -> int:
         cur = await self._db.execute(
-            "INSERT OR IGNORE INTO chapters (project_id, idx, local_path, source_url, source_name) VALUES (?,?,?,?,?)",
-            (project_id, idx, local_path, source_url, source_name),
+            "INSERT OR IGNORE INTO chapters (project_id, idx, source_url, source_name) VALUES (?,?,?,?)",
+            (project_id, idx, source_url, source_name),
         )
         await self._db.commit()
         return cur.lastrowid  # type: ignore
+
+    async def get_pending_chapters(self, project_id: int) -> list[dict]:
+        cur = await self._db.execute(
+            "SELECT * FROM chapters WHERE project_id=? AND status='pending' ORDER BY idx",
+            (project_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_all_chapters(self, project_id: int) -> list[dict]:
+        cur = await self._db.execute(
+            "SELECT * FROM chapters WHERE project_id=? ORDER BY idx",
+            (project_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_project_by_slug(self, slug: str) -> dict | None:
+        cur = await self._db.execute("SELECT * FROM projects WHERE title=?", (slug,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
     async def set_chapter_status(self, project_id: int, idx: float, status: str) -> None:
         await self._db.execute(

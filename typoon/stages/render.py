@@ -34,8 +34,8 @@ def render_chapter(
 ) -> RenderedChapter:
     """Erase source text, render translations, write PNGs."""
     if out_dir is not None:
-        out_dir = Path(out_dir) / "render"
-        out_dir.mkdir(parents=True, exist_ok=True)
+        render_dir = Path(out_dir) / "render" if not str(out_dir).endswith("render") else Path(out_dir)
+        render_dir.mkdir(parents=True, exist_ok=True)
 
     rendered_pages = []
 
@@ -69,7 +69,7 @@ def render_chapter(
         # Write PNG
         if out_dir is not None:
             tag = f"page_{tp.index:04d}.png"
-            _write_rgb(out_dir / tag, result)
+            _write_rgb(render_dir / tag, result)
 
         if artifacts is not None:
             artifacts.write_image("06_render", f"page_{tp.index:04d}_rendered.png", result)

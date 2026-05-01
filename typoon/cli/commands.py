@@ -3,339 +3,358 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
-from uuid import uuid4
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
-from ..adapters.connectors import get_connectors
-
-app = typer.Typer(name="typoon")
+app = typer.Typer(name="typoon", help="Manga translation pipeline.")
 console = Console()
 
 
-@app.command()
-def status():
-    """Show connectors and authentication status."""
-    console.print("[bold]Connectors[/]\n")
-    for c in get_connectors():
-        if c.is_authenticated():
-            console.print(f"  [green]●[/] {c.site_name:20s} authenticated")
-        else:
-            console.print(f"  [red]○[/] {c.site_name:20s} [dim]run:[/] typoon auth {c.site_name}")
-    console.print()
+# ── auth ──────────────────────────────────────────────────────────────
 
 
 @app.command()
 def auth(site: str = typer.Argument(..., help="Site to authenticate (e.g. comix.to)")):
-    """Authenticate with a manga source (opens browser if needed)."""
+    """Authenticate with a manga source site."""
     asyncio.run(_auth(site))
 
 
 async def _auth(site: str):
+    from ..adapters.connectors import get_connectors
     connector = next((c for c in get_connectors() if site in c.site_name or c.site_name in site), None)
     if connector is None:
         console.print(f"[red]Unknown site: {site}[/]")
         raise typer.Exit(1)
-    console.print(f"[yellow]Solving Cloudflare challenge for {connector.site_name}…[/]")
-    console.print("[dim]Complete the challenge in the browser window.[/]")
+    console.print(f"[yellow]Opening browser for {connector.site_name}…[/]")
     await connector.authenticate()
     console.print(f"[green]✓[/] {connector.site_name} — authenticated")
 
 
+# ── pull ──────────────────────────────────────────────────────────────
+
+
 @app.command()
-def prepare(
-    input: Path = typer.Argument(..., help="Raw chapter image folder"),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Output directory"),
-    run_id: str = typer.Option("latest", "--run-id", help="Debug run id"),
-    debug_root: Path | None = typer.Option(None, "--debug-root", help="Debug runs root"),
+def pull(
+    url: str = typer.Argument(..., help="Manga or chapter URL"),
+    target_lang: str = typer.Option("vi", "--target-lang", "-t", help="Target language"),
+    from_ch: float = typer.Option(0, "--from", help="First chapter (0 = ask)"),
+    to_ch: float = typer.Option(0, "--to", help="Last chapter (0 = ask)"),
+    redo: str = typer.Option(None, "--redo", help="Re-run from stage: scan|translate|render"),
 ):
-    """Prepare raw images into a chapter directory."""
-    from ..adapters.local_source import LocalSource
-    from ..runs import FileArtifactSink
-    from ..stages import prepare_chapter
+    """Download chapters from a manga URL and translate."""
+    asyncio.run(_pull(url, target_lang, from_ch, to_ch, redo))
 
-    if not input.is_dir():
-        console.print(f"[red]Input must be an image folder:[/] {input}")
-        raise typer.Exit(2)
 
-    rid = run_id or uuid4().hex[:12]
-    chapters = _prepare_inputs(input)
-    if len(chapters) > 1 and out is not None:
-        console.print("[red]--out is only valid when preparing a single chapter folder.[/]")
-        raise typer.Exit(2)
+async def _pull(url: str, target_lang: str, from_ch: float, to_ch: float, redo: str | None):
+    from ..adapters.connectors import get_connectors
+    from ..downloader import download_images
+    from ..paths import Paths, ProjectPaths, slugify
+    from ..storage.sqlite import SqliteStore
 
-    for chapter_input in chapters:
-        out_dir = out or _default_prepared_dir(chapter_input)
-        debug_dir = debug_root or _default_debug_root(chapter_input)
-        run_name = f"{rid}/{chapter_input.name}" if _is_project_chapter(chapter_input) else rid
-        artifacts = FileArtifactSink(debug_dir, run_name)
-        chapter = prepare_chapter(
-            LocalSource(chapter_input),
-            out_dir,
-            source_label=str(chapter_input),
-            artifacts=artifacts,
+    connector = next((c for c in get_connectors() if c.accepts(url)), None)
+    if connector is None:
+        console.print(f"[red]No connector for:[/] {url}")
+        raise typer.Exit(1)
+
+    console.print("[dim]Fetching chapter list…[/]")
+    info = await connector.discover(url)
+    console.print(f"  {info.suggested_title} — {len(info.chapters)} chapters ({info.suggested_lang})")
+
+    # Select chapters
+    chapters = _select_chapters(info.chapters, from_ch, to_ch)
+    if not chapters:
+        console.print("[yellow]No chapters selected.[/]")
+        raise typer.Exit(0)
+
+    paths = Paths()
+    paths.ensure()
+    slug = slugify(info.suggested_title, url)
+    proj_paths = ProjectPaths(paths.projects, slug)
+    proj_paths.ensure()
+
+    db = await SqliteStore.open(paths.db)
+    try:
+        project_id = await db.get_or_create_project(
+            title=info.suggested_title,
+            source_lang=info.suggested_lang,
+            target_lang=target_lang,
+            source_url=url,
         )
-        console.print(f"[green]✓ Prepared[/] {chapter_input.name}  {chapter.page_count} pages")
-        console.print(f"  Output:    [cyan]{out_dir}[/]")
-        console.print(f"  Debug run: [cyan]{artifacts.root}[/]")
+
+        for ch in chapters:
+            cp = proj_paths.chapter(ch.number)
+            cp.ensure()
+
+            if not any(cp.pages.iterdir()) if cp.pages.exists() else True:
+                console.print(f"  [dim]Downloading ch{ch.number:03.0f}…[/]", end="")
+                page_urls = await connector.get_page_urls(ch)
+                headers = await connector._get_headers() if hasattr(connector, "_get_headers") else {}
+                await download_images(page_urls, cp.pages, headers=headers)
+                console.print(f" {len(page_urls)} pages")
+            else:
+                console.print(f"  ch{ch.number:03.0f}: images already present, skipping download")
+
+            await db.add_chapter(project_id, ch.number, source_url=ch.best_variant.url)
+
+        await _translate_chapters(db, project_id, [c.number for c in chapters], proj_paths, redo)
+    finally:
+        await db.close()
+
+
+def _select_chapters(chapters, from_ch, to_ch):
+    if from_ch > 0 or to_ch > 0:
+        lo = from_ch or chapters[0].number
+        hi = to_ch or chapters[-1].number
+        return [c for c in chapters if lo <= c.number <= hi]
+
+    # Interactive selection
+    console.print(f"  First: ch{chapters[0].number:.0f}  Last: ch{chapters[-1].number:.0f}")
+    raw = console.input("  Select chapters (e.g. 1-5 or 3): ").strip()
+    if "-" in raw:
+        parts = raw.split("-", 1)
+        lo, hi = float(parts[0].strip()), float(parts[1].strip())
+    else:
+        lo = hi = float(raw)
+    return [c for c in chapters if lo <= c.number <= hi]
+
+
+# ── add ───────────────────────────────────────────────────────────────
 
 
 @app.command()
-def scan(
-    input: Path = typer.Argument(..., help="Prepared chapter directory (output of typoon prepare)"),
-    run_id: str = typer.Option("latest", "--run-id", help="Debug run id"),
-    debug_root: Path | None = typer.Option(None, "--debug-root", help="Debug runs root"),
+def add(
+    folder: Path = typer.Argument(..., help="Local folder with chapter images"),
+    target_lang: str = typer.Option("vi", "--target-lang", "-t"),
+    source_lang: str = typer.Option("ko", "--source-lang", "-s"),
+    project: str = typer.Option(None, "--project", "-p", help="Project name (default: folder name)"),
+    redo: str = typer.Option(None, "--redo", help="Re-run from stage: scan|translate|render"),
 ):
-    """Run vision scan on a prepared chapter."""
-    from ..adapters.mask_store import MaskStore
-    from ..adapters.vision_runtime import VisionRuntime
-    from ..domain.prepared import Chapter
-    from ..runs import FileArtifactSink
-    from ..stages import scan_chapter
+    """Import a local folder of chapter images and translate."""
+    asyncio.run(_add(folder, target_lang, source_lang, project, redo))
 
-    if not (input / "manifest.json").exists():
-        console.print(f"[red]Not a prepared chapter (missing manifest.json):[/] {input}")
+
+async def _add(folder: Path, target_lang: str, source_lang: str, project_name: str | None, redo: str | None):
+    from ..paths import Paths, ProjectPaths, slugify
+    from ..storage.sqlite import SqliteStore
+
+    if not folder.is_dir():
+        console.print(f"[red]Not a directory:[/] {folder}")
         raise typer.Exit(2)
 
-    chapter = Chapter.load(input)
-    debug_dir = debug_root or input / "debug-runs"
-    artifacts = FileArtifactSink(debug_dir, run_id)
+    # Detect: single chapter or multi-chapter folder
+    chapter_dirs = _detect_chapters(folder)
+    console.print(f"  Detected {len(chapter_dirs)} chapter(s)")
 
-    runtime, _, _ = VisionRuntime.from_config()
-    result = scan_chapter(chapter, runtime, artifacts=artifacts)
+    title = project_name or folder.name
+    paths = Paths()
+    paths.ensure()
+    slug = slugify(title)
+    proj_paths = ProjectPaths(paths.projects, slug)
+    proj_paths.ensure()
 
-    result.chapter.save(input)
-    result.masks.save(input)
+    db = await SqliteStore.open(paths.db)
+    try:
+        project_id = await db.get_or_create_project(
+            title=title,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
 
-    total_bubbles = sum(len(p.bubbles) for p in result.chapter.pages)
-    console.print(f"[green]✓ Scanned[/] {chapter.page_count} pages, {total_bubbles} bubbles")
-    console.print(f"  Scan output: [cyan]{input}/scan/[/]")
-    console.print(f"  Debug run:   [cyan]{artifacts.root}[/]")
+        chapter_indices = []
+        for i, src_dir in enumerate(chapter_dirs, start=1):
+            # Try to parse chapter number from folder name, fallback to index
+            ch_num = _parse_ch_num(src_dir.name) or float(i)
+            cp = proj_paths.chapter(ch_num)
+            cp.ensure()
+
+            if not (cp.pages.exists() and any(cp.pages.iterdir())):
+                console.print(f"  Copying ch{ch_num:03.0f} from {src_dir.name}…")
+                _copy_images(src_dir, cp.pages)
+            else:
+                console.print(f"  ch{ch_num:03.0f}: already imported")
+
+            await db.add_chapter(project_id, ch_num)
+            chapter_indices.append(ch_num)
+
+        await _translate_chapters(db, project_id, chapter_indices, proj_paths, redo)
+    finally:
+        await db.close()
+
+
+def _detect_chapters(folder: Path) -> list[Path]:
+    """Return list of image directories. Single chapter or multi-chapter."""
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+    # Images directly in folder → single chapter
+    if any(f.suffix.lower() in _IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
+        return [folder]
+    # Subfolders containing images → multiple chapters
+    subs = sorted(
+        d for d in folder.iterdir()
+        if d.is_dir() and any(f.suffix.lower() in _IMAGE_EXTS for f in d.iterdir() if f.is_file())
+    )
+    return subs or [folder]
+
+
+def _parse_ch_num(name: str) -> float | None:
+    import re
+    m = re.search(r"(\d+(?:\.\d+)?)", name)
+    return float(m.group(1)) if m else None
+
+
+def _copy_images(src: Path, dest: Path) -> None:
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+    dest.mkdir(parents=True, exist_ok=True)
+    files = sorted(f for f in src.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTS)
+    for i, f in enumerate(files):
+        shutil.copy2(f, dest / f"{i + 1:03d}{f.suffix.lower()}")
+
+
+# ── translate ─────────────────────────────────────────────────────────
 
 
 @app.command()
 def translate(
-    input: Path = typer.Argument(..., help="Prepared chapter directory (must have scan/ output)"),
-    project_id: int = typer.Option(1, "--project-id", "-p", help="Project ID in database"),
-    chapter: float = typer.Option(1.0, "--chapter", "-c", help="Chapter number"),
-    source_lang: str = typer.Option("ko", "--source-lang", "-s", help="Source language"),
-    target_lang: str = typer.Option("vi", "--target-lang", "-t", help="Target language"),
-    db: Path | None = typer.Option(None, "--db", help="SQLite database path (default: ~/.typoon/typoon.db)"),
+    project: str = typer.Argument(None, help="Project name (omit for all pending)"),
+    chapter: float = typer.Option(None, "--chapter", "-c", help="Specific chapter number"),
+    redo: str = typer.Option(None, "--redo", help="Re-run from stage: scan|translate|render"),
 ):
-    """Translate a scanned chapter using LLM agents."""
-    asyncio.run(_translate(input, project_id, chapter, source_lang, target_lang, db))
+    """Translate pending chapters (scan + translate + render)."""
+    asyncio.run(_translate_cmd(project, chapter, redo))
 
 
-async def _translate(
-    chapter_dir: Path,
-    project_id: int,
-    chapter_num: float,
-    source_lang: str,
-    target_lang: str,
-    db_path: Path | None,
-):
-    from ..adapters.session import make_session
-    from ..domain.scan import Chapter as ScannedChapter
-    from ..paths import home
-    from ..stages import translate_chapter
+async def _translate_cmd(project_name: str | None, chapter_num: float | None, redo: str | None):
+    from ..paths import Paths, ProjectPaths
     from ..storage.sqlite import SqliteStore
 
-    scan_dir = chapter_dir / "scan"
-    if not (scan_dir / "manifest.json").exists():
-        console.print(f"[red]No scan output found at {scan_dir}[/]")
-        console.print("[dim]Run: typoon scan <chapter_dir>[/]")
-        raise typer.Exit(2)
-
-    db_path = db_path or home() / "typoon.db"
-    store = await SqliteStore.open(db_path)
-
+    paths = Paths()
+    db = await SqliteStore.open(paths.db)
     try:
-        scanned = ScannedChapter.load(chapter_dir)
-        session = make_session(
-            project_id=project_id,
-            chapter=chapter_num,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            store=store,
-        )
-        console.print(f"[dim]Translating {scanned.page_count} pages, "
-                      f"{len(scanned.all_bubbles)} bubbles…[/]")
-        translated = await translate_chapter(scanned, session)
-        translated.save(chapter_dir)
-        non_skip = sum(1 for b in translated.all_bubbles if b.kind != "skip")
-        console.print(f"[green]✓ Translated[/] {non_skip}/{len(translated.all_bubbles)} bubbles")
-        console.print(f"  Output: [cyan]{chapter_dir}/translate/[/]")
-    finally:
-        await store.close()
+        if project_name:
+            proj = await db.get_project_by_title(project_name)
+            if not proj:
+                console.print(f"[red]Project not found:[/] {project_name}")
+                raise typer.Exit(1)
+            projects = [proj]
+        else:
+            projects = await db.list_projects()
 
+        for proj in projects:
+            proj_paths = ProjectPaths(paths.projects, _slug_for(proj))
+            if chapter_num is not None:
+                indices = [chapter_num]
+            else:
+                pending = await db.get_pending_chapters(proj["id"])
+                indices = [c["idx"] for c in pending]
 
-@app.command()
-def render(
-    input: Path = typer.Argument(..., help="Prepared chapter directory (must have translate/ output)"),
-):
-    """Render translated chapter — erase source text, draw translations."""
-    from ..adapters.mask_store import MaskStore
-    from ..adapters.vision_runtime import VisionRuntime
-    from ..domain.translate import Chapter as TranslatedChapter
-    from ..stages import render_chapter
-
-    translate_dir = input / "translate"
-    if not (translate_dir / "manifest.json").exists():
-        console.print(f"[red]No translate output found at {translate_dir}[/]")
-        console.print("[dim]Run: typoon translate <chapter_dir>[/]")
-        raise typer.Exit(2)
-
-    translated = TranslatedChapter.load(input)
-    masks = MaskStore.load(input)
-    runtime, _, _ = VisionRuntime.from_config()
-
-    result = render_chapter(translated, masks, runtime, out_dir=input)
-
-    overflows = sum(1 for b in result.pages for rb in b.bubbles if rb.overflow)
-    console.print(f"[green]✓ Rendered[/] {result.page_count} pages")
-    if overflows:
-        console.print(f"  [yellow]⚠ {overflows} overflow(s)[/]")
-    console.print(f"  Output: [cyan]{input}/render/[/]")
-
-
-@app.command()
-def run(
-    input: Path = typer.Argument(..., help="Raw chapter image folder"),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Chapter directory (default: <input>/prepared)"),
-    project_id: int = typer.Option(1, "--project-id", "-p"),
-    chapter: float = typer.Option(1.0, "--chapter", "-c"),
-    source_lang: str = typer.Option("ko", "--source-lang", "-s"),
-    target_lang: str = typer.Option("vi", "--target-lang", "-t"),
-    db: Path | None = typer.Option(None, "--db"),
-):
-    """Run full pipeline: prepare → scan → translate → render."""
-    asyncio.run(_run(input, out, project_id, chapter, source_lang, target_lang, db))
-
-
-async def _run(
-    raw_dir: Path,
-    out: Path | None,
-    project_id: int,
-    chapter_num: float,
-    source_lang: str,
-    target_lang: str,
-    db_path: Path | None,
-):
-    from ..adapters.local_source import LocalSource
-    from ..adapters.session import make_session
-    from ..adapters.vision_runtime import VisionRuntime
-    from ..paths import home
-    from ..stages import prepare_chapter, render_chapter, scan_chapter, translate_chapter
-    from ..storage.sqlite import SqliteStore
-
-    chapter_dir = out or _default_prepared_dir(raw_dir)
-    db_path = db_path or home() / "typoon.db"
-
-    console.print(f"[dim]Preparing {raw_dir.name}…[/]")
-    chapter = prepare_chapter(LocalSource(raw_dir), chapter_dir, source_label=str(raw_dir))
-    console.print(f"  [green]✓[/] prepare  {chapter.page_count} pages")
-
-    console.print("[dim]Scanning…[/]")
-    runtime, _, _ = VisionRuntime.from_config()
-    scan_out = scan_chapter(chapter, runtime)
-    scan_out.chapter.save(chapter_dir)
-    scan_out.masks.save(chapter_dir)
-    console.print(f"  [green]✓[/] scan     {len(scan_out.chapter.all_bubbles)} bubbles")
-
-    console.print("[dim]Translating…[/]")
-    store = await SqliteStore.open(db_path)
-    try:
-        session = make_session(
-            project_id=project_id, chapter=chapter_num,
-            source_lang=source_lang, target_lang=target_lang, store=store,
-        )
-        translated = await translate_chapter(scan_out.chapter, session)
-        translated.save(chapter_dir)
-        non_skip = sum(1 for b in translated.all_bubbles if b.kind != "skip")
-        console.print(f"  [green]✓[/] translate {non_skip}/{len(translated.all_bubbles)} bubbles")
-    finally:
-        await store.close()
-
-    console.print("[dim]Rendering…[/]")
-    result = render_chapter(translated, scan_out.masks, runtime, out_dir=chapter_dir)
-    console.print(f"  [green]✓[/] render   {result.page_count} pages")
-    console.print(f"\n[bold green]Done.[/] Output: [cyan]{chapter_dir}/render/[/]")
-
-    # Render
-    console.print("[dim]Rendering…[/]")
-    result = render_chapter(translated, scan_out.masks, runtime, out_dir=chapter_dir)
-    console.print(f"  [green]✓[/] render   {result.page_count} pages")
-
-    console.print(f"\n[bold green]Done.[/] Output: [cyan]{chapter_dir}/render/[/]")
-
-
-@app.command()
-def clean(
-    older_than: int = typer.Option(30, "--older-than", "-d", help="Remove cached images older than N days"),
-    project: str = typer.Option(None, "--project", "-p", help="Only clean this project by slug"),
-):
-    """Remove cached source images older than N days to free disk space."""
-    from datetime import datetime, timezone
-
-    from ..paths import home
-
-    projects_root = home() / "projects"
-    if not projects_root.exists():
-        console.print("[dim]No projects directory found.[/]")
-        raise typer.Exit(0)
-
-    cutoff = datetime.now(timezone.utc).timestamp() - (older_than * 86400)
-    cleaned = 0
-    freed_bytes = 0
-
-    for project_dir in sorted(projects_root.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        if project and project_dir.name != project:
-            continue
-
-        source_dir = project_dir / "source"
-        if not source_dir.exists():
-            continue
-
-        for ch_dir in sorted(source_dir.iterdir()):
-            if not ch_dir.is_dir():
+            if not indices:
                 continue
-            for img in ch_dir.iterdir():
-                if img.is_file() and img.stat().st_mtime < cutoff:
-                    freed_bytes += img.stat().st_size
-                    img.unlink()
-                    cleaned += 1
 
-    console.print(f"[bold green]✓ Cleaned[/] {cleaned} files, freed {freed_bytes / (1024 * 1024):.1f} MB")
+            await _translate_chapters(db, proj["id"], indices, proj_paths, redo)
+    finally:
+        await db.close()
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
+async def _translate_chapters(
+    db,
+    project_id: int,
+    indices: list[float],
+    proj_paths,
+    redo: str | None,
+):
+    from ..adapters.session import make_session
+    from ..adapters.vision_runtime import VisionRuntime
+    from ..paths import Paths
+    from ..stages.pipeline import run_chapter
+
+    proj = await db.get_project(project_id)
+    runtime, config, _ = VisionRuntime.from_config()
+
+    for idx in indices:
+        cp = proj_paths.chapter(idx)
+        cp.ensure()
+        console.print(f"\n[bold]ch{idx:03.0f}[/] {proj['title']}")
+
+        await db.set_chapter_status(project_id, idx, "translating")
+        try:
+            session = make_session(
+                project_id=project_id,
+                chapter=idx,
+                source_lang=proj["source_lang"],
+                target_lang=proj["target_lang"],
+                store=db,
+                config=config,
+            )
+            await run_chapter(cp, session, runtime, redo_from=redo)
+            await db.set_chapter_status(project_id, idx, "done")
+            console.print(f"  [green]✓[/] done → {cp.render}")
+        except Exception as e:
+            await db.set_chapter_status(project_id, idx, "error")
+            console.print(f"  [red]✗[/] {e}")
 
 
-def _prepare_inputs(path: Path) -> list[Path]:
-    chapters = [child for child in sorted(path.iterdir()) if child.is_dir() and _has_images(child)]
-    return chapters or [path]
+# ── status ────────────────────────────────────────────────────────────
 
 
-def _default_prepared_dir(chapter_input: Path) -> Path:
-    if chapter_input.parent.name == "source":
-        return chapter_input.parent.parent / "prepared" / chapter_input.name
-    return chapter_input / "prepared"
+@app.command()
+def status(
+    project: str = typer.Argument(None, help="Project name (omit for all)"),
+):
+    """Show project and chapter status."""
+    asyncio.run(_status(project))
 
 
-def _default_debug_root(chapter_input: Path) -> Path:
-    if chapter_input.parent.name == "source":
-        return chapter_input.parent.parent / "debug-runs"
-    return chapter_input / "debug-runs"
+async def _status(project_name: str | None):
+    from ..paths import Paths, ProjectPaths
+    from ..storage.sqlite import SqliteStore
+
+    paths = Paths()
+    db = await SqliteStore.open(paths.db)
+    try:
+        projects = await db.list_projects()
+        if not projects:
+            console.print("[dim]No projects yet. Run: typoon pull <url>[/]")
+            return
+
+        for proj in projects:
+            if project_name and proj["title"] != project_name:
+                continue
+
+            console.print(f"\n[bold]{proj['title']}[/] ({proj['source_lang']} → {proj['target_lang']})")
+            chapters = await db.get_all_chapters(proj["id"])
+            if not chapters:
+                console.print("  [dim]No chapters imported[/]")
+                continue
+
+            proj_paths = ProjectPaths(paths.projects, _slug_for(proj))
+            t = Table(show_header=False, box=None, padding=(0, 1))
+            for ch in chapters:
+                idx = ch["idx"]
+                cp = proj_paths.chapter(idx)
+                status_icon = {
+                    "done":        "[green]✓[/]",
+                    "translating": "[yellow]⟳[/]",
+                    "error":       "[red]✗[/]",
+                    "pending":     "[dim]○[/]",
+                }.get(ch["status"], "?")
+                render_info = f"{len(list(cp.render.iterdir()))} pages" if cp.is_rendered else ""
+                t.add_row(
+                    status_icon,
+                    f"ch{idx:03.0f}",
+                    ch["status"],
+                    f"[dim]{render_info}[/]",
+                )
+            console.print(t)
+    finally:
+        await db.close()
 
 
-def _is_project_chapter(chapter_input: Path) -> bool:
-    return chapter_input.parent.name == "source"
+# ── helpers ───────────────────────────────────────────────────────────
 
 
-def _has_images(path: Path) -> bool:
-    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
-    return any(child.is_file() and child.suffix.lower() in exts for child in path.iterdir())
+def _slug_for(proj: dict) -> str:
+    from ..paths import slugify
+    return slugify(proj["title"], proj.get("source_url") or "")
