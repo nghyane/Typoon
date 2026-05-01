@@ -35,18 +35,12 @@ async def translate_chapter(
         windows = list(_windows(key_map, scanned))
         total = len(windows)
         
-        # Run windows with limited concurrency — Cloudflare free tier rate limits
-        _TRANSLATE_SEM = asyncio.Semaphore(4)
-        
-        async def _run_window(i: int, window_keys: list[str]) -> tuple[list[TranslationOp], int]:
-            async with _TRANSLATE_SEM:
-                return await translate_window(
-                    session, brief=brief, window_keys=window_keys, key_map=key_map,
-                    window_num=i, total_windows=total,
-                )
-        
+        # Run all windows in parallel — independent calls with shared brief
         results = await asyncio.gather(*[
-            _run_window(i, window_keys)
+            translate_window(
+                session, brief=brief, window_keys=window_keys, key_map=key_map,
+                window_num=i, total_windows=total,
+            )
             for i, window_keys in enumerate(windows)
         ])
         
