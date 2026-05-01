@@ -78,7 +78,7 @@ def prepare(
             artifacts=artifacts,
         )
         console.print(f"[green]✓ Prepared[/] {chapter_input.name}  {chapter.page_count} pages")
-        console.print(f"  PreparedChapter: [cyan]{out_dir}[/]")
+        console.print(f"  Prepared chapter: [cyan]{out_dir}[/]")
         console.print(f"  Debug run:       [cyan]{artifacts.root}[/]")
 
 
@@ -90,7 +90,7 @@ def _prepare_inputs(path: Path) -> list[Path]:
 def _default_prepared_dir(chapter_input: Path) -> Path:
     if chapter_input.parent.name == "source":
         return chapter_input.parent.parent / "prepared" / chapter_input.name
-    return chapter_input / "PreparedChapter"
+    return chapter_input / "prepared"
 
 
 def _default_debug_root(chapter_input: Path) -> Path:
@@ -116,15 +116,15 @@ def scan(
 ):
     """Run vision scan on a PreparedChapter and write debug artifacts."""
     from ..adapters.vision_runtime import VisionRuntime
-    from ..domain.prepared import load_prepared_chapter
+    from ..domain.prepared import Chapter
     from ..runs import FileArtifactSink
     from ..stages import scan_chapter
 
     if not (input / "manifest.json").exists():
-        console.print(f"[red]Not a PreparedChapter (missing manifest.json):[/] {input}")
+        console.print(f"[red]Not a prepared chapter (missing manifest.json):[/] {input}")
         raise typer.Exit(2)
 
-    chapter = load_prepared_chapter(input)
+    chapter = Chapter.load(input)
     debug_dir = debug_root or input / "debug-runs"
     artifacts = FileArtifactSink(debug_dir, run_id)
 

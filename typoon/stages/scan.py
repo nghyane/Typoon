@@ -1,4 +1,4 @@
-"""Scan stage — PreparedChapter + VisionRuntime → ScanOutput."""
+"""Scan stage — prepared Chapter + VisionRuntime → ScanOutput."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import numpy as np
 from typoon.adapters.mask_store import Masks, MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import scan as scan_domain
-from typoon.domain.prepared import Chapter as PreparedChapter
+from typoon.domain.prepared import Chapter
 from typoon.runs.artifacts import ArtifactSink
 from typoon.vision.draw import CYAN, GREEN, PALETTE, RED, YELLOW, label, rect
 from typoon.vision.grouping import ScanState, export_groups
@@ -27,7 +27,7 @@ class ScanOutput:
 
 
 def scan_chapter(
-    prepared: PreparedChapter,
+    prepared: Chapter,
     runtime: VisionRuntime,
     *,
     artifacts: ArtifactSink | None = None,
@@ -166,5 +166,3 @@ def _load_rgb(path) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
-# Backward-compat alias
-ScanResult = ScanOutput

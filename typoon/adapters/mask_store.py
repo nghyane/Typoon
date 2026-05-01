@@ -37,5 +37,3 @@ class MaskStore:
         return len(self._data)
 
 
-# Backward-compat alias
-BubbleMasks = Masks

@@ -10,7 +10,7 @@ import numpy as np
 from typoon.models import ModelHub
 from typoon.runs.events import Hook, ModelsUnloaded
 from typoon.vision.erase import Eraser
-from typoon.vision.types import VisualTextGroup
+from typoon.vision.types import DetectedGroup
 
 _NO_HOOK = Hook()
 
@@ -88,6 +88,6 @@ class VisionRuntime:
             yolo_imgsz=self._bubble_scope_imgsz,
         )
 
-    def scan_page(self, image: np.ndarray) -> list[VisualTextGroup]:
+    def scan_page(self, image: np.ndarray) -> list[DetectedGroup]:
         from typoon.vision.grouping import export_groups
         return export_groups(self.scan_page_state(image))

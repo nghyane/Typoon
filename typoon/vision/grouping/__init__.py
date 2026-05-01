@@ -54,6 +54,3 @@ def scan_page(
     return state
 
 
-# Backward-compat aliases used by shim and any remaining old callers
-build_page_scan_state = scan_page
-to_visual_text_groups = export_groups

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .prepared import Chapter as PreparedChapter
+from .prepared import Chapter as _PreparedChapter
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class Page:
 class Chapter:
     """Full scan output — typed boundary between scan and translate stages."""
 
-    prepared: PreparedChapter
+    prepared: _PreparedChapter
     pages:    tuple[Page, ...]
 
     @property
@@ -54,8 +54,3 @@ class Chapter:
         return [b for p in self.pages for b in p.bubbles]
 
 
-# Backward-compat aliases
-BubbleGeometry = Box
-ScannedBubble = Bubble
-ScannedPage = Page
-ScannedChapter = Chapter

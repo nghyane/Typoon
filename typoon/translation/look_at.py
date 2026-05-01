@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from typoon.adapters.session import Session
-from typoon.domain.scan import ScannedBubble
-from typoon.domain.prepared import PreparedChapter
+from typoon.domain.scan import Bubble as ScannedBubble
+from typoon.domain.prepared import Chapter
 from typoon.llm.ir import ContentPart, Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
@@ -18,7 +18,7 @@ class LookAtAgent:
     def __init__(
         self,
         session: Session,
-        prepared: PreparedChapter,
+        prepared: Chapter,
         *,
         pages: list[int],
         keys: list[str],
@@ -101,7 +101,7 @@ class LookAtAgent:
 
 async def look_at(
     session: Session,
-    prepared: PreparedChapter,
+    prepared: Chapter,
     *,
     pages: list[int],
     keys: list[str],

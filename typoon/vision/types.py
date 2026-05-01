@@ -56,8 +56,6 @@ class DetectedGroup:
     reject_reason: str | None = None
 
 
-# Backward-compat alias — remove after all callers updated
-VisualTextGroup = DetectedGroup
 
 
 # ── Grouping pipeline internal state ─────────────────────────────────
@@ -117,8 +115,3 @@ class ScanState:
     groups: list[GroupState] = field(default_factory=list)
 
 
-# Backward-compat aliases
-TextUnit = UnitState
-Scope = ScopeState
-TextGroup = GroupState
-PageScanState = ScanState

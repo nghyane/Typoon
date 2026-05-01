@@ -49,7 +49,7 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
 from typoon.runs.events import Hook
 from typoon.adapters.session import Session
-from typoon.domain.prepared import Chapter as PreparedChapter, Page as PreparedPage
+from typoon.domain.prepared import Chapter, Page as PreparedPage
 from typoon.domain.scan import Box, Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
 
 
@@ -105,7 +105,7 @@ _BOX = Box(
     erase=[0, 0, 100, 50],
     text=[5, 5, 95, 45],
 )
-_PREPARED = PreparedChapter(
+_PREPARED = Chapter(
     root=Path("/tmp/test_chapter"),
     source="test",
     pages=(PreparedPage(index=0, file="page_0000.png", width=800, height=1200),),

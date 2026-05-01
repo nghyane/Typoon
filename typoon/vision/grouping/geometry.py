@@ -94,10 +94,3 @@ def containment_ratio(a: list, b: list) -> float:
     )
 
 
-# Backward-compat aliases
-bbox = poly_bbox
-expand = pad_box
-box_to_polygon = box_to_poly
-balance_fit_in_scope = fit_to_scope
-ox, oy, gx, gy = x_overlap, y_overlap, x_gap, y_gap
-containment = containment_ratio

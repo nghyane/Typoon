@@ -53,7 +53,3 @@ class Chapter:
         return [b for p in self.pages for b in p.bubbles]
 
 
-# Backward-compat aliases
-TranslatedBubble = Bubble
-TranslatedPage = Page
-TranslatedChapter = Chapter

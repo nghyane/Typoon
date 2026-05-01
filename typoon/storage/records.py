@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from typoon.domain.translate import TranslatedBubble, TranslatedChapter
+from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter
 from typoon.translation.brief import ChapterBrief
 
 

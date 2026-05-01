@@ -57,14 +57,3 @@ class Chapter:
         )
 
 
-# Backward-compat aliases and module-level functions
-PreparedPage = Page
-PreparedChapter = Chapter
-
-
-def write_prepared_chapter(chapter: Chapter) -> Path:
-    return chapter.save()
-
-
-def load_prepared_chapter(root: Path) -> Chapter:
-    return Chapter.load(root)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from typoon.adapters.session import Session
-from typoon.domain.scan import ScannedBubble
+from typoon.domain.scan import Bubble as ScannedBubble
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt

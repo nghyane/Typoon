@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from typoon.domain.scan import ScannedBubble
+from typoon.domain.scan import Bubble as ScannedBubble
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 

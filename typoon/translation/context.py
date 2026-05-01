@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from typoon.adapters.session import Session
-from typoon.domain.prepared import PreparedChapter
-from typoon.domain.scan import ScannedBubble
+from typoon.domain.prepared import Chapter
+from typoon.domain.scan import Bubble as ScannedBubble
 from typoon.llm.ir import Message, ToolCallMsg, ToolDef, ToolResponse
 
 from . import prompt
@@ -21,7 +21,7 @@ class ContextAgent:
     def __init__(
         self,
         session: Session,
-        prepared: PreparedChapter,
+        prepared: Chapter,
         key_map: dict[str, ScannedBubble],
     ) -> None:
         self._session = session
@@ -129,7 +129,7 @@ class ContextAgent:
 
 async def build_chapter_brief(
     session: Session,
-    prepared: PreparedChapter,
+    prepared: Chapter,
     key_map: dict[str, ScannedBubble],
 ) -> tuple[ChapterBrief, int]:
     from typoon.llm.agent import run as agent_run

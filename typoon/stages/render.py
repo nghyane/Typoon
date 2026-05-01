@@ -15,10 +15,10 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from typoon.adapters.mask_store import BubbleMasks, MaskStore
+from typoon.adapters.mask_store import Masks, MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
-from typoon.domain.translate import TranslatedBubble, TranslatedChapter
+from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter
 from typoon.runs.artifacts import ArtifactSink
 
 

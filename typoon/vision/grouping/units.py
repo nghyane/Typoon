@@ -179,8 +179,3 @@ def _unit_quality(
     return True, None
 
 
-# Backward-compat aliases
-detect_raw_text_units = detect_units
-ocr_units_for_filtering = ocr_units
-assign_units_to_scopes = assign_scopes
-split_units_crossing_scopes = split_units

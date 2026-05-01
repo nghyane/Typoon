@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typoon.adapters.session import Session
-from typoon.domain.scan import ScannedBubble, ScannedChapter
+from typoon.domain.scan import Bubble as ScannedBubble, Chapter as ScannedChapter
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import PipelineError

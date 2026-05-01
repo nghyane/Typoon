@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from typoon.domain.scan import ScannedBubble
+from typoon.domain.scan import Bubble as ScannedBubble
 
 
 @dataclass(slots=True)

@@ -59,7 +59,3 @@ class Chapter:
         return len(self.pages)
 
 
-# Backward-compat aliases
-RenderedBubble = Bubble
-RenderedPage = Page
-RenderedChapter = Chapter

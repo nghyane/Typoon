@@ -365,7 +365,3 @@ def _should_skip(g: GroupState, pw: int, ph: int) -> tuple[bool, str | None]:
     return False, None
 
 
-# Backward-compat aliases
-final_filter_groups = filter_groups
-to_visual_text_groups = export_groups
-subgroup_text_blocks = subgroup_blocks
