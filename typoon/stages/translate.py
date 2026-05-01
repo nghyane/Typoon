@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from typoon.adapters.session import Session
 from typoon.domain.scan import Bubble as ScannedBubble, Chapter as ScannedChapter
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
@@ -30,14 +32,26 @@ async def translate_chapter(
     try:
         brief, _ = await build_chapter_brief(session, scanned.prepared, key_map)
 
-        ops: dict[str, TranslationOp] = {}
         windows = list(_windows(key_map, scanned))
         total = len(windows)
-        for i, window_keys in enumerate(windows):
-            accepted, _ = await translate_window(
-                session, brief=brief, window_keys=window_keys, key_map=key_map,
-                window_num=i, total_windows=total,
-            )
+        
+        # Run windows with limited concurrency — Cloudflare free tier rate limits
+        _TRANSLATE_SEM = asyncio.Semaphore(4)
+        
+        async def _run_window(i: int, window_keys: list[str]) -> tuple[list[TranslationOp], int]:
+            async with _TRANSLATE_SEM:
+                return await translate_window(
+                    session, brief=brief, window_keys=window_keys, key_map=key_map,
+                    window_num=i, total_windows=total,
+                )
+        
+        results = await asyncio.gather(*[
+            _run_window(i, window_keys)
+            for i, window_keys in enumerate(windows)
+        ])
+        
+        ops: dict[str, TranslationOp] = {}
+        for accepted, _ in results:
             for op in accepted:
                 ops[op.key] = op
 
