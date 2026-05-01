@@ -196,12 +196,15 @@ def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
 
 
 def _rotate_crop(crop: np.ndarray, angle: float) -> np.ndarray:
-    """Rotate crop to straighten text. No-op if angle < 3°."""
-    if abs(angle) < 3:
-        return crop
-    ch, cw = crop.shape[:2]
-    M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
-    return cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    """Rotate crop to straighten text, then binarize for cleaner OCR."""
+    if abs(angle) >= 3:
+        ch, cw = crop.shape[:2]
+        M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
+        crop = cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    # Adaptive binarization removes bubble-edge noise and improves manga font OCR
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
 
 def filter_groups(state: ScanState) -> None:
