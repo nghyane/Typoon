@@ -48,7 +48,13 @@ async def translate_chapter(
         session.hook.on(PipelineError(stage="translate", error=e))
         raise
 
-    return _build(scanned, key_map, ops)
+    translated = _build(scanned, key_map, ops)
+
+    from typoon.storage.records import translation_records
+    records = translation_records(session.project_id, session.chapter, translated)
+    await session.store.save_translations(session.project_id, session.chapter, records)
+
+    return translated
 
 
 # ── Build result ──────────────────────────────────────────────────────

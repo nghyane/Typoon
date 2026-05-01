@@ -23,3 +23,34 @@ class Session:
     hook: object
     chapter: float = 0.0
     glossary: dict[str, str] = field(default_factory=dict)
+
+
+def make_session(
+    project_id: int,
+    chapter: float,
+    source_lang: str,
+    target_lang: str,
+    store: object,
+    *,
+    config=None,
+) -> Session:
+    """Build a Session from config. Loads providers from config.toml."""
+    from typoon.config import load_config
+    from typoon.providers import make_context_provider, make_translation_provider
+    from typoon.runs.events import Hook
+
+    if config is None:
+        config, _ = load_config()
+
+    return Session(
+        store=store,
+        source=None,
+        project_id=project_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        provider=make_translation_provider(config),
+        context_provider=make_context_provider(config),
+        hook=Hook(),
+        chapter=chapter,
+        glossary={},
+    )
