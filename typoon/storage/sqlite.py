@@ -12,6 +12,7 @@ from typoon.storage.records import TranslationRecord
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id            INTEGER PRIMARY KEY,
+    slug          TEXT NOT NULL UNIQUE,
     source_url    TEXT,
     title         TEXT,
     source_lang   TEXT NOT NULL DEFAULT 'en',
@@ -147,32 +148,35 @@ class SqliteStore:
 
     async def get_or_create_project(
         self,
+        slug: str,
         title: str,
         source_lang: str,
         target_lang: str,
         source_url: str | None = None,
     ) -> int:
-        """Return existing project_id or create new one."""
-        if source_url:
-            row = await self.get_project_by_url(source_url)
-            if row:
-                return row["id"]
-        row = await self.get_project_by_title(title)
+        """Return existing project_id or create new one. Slug is stable identifier."""
+        cur = await self._db.execute("SELECT id FROM projects WHERE slug=?", (slug,))
+        row = await cur.fetchone()
         if row:
             return row["id"]
-        return await self.add_project(title, source_lang, target_lang, source_url)
+        if source_url:
+            cur = await self._db.execute("SELECT id FROM projects WHERE source_url=?", (source_url,))
+            row = await cur.fetchone()
+            if row:
+                return row["id"]
+        return await self.add_project(slug, title, source_lang, target_lang, source_url)
 
     async def list_projects(self) -> list[dict]:
         cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
         return [dict(r) for r in await cur.fetchall()]
 
     async def add_project(
-        self, title: str, source_lang: str = "en", target_lang: str = "vi",
+        self, slug: str, title: str, source_lang: str = "en", target_lang: str = "vi",
         source_url: str | None = None, auto_update: bool = False,
     ) -> int:
         cur = await self._db.execute(
-            "INSERT INTO projects (title, source_lang, target_lang, source_url, auto_update) VALUES (?,?,?,?,?)",
-            (title, source_lang, target_lang, source_url, int(auto_update)),
+            "INSERT INTO projects (slug, title, source_lang, target_lang, source_url, auto_update) VALUES (?,?,?,?,?,?)",
+            (slug, title, source_lang, target_lang, source_url, int(auto_update)),
         )
         await self._db.commit()
         return cur.lastrowid  # type: ignore
@@ -221,7 +225,7 @@ class SqliteStore:
         return [dict(r) for r in await cur.fetchall()]
 
     async def get_project_by_slug(self, slug: str) -> dict | None:
-        cur = await self._db.execute("SELECT * FROM projects WHERE title=?", (slug,))
+        cur = await self._db.execute("SELECT * FROM projects WHERE slug=?", (slug,))
         row = await cur.fetchone()
         return dict(row) if row else None
 

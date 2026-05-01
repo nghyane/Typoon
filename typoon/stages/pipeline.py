@@ -38,19 +38,13 @@ async def run_chapter(
 # ── Stage runners ─────────────────────────────────────────────────────
 
 
-async def _stage_prepare(cp: ChapterPaths, artifacts: ArtifactSink | None) -> None:
+def _stage_prepare(cp: ChapterPaths, artifacts: ArtifactSink | None) -> None:
     if cp.is_prepared:
         return
     from typoon.adapters.local_source import LocalSource
-    from typoon.domain.prepared import Chapter
     from typoon.stages.prepare import prepare_chapter
-
-    chapter = prepare_chapter(
-        LocalSource(cp.pages),
-        cp.root,
-        source_label=str(cp.pages),
-        artifacts=artifacts,
-    )
+    prepare_chapter(LocalSource(cp.pages), cp.root,
+                    source_label=str(cp.pages), artifacts=artifacts)
 
 
 async def _stage_scan(
@@ -100,6 +94,15 @@ def _stage_render(
 
 
 # ── Redo logic ────────────────────────────────────────────────────────
+
+def _already_done(cp: ChapterPaths, stage: str) -> bool:
+    return {
+        "prepare":   cp.is_prepared,
+        "scan":      cp.is_scanned,
+        "translate": cp.is_translated,
+        "render":    cp.is_rendered,
+    }[stage]
+
 
 _STAGE_ORDER = ["prepare", "scan", "translate", "render"]
 

@@ -66,6 +66,47 @@ class PipelineError(Event):
     error: Exception | None = None
 
 
+# ── Pipeline stage events ─────────────────────────────────────────────
+
+
+@dataclass
+class ChapterSkipped(Event):
+    idx:    float = 0.0
+    reason: str = ""
+
+
+@dataclass
+class ChapterDownloaded(Event):
+    idx:        float = 0.0
+    page_count: int = 0
+
+
+@dataclass
+class StageStarted(Event):
+    idx:   float = 0.0
+    stage: str = ""
+
+
+@dataclass
+class StageDone(Event):
+    idx:   float = 0.0
+    stage: str = ""
+
+
+@dataclass
+class ChapterDone(Event):
+    idx:          float = 0.0
+    bubble_count: int = 0
+    render_dir:   str = ""
+
+
+@dataclass
+class ChapterFailed(Event):
+    idx:   float = 0.0
+    stage: str = ""
+    error: Exception | None = None
+
+
 class Hook:
     quit_requested: bool = False
 
