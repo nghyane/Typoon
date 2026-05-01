@@ -168,7 +168,7 @@ def _parse_xml(
     seen: set[str] = set()
 
     for t in root.findall("t"):
-        id_ = t.attrib.get("id", "").strip()
+        id_ = t.attrib.get("id", "").strip().lstrip("#")
         kind = t.attrib.get("kind", "dialogue").strip().lower()
         translated = (t.text or "").strip()
 
