@@ -1,4 +1,4 @@
-"""Translate stage — ScannedChapter → (TranslatedChapter, ChapterBrief).
+"""Translate stage — scan.Chapter → (translate.Chapter, ChapterBrief).
 
 Pure computation: no DB writes. Caller (worker) is responsible for persisting
 the returned brief and translations.
@@ -9,23 +9,23 @@ from __future__ import annotations
 import asyncio
 
 from typoon.adapters.ctx import TranslateCtx
+from typoon.domain import scan, translate
+from typoon.domain.scan import BubbleKey
+from typoon.runs.artifacts import ArtifactSink
 from typoon.stages.brief import ChapterBrief
 from typoon.stages.context import build_chapter_brief
 from typoon.stages.keys import assign_keys
 from typoon.stages.page import TranslationOp, translate_window
-from typoon.domain.scan import BubbleKey, Chapter as ScannedChapter
-from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
-from typoon.runs.artifacts import ArtifactSink
 
 _WINDOW_CHAR_BUDGET = 600
 
 
 async def translate_chapter(
-    scanned: ScannedChapter,
+    scanned: scan.Chapter,
     ctx: TranslateCtx,
     *,
     artifacts: ArtifactSink | None = None,
-) -> tuple[TranslatedChapter, ChapterBrief]:
+) -> tuple[translate.Chapter, ChapterBrief]:
     """Translate a ScannedChapter. Returns (translated, brief) — does not persist.
 
     Caller is responsible for:
@@ -33,8 +33,7 @@ async def translate_chapter(
         await db.save_translations(chapter_id, translated.to_db_records())
     """
     if not scanned.all_bubbles:
-        brief = ChapterBrief()
-        return _empty(scanned), brief
+        return _empty(scanned), ChapterBrief()
 
     keyed  = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
     brief  = await build_chapter_brief(ctx, scanned.prepared, keyed)
@@ -52,10 +51,10 @@ async def translate_chapter(
 
 
 def _build(
-    scanned: ScannedChapter,
+    scanned: scan.Chapter,
     keyed: list[BubbleKey],
     ops: dict[str, TranslationOp],
-) -> TranslatedChapter:
+) -> translate.Chapter:
     pos_to_key = {(bk.page_index, bk.idx): bk.key for bk in keyed}
     pages = []
     for sp in scanned.pages:
@@ -63,20 +62,20 @@ def _build(
         for sb in sp.bubbles:
             key = pos_to_key.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
             op  = ops.get(key)
-            bubbles.append(TranslatedBubble(
+            bubbles.append(translate.Bubble(
                 source=sb,
                 translation_key=key,
                 translated_text=op.text if op else "",
                 kind=op.kind if op else "skip",
             ))
-        pages.append(TranslatedPage(source=sp, bubbles=tuple(bubbles)))
-    return TranslatedChapter(scan=scanned, pages=tuple(pages))
+        pages.append(translate.Page(source=sp, bubbles=tuple(bubbles)))
+    return translate.Chapter(scan=scanned, pages=tuple(pages))
 
 
-def _empty(scanned: ScannedChapter) -> TranslatedChapter:
-    return TranslatedChapter(
+def _empty(scanned: scan.Chapter) -> translate.Chapter:
+    return translate.Chapter(
         scan=scanned,
-        pages=tuple(TranslatedPage(source=sp, bubbles=()) for sp in scanned.pages),
+        pages=tuple(translate.Page(source=sp, bubbles=()) for sp in scanned.pages),
     )
 
 

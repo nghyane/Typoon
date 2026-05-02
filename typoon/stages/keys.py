@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 
-from typoon.domain.scan import Bubble as ScannedBubble, BubbleKey
+from typoon.domain import scan
+from typoon.domain.scan import BubbleKey
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def assign_keys(
-    bubbles: list[ScannedBubble],
+    bubbles: list[scan.Bubble],
     *,
     project_id: int,
     chapter_id: int,
@@ -31,7 +32,7 @@ def assign_keys(
     return out
 
 
-def _make_key(b: ScannedBubble, *, project_id: int, chapter_id: int, salt: int) -> str:
+def _make_key(b: scan.Bubble, *, project_id: int, chapter_id: int, salt: int) -> str:
     payload = {
         "project":    project_id,
         "chapter_id": chapter_id,

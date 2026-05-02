@@ -9,7 +9,7 @@ import numpy as np
 
 from typoon.adapters.mask_store import BubbleMasks, MaskStore, save_scan_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
-from typoon.domain import scan as scan_domain
+from typoon.domain import scan
 from typoon.domain.prepared import Chapter
 from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.paths import ChapterPaths
@@ -21,7 +21,7 @@ from typoon.vision.types import DetectedGroup
 @dataclass(frozen=True)
 class ScanOutput:
     """Output of scan_chapter — pure data, no persistence logic."""
-    chapter:  scan_domain.Chapter
+    chapter:  scan.Chapter
     masks:    MaskStore
     geometry: list[PageGeometry]
 
@@ -45,7 +45,7 @@ def scan_chapter(
     artifacts: ArtifactSink | None = None,
 ) -> ScanOutput:
     """Run vision pipeline on every prepared page. Returns ScanOutput."""
-    pages:    list[scan_domain.Page] = []
+    pages:    list[scan.Page] = []
     geometry: list[PageGeometry]     = []
     masks     = MaskStore()
     all_ocr:  list[dict]             = []
@@ -60,7 +60,7 @@ def scan_chapter(
         for sb, bm in zip(bubbles, page_masks):
             masks.put(sb.page_index, sb.idx, bm)
 
-        pages.append(scan_domain.Page(
+        pages.append(scan.Page(
             index=index, width=w, height=h,
             bubbles=tuple(bubbles),
         ))
@@ -80,7 +80,7 @@ def scan_chapter(
         artifacts.write_json("04_ocr", "ocr_all_pages.json", all_ocr)
 
     return ScanOutput(
-        chapter=scan_domain.Chapter(prepared=prepared, pages=tuple(pages)),
+        chapter=scan.Chapter(prepared=prepared, pages=tuple(pages)),
         masks=masks,
         geometry=geometry,
     )
@@ -94,19 +94,19 @@ def _extract_page(
     state: ScanState,
     width: int,
     height: int,
-) -> tuple[list[scan_domain.Bubble], PageGeometry, list[BubbleMasks]]:
+) -> tuple[list[scan.Bubble], PageGeometry, list[BubbleMasks]]:
     groups = export_groups(state)
-    bubbles:  list[scan_domain.Bubble] = []
+    bubbles:  list[scan.Bubble] = []
     geom_list: list[BubbleGeometry]    = []
     masks_out: list[BubbleMasks]       = []
 
     for i, g in enumerate(groups):
-        b = scan_domain.Bubble(
+        b = scan.Bubble(
             idx=i,
             page_index=index,
             source_text=g.text,
             confidence=g.confidence,
-            box=scan_domain.Box(
+            box=scan.Box(
                 polygon=g.render_polygon,
                 fit=g.fit_box,
                 erase=g.erase_box,

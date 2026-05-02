@@ -13,21 +13,20 @@ import numpy as np
 
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
-from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
+from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
-from typoon.domain.translate import Chapter as TranslatedChapter
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 
 
 def render_chapter(
-    translated: TranslatedChapter,
+    translated: translate.Chapter,
     cp: ChapterPaths,
     runtime: VisionRuntime,
     page_geoms: dict[int, PageGeometry],
     *,
     artifacts: ArtifactSink | None = None,
-) -> RenderedChapter:
+) -> render.Chapter:
     """Erase source text, render translations, write PNGs to cp.render/.
 
     page_geoms: pre-loaded from load_translated_with_geometry — not re-read here.
@@ -78,7 +77,7 @@ def render_chapter(
 
         active_info = {tb.idx: rb for tb, rb in zip(active, result.bubbles)}
         rendered_bubbles = tuple(
-            RenderedBubble(
+            render.Bubble(
                 source=tb,
                 font_size=active_info[tb.idx].font_size_px if tb.idx in active_info else 0,
                 overflow=active_info[tb.idx].overflow if tb.idx in active_info else False,
@@ -92,11 +91,11 @@ def render_chapter(
         if artifacts is not None:
             artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
 
-        rendered_pages.append(RenderedPage(
+        rendered_pages.append(render.Page(
             source=tp, bubbles=rendered_bubbles, image_path=image_path,
         ))
 
-    return RenderedChapter(source=translated, pages=tuple(rendered_pages))
+    return render.Chapter(source=translated, pages=tuple(rendered_pages))
 
 
 def _load_rgb(path) -> np.ndarray:
