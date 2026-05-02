@@ -7,13 +7,13 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from typoon.adapters.session import make_session
+from typoon.adapters.ctx import make_ctx
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain.project import DiscoveredChapter, SourceInfo
 from typoon.paths import ChapterPaths, Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDone, ChapterDownloaded, ChapterFailed,
-    ChapterSkipped, Hook, StageDone, StageStarted, StageFailed,
+    ChapterSkipped, Hook,
 )
 from typoon.sources.constants import IMAGE_EXTS
 from typoon.storage.sqlite import SqliteStore
@@ -298,24 +298,24 @@ class ProjectService:
         from typoon.stages import pipeline
 
         await self._db.set_chapter_status(proj["id"], cp.idx, "translating")
+        ctx = make_ctx(
+            project_id=proj["id"],
+            chapter=cp.idx,
+            source_lang=proj["source_lang"],
+            target_lang=proj["target_lang"],
+            store=self._db,
+            config=self._config,
+            hook=hook,
+        )
         try:
-            session = make_session(
-                project_id=proj["id"],
-                chapter=cp.idx,
-                source_lang=proj["source_lang"],
-                target_lang=proj["target_lang"],
-                store=self._db,
-                config=self._config,
-            )
-            async for event in pipeline.run(cp, session, self.runtime, redo=redo):
-                hook.on(event)
+            await pipeline.run(cp, ctx, self.runtime, hook=hook, redo=redo)
             await self._db.set_chapter_status(proj["id"], cp.idx, "done")
             hook.on(ChapterDone(idx=cp.idx, bubble_count=_count_bubbles(cp), render_dir=str(cp.render)))
         except Exception as e:
             await self._db.set_chapter_status(proj["id"], cp.idx, "error")
+            hook.on(ChapterFailed(idx=cp.idx, stage="pipeline", error=e))
             if _is_fatal(e):
                 raise FatalError(str(e)) from e
-            hook.on(ChapterFailed(idx=cp.idx, stage="pipeline", error=e))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
