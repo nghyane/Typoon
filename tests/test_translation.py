@@ -90,7 +90,7 @@ class TestTranslate:
         provider = MockProvider([])
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
-        result = await translate_chapter(scanned, ctx)
+        result, _brief = await translate_chapter(scanned, ctx)
         bubbles = result.all_bubbles
         assert bubbles[0].translated_text == "A"
         assert bubbles[1].translated_text == ""
@@ -124,7 +124,8 @@ class TestTranslate:
         provider = MockProvider([])
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
-        await translate_chapter(scanned, ctx)
+        _translated, brief = await translate_chapter(scanned, ctx)
+        await ctx.store.save_chapter_brief(ctx.chapter_id, brief.to_dict())
         saved = await ctx.store.get_recent_chapter_briefs(ctx.project_id, 99, limit=1)
         assert saved
         assert saved[0]["brief"]["summary"] == "test chapter"

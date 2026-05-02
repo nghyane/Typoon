@@ -16,7 +16,7 @@ import logging
 from uuid import uuid4
 
 from typoon.adapters.ctx import make_ctx
-from typoon.adapters.loader import load_prepared, load_scanned, load_translated
+from typoon.adapters.loader import load_prepared, load_scanned, load_translated_with_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import Paths, ProjectPaths, ChapterPaths
 from typoon.runs.events import Hook, StageDone, StageFailed, StageStarted
@@ -107,8 +107,10 @@ async def _run_translate(
 ) -> None:
     hook.on(StageStarted(chapter_id=chapter_id, stage="translate"))
     try:
-        scanned = await load_scanned(cp, db, chapter_id)
-        await translate_chapter(scanned, ctx)
+        scanned             = await load_scanned(cp, db, chapter_id)
+        translated, brief   = await translate_chapter(scanned, ctx)
+        await db.save_chapter_brief(chapter_id, brief.to_dict())
+        await db.save_translations(chapter_id, translated.to_db_records())
         await db.complete_task(chapter_id, "translate")
         await db.enqueue(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, stage="translate"))
@@ -127,8 +129,8 @@ async def _run_render(
 ) -> None:
     hook.on(StageStarted(chapter_id=chapter_id, stage="render"))
     try:
-        translated = await load_translated(cp, db, chapter_id)
-        await asyncio.to_thread(render_chapter, translated, cp, runtime)
+        translated, page_geoms = await load_translated_with_geometry(cp, db, chapter_id)
+        await asyncio.to_thread(render_chapter, translated, cp, runtime, page_geoms)
         await db.complete_task(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, stage="render"))
     except Exception as e:

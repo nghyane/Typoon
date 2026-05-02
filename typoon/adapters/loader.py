@@ -1,14 +1,14 @@
 """Chapter domain loaders — assemble domain objects from DB + filesystem.
 
 Single source of truth per data type:
-  PreparedChapter  — filesystem (pages/ directory)
-  ScannedChapter   — filesystem (scan.npz geometry) + DB (bubble text)
+  PreparedChapter   — filesystem (pages/ directory)
+  ScannedChapter    — filesystem (scan.npz geometry) + DB (bubble text)
   TranslatedChapter — filesystem (scan.npz) + DB (bubbles + translations)
 """
 
 from __future__ import annotations
 
-from typoon.adapters.mask_store import load_scan_geometry
+from typoon.adapters.mask_store import PageGeometry, load_scan_geometry
 from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import Box, Bubble, Chapter as ScannedChapter, Page as ScannedPage
 from typoon.domain.translate import (
@@ -66,9 +66,61 @@ async def load_scanned(cp: ChapterPaths, db: Store, chapter_id: int) -> ScannedC
     return ScannedChapter(prepared=prepared, pages=pages)
 
 
-async def load_translated(cp: ChapterPaths, db: Store, chapter_id: int) -> TranslatedChapter:
-    scanned      = await load_scanned(cp, db, chapter_id)
+async def load_translated(
+    cp: ChapterPaths,
+    db: Store,
+    chapter_id: int,
+) -> TranslatedChapter:
+    translated, _ = await load_translated_with_geometry(cp, db, chapter_id)
+    return translated
+
+
+async def load_translated_with_geometry(
+    cp: ChapterPaths,
+    db: Store,
+    chapter_id: int,
+) -> tuple[TranslatedChapter, dict[int, PageGeometry]]:
+    """Load TranslatedChapter and geometry in one pass — scan.npz read once."""
+    page_geoms   = {pg.page_index: pg for pg in load_scan_geometry(cp)}
+    bubbles_db   = await db.get_bubbles(chapter_id)
     translations = await db.get_translations(chapter_id)
+    prepared     = load_prepared(cp)
+
+    geom_idx = {
+        (pg.page_index, bg.bubble_idx): bg
+        for pg in page_geoms.values()
+        for bg in pg.bubbles
+    }
+
+    pages_bubbles: dict[int, list[Bubble]] = {}
+    for bd in bubbles_db:
+        pi, bi = bd["page_index"], bd["bubble_idx"]
+        bg = geom_idx.get((pi, bi))
+        if bg is None:
+            continue
+        pages_bubbles.setdefault(pi, []).append(Bubble(
+            idx=bi,
+            page_index=pi,
+            source_text=bd["source_text"],
+            confidence=bd["confidence"],
+            box=Box(
+                polygon=bg.polygon,
+                fit=bg.fit_box,
+                erase=bg.erase_box,
+                text=bg.text_box,
+            ),
+        ))
+
+    scan_pages = tuple(
+        ScannedPage(
+            index=pi,
+            width=page_geoms[pi].width,
+            height=page_geoms[pi].height,
+            bubbles=tuple(pages_bubbles.get(pi, [])),
+        )
+        for pi in sorted(page_geoms)
+    )
+    scanned = ScannedChapter(prepared=prepared, pages=scan_pages)
 
     pages = tuple(
         TranslatedPage(
@@ -85,4 +137,4 @@ async def load_translated(cp: ChapterPaths, db: Store, chapter_id: int) -> Trans
         )
         for sp in scanned.pages
     )
-    return TranslatedChapter(scan=scanned, pages=pages)
+    return TranslatedChapter(scan=scanned, pages=pages), page_geoms
