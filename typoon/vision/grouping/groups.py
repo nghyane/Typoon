@@ -319,11 +319,17 @@ def _ocr_crop_box(
     page_w: int, page_h: int, scope_bbox: list[int] | None = None,
 ) -> list[int]:
     x1, y1, x2, y2 = group_box
-    pad = 0
-    l, t = x1, y1
-    r, b = x2, y2
 
-    # Clip to scope boundary if available
+    # Start with OCR margin around the raw detection box so edge characters
+    # are not clipped. PP-OCR detection boxes are typically tight; Apple
+    # Vision and Windows OCR read better with a few pixels of whitespace.
+    ocr_pad = 6
+    l = x1 - ocr_pad
+    t = y1 - ocr_pad
+    r = x2 + ocr_pad
+    b = y2 + ocr_pad
+
+    # Clip to scope boundary (hard wall — do not read outside the bubble)
     if scope_bbox is not None:
         sx1, sy1, sx2, sy2 = scope_bbox
         l = max(l, sx1)
@@ -331,7 +337,14 @@ def _ocr_crop_box(
         r = min(r, sx2)
         b = min(b, sy2)
 
-    # Clip away neighboring bubbles
+    # Clip to page boundary
+    l = max(l, 0)
+    t = max(t, 0)
+    r = min(r, page_w)
+    b = min(b, page_h)
+
+    # Clip away neighboring text regions so their pixels don't contaminate
+    # the crop. Applied after padding so the pad does not reach into neighbors.
     for i, other in enumerate(all_boxes):
         if i in group_indices:
             continue
@@ -343,7 +356,7 @@ def _ocr_crop_box(
             if oy2 <= y1 and oy2 > t: t = oy2 + 1
             elif oy1 >= y2 and oy1 < b: b = oy1 - 1
 
-    return [min(l, x1), min(t, y1), max(r, x2), max(b, y2)]
+    return [l, t, r, b]
 
 
 def _masks_bbox(masks: list[TextMask], fallback: list[int]) -> list[int]:
