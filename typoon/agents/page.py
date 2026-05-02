@@ -9,14 +9,13 @@ from dataclasses import dataclass
 
 from typoon.adapters.ctx import TranslateCtx
 from typoon.agents.brief import ChapterBrief, brief_slice
-from typoon.agents.translation_validation import issue_prompt, validate_translation_ops
 from typoon.domain.scan import BubbleKey
 from typoon.llm.conversation import ConversationBuffer
 from typoon.runs.events import LLMCall, LLMResponse
 
 from . import prompt
 
-_RETRIES = 2
+_RETRIES = 1
 _CONTEXT_SIZE = 20
 _VALID_KINDS = {"dialogue", "sfx", "skip"}
 _OCR_NOISE_RE = re.compile(r"^[\W_\d]+$")
@@ -87,29 +86,19 @@ async def translate_window(
             ms=ms,
         ))
 
-        issues = validate_translation_ops(parsed, key_map, brief)
-        issue_keys = {issue.key for issue in issues}
-
         for op in parsed:
-            if op.key in issue_keys:
-                continue
             ops.append(op)
             remaining.discard(op.key)
-
-        remaining.update(issue_keys)
 
         if not remaining:
             return auto_skipped + ops
 
         if attempt < _RETRIES:
             buf.append_assistant(resp.text or "")
-            if issues:
-                buf.append_user(issue_prompt(issues))
-            else:
-                buf.append_user(
-                    f"Missing ids: {', '.join(sorted(remaining))}\n"
-                    f"Reply with a <translations> block for ONLY these missing ids."
-                )
+            buf.append_user(
+                f"Missing ids: {', '.join(sorted(remaining))}\n"
+                f"Reply with a <translations> block for ONLY these missing ids."
+            )
 
     raise RuntimeError(
         f"translate_window w{window_num+1}: incomplete after {_RETRIES+1} attempts. "
