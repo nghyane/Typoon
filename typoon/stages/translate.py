@@ -4,118 +4,91 @@ from __future__ import annotations
 
 import asyncio
 
-from typoon.adapters.session import Session
-from typoon.domain.scan import Bubble as ScannedBubble, Chapter as ScannedChapter
+from typoon.adapters.ctx import TranslateCtx
+from typoon.agents.context import build_chapter_brief
+from typoon.agents.keys import assign_keys
+from typoon.agents.page import TranslationOp, translate_window
+from typoon.domain.scan import BubbleKey, Chapter as ScannedChapter
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 from typoon.runs.artifacts import ArtifactSink
-from typoon.runs.events import PipelineError
-from typoon.agents import ChapterBrief, assign_keys, TranslationOp, translate_window, build_chapter_brief
 
-_WINDOW_CHAR_BUDGET = 300  # max source chars of active keys per window
+_WINDOW_CHAR_BUDGET = 300
 
 
 async def translate_chapter(
     scanned: ScannedChapter,
-    session: Session,
+    ctx: TranslateCtx,
     *,
     artifacts: ArtifactSink | None = None,
 ) -> TranslatedChapter:
-    """Translate a ScannedChapter. Raises on agent failure."""
-    all_bubbles = scanned.all_bubbles
-    if not all_bubbles:
+    """Translate a ScannedChapter. Raises on failure."""
+    if not scanned.all_bubbles:
         return _empty(scanned)
 
-    key_map = assign_keys(
-        all_bubbles, project_id=session.project_id, chapter=session.chapter
+    keyed = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter=ctx.chapter)
+    brief = await build_chapter_brief(ctx, scanned.prepared, keyed)
+
+    windows = _make_windows(keyed)
+    total = len(windows)
+
+    results = await asyncio.gather(*[
+        translate_window(ctx, brief, wk, keyed, window_num=i, total_windows=total)
+        for i, wk in enumerate(windows)
+    ])
+
+    ops: dict[str, TranslationOp] = {op.key: op for batch in results for op in batch}
+
+    await ctx.store.save_chapter_brief(ctx.project_id, ctx.chapter, brief.to_dict())
+
+    translated = _build(scanned, keyed, ops)
+    await ctx.store.save_translations(
+        ctx.project_id, ctx.chapter,
+        translated.to_records(ctx.project_id, ctx.chapter),
     )
-
-    try:
-        brief, _ = await build_chapter_brief(session, scanned.prepared, key_map)
-
-        windows = list(_windows(key_map, scanned))
-        total = len(windows)
-        
-        # Run all windows in parallel — independent calls with shared brief
-        results = await asyncio.gather(*[
-            translate_window(
-                session, brief=brief, window_keys=window_keys, key_map=key_map,
-                window_num=i, total_windows=total,
-            )
-            for i, window_keys in enumerate(windows)
-        ])
-        
-        ops: dict[str, TranslationOp] = {}
-        for accepted, _ in results:
-            for op in accepted:
-                ops[op.key] = op
-
-        await session.store.save_chapter_brief(
-            session.project_id, session.chapter, brief.to_dict()
-        )
-    except Exception as e:
-        session.hook.on(PipelineError(stage="translate", error=e))
-        raise
-
-    translated = _build(scanned, key_map, ops)
-
-    from typoon.storage.records import translation_records
-    records = translation_records(session.project_id, session.chapter, translated)
-    await session.store.save_translations(session.project_id, session.chapter, records)
-
     return translated
-
-
-# ── Build result ──────────────────────────────────────────────────────
 
 
 def _build(
     scanned: ScannedChapter,
-    key_map: dict[str, ScannedBubble],
+    keyed: list[BubbleKey],
     ops: dict[str, TranslationOp],
 ) -> TranslatedChapter:
-    # Reverse map: bubble → key
-    bubble_key: dict[int, str] = {
-        id(b): key for key, b in key_map.items()
-    }
-    translated_pages = []
+    pos_to_key = {(bk.page_index, bk.idx): bk.key for bk in keyed}
+    pages = []
     for sp in scanned.pages:
-        tbs = []
+        bubbles = []
         for sb in sp.bubbles:
-            key = bubble_key.get(id(sb), f"p{sb.page_index}_b{sb.idx}")
+            key = pos_to_key.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
             op = ops.get(key)
-            tbs.append(TranslatedBubble(
+            bubbles.append(TranslatedBubble(
                 source=sb,
                 translation_key=key,
                 translated_text=op.text if op else "",
                 kind=op.kind if op else "skip",
             ))
-        translated_pages.append(TranslatedPage(source=sp, bubbles=tuple(tbs)))
-    return TranslatedChapter(scan=scanned, pages=tuple(translated_pages))
+        pages.append(TranslatedPage(source=sp, bubbles=tuple(bubbles)))
+    return TranslatedChapter(scan=scanned, pages=tuple(pages))
 
 
 def _empty(scanned: ScannedChapter) -> TranslatedChapter:
-    pages = tuple(TranslatedPage(source=sp, bubbles=()) for sp in scanned.pages)
-    return TranslatedChapter(scan=scanned, pages=pages)
+    return TranslatedChapter(
+        scan=scanned,
+        pages=tuple(TranslatedPage(source=sp, bubbles=()) for sp in scanned.pages),
+    )
 
 
-def _windows(
-    key_map: dict[str, ScannedBubble],
-    scanned: ScannedChapter,
-) -> list[list[str]]:
-    """Group keys into windows bounded by source char budget."""
-    ordered = sorted(key_map.items(), key=lambda kv: (kv[1].page_index, kv[1].idx))
-
+def _make_windows(keyed: list[BubbleKey]) -> list[list[str]]:
+    ordered = sorted(keyed, key=lambda bk: (bk.page_index, bk.idx))
     windows: list[list[str]] = []
     current: list[str] = []
-    current_chars = 0
-    for key, b in ordered:
-        key_chars = len(b.source_text)
-        if current and current_chars + key_chars > _WINDOW_CHAR_BUDGET:
+    chars = 0
+    for bk in ordered:
+        n = len(bk.source_text)
+        if current and chars + n > _WINDOW_CHAR_BUDGET:
             windows.append(current)
-            current = []
-            current_chars = 0
-        current.append(key)
-        current_chars += key_chars
+            current, chars = [], 0
+        current.append(bk.key)
+        chars += n
     if current:
         windows.append(current)
     return windows

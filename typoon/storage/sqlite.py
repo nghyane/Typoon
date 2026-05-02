@@ -8,8 +8,6 @@ from pathlib import Path
 
 import aiosqlite
 
-from typoon.storage.records import TranslationRecord
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id            INTEGER PRIMARY KEY,
@@ -309,19 +307,32 @@ class SqliteStore:
             rows.append(out)
         return rows
 
-    async def search_briefs(self, project_id: int, queries: list[str], limit: int = 10) -> list[str]:
+    async def search_briefs(
+        self,
+        project_id: int,
+        queries: list[str],
+        limit: int = 10,
+        *,
+        before_chapter: float | None = None,
+    ) -> list[str]:
         results: list[str] = []
         seen: set[str] = set()
         for query in queries:
             safe = _fts_escape(query)
             if not safe:
                 continue
+            chapter_filter = "AND cb.chapter < ?" if before_chapter is not None else ""
+            params = [safe, project_id]
+            if before_chapter is not None:
+                params.append(before_chapter)
+            params.append(limit)
             cur = await self._db.execute(
                 "SELECT cb.chapter, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
                 "FROM chapter_briefs_fts f "
                 "JOIN chapter_briefs cb ON cb.rowid = f.rowid "
-                "WHERE chapter_briefs_fts MATCH ? AND cb.project_id=? ORDER BY rank LIMIT ?",
-                (safe, project_id, limit),
+                f"WHERE chapter_briefs_fts MATCH ? AND cb.project_id=? {chapter_filter} "
+                "ORDER BY rank LIMIT ?",
+                tuple(params),
             )
             for r in await cur.fetchall():
                 text = "\n".join(str(r[k] or "") for k in ("summary", "terms_text", "facts_text", "rules_text")).strip()
@@ -333,12 +344,20 @@ class SqliteStore:
 
     # ── Translations ──────────────────────────────────────────────
 
-    async def save_translations(self, project_id: int, chapter: float, records: list[TranslationRecord]) -> None:
+    async def save_translations(self, project_id: int, chapter: float, records: list[dict]) -> None:
         await self._db.executemany(
             "INSERT OR REPLACE INTO translations "
             "(project_id, chapter, page, idx, key, source_text, translated_text, status, polygon, font_size_px) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            [r.as_tuple() for r in records],
+            [
+                (
+                    r["project_id"], r["chapter"],
+                    r["page_index"], r["bubble_idx"],
+                    r["key"], r["source_text"], r["translated_text"],
+                    r["status"], r["polygon_json"], r["font_size"],
+                )
+                for r in records
+            ],
         )
         await self._db.commit()
 

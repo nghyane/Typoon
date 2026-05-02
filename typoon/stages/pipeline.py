@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import shutil
 from enum import Enum
-from typing import AsyncIterator
 
+from typoon.adapters.ctx import TranslateCtx
 from typoon.adapters.mask_store import MaskStore
-from typoon.adapters.session import Session
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
-from typoon.runs.events import (
-    Event, StageDone, StageStarted, StageFailed,
-)
+from typoon.runs.events import Hook, StageDone, StageStarted, StageFailed
 
 
 class Stage(str, Enum):
@@ -56,49 +53,47 @@ def redo_from(cp: ChapterPaths, stage: Stage | str | None) -> None:
 
 async def run(
     cp: ChapterPaths,
-    session: Session,
+    ctx: TranslateCtx,
     runtime: VisionRuntime,
     *,
+    hook: Hook,
     redo: Stage | str | None = None,
     artifacts: ArtifactSink | None = None,
-) -> AsyncIterator[Event]:
-    """Run pipeline stages for one chapter, yielding events. Skips completed stages."""
+) -> None:
+    """Run all pipeline stages for one chapter. Raises on failure."""
     redo_from(cp, redo)
-
-    async for event in _run_prepare(cp, artifacts):
-        yield event
-    async for event in _run_scan(cp, runtime, artifacts):
-        yield event
-    async for event in _run_translate(cp, session, artifacts):
-        yield event
-    async for event in _run_render(cp, runtime, artifacts):
-        yield event
+    await _run_prepare(cp, hook, artifacts)
+    await _run_scan(cp, runtime, hook, artifacts)
+    await _run_translate(cp, ctx, hook, artifacts)
+    await _run_render(cp, runtime, hook, artifacts)
 
 
 # ── Stage runners ─────────────────────────────────────────────────────
 
 
-async def _run_prepare(cp: ChapterPaths, artifacts: ArtifactSink | None) -> AsyncIterator[Event]:
+async def _run_prepare(
+    cp: ChapterPaths, hook: Hook, artifacts: ArtifactSink | None,
+) -> None:
     if Stage.PREPARE.is_done(cp):
         return
-    yield StageStarted(idx=cp.idx, stage=Stage.PREPARE.value)
+    hook.on(StageStarted(idx=cp.idx, stage=Stage.PREPARE.value))
     try:
         from typoon.sources.local import LocalSource
         from typoon.stages.prepare import prepare_chapter
         prepare_chapter(LocalSource(cp.pages), cp.root,
                         source_label=str(cp.pages), artifacts=artifacts)
     except Exception as e:
-        yield StageFailed(idx=cp.idx, stage=Stage.PREPARE.value, error=e)
+        hook.on(StageFailed(idx=cp.idx, stage=Stage.PREPARE.value, error=e))
         raise
-    yield StageDone(idx=cp.idx, stage=Stage.PREPARE.value)
+    hook.on(StageDone(idx=cp.idx, stage=Stage.PREPARE.value))
 
 
 async def _run_scan(
-    cp: ChapterPaths, runtime: VisionRuntime, artifacts: ArtifactSink | None,
-) -> AsyncIterator[Event]:
+    cp: ChapterPaths, runtime: VisionRuntime, hook: Hook, artifacts: ArtifactSink | None,
+) -> None:
     if Stage.SCAN.is_done(cp):
         return
-    yield StageStarted(idx=cp.idx, stage=Stage.SCAN.value)
+    hook.on(StageStarted(idx=cp.idx, stage=Stage.SCAN.value))
     try:
         from typoon.domain.prepared import Chapter
         from typoon.stages.scan import scan_chapter
@@ -106,39 +101,39 @@ async def _run_scan(
         result.chapter.save(cp)
         result.masks.save(cp)
     except Exception as e:
-        yield StageFailed(idx=cp.idx, stage=Stage.SCAN.value, error=e)
+        hook.on(StageFailed(idx=cp.idx, stage=Stage.SCAN.value, error=e))
         raise
-    yield StageDone(idx=cp.idx, stage=Stage.SCAN.value)
+    hook.on(StageDone(idx=cp.idx, stage=Stage.SCAN.value))
 
 
 async def _run_translate(
-    cp: ChapterPaths, session: Session, artifacts: ArtifactSink | None,
-) -> AsyncIterator[Event]:
+    cp: ChapterPaths, ctx: TranslateCtx, hook: Hook, artifacts: ArtifactSink | None,
+) -> None:
     if Stage.TRANSLATE.is_done(cp):
         return
-    yield StageStarted(idx=cp.idx, stage=Stage.TRANSLATE.value)
+    hook.on(StageStarted(idx=cp.idx, stage=Stage.TRANSLATE.value))
     try:
         from typoon.domain.scan import Chapter as ScannedChapter
         from typoon.stages.translate import translate_chapter
-        translated = await translate_chapter(ScannedChapter.load(cp), session, artifacts=artifacts)
+        translated = await translate_chapter(ScannedChapter.load(cp), ctx, artifacts=artifacts)
         translated.save(cp)
     except Exception as e:
-        yield StageFailed(idx=cp.idx, stage=Stage.TRANSLATE.value, error=e)
+        hook.on(StageFailed(idx=cp.idx, stage=Stage.TRANSLATE.value, error=e))
         raise
-    yield StageDone(idx=cp.idx, stage=Stage.TRANSLATE.value)
+    hook.on(StageDone(idx=cp.idx, stage=Stage.TRANSLATE.value))
 
 
 async def _run_render(
-    cp: ChapterPaths, runtime: VisionRuntime, artifacts: ArtifactSink | None,
-) -> AsyncIterator[Event]:
+    cp: ChapterPaths, runtime: VisionRuntime, hook: Hook, artifacts: ArtifactSink | None,
+) -> None:
     if Stage.RENDER.is_done(cp):
         return
-    yield StageStarted(idx=cp.idx, stage=Stage.RENDER.value)
+    hook.on(StageStarted(idx=cp.idx, stage=Stage.RENDER.value))
     try:
         from typoon.domain.translate import Chapter as TranslatedChapter
         from typoon.stages.render import render_chapter
         render_chapter(TranslatedChapter.load(cp), MaskStore.load(cp), runtime, render_dir=cp.render)
     except Exception as e:
-        yield StageFailed(idx=cp.idx, stage=Stage.RENDER.value, error=e)
+        hook.on(StageFailed(idx=cp.idx, stage=Stage.RENDER.value, error=e))
         raise
-    yield StageDone(idx=cp.idx, stage=Stage.RENDER.value)
+    hook.on(StageDone(idx=cp.idx, stage=Stage.RENDER.value))
