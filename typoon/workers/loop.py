@@ -15,7 +15,7 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from typoon.adapters.ctx import make_ctx
+from typoon.adapters.ctx import TranslateCtx, make_ctx
 from typoon.adapters.loader import load_prepared, load_scanned, load_translated_with_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import Paths, ProjectPaths, ChapterPaths
@@ -101,7 +101,7 @@ async def _run_scan(
 async def _run_translate(
     cp: ChapterPaths,
     chapter_id: int,
-    ctx,
+    ctx: TranslateCtx,
     db: SqliteStore,
     hook: Hook,
 ) -> None:
