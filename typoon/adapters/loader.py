@@ -9,21 +9,22 @@ Single source of truth per data type:
 from __future__ import annotations
 
 from typoon.adapters.mask_store import load_scan_geometry
-from typoon.domain import prepared, scan, translate
+from typoon.domain import scan, translate
+from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.paths import ChapterPaths
 from typoon.storage.store import Store
 
 
-def load_prepared(cp: ChapterPaths) -> prepared.Chapter:
-    return prepared.Chapter.from_paths(cp)
+def load_prepared(cp: ChapterPaths) -> PreparedChapter:
+    return PreparedChapter.from_paths(cp)
 
 
 async def load_scanned(cp: ChapterPaths, db: Store, chapter_id: int) -> scan.Chapter:
     page_geoms = {pg.page_index: pg for pg in load_scan_geometry(cp)}
     bubbles_db = await db.get_bubbles(chapter_id)
-    chapter    = load_prepared(cp)
-    return _build_scanned(chapter, bubbles_db, page_geoms)
+    prepared   = load_prepared(cp)
+    return _build_scanned(prepared, bubbles_db, page_geoms)
 
 
 async def load_translated_with_geometry(
@@ -35,9 +36,9 @@ async def load_translated_with_geometry(
     page_geoms   = {pg.page_index: pg for pg in load_scan_geometry(cp)}
     bubbles_db   = await db.get_bubbles(chapter_id)
     translations = await db.get_translations(chapter_id)
-    chapter      = load_prepared(cp)
+    prepared     = load_prepared(cp)
 
-    scanned = _build_scanned(chapter, bubbles_db, page_geoms)
+    scanned = _build_scanned(prepared, bubbles_db, page_geoms)
 
     pages = tuple(
         translate.Page(
@@ -61,7 +62,7 @@ async def load_translated_with_geometry(
 
 
 def _build_scanned(
-    chapter: prepared.Chapter,
+    prepared: PreparedChapter,
     bubbles_db: list[dict],
     page_geoms: dict[int, PageGeometry],
 ) -> scan.Chapter:
@@ -99,4 +100,4 @@ def _build_scanned(
         )
         for pi in sorted(page_geoms)
     )
-    return scan.Chapter(prepared=chapter, pages=pages)
+    return scan.Chapter(prepared=prepared, pages=pages)
