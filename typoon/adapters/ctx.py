@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from typoon.adapters.store import Store
+from typoon.storage.store import Store
 from typoon.llm.ir import Provider
 from typoon.runs.events import Hook
 
@@ -16,7 +16,8 @@ class TranslateCtx:
     vision_provider:      Provider
     store:                Store
     project_id:           int
-    chapter:              float
+    chapter_id:           int       # DB primary key
+    chapter_idx:          float     # chapter number (for brief lookup by idx)
     source_lang:          str
     target_lang:          str
     hook:                 Hook
@@ -24,7 +25,8 @@ class TranslateCtx:
 
 def make_ctx(
     project_id: int,
-    chapter: float,
+    chapter_id: int,
+    chapter_idx: float,
     source_lang: str,
     target_lang: str,
     store: Store,
@@ -47,7 +49,8 @@ def make_ctx(
         vision_provider=make_vision_provider(config),
         store=store,
         project_id=project_id,
-        chapter=chapter,
+        chapter_id=chapter_id,
+        chapter_idx=chapter_idx,
         source_lang=source_lang,
         target_lang=target_lang,
         hook=hook,

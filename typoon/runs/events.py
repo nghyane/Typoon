@@ -71,47 +71,47 @@ class PipelineError(Event):
 
 @dataclass
 class ChapterSkipped(Event):
-    idx:    float = 0.0
-    reason: str = ""
+    chapter_id: int = 0
+    reason:     str = ""
 
 
 @dataclass
 class ChapterDownloaded(Event):
-    idx:        float = 0.0
+    chapter_id: int = 0
     page_count: int = 0
 
 
 @dataclass
 class StageStarted(Event):
-    idx:   float = 0.0
-    stage: str = ""
+    chapter_id: int = 0
+    stage:      str = ""
 
 
 @dataclass
 class StageDone(Event):
-    idx:   float = 0.0
-    stage: str = ""
+    chapter_id: int = 0
+    stage:      str = ""
 
 
 @dataclass
 class ChapterDone(Event):
-    idx:          float = 0.0
+    chapter_id:   int = 0
     bubble_count: int = 0
     render_dir:   str = ""
 
 
 @dataclass
 class ChapterFailed(Event):
-    idx:   float = 0.0
-    stage: str = ""
-    error: Exception | None = None
+    chapter_id: int = 0
+    stage:      str = ""
+    error:      Exception | None = None
 
 
 @dataclass
 class StageFailed(Event):
-    idx:   float = 0.0
-    stage: str = ""
-    error: Exception | None = None
+    chapter_id: int = 0
+    stage:      str = ""
+    error:      Exception | None = None
 
 
 class Hook:

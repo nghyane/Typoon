@@ -1,19 +1,22 @@
-"""PreparedChapter manifest contracts."""
+"""PreparedChapter — pages directory is the source of truth."""
 
 from __future__ import annotations
 
-import json
+import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typoon.paths import ChapterPaths
 
 
 @dataclass(frozen=True)
 class Page:
     index:  int
-    file:   str
     width:  int
     height: int
+    file:   str     # relative to chapter root, e.g. "pages/0000.png"
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,6 @@ class Chapter:
     root:   Path
     source: str
     pages:  tuple[Page, ...]
-    version: int = 1
 
     @property
     def page_count(self) -> int:
@@ -30,30 +32,25 @@ class Chapter:
     def page_path(self, index: int) -> Path:
         return self.root / self.pages[index].file
 
-    def to_manifest(self) -> dict[str, Any]:
-        return {
-            "version": self.version,
-            "source": self.source,
-            "page_count": self.page_count,
-            "pages": [p.__dict__ for p in self.pages],
-        }
-
-    def save(self) -> Path:
-        out = self.root / "manifest.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(self.to_manifest(), ensure_ascii=False, indent=2) + "\n", "utf-8")
-        return out
-
     @classmethod
-    def load(cls, root: Path) -> "Chapter":
-        root = Path(root)
-        data = json.loads((root / "manifest.json").read_text("utf-8"))
-        pages = tuple(Page(**p) for p in data["pages"])
-        return cls(
-            root=root,
-            source=data.get("source", ""),
-            pages=pages,
-            version=int(data.get("version", 1)),
-        )
+    def from_paths(cls, cp: "ChapterPaths", source: str = "") -> "Chapter":
+        """Build Chapter by scanning the pages directory.
+        Reads PNG dimensions from header only — does not decode pixel data.
+        """
+        pages = []
+        for png in sorted(cp.pages.glob("*.png")):
+            w, h = _png_dimensions(png)
+            index = int(png.stem)
+            pages.append(Page(index=index, width=w, height=h, file=f"pages/{png.name}"))
+        return cls(root=cp.root, source=source, pages=tuple(pages))
 
 
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    """Read width, height from PNG IHDR — no pixel decoding."""
+    with open(path, "rb") as f:
+        f.read(8)           # PNG signature
+        f.read(4)           # IHDR chunk length
+        f.read(4)           # 'IHDR'
+        w = struct.unpack(">I", f.read(4))[0]
+        h = struct.unpack(">I", f.read(4))[0]
+    return w, h

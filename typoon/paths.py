@@ -14,7 +14,6 @@ _HOME: Path | None = None
 
 
 def home() -> Path:
-    """Fixed app data directory. Cached after first call."""
     global _HOME
     if _HOME is None:
         _HOME = Path(os.environ.get("TYPOON_HOME", "~/.typoon")).expanduser()
@@ -22,79 +21,76 @@ def home() -> Path:
 
 
 def slugify(title: str, url: str = "") -> str:
-    """Filesystem-safe slug. Appends URL hash when provided to avoid collisions."""
     base = _re.sub(r"[\s]+", "-", _re.sub(r"[^\w\s-]", "", title.lower().strip())).strip("-")
     if not base:
         base = f"unnamed-{int(_time.time())}"
     return f"{base}-{hashlib.md5(url.encode()).hexdigest()[:6]}" if url else base
 
 
-def ch_label(idx: float) -> str:
-    """Chapter directory label: 1.0 → 'ch001', 1.5 → 'ch0001.5'."""
-    return f"ch{int(idx):03d}" if idx == int(idx) else f"ch{idx:06.1f}"
-
-
 @dataclass(frozen=True)
 class ChapterPaths:
-    """All file paths for one chapter. Derived — never stored in DB."""
+    """All file paths for one chapter. Keyed by DB chapter_id (int)."""
 
     projects_root: Path
     slug:          str
-    idx:           float
+    chapter_id:    int          # DB primary key — never float, never ambiguous
 
     @property
     def root(self) -> Path:
-        return self.projects_root / self.slug / ch_label(self.idx)
+        return self.projects_root / self.slug / str(self.chapter_id)
+
+    # ── Directories ───────────────────────────────────────────────
 
     @property
     def pages(self) -> Path:
         return self.root / "pages"
 
     @property
-    def manifest(self) -> Path:
-        return self.root / "manifest.json"
-
-    @property
-    def scan(self) -> Path:
-        return self.root / "scan.json"
-
-    @property
     def masks(self) -> Path:
         return self.root / "masks"
-
-    @property
-    def translate(self) -> Path:
-        return self.root / "translate.json"
 
     @property
     def render(self) -> Path:
         return self.root / "render"
 
-    def ensure(self) -> None:
-        for d in (self.pages, self.masks, self.render):
-            d.mkdir(parents=True, exist_ok=True)
+    # ── Files ─────────────────────────────────────────────────────
+
+    @property
+    def scan(self) -> Path:
+        """scan.npz — bubble geometry for the whole chapter."""
+        return self.root / "scan.npz"
+
+    def page(self, index: int) -> Path:
+        return self.pages / f"{index:04d}.png"
+
+    def mask(self, page_index: int) -> Path:
+        """Per-page mask file — all bubbles for that page."""
+        return self.masks / f"{page_index:04d}.npz"
+
+    def rendered(self, index: int) -> Path:
+        return self.render / f"{index:04d}.png"
+
+    # ── Stage done — derived from data presence, never stored ─────
 
     @property
     def is_prepared(self) -> bool:
-        return self.manifest.exists()
+        return self.pages.exists() and any(self.pages.iterdir())
 
     @property
     def is_scanned(self) -> bool:
         return self.scan.exists()
 
     @property
-    def is_translated(self) -> bool:
-        return self.translate.exists()
-
-    @property
     def is_rendered(self) -> bool:
         return self.render.exists() and any(self.render.iterdir())
+
+    def ensure(self) -> None:
+        for d in (self.pages, self.masks, self.render):
+            d.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
 class ProjectPaths:
-    """Paths for one project."""
-
     projects_root: Path
     slug:          str
 
@@ -102,8 +98,8 @@ class ProjectPaths:
     def root(self) -> Path:
         return self.projects_root / self.slug
 
-    def chapter(self, idx: float) -> ChapterPaths:
-        return ChapterPaths(self.projects_root, self.slug, idx)
+    def chapter(self, chapter_id: int) -> ChapterPaths:
+        return ChapterPaths(self.projects_root, self.slug, chapter_id)
 
     def ensure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -111,8 +107,6 @@ class ProjectPaths:
 
 @dataclass(frozen=True)
 class Paths:
-    """All app paths resolved from home directory."""
-
     root: Path = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -129,6 +123,9 @@ class Paths:
 
     @property
     def projects(self) -> Path: return self.root / "projects"
+
+    @property
+    def cache(self) -> Path: return self.root / "cache"
 
     def ensure(self) -> None:
         for d in (self.root, self.projects):
