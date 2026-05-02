@@ -11,9 +11,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from typoon.adapters.mask_store import MaskStore, PageGeometry
+from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
+from typoon.domain.scan import PageGeometry
 from typoon.domain.translate import Chapter as TranslatedChapter
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink

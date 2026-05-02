@@ -7,10 +7,11 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from typoon.adapters.mask_store import BubbleMasks, BubbleGeometry, MaskStore, PageGeometry, save_scan_geometry
+from typoon.adapters.mask_store import BubbleMasks, MaskStore, save_scan_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import scan as scan_domain
 from typoon.domain.prepared import Chapter
+from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 from typoon.vision.grouping import ScanState, export_groups
@@ -19,7 +20,7 @@ from typoon.vision.types import DetectedGroup
 
 @dataclass(frozen=True)
 class ScanOutput:
-    """Output of scan_chapter."""
+    """Output of scan_chapter — pure data, no persistence logic."""
     chapter:  scan_domain.Chapter
     masks:    MaskStore
     geometry: list[PageGeometry]
@@ -35,11 +36,6 @@ class ScanOutput:
             }
             for b in self.chapter.all_bubbles
         ]
-
-    def save(self, cp: ChapterPaths) -> None:
-        """Write scan.npz + masks/ to filesystem."""
-        save_scan_geometry(cp, self.geometry)
-        self.masks.save(cp)
 
 
 def scan_chapter(

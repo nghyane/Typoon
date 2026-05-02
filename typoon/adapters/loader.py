@@ -8,9 +8,9 @@ Single source of truth per data type:
 
 from __future__ import annotations
 
-from typoon.adapters.mask_store import PageGeometry, load_scan_geometry
+from typoon.adapters.mask_store import load_scan_geometry
 from typoon.domain.prepared import Chapter as PreparedChapter
-from typoon.domain.scan import Box, Bubble, Chapter as ScannedChapter, Page as ScannedPage
+from typoon.domain.scan import Box, Bubble, Chapter as ScannedChapter, Page as ScannedPage, PageGeometry
 from typoon.domain.translate import (
     Bubble as TranslatedBubble,
     Chapter as TranslatedChapter,

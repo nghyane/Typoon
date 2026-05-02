@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from typoon.adapters.ctx import TranslateCtx, make_ctx
 from typoon.adapters.loader import load_prepared, load_scanned, load_translated_with_geometry
+from typoon.adapters.mask_store import save_scan_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import Paths, ProjectPaths, ChapterPaths
 from typoon.runs.events import Hook, StageDone, StageFailed, StageStarted
@@ -87,7 +88,8 @@ async def _run_scan(
     try:
         prepared = load_prepared(cp)
         result   = await asyncio.to_thread(scan_chapter, prepared, runtime)
-        result.save(cp)
+        save_scan_geometry(cp, result.geometry)
+        result.masks.save(cp)
         await db.save_bubbles(chapter_id, result.bubble_records())
         await db.complete_task(chapter_id, "scan")
         await db.enqueue(chapter_id, "translate")

@@ -8,11 +8,8 @@ from typing import Any
 import numpy as np
 
 from typoon.models import ModelHub
-from typoon.runs.events import Hook, ModelsUnloaded
 from typoon.vision.erase import Eraser
 from typoon.vision.types import DetectedGroup
-
-_NO_HOOK = Hook()
 
 
 class VisionRuntime:
@@ -47,25 +44,6 @@ class VisionRuntime:
             bubble_scope_imgsz=config.bubble_scope_imgsz,
         )
         return runtime, config, paths
-
-    def unload_scan_models(self, hook: Hook = _NO_HOOK) -> None:
-        self.scanner = None  # type: ignore[assignment]
-        hook.on(ModelsUnloaded(stage="scan"))
-
-    def unload_erase_models(self, hook: Hook = _NO_HOOK) -> None:
-        self.eraser = None  # type: ignore[assignment]
-        hook.on(ModelsUnloaded(stage="erase"))
-
-    def ensure_scan_models(self) -> None:
-        if self.scanner is not None:
-            return
-        from typoon.vision.scanner import create_scanner
-        self.scanner = create_scanner(hub=self._hub)
-
-    def ensure_erase_models(self) -> None:
-        if self.eraser is not None:
-            return
-        self.eraser = Eraser(str(self._hub.dir))
 
     def _get_yolo_model(self) -> Any | None:
         if self._yolo_model is None:

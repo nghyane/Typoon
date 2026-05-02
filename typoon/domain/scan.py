@@ -63,3 +63,25 @@ class Chapter:
     @property
     def all_bubbles(self) -> list[Bubble]:
         return [b for p in self.pages for b in p.bubbles]
+
+
+# ── Geometry — serialized to scan.npz, not part of domain chain ──────
+
+
+@dataclass(frozen=True)
+class BubbleGeometry:
+    """Polygon + render boxes for one bubble — stored in scan.npz."""
+    bubble_idx: int
+    polygon:    list[list[float]]
+    fit_box:    list[int]
+    erase_box:  list[int]
+    text_box:   list[int]
+
+
+@dataclass(frozen=True)
+class PageGeometry:
+    """All geometry for one page — stored in scan.npz."""
+    page_index: int
+    width:      int
+    height:     int
+    bubbles:    tuple[BubbleGeometry, ...]
