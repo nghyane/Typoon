@@ -1,60 +1,54 @@
-"""look_at — single vision query: page images + question → answer."""
+"""look_at — single vision query: page images + question → observations."""
 
 from __future__ import annotations
 
-from typoon.adapters.session import Session
-from typoon.domain.prepared import Chapter
-from typoon.domain.scan import Bubble as ScannedBubble
+import cv2
+
+from typoon.agents.image import encode_page_jpeg
+from typoon.domain.prepared import Chapter as PreparedChapter
+from typoon.domain.scan import BubbleKey
 from typoon.llm.ir import ContentPart, Message
+
+_MAX_PAGES = 3
 
 
 async def look_at(
-    session: Session,
-    prepared: Chapter,
+    ctx,  # TranslateCtx — avoid circular import
+    prepared: PreparedChapter,
     *,
     pages: list[int],
     keys: list[str],
     query: str,
-    key_map: dict[str, ScannedBubble],
+    keyed: list[BubbleKey],
 ) -> dict[str, str]:
-    """Query vision model with page images. Returns {key: note} observations."""
-    source_by_key = {k: key_map[k].source_text for k in keys if k in key_map}
-    polygon_by_key = {k: key_map[k].box.polygon for k in keys if k in key_map}
+    """Query vision model with page images. Returns {key: observation}."""
+    key_map = {bk.key: bk for bk in keyed}
+    relevant = {k: key_map[k] for k in keys if k in key_map}
+    pages = pages[:_MAX_PAGES]
 
-    parts: list[ContentPart] = []
+    if not relevant:
+        return {}
 
-    # Build text context
-    related = "\n".join(f"#{k}: {source_by_key.get(k, '')}" for k in keys)
-    page_label = ", ".join(str(p) for p in pages)
-    parts.append(ContentPart.of_text(
-        f"Pages: {page_label}\n"
+    related = "\n".join(f"#{k}: {bk.source_text}" for k, bk in relevant.items())
+    parts: list[ContentPart] = [ContentPart.of_text(
+        f"Pages: {', '.join(str(p) for p in pages)}\n"
         f"Query: {query}\n\n"
         f"Bubbles to observe:\n{related}\n\n"
         f"For each bubble key, note: speaker identity/gender, emotion/tone, "
-        f"whether text is dialogue or SFX, pronoun/address cues visible in the image. "
-        f"Reply as a list: #KEY: observation"
-    ))
+        f"whether text is dialogue or SFX. Reply as: #KEY: observation"
+    )]
 
-    # Attach page images
+    labels = {k: bk.box.polygon for k, bk in relevant.items()}
     for pi in pages:
-        try:
-            import cv2
-            from .image import encode_page_jpeg
-            path = prepared.page_path(pi)
-            bgr = cv2.imread(str(path))
-            if bgr is None:
-                continue
-            import numpy as np
-            img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            labels = {k: polygon_by_key[k] for k in keys if k in polygon_by_key}
-            parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
-            parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
-        except Exception:
+        bgr = cv2.imread(str(prepared.page_path(pi)))
+        if bgr is None:
             continue
+        img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
+        parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
 
     if len(parts) == 1:
-        # No images loaded — skip vision call
-        return {}
+        return {}  # no images loaded
 
     system = (
         "You are a visual assistant for comic translation. "
@@ -62,11 +56,9 @@ async def look_at(
         "Be concise — one line per key."
     )
     messages = [Message.system(system), Message.user_parts(parts)]
-
-    resp = await session.vision_provider.call(messages, [])
+    resp = await ctx.vision_provider.call(messages, [])
     text = resp.text or ""
 
-    # Parse "#KEY: note" lines
     notes: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -76,5 +68,4 @@ async def look_at(
         key = key_part.lstrip("#").strip()
         if key in key_map:
             notes[key] = note.strip()
-
     return notes

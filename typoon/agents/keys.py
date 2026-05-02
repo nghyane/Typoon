@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from typoon.domain.scan import Bubble as ScannedBubble
+from typoon.domain.scan import Bubble as ScannedBubble, BubbleKey
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -15,9 +15,9 @@ def assign_keys(
     *,
     project_id: int,
     chapter: float,
-) -> dict[str, ScannedBubble]:
-    """Return stable opaque key → bubble mapping. Does not mutate bubbles."""
-    out: dict[str, ScannedBubble] = {}
+) -> list[BubbleKey]:
+    """Return stable list of BubbleKey. Key is the single identity for LLM communication."""
+    out: list[BubbleKey] = []
     used: set[str] = set()
     for b in bubbles:
         salt = 0
@@ -27,7 +27,7 @@ def assign_keys(
                 break
             salt += 1
         used.add(key)
-        out[key] = b
+        out.append(BubbleKey(key=key, bubble=b))
     return out
 
 
