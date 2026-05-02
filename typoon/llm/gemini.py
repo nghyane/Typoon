@@ -1,13 +1,8 @@
-"""Google Gemini provider — native SDK adapter.
-
-Serializes IR → Gemini format, calls via `google-genai` SDK,
-parses response back to CallResponse IR. Supports streaming.
-"""
+"""Google Gemini provider — native SDK adapter."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 
 from google import genai
 from google.genai import types
@@ -17,8 +12,6 @@ from .ir import (
     ContentPart,
     Message,
     Role,
-    StreamEvent,
-    StreamEventType,
     ToolCallMsg,
     ToolDef,
 )
@@ -68,54 +61,6 @@ class GeminiProvider:
 
         text = "\n".join(text_parts) if text_parts else None
         return CallResponse(tool_calls=tool_calls, text=text)
-
-    async def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
-        system_instruction, contents = _build_contents(messages)
-
-        config: dict = {}
-        if system_instruction:
-            config["system_instruction"] = system_instruction
-        if tools:
-            config["tools"] = [_build_tools(tools)]
-
-        tc_counter = 0
-        async for chunk in self._client.aio.models.generate_content_stream(
-            model=self._model,
-            contents=contents,
-            config=types.GenerateContentConfig(**config),
-        ):
-            if not chunk.candidates or not chunk.candidates[0].content:
-                continue
-            for part in chunk.candidates[0].content.parts:
-                if part.thought:
-                    yield StreamEvent(type=StreamEventType.THINKING_DELTA, text=part.text or "")
-                elif part.function_call:
-                    fc = part.function_call
-                    tid = fc.id or f"call_{fc.name}"
-                    args = json.dumps(fc.args) if fc.args else "{}"
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_CALL_START,
-                        tool_index=tc_counter,
-                        tool_id=tid,
-                        tool_name=fc.name,
-                    )
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_CALL_DELTA,
-                        tool_index=tc_counter,
-                        text=args,
-                    )
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_CALL_DONE,
-                        tool_index=tc_counter,
-                        tool_id=tid,
-                        tool_name=fc.name,
-                        text=args,
-                    )
-                    tc_counter += 1
-                elif part.text:
-                    yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=part.text)
-
-        yield StreamEvent(type=StreamEventType.DONE)
 
 
 # ── IR → Gemini serialization ────────────────────────────────────────

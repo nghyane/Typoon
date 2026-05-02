@@ -6,8 +6,6 @@ parses response back to CallResponse IR. Supports streaming.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import openai
 
 from .ir import (
@@ -15,13 +13,11 @@ from .ir import (
     ContentPart,
     Message,
     Role,
-    StreamEvent,
-    StreamEventType,
     ToolCallMsg,
     ToolDef,
 )
 
-_TIMEOUT = 180
+_TIMEOUT = 300
 
 
 class OpenAIProvider:
@@ -79,77 +75,6 @@ class OpenAIProvider:
 
         return CallResponse(tool_calls=tool_calls, text=choice.message.content)
 
-    async def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
-        # Cloudflare Gateway models (GLM, Qwen, etc.) hang on streaming —
-        # the async generator never yields. Fall back to call() silently.
-        if self._base_url and ("cloudflare" in self._base_url or "gateway" in self._base_url):
-            # Yield nothing; agent loop will see empty stream and fall back
-            return
-
-        kwargs: dict = {
-            "messages": [_serialize_message(m) for m in messages],
-            "stream": True,
-            "max_tokens": self._max_tokens,
-        }
-        if self._model:
-            kwargs["model"] = self._model
-        if tools:
-            kwargs["tools"] = [_serialize_tool(t) for t in tools]
-            kwargs["parallel_tool_calls"] = True
-        if self._reasoning_effort:
-            kwargs["reasoning_effort"] = self._reasoning_effort
-
-        response = await self._client.chat.completions.create(**kwargs)
-
-        pending: dict[int, tuple[str, str]] = {}  # index → (id, name)
-        async for chunk in response:
-            choice = chunk.choices[0] if chunk.choices else None
-            if choice is None:
-                continue
-            delta = choice.delta
-
-            # Thinking tokens (o-series models)
-            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                yield StreamEvent(type=StreamEventType.THINKING_DELTA, text=delta.reasoning_content)
-
-            # Text content
-            if delta.content:
-                yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=delta.content)
-
-            # Tool call deltas
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in pending and tc_delta.function:
-                        pending[idx] = (tc_delta.id or "", tc_delta.function.name or "")
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_CALL_START,
-                            tool_index=idx,
-                            tool_id=tc_delta.id or "",
-                            tool_name=tc_delta.function.name or "",
-                        )
-                    if tc_delta.function and tc_delta.function.arguments:
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_CALL_DELTA,
-                            tool_index=idx,
-                            text=tc_delta.function.arguments,
-                        )
-
-            if choice.finish_reason is not None:
-                if choice.finish_reason == "length":
-                    from .ir import StreamTruncatedError
-                    raise StreamTruncatedError(
-                        f"Stream truncated (finish_reason=length). "
-                        f"Incomplete tool calls: {list(pending.keys())}"
-                    )
-                for idx, (tid, tname) in sorted(pending.items()):
-                    yield StreamEvent(
-                        type=StreamEventType.TOOL_CALL_DONE,
-                        tool_index=idx,
-                        tool_id=tid,
-                        tool_name=tname,
-                    )
-                yield StreamEvent(type=StreamEventType.DONE)
 
 
 # ── IR → OpenAI serialization ────────────────────────────────────────

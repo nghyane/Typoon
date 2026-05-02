@@ -7,7 +7,6 @@ parses response back to CallResponse IR. Supports prompt caching + streaming.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 
 import anthropic
 
@@ -16,8 +15,6 @@ from .ir import (
     ContentPart,
     Message,
     Role,
-    StreamEvent,
-    StreamEventType,
     ToolCallMsg,
     ToolDef,
 )
@@ -62,68 +59,25 @@ class AnthropicProvider:
         return kwargs
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
+        import json
+        kwargs = self._build_kwargs(messages, tools)
+        response = await self._client.messages.create(**kwargs)
+
         tool_calls: list[ToolCallMsg] = []
         text_parts: list[str] = []
 
-        async for event in self.stream(messages, tools):
-            match event.type:
-                case StreamEventType.TEXT_DELTA:
-                    text_parts.append(event.text)
-                case StreamEventType.TOOL_CALL_DONE:
-                    tool_calls.append(ToolCallMsg(
-                        id=event.tool_id, name=event.tool_name, arguments=event.text,
-                    ))
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCallMsg(
+                    id=block.id,
+                    name=block.name,
+                    arguments=json.dumps(block.input),
+                ))
 
         text = "".join(text_parts) if text_parts else None
         return CallResponse(tool_calls=tool_calls, text=text)
-
-    async def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
-        kwargs = self._build_kwargs(messages, tools)
-
-        pending_tools: dict[int, dict] = {}
-
-        async with self._client.messages.stream(**kwargs) as raw:
-            async for event in raw:
-                if event.type == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        pending_tools[event.index] = {
-                            "id": block.id, "name": block.name, "input_json": "",
-                        }
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_CALL_START,
-                            tool_index=event.index,
-                            tool_id=block.id,
-                            tool_name=block.name,
-                        )
-                    elif block.type == "thinking":
-                        pass  # deltas arrive via thinking_delta
-                elif event.type == "content_block_delta":
-                    delta = event.delta
-                    if delta.type == "text_delta":
-                        yield StreamEvent(type=StreamEventType.TEXT_DELTA, text=delta.text)
-                    elif delta.type == "input_json_delta":
-                        if event.index in pending_tools:
-                            pending_tools[event.index]["input_json"] += delta.partial_json
-                            yield StreamEvent(
-                                type=StreamEventType.TOOL_CALL_DELTA,
-                                tool_index=event.index,
-                                text=delta.partial_json,
-                            )
-                    elif delta.type == "thinking_delta":
-                        yield StreamEvent(type=StreamEventType.THINKING_DELTA, text=delta.thinking)
-                elif event.type == "content_block_stop":
-                    if event.index in pending_tools:
-                        t = pending_tools.pop(event.index)
-                        yield StreamEvent(
-                            type=StreamEventType.TOOL_CALL_DONE,
-                            tool_index=event.index,
-                            tool_id=t["id"],
-                            tool_name=t["name"],
-                            text=t["input_json"],
-                        )
-
-        yield StreamEvent(type=StreamEventType.DONE)
 
 
 # ── IR → Anthropic serialization ─────────────────────────────────────

@@ -6,9 +6,8 @@ Each provider adapter serializes these to its own wire format.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from enum import Enum, auto
+from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -132,40 +131,9 @@ class CallResponse:
     text: str | None = None
 
 
-# ── Stream events ────────────────────────────────────────────────────
-
-
-class StreamTruncatedError(RuntimeError):
-    """Raised when a stream ends with finish_reason='length' (output truncated)."""
-
-
-class StreamEventType(Enum):
-    THINKING_DELTA = auto()
-    TEXT_DELTA = auto()
-    TOOL_CALL_START = auto()
-    TOOL_CALL_DELTA = auto()
-    TOOL_CALL_DONE = auto()
-    DONE = auto()
-
-
-@dataclass(slots=True)
-class StreamEvent:
-    """A single event from a streaming LLM response."""
-
-    type: StreamEventType
-    text: str = ""
-    tool_index: int = 0
-    tool_id: str = ""
-    tool_name: str = ""
-
-
 # ── Provider protocol ────────────────────────────────────────────────
 
 
 @runtime_checkable
 class Provider(Protocol):
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse: ...
-
-    def stream(self, messages: list[Message], tools: list[ToolDef]) -> AsyncIterator[StreamEvent]:
-        """Yield streaming events. Default: not implemented."""
-        ...
