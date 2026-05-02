@@ -29,3 +29,21 @@ model = "dynamic/auto"
 # [translation]
 # provider = "openai"
 # model = "gpt-4o-mini"
+
+# Alternative: MiniMax (Anthropic-compatible API with prompt caching)
+# Uses Anthropic SDK — base_url points to MiniMax endpoint.
+# Supports cache_control (ephemeral, 5-min lifetime) on system + tools prefix.
+# Models: MiniMax-M2.7, MiniMax-M2.7-highspeed, MiniMax-M2.5, MiniMax-M2.5-highspeed
+#
+# [providers.minimax]
+# type = "anthropic"
+# endpoint = "https://api.minimax.io/anthropic"
+# api_key = "$MINIMAX_API_KEY"
+#
+# [translation]
+# provider = "minimax"
+# model = "MiniMax-M2.7"
+#
+# [context_agent]
+# provider = "minimax"
+# model = "MiniMax-M2.5"    # cheaper model for context phase
