@@ -48,7 +48,7 @@ def make_mask(x: int, y: int, w: int, h: int, fill: int = 255) -> TextMask:
 
 from typoon.llm.ir import CallResponse, Message, ToolDef, ToolCallMsg, ToolResponse
 from typoon.runs.events import Hook
-from typoon.adapters.session import Session
+from typoon.adapters.ctx import TranslateCtx
 from typoon.domain.prepared import Chapter, Page as PreparedPage
 from typoon.domain.scan import Box, Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
 
@@ -130,21 +130,22 @@ def make_session(
     n_bubbles: int = 3,
     provider_responses: list[CallResponse] | None = None,
     glossary: dict[str, str] | None = None,
-) -> tuple[ScannedChapter, Session]:
-    """Create a ScannedChapter + Session with mock provider."""
+) -> tuple[ScannedChapter, TranslateCtx]:
+    """Create a ScannedChapter + TranslateCtx with mock providers."""
     scanned = make_scanned_chapter(n_bubbles)
     provider = MockProvider(provider_responses)
-    session = Session(
+    ctx = TranslateCtx(
+        translation_provider=provider,
+        context_provider=provider,
+        vision_provider=provider,
         store=MockStore(),
         project_id=1,
+        chapter=1.0,
         source_lang="en",
         target_lang="vi",
-        provider=provider,
-        context_provider=provider,
         hook=Hook(),
-        glossary=glossary or {},
     )
-    return scanned, session
+    return scanned, ctx
 
 
 def make_text_response(text: str) -> CallResponse:
