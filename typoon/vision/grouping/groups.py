@@ -320,14 +320,12 @@ def _ocr_crop_box(
 ) -> list[int]:
     x1, y1, x2, y2 = group_box
 
-    # Start with OCR margin around the raw detection box so edge characters
-    # are not clipped. PP-OCR detection boxes are typically tight; Apple
-    # Vision and Windows OCR read better with a few pixels of whitespace.
-    ocr_pad = 6
-    l = x1 - ocr_pad
-    t = y1 - ocr_pad
-    r = x2 + ocr_pad
-    b = y2 + ocr_pad
+    # No OCR padding: the raw_bbox already contains all detected ink pixels.
+    # Adding margin risks pulling in bubble outline ink (for unscoped groups)
+    # or adjacent panel content. Noise fragments like 'ic WHERE' are a
+    # grouping artefact, not a tight-crop issue — fix them in grouping, not here.
+    l, t = x1, y1
+    r, b = x2, y2
 
     # Clip to scope boundary (hard wall — do not read outside the bubble)
     if scope_bbox is not None:
