@@ -21,6 +21,26 @@ class Box:
 
 
 @dataclass(frozen=True)
+class BubbleKey:
+    """Stable pairing of an opaque translation key with its bubble.
+
+    Single source of truth for bubble identity throughout the translate stage.
+    Use key for LLM communication; use (page_index, idx) for structural lookup.
+    """
+    key:    str
+    bubble: "Bubble"
+
+    @property
+    def page_index(self) -> int:  return self.bubble.page_index
+    @property
+    def idx(self) -> int:         return self.bubble.idx
+    @property
+    def source_text(self) -> str: return self.bubble.source_text
+    @property
+    def box(self):                return self.bubble.box
+
+
+@dataclass(frozen=True)
 class Bubble:
     """One accepted text group after detect → group → OCR."""
 

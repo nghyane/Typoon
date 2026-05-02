@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .scan import Box, Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
+from .scan import Bubble as ScannedBubble, Chapter as ScannedChapter, Page as ScannedPage
 
 
 @dataclass(frozen=True)
@@ -55,25 +55,36 @@ class Chapter:
     def all_bubbles(self) -> list[Bubble]:
         return [b for p in self.pages for b in p.bubbles]
 
+    def to_records(self, project_id: int, chapter: float) -> list[dict]:
+        """Return flat list of translation dicts for storage. Skips 'skip' bubbles."""
+        return [
+            {
+                "project_id":      project_id,
+                "chapter":         chapter,
+                "page_index":      b.page_index,
+                "bubble_idx":      b.idx,
+                "key":             b.translation_key,
+                "source_text":     b.source_text,
+                "translated_text": b.translated_text,
+                "status":          b.kind,
+                "polygon_json":    json.dumps(b.source.box.polygon),
+                "font_size":       0,
+            }
+            for b in self.all_bubbles
+            if b.kind != "skip"
+        ]
+
     def save(self, cp) -> Path:
-        """Save to cp.translate. cp is a ChapterPaths instance."""
+        """Save translation data to cp.translate. Box geometry lives in scan.json."""
         data: dict[str, Any] = {
-            "version": 1,
+            "version": 2,
             "bubbles": [
                 {
-                    "idx":             b.idx,
                     "page_index":      b.page_index,
+                    "idx":             b.idx,
                     "translation_key": b.translation_key,
-                    "source_text":     b.source_text,
                     "translated_text": b.translated_text,
                     "kind":            b.kind,
-                    "confidence":      b.source.confidence,
-                    "box": {
-                        "polygon": b.source.box.polygon,
-                        "fit":     b.source.box.fit,
-                        "erase":   b.source.box.erase,
-                        "text":    b.source.box.text,
-                    },
                 }
                 for b in self.all_bubbles
             ],
@@ -83,7 +94,7 @@ class Chapter:
 
     @classmethod
     def load(cls, cp) -> "Chapter":
-        """Load from cp.translate + cp.scan. cp is a ChapterPaths instance."""
+        """Load from cp.translate + cp.scan. Box geometry is always taken from scan."""
         scan = ScannedChapter.load(cp)
         data = json.loads(cp.translate.read_text("utf-8"))
 
@@ -94,18 +105,10 @@ class Chapter:
         by_page: dict[int, list[Bubble]] = {}
         for bd in data["bubbles"]:
             key = (bd["page_index"], bd["idx"])
-            sb = scan_bubble.get(key) or ScannedBubble(
-                idx=bd["idx"],
-                page_index=bd["page_index"],
-                source_text=bd["source_text"],
-                confidence=bd["confidence"],
-                box=Box(
-                    polygon=bd["box"]["polygon"],
-                    fit=bd["box"]["fit"],
-                    erase=bd["box"]["erase"],
-                    text=bd["box"]["text"],
-                ),
-            )
+            sb = scan_bubble.get(key)
+            if sb is None:
+                # scan.json and translate.json are out of sync — skip orphan
+                continue
             by_page.setdefault(bd["page_index"], []).append(Bubble(
                 source=sb,
                 translation_key=bd["translation_key"],
