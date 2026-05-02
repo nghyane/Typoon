@@ -9,11 +9,11 @@ import numpy as np
 import pytest
 
 from typoon.llm.ir import CallResponse, ToolCallMsg
-from typoon.agents.image import encode_page_jpeg
-from typoon.agents.tools.brief import ChapterBriefArgs
-from typoon.agents.tools.search_knowledge import SearchKnowledgeArgs
+from typoon.stages.image import encode_page_jpeg
+from typoon.stages.tools.brief import ChapterBriefArgs
+from typoon.stages.tools.search_knowledge import SearchKnowledgeArgs
 from typoon.stages.translate import translate_chapter
-from typoon.agents.keys import assign_keys
+from typoon.stages.keys import assign_keys
 
 from .conftest import MockProvider, make_session
 
@@ -77,7 +77,7 @@ class TestTranslate:
     async def test_keyed_xml_translation(self):
         scanned, ctx = make_session(3)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
-        key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter=ctx.chapter)
+        key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
         keys = [bk.key for bk in key_list]
 
         async def call(messages, tools):
@@ -115,7 +115,7 @@ class TestTranslate:
     async def test_brief_saved_after_success(self):
         scanned, ctx = make_session(1)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
-        key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter=ctx.chapter)
+        key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
         keys = [bk.key for bk in key_list]
 
         async def call(messages, tools):

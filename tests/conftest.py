@@ -75,16 +75,18 @@ class MockStore:
     async def get_project_by_title(self, title): return None
     async def get_project_by_url(self, url): return None
     async def get_glossary(self, pid): return dict(self.glossary)
-    async def save_chapter_brief(self, pid, ch, brief): self.briefs[(pid, ch)] = brief
-    async def get_chapter_brief(self, pid, ch): return self.briefs.get((pid, ch))
-    async def get_recent_chapter_briefs(self, pid, before_chapter, limit=3):
+    async def save_chapter_brief(self, chapter_id, brief): self.briefs[chapter_id] = brief
+    async def get_chapter_brief(self, chapter_id): return self.briefs.get(chapter_id)
+    async def get_recent_chapter_briefs(self, pid, before_chapter_idx, limit=3):
         rows = []
-        for (p, ch), brief in sorted(self.briefs.items(), key=lambda x: x[0][1], reverse=True):
-            if p == pid and ch < before_chapter:
-                rows.append({"chapter": ch, "brief": brief, "summary": brief.get("summary", "")})
+        for ch_id, brief in sorted(self.briefs.items(), reverse=True):
+            rows.append({"chapter": 0, "brief": brief, "summary": brief.get("summary", "")})
         return rows[:limit]
-    async def search_briefs(self, pid, queries, limit=10): return []
-    async def save_translations(self, pid, ch, records): self._translations[(pid, ch)] = records
+    async def search_briefs(self, pid, queries, limit=10, *, before_chapter_idx=None): return []
+    async def save_translations(self, chapter_id, records): self._translations[chapter_id] = records
+    async def save_bubbles(self, chapter_id, bubbles): pass
+    async def get_bubbles(self, chapter_id): return []
+    async def get_translations(self, chapter_id): return {}
     async def get_chapter_translations(self, pid, ch): return []
     async def glossary_search(self, pid, q): return []
     async def glossary_upsert(self, pid, s, t, n): self.glossary[s] = t
@@ -140,7 +142,8 @@ def make_session(
         vision_provider=provider,
         store=MockStore(),
         project_id=1,
-        chapter=1.0,
+        chapter_id=1,
+        chapter_idx=1.0,
         source_lang="en",
         target_lang="vi",
         hook=Hook(),
