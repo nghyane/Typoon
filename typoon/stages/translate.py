@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 
 from typoon.adapters.ctx import TranslateCtx
-from typoon.agents.context import build_chapter_brief
-from typoon.agents.keys import assign_keys
-from typoon.agents.page import TranslationOp, translate_window
+from typoon.stages.context import build_chapter_brief
+from typoon.stages.keys import assign_keys
+from typoon.stages.page import TranslationOp, translate_window
 from typoon.domain.scan import BubbleKey, Chapter as ScannedChapter
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 from typoon.runs.artifacts import ArtifactSink
 
-_WINDOW_CHAR_BUDGET = 300
+_WINDOW_CHAR_BUDGET = 600   # raised from 300 — fewer LLM calls per chapter
 
 
 async def translate_chapter(
@@ -25,11 +25,15 @@ async def translate_chapter(
     if not scanned.all_bubbles:
         return _empty(scanned)
 
-    keyed = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter=ctx.chapter)
+    keyed = assign_keys(
+        scanned.all_bubbles,
+        project_id=ctx.project_id,
+        chapter_id=ctx.chapter_id,
+    )
     brief = await build_chapter_brief(ctx, scanned.prepared, keyed)
 
     windows = _make_windows(keyed)
-    total = len(windows)
+    total   = len(windows)
 
     results = await asyncio.gather(*[
         translate_window(ctx, brief, wk, keyed, window_num=i, total_windows=total)
@@ -38,13 +42,11 @@ async def translate_chapter(
 
     ops: dict[str, TranslationOp] = {op.key: op for batch in results for op in batch}
 
-    await ctx.store.save_chapter_brief(ctx.project_id, ctx.chapter, brief.to_dict())
-
+    # Persist — brief first, then translations
+    await ctx.store.save_chapter_brief(ctx.chapter_id, brief.to_dict())
     translated = _build(scanned, keyed, ops)
-    await ctx.store.save_translations(
-        ctx.project_id, ctx.chapter,
-        translated.to_records(ctx.project_id, ctx.chapter),
-    )
+    await ctx.store.save_translations(ctx.chapter_id, translated.to_db_records())
+
     return translated
 
 
@@ -59,7 +61,7 @@ def _build(
         bubbles = []
         for sb in sp.bubbles:
             key = pos_to_key.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
-            op = ops.get(key)
+            op  = ops.get(key)
             bubbles.append(TranslatedBubble(
                 source=sb,
                 translation_key=key,

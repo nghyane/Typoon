@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from typoon.agents.brief import AddressRule, ChapterBrief
+from typoon.stages.brief import AddressRule, ChapterBrief
 from typoon.llm.ir import ToolResponse
 from typoon.llm.tool import Tool, tool
 

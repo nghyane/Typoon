@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 from typoon.adapters.ctx import TranslateCtx
-from typoon.agents.brief import ChapterBrief, brief_slice
+from typoon.stages.brief import ChapterBrief, brief_slice
 from typoon.domain.scan import BubbleKey
 from typoon.llm.conversation import ConversationBuffer
 from typoon.runs.events import LLMCall, LLMResponse

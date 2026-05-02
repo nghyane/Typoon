@@ -32,7 +32,7 @@ async def search_knowledge(args: SearchKnowledgeArgs, ctx) -> ToolResponse:
                 results.append(f"{entry['source_term']} => {entry['target_term']}")
         if args.scope in (SearchScope.all, SearchScope.briefs):
             results.extend(await ctx.store.search_briefs(
-                ctx.project_id, [query], limit=5, before_chapter=ctx.chapter,
+                ctx.project_id, [query], limit=5, before_chapter_idx=ctx.chapter_idx,
             ))
         if args.scope in (SearchScope.all, SearchScope.translations):
             results.extend(await ctx.store.search_context(

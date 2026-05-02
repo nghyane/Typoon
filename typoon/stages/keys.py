@@ -14,7 +14,7 @@ def assign_keys(
     bubbles: list[ScannedBubble],
     *,
     project_id: int,
-    chapter: float,
+    chapter_id: int,
 ) -> list[BubbleKey]:
     """Return stable list of BubbleKey. Key is the single identity for LLM communication."""
     out: list[BubbleKey] = []
@@ -22,7 +22,7 @@ def assign_keys(
     for b in bubbles:
         salt = 0
         while True:
-            key = _make_key(b, project_id=project_id, chapter=chapter, salt=salt)
+            key = _make_key(b, project_id=project_id, chapter_id=chapter_id, salt=salt)
             if key not in used:
                 break
             salt += 1
@@ -31,18 +31,13 @@ def assign_keys(
     return out
 
 
-def _make_key(b: ScannedBubble, *, project_id: int, chapter: float, salt: int) -> str:
+def _make_key(b: ScannedBubble, *, project_id: int, chapter_id: int, salt: int) -> str:
     payload = {
-        "project": project_id,
-        "chapter": chapter,
-        "page": b.page_index,
-        "idx": b.idx,
-        "text": " ".join(b.source_text.split()),
-        "polygon": [
-            [round(float(x), 1), round(float(y), 1)]
-            for x, y in b.box.polygon
-        ],
-        "salt": salt,
+        "project":    project_id,
+        "chapter_id": chapter_id,
+        "page":       b.page_index,
+        "idx":        b.idx,
+        "salt":       salt,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     n = int.from_bytes(hashlib.blake2s(raw, digest_size=5).digest(), "big")

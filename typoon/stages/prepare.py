@@ -40,7 +40,6 @@ def prepare_chapter(
             artifacts.write_image("01_prepare", f"prepared_{index:04d}.png", image)
 
     chapter = Chapter(root=out_dir, source=source_label, pages=tuple(pages))
-    chapter.save()
 
     if artifacts is not None:
         artifacts.write_json("01_prepare", "prepared_manifest.json", chapter.to_manifest())

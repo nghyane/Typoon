@@ -1,15 +1,13 @@
-"""Stage orchestration entry points."""
+"""Stages — pure computation functions."""
 
 from .prepare import prepare_chapter
-from .render import render_chapter
-from .scan import ScanOutput, scan_chapter
+from .scan import scan_chapter, ScanOutput
 from .translate import translate_chapter
-from . import pipeline
+from .render import render_chapter
 
 __all__ = [
     "prepare_chapter",
     "scan_chapter", "ScanOutput",
     "translate_chapter",
     "render_chapter",
-    "pipeline",
 ]

@@ -26,7 +26,7 @@ async def look_at(args: LookAtArgs, ctx, prepared, keyed) -> ToolResponse:
     Do NOT call for: scene description, emotion confirmation, or any context
     already deducible from the chapter text. Max 3 pages per call.
     """
-    from typoon.agents.look_at import look_at as _look_at
+    from typoon.stages.look_at import look_at as _look_at
     notes = await _look_at(ctx, prepared, pages=args.pages, keys=args.keys, query=args.query, keyed=keyed)
     if not notes:
         return ToolResponse("No visual notes returned.")

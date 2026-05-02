@@ -8,7 +8,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from typoon.llm.ir import ToolDef
 
-_SKILLS_DIR = Path(__file__).parent / "skills"
+_SKILLS_DIR = Path(__file__).parent / "skills_data"
 
 LOAD_SKILL_TOOL = ToolDef(
     name="load_skill",

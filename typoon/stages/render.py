@@ -1,12 +1,4 @@
-"""Render stage — TranslatedChapter + MaskStore → RenderedChapter.
-
-Pipeline per page:
-  1. Load prepared page image (RGB)
-  2. Erase source text via MaskStore + VisionRuntime.eraser → clean RGB
-  3. Render translated text via typoon_render.render()
-  4. Write PNG to render_dir/
-  5. Return RenderedChapter with per-bubble font metrics
-"""
+"""Render stage — TranslatedChapter + geometry + masks → RenderedChapter."""
 
 from __future__ import annotations
 
@@ -15,27 +7,32 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from typoon.adapters.mask_store import MaskStore
-from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.adapters.mask_store import MaskStore, load_scan_geometry
 from typoon.domain.render import Bubble as RenderedBubble, Chapter as RenderedChapter, Page as RenderedPage
 from typoon.domain.translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter
+from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 
 
 def render_chapter(
     translated: TranslatedChapter,
-    masks: MaskStore,
+    cp: ChapterPaths,
     runtime: VisionRuntime,
     *,
-    render_dir: Path | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> RenderedChapter:
-    """Erase source text, render translations, write PNGs to render_dir."""
-    if render_dir is not None:
-        render_dir = Path(render_dir)
-        render_dir.mkdir(parents=True, exist_ok=True)
+    """Erase source text, render translations, write PNGs to cp.render/.
+
+    Geometry loaded from cp.scan (scan.npz).
+    Masks loaded per-page from cp.masks/ — one file open per page.
+    """
+    cp.render.mkdir(parents=True, exist_ok=True)
 
     import typoon_render
+
+    # Load geometry once — mmap, no full RAM load
+    geometry = {pg.page_index: pg for pg in load_scan_geometry(cp)}
 
     rendered_pages = []
 
@@ -43,12 +40,14 @@ def render_chapter(
         original = _load_rgb(translated.scan.prepared.page_path(tp.index))
         canvas   = _to_rgba(original)
 
-        # Collect erase masks for accepted bubbles
+        # Load masks for this page only
+        page_masks = MaskStore.load_page(cp, tp.index)
+
         erase_masks = [
             m
             for tb in tp.bubbles
             if tb.kind != "skip"
-            for bm in [masks.get(tb.page_index, tb.idx)]
+            for bm in [page_masks.get(tb.idx)]
             if bm is not None
             for m in bm.erase_masks
         ]
@@ -57,16 +56,19 @@ def render_chapter(
 
         clean = canvas[:, :, :3]
 
-        # Render text — only non-skip bubbles with actual translation
-        active = [tb for tb in tp.bubbles if tb.kind != "skip" and tb.translated_text.strip()]
-        polygons = [tb.source.box.polygon for tb in active]
-        texts    = [tb.translated_text for tb in active]
+        active   = [tb for tb in tp.bubbles if tb.kind != "skip" and tb.translated_text.strip()]
+        pg_geom  = geometry.get(tp.index)
+
+        # Build polygon list from scan.npz geometry (not from domain Box)
+        geom_by_idx = {bg.bubble_idx: bg for bg in pg_geom.bubbles} if pg_geom else {}
+        polygons = [geom_by_idx[tb.idx].polygon for tb in active if tb.idx in geom_by_idx]
+        texts    = [tb.translated_text for tb in active if tb.idx in geom_by_idx]
+        active   = [tb for tb in active if tb.idx in geom_by_idx]
 
         result = typoon_render.typoon_render.render(
             original, clean, polygons, texts, original.shape[1]
         )
 
-        # Map render results back to all bubbles
         active_info = dict(zip((tb.idx for tb in active), result.bubbles))
         rendered_bubbles = tuple(
             RenderedBubble(
@@ -77,13 +79,11 @@ def render_chapter(
             for tb in tp.bubbles
         )
 
-        image_path = None
-        if render_dir is not None:
-            image_path = render_dir / f"page_{tp.index:04d}.png"
-            _write_rgb(image_path, result.image)
+        image_path = cp.rendered(tp.index)
+        _write_rgb(image_path, result.image)
 
         if artifacts is not None:
-            artifacts.write_image("06_render", f"page_{tp.index:04d}_rendered.png", result.image)
+            artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
 
         rendered_pages.append(RenderedPage(
             source=tp, bubbles=rendered_bubbles, image_path=image_path,

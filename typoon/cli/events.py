@@ -8,9 +8,9 @@ from functools import singledispatch
 from rich.console import Console
 
 from typoon.runs.events import (
-    ChapterDone, ChapterDownloaded, ChapterFailed,
-    ChapterSkipped, Event, LLMCall, LLMResponse, PipelineError,
-    StageDone, StageStarted, StageFailed, ToolResult,
+    ChapterDone, ChapterDownloaded, ChapterFailed, ChapterSkipped,
+    Event, LLMCall, LLMResponse, PipelineError, StageDone, StageStarted,
+    StageFailed, ToolResult,
 )
 
 console = Console()
@@ -23,12 +23,12 @@ def render(event: Event) -> None:
 
 @render.register
 def _(event: ChapterDownloaded) -> None:
-    console.print(f"  [cyan]↓[/] ch{event.idx:03.0f}  {event.page_count} pages")
+    console.print(f"  [cyan]↓[/] ch#{event.chapter_id}  {event.page_count} pages")
 
 
 @render.register
 def _(event: ChapterSkipped) -> None:
-    console.print(f"  [dim]–[/] ch{event.idx:03.0f}  {event.reason}")
+    console.print(f"  [dim]–[/] ch#{event.chapter_id}  {event.reason}")
 
 
 @render.register
@@ -38,32 +38,32 @@ def _(event: StageStarted) -> None:
 
 @render.register
 def _(event: StageDone) -> None:
-    console.print(f"    [green]✓[/] {event.stage} done")
+    console.print(f"    [green]✓[/] {event.stage}")
 
 
 @render.register
 def _(event: StageFailed) -> None:
     console.print(f"    [red]✗[/] {event.stage}: {event.error}")
-    if event.error.__traceback__:
+    if event.error and event.error.__traceback__:
         console.print("".join(traceback.format_tb(event.error.__traceback__)), style="dim red")
 
 
 @render.register
 def _(event: PipelineError) -> None:
-    console.print(f"      [red]error[/] [{event.stage}] {event.error}")
+    console.print(f"    [red]error[/] [{event.stage}] {event.error}")
     if event.error and event.error.__traceback__:
         console.print("".join(traceback.format_tb(event.error.__traceback__)), style="dim red")
 
 
 @render.register
 def _(event: ChapterDone) -> None:
-    console.print(f"  [green]✓[/] ch{event.idx:03.0f}  {event.bubble_count} bubbles")
+    console.print(f"  [green]✓[/] ch#{event.chapter_id}  {event.bubble_count} pages rendered")
     console.print(f"    [dim]{event.render_dir}[/]")
 
 
 @render.register
 def _(event: ChapterFailed) -> None:
-    console.print(f"  [red]✗[/] ch{event.idx:03.0f}  {event.stage}: {event.error}")
+    console.print(f"  [red]✗[/] ch#{event.chapter_id}  {event.stage}: {event.error}")
     if event.error and event.error.__traceback__:
         console.print("".join(traceback.format_tb(event.error.__traceback__)), style="dim red")
 
@@ -76,7 +76,7 @@ def _(event: LLMCall) -> None:
 @render.register
 def _(event: LLMResponse) -> None:
     status = "[green]✓[/]" if event.tool_calls > 0 else "[yellow]–[/]"
-    console.print(f"      {status} {event.tool_calls} tools, {event.ms:.0f}ms")
+    console.print(f"      {status} {event.tool_calls} tools  {event.ms:.0f}ms")
 
 
 @render.register

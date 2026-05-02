@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import cv2
 
-from typoon.agents.image import encode_page_jpeg
+from typoon.stages.image import encode_page_jpeg
 from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import BubbleKey
 from typoon.llm.ir import ContentPart, Message
