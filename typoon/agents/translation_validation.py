@@ -9,7 +9,12 @@ from typoon.agents.brief import ChapterBrief
 from typoon.domain.scan import BubbleKey
 
 
+# Tokens worth preserving: codes, stat numbers, timestamps, currency values.
+# NOT plain uppercase words — those are SFX and should translate freely.
 _TOKEN_RE = re.compile(r"(?<!\w)(?:[A-Z]{1,4}\d[A-Z0-9:/.,+%-]*|\d{1,4}(?:[:/%$¥₩€£]|[A-Za-z]{1,4})[A-Z0-9:/.,+%-]*)(?!\w)")
+
+# Word-boundary pattern for glossary source matching
+_WORD_RE = re.compile(r"\b{}\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -25,7 +30,7 @@ def validate_translation_ops(
 ) -> list[TranslationIssue]:
     issues: list[TranslationIssue] = []
     for op in ops:
-        if op.kind == "skip":
+        if op.kind in ("skip", "sfx"):
             continue
         source = key_map[op.key].source_text
         issues.extend(_missing_source_tokens(op.key, source, op.text))
@@ -48,12 +53,16 @@ def _missing_glossary_terms(
     brief: ChapterBrief,
 ) -> list[TranslationIssue]:
     issues: list[TranslationIssue] = []
-    source_fold = source.casefold()
     translated_fold = translated.casefold()
     for src, target in brief.glossary.items():
         if not src or not target:
             continue
-        if src.casefold() in source_fold and target.casefold() not in translated_fold:
+        # Word-boundary match on source to avoid "elf" hitting "myself", "shelf" etc.
+        try:
+            pattern = re.compile(r"\b" + re.escape(src) + r"\b", re.IGNORECASE)
+        except re.error:
+            continue
+        if pattern.search(source) and target.casefold() not in translated_fold:
             issues.append(TranslationIssue(key, f'use glossary "{src}" -> "{target}"'))
     return issues
 
