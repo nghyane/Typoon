@@ -12,7 +12,7 @@ from typoon.stages.tools.brief import ChapterBriefArgs, make_submit_chapter_brie
 from typoon.stages.tools.look_at import make_look_at
 from typoon.stages.tools.search_knowledge import make_search_knowledge
 from typoon.stages.image import encode_page_jpeg
-from typoon.domain.prepared import Chapter as PreparedChapter
+from typoon.domain import prepared
 from typoon.domain.scan import BubbleKey
 from typoon.llm.ir import ContentPart, Message, ToolResponse
 from typoon.llm.loop import tool_loop
@@ -33,7 +33,7 @@ class _LoadSkillArgs(BaseModel):
 
 async def build_chapter_brief(
     ctx: TranslateCtx,
-    prepared: PreparedChapter,
+    chapter: prepared.Chapter,
     keyed: list[BubbleKey],
 ) -> ChapterBrief:
     sensitive        = _address_sensitive(keyed)
@@ -51,7 +51,7 @@ async def build_chapter_brief(
         context_snapshot=context_snapshot,
         chapter_text=chapter_text(keyed),
     )
-    messages = [Message.system(system), _context_user_message(user, prepared, sensitive, keyed)]
+    messages = [Message.system(system), _context_user_message(user, chapter, sensitive, keyed)]
 
     brief: ChapterBrief | None = None
 
@@ -74,7 +74,7 @@ async def build_chapter_brief(
     tools = [
         make_search_knowledge(ctx),
         Tool(LOAD_SKILL_TOOL, _LoadSkillArgs, lambda args: _handle_load_skill(args, skills)),
-        make_look_at(ctx, prepared, keyed),
+        make_look_at(ctx, chapter, keyed),
         make_submit_chapter_brief(on_submit),
     ]
 
@@ -145,7 +145,7 @@ def _address_sensitive(keyed: list[BubbleKey]) -> list[BubbleKey]:
 
 def _context_user_message(
     text: str,
-    prepared: PreparedChapter,
+    chapter: prepared.Chapter,
     sensitive: list[BubbleKey],
     keyed: list[BubbleKey],
 ) -> Message:
@@ -155,7 +155,7 @@ def _context_user_message(
     parts: list[ContentPart] = [ContentPart.of_text(text)]
     ordered = sorted(keyed, key=lambda bk: (bk.page_index, bk.idx))
     for target in sensitive[:2]:
-        storyboard = _storyboard_image(prepared, ordered, target)
+        storyboard = _storyboard_image(chapter, ordered, target)
         if storyboard is None:
             continue
         parts.append(ContentPart.of_text(
@@ -167,7 +167,7 @@ def _context_user_message(
 
 
 def _storyboard_image(
-    prepared: PreparedChapter,
+    chapter: prepared.Chapter,
     ordered: list[BubbleKey],
     target: BubbleKey,
 ):
@@ -196,7 +196,7 @@ def _storyboard_image(
     panel_h   = 0
     page_info = []
     for page_index in pages:
-        bgr = cv2.imread(str(prepared.page_path(page_index)))
+        bgr = cv2.imread(str(chapter.page_path(page_index)))
         if bgr is None:
             continue
         image = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)

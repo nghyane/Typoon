@@ -15,7 +15,7 @@ class LookAtArgs(BaseModel):
 
 
 @tool
-async def look_at(args: LookAtArgs, ctx, prepared, keyed) -> ToolResponse:
+async def look_at(args: LookAtArgs, ctx, chapter, keyed) -> ToolResponse:
     """Inspect page images ONLY when text is genuinely insufficient.
 
     Call this ONLY when:
@@ -27,11 +27,11 @@ async def look_at(args: LookAtArgs, ctx, prepared, keyed) -> ToolResponse:
     already deducible from the chapter text. Max 3 pages per call.
     """
     from typoon.stages.look_at import look_at as _look_at
-    notes = await _look_at(ctx, prepared, pages=args.pages, keys=args.keys, query=args.query, keyed=keyed)
+    notes = await _look_at(ctx, chapter, pages=args.pages, keys=args.keys, query=args.query, keyed=keyed)
     if not notes:
         return ToolResponse("No visual notes returned.")
     return ToolResponse("\n".join(f"#{k}: {v}" for k, v in notes.items()))
 
 
-def make_look_at(ctx, prepared, keyed) -> Tool:
-    return look_at(ctx=ctx, prepared=prepared, keyed=keyed)
+def make_look_at(ctx, chapter, keyed) -> Tool:
+    return look_at(ctx=ctx, chapter=chapter, keyed=keyed)
