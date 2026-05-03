@@ -1,11 +1,9 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, FolderOpen, Library,
   BookText, Users, BarChart2, Settings, Cloud,
 } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { projectsApi, projectKeys } from '../../api/projects'
 
 const NAV = [
   { to: '/overview', icon: LayoutDashboard, label: 'Tổng quan' },
@@ -42,11 +40,6 @@ function NavItem({ to, icon: Icon, label }: { to: string; icon: React.ElementTyp
 }
 
 export function Sidebar() {
-  const { data: projects = [] } = useQuery({
-    queryKey: projectKeys.all(),
-    queryFn:  projectsApi.list,
-    staleTime: 60_000,
-  })
 
   return (
     <aside
@@ -78,39 +71,6 @@ export function Sidebar() {
       <nav className="px-2 flex flex-col gap-0.5">
         {NAV.map((item) => <NavItem key={item.to} {...item} />)}
       </nav>
-
-      {/* GẦN ĐÂY */}
-      {projects.length > 0 && (
-        <div className="mt-5 px-3">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-(--color-text-3) mb-2 px-1">
-            Gần đây
-          </p>
-          <div className="flex flex-col gap-0.5">
-            {projects.slice(0, 4).map((p) => (
-              <Link
-                key={p.project_id}
-                to="/projects/$id"
-                params={{ id: String(p.project_id) }}
-                className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-(--color-nav-hover-bg) transition-colors"
-              >
-                <div
-                  className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center text-xs font-bold text-white"
-                  style={{ background: 'linear-gradient(135deg, #636366, #48484a)' }}
-                >
-                  {p.title[0]}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-(--color-text-1) truncate leading-tight">{p.title}</p>
-                  <p className="text-xs text-(--color-text-3) leading-tight">{p.source_lang} → {p.target_lang}</p>
-                </div>
-              </Link>
-            ))}
-            <Link to="/projects" className="px-2 py-1 text-xs text-(--color-text-3) hover:text-(--color-accent) transition-colors">
-              Xem tất cả
-            </Link>
-          </div>
-        </div>
-      )}
 
       {/* Storage */}
       <div className="mt-auto px-4 pb-4">
