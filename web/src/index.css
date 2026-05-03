@@ -5,55 +5,47 @@
 @import "@fontsource/inter/700.css";
 
 @theme {
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, sans-serif;
+  /* SF Pro / Inter stack */
+  --font-sans: "Inter", -apple-system, "SF Pro Text", ui-sans-serif, system-ui, sans-serif;
 
-  /* ── Radius — iOS/macOS subtle ────────────── */
-  --radius-sm:  5px;
-  --radius-md:  8px;
-  --radius-lg:  10px;
-  --radius-xl:  12px;
+  /* ── iOS system colors ────────────────────────── */
+  --color-bg:              #ffffff;
+  --color-surface:         #f2f2f7;   /* iOS systemGroupedBackground */
+  --color-surface-2:       #ffffff;   /* iOS secondaryGroupedBackground */
 
-  /* ── Surface — pure white system ──────────── */
-  --color-bg:            #ffffff;
-  --color-surface:       #f6f8fa;
-  --color-border:        #d0d7de;
-  --color-border-subtle: #eaeef2;
+  /* ── Separator ────────────────────────────────── */
+  --color-border:          #c6c6c8;   /* iOS separator */
+  --color-border-subtle:   #e5e5ea;   /* iOS opaqueSeparator */
 
-  /* ── Text — GitHub/iOS scale ───────────────── */
-  --color-text-1: #1f2328;
-  --color-text-2: #656d76;
-  --color-text-3: #9198a1;
+  /* ── Text — iOS label scale ───────────────────── */
+  --color-text-1:          #1c1c1e;   /* iOS label */
+  --color-text-2:          #6e6e73;   /* iOS secondaryLabel */
+  --color-text-3:          #aeaeb2;   /* iOS tertiaryLabel */
+  --color-text-4:          #c7c7cc;   /* iOS quaternaryLabel */
 
-  /* ── Nav ────────────────────────────────────── */
-  --color-nav-active-bg:   #eaeef2;
-  --color-nav-active-text: #1f2328;
-  --color-nav-hover-bg:    #f6f8fa;
-  --color-nav-text:        #1f2328;
+  /* ── Nav active — iOS dark fill ───────────────── */
+  --color-nav-active-bg:   #1c1c1e;
+  --color-nav-active-text: #ffffff;
+  --color-nav-hover-bg:    #f2f2f7;
 
-  /* ── Accent — system blue (iOS) ─────────────── */
-  --color-accent:       #0969da;
-  --color-accent-hover: #0550ae;
-  --color-accent-text:  #ffffff;
+  /* ── Accent — iOS blue ────────────────────────── */
+  --color-accent:          #007aff;
+  --color-accent-hover:    #0062cc;
+  --color-accent-text:     #ffffff;
 
-  /* ── Status ─────────────────────────────────── */
-  --color-done:    #1a7f37;
-  --color-running: #0969da;
-  --color-pending: #9a6700;
-  --color-idle:    #9198a1;
-  --color-error:   #d1242f;
+  /* ── Status — iOS system colors ──────────────── */
+  --color-done:            #34c759;   /* iOS green */
+  --color-running:         #007aff;   /* iOS blue */
+  --color-pending:         #ff9500;   /* iOS orange */
+  --color-idle:            #aeaeb2;
+  --color-error:           #ff3b30;   /* iOS red */
 
-  /* ── Status bg ──────────────────────────────── */
-  --color-done-bg:    #dafbe1;
-  --color-running-bg: #ddf4ff;
-  --color-pending-bg: #fff8c5;
-  --color-error-bg:   #ffebe9;
-
-  /* ── Sidebar ────────────────────────────────── */
-  --sidebar-width: 220px;
-
-  /* ── Filter pill ─────────────────────────────── */
-  --color-pill-active-bg:   #1f2328;
+  /* ── Filter pill active ───────────────────────── */
+  --color-pill-active-bg:   #1c1c1e;
   --color-pill-active-text: #ffffff;
+
+  /* ── Sidebar ──────────────────────────────────── */
+  --sidebar-width: 220px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
