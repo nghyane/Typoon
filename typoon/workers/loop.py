@@ -20,7 +20,7 @@ from typoon.adapters.loader import load_prepared, load_scanned, load_translated_
 from typoon.adapters.mask_store import save_scan_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.paths import Paths, ProjectPaths, ChapterPaths
-from typoon.runs.events import Hook, StageDone, StageFailed, StageStarted
+from typoon.runs.events import Hook, LoggingHook, StageDone, StageFailed, StageStarted
 from typoon.stages.scan import scan_chapter
 from typoon.stages.translate import translate_chapter
 from typoon.stages.render import render_chapter
@@ -152,7 +152,7 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
 
     db      = await SqliteStore.open(paths.db)
     runtime = VisionRuntime.from_config(config)[0]
-    hook    = Hook()
+    hook    = LoggingHook()
 
     try:
         await asyncio.gather(

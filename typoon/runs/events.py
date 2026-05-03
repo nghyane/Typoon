@@ -121,6 +121,25 @@ class Hook:
         pass
 
 
+class LoggingHook(Hook):
+    """Prints pipeline events to the Python logger."""
+
+    import logging as _logging
+    _log = _logging.getLogger("typoon.pipeline")
+
+    def on(self, event: Event) -> None:
+        if isinstance(event, StageStarted):
+            self._log.info("[ch%d] %s started", event.chapter_id, event.stage)
+        elif isinstance(event, StageDone):
+            self._log.info("[ch%d] %s done", event.chapter_id, event.stage)
+        elif isinstance(event, StageFailed):
+            self._log.error("[ch%d] %s failed: %s", event.chapter_id, event.stage, event.error)
+        elif isinstance(event, LLMCall):
+            self._log.info("[llm] %s turn %d", event.agent, event.turn)
+        elif isinstance(event, LLMResponse):
+            self._log.info("[llm] %s turn %d → %d ops (%.0fms)", event.agent, event.turn, event.tool_calls, event.ms)
+
+
 class CompositeHook(Hook):
     def __init__(self, *hooks: Hook) -> None:
         self._hooks = hooks

@@ -194,9 +194,67 @@ def work(
 
 
 async def _work(concurrency: int) -> None:
+    import logging
     from ..workers.loop import run_workers
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
     console.print(f"[dim]workers started (translate×{concurrency}) — Ctrl+C to stop[/]")
     await run_workers(translate_concurrency=concurrency)
+
+
+# ── pdf ───────────────────────────────────────────────────────────────
+
+
+@app.command()
+def pdf(
+    slug:    str   = typer.Argument(..., help="Project slug"),
+    from_ch: float = typer.Option(0, "--from", help="First chapter"),
+    to_ch:   float = typer.Option(0, "--to",   help="Last chapter"),
+    out:     Path  = typer.Option(None, "--out", "-o", help="Output path (default: <slug>-ch<N>.pdf)"),
+):
+    """Export rendered chapter(s) to PDF and open in system viewer."""
+    asyncio.run(_pdf(slug, from_ch, to_ch, out))
+
+
+async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> None:
+    import subprocess
+    import sys
+    from PIL import Image
+    from ..adapters.projects import Projects
+
+    projects = await Projects.open()
+    try:
+        proj     = await projects.require(slug)
+        all_chs  = await projects._db.get_all_chapters(proj["id"])
+        lo       = from_ch or (all_chs[0]["idx"] if all_chs else 1)
+        hi       = to_ch   or lo
+        chapters = [c for c in all_chs if lo <= c["idx"] <= hi]
+        if not chapters:
+            console.print("[red]No chapters found in range.[/]")
+            return
+        from ..paths import Paths, ProjectPaths
+        paths = Paths()
+        for ch in chapters:
+            cp      = ProjectPaths(paths.projects, slug).chapter(ch["id"])
+            renders = sorted(cp.render.glob("*.png"))
+            if not renders:
+                console.print(f"[yellow]ch{ch['idx']:.4g}: no render output, skipping[/]")
+                continue
+            dest = out or Path(f"{slug}-ch{ch['idx']:.4g}.pdf")
+            images = [Image.open(p).convert("RGB") for p in renders]
+            images[0].save(dest, save_all=True, append_images=images[1:])
+            console.print(f"[green]✓[/] {dest} ({len(images)} pages)")
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(dest)])
+            elif sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", str(dest)])
+            else:
+                subprocess.Popen(["start", str(dest)], shell=True)
+    finally:
+        await projects.close()
 
 
 # ── status ────────────────────────────────────────────────────────────
