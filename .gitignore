@@ -23,3 +23,7 @@ projects/
 *.db-wal
 debug/
 .pipeline/
+
+# Web UI
+web/node_modules/
+web/dist/
