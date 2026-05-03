@@ -4,63 +4,60 @@
 @import "@fontsource/inter/600.css";
 @import "@fontsource/inter/700.css";
 
+/* ─────────────────────────────────────────────────────────
+   Design tokens — Tailwind v4 @theme
+   Reference: bg-(--token), text-(--token), border-(--token)
+───────────────────────────────────────────────────────── */
 @theme {
-  /* SF Pro / Inter stack */
   --font-sans: "Inter", -apple-system, "SF Pro Text", ui-sans-serif, system-ui, sans-serif;
 
-  /* ── iOS system colors ────────────────────────── */
-  --color-bg:              #ffffff;
-  --color-surface:         #f2f2f7;   /* iOS systemGroupedBackground */
-  --color-surface-2:       #ffffff;   /* iOS secondaryGroupedBackground */
+  /* Surface */
+  --color-bg:        #ffffff;
+  --color-surface:   #f2f2f7;
+  --color-surface-2: #e5e5ea;
 
-  /* ── Separator ────────────────────────────────── */
-  --color-border:          #c6c6c8;   /* iOS separator */
-  --color-border-subtle:   #e5e5ea;   /* iOS opaqueSeparator */
+  /* Border */
+  --color-border:        #e5e5ea;
+  --color-border-strong: #c6c6c8;
 
-  /* ── Text — iOS label scale ───────────────────── */
-  --color-text-1:          #1c1c1e;   /* iOS label */
-  --color-text-2:          #6e6e73;   /* iOS secondaryLabel */
-  --color-text-3:          #aeaeb2;   /* iOS tertiaryLabel */
-  --color-text-4:          #c7c7cc;   /* iOS quaternaryLabel */
+  /* Text */
+  --color-text:     #1c1c1e;
+  --color-text-2:   #3c3c43;
+  --color-text-3:   #8e8e93;
+  --color-text-4:   #c7c7cc;
 
-  /* ── Nav active — iOS light gray, NOT dark ──────── */
-  --color-nav-active-bg:   #f0f0f0;
-  --color-nav-active-text: #1c1c1e;
-  --color-nav-hover-bg:    #f7f7f7;
+  /* Nav active: light fill, dark text */
+  --color-nav-active: #f2f2f7;
 
-  /* ── Accent — iOS blue ────────────────────────── */
-  --color-accent:          #007aff;
-  --color-accent-hover:    #0062cc;
-  --color-accent-text:     #ffffff;
+  /* Primary button: dark */
+  --color-btn-bg:    #1c1c1e;
+  --color-btn-text:  #ffffff;
 
-  /* ── Status — iOS system colors ──────────────── */
-  --color-done:            #34c759;   /* iOS green */
-  --color-running:         #007aff;   /* iOS blue */
-  --color-pending:         #ff9500;   /* iOS orange */
-  --color-idle:            #aeaeb2;
-  --color-error:           #ff3b30;   /* iOS red */
+  /* Status */
+  --color-green:  #34c759;
+  --color-blue:   #007aff;
+  --color-orange: #ff9500;
+  --color-red:    #ff3b30;
+  --color-purple: #af52de;
 
-  /* ── Filter pill active ───────────────────────── */
-  --color-pill-active-bg:   #1c1c1e;
-  --color-pill-active-text: #ffffff;
-
-  /* ── Sidebar ──────────────────────────────────── */
+  /* Sidebar */
   --sidebar-width: 220px;
 }
 
+/* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
-
 body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
   background: var(--color-bg);
-  color: var(--color-text-1);
+  color: var(--color-text);
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-border-subtle); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-border); }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-strong); }

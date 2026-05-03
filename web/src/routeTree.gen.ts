@@ -13,6 +13,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PipelineRouteImport } from './routes/pipeline'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
+import { Route as OverviewIndexRouteImport } from './routes/overview/index'
 import { Route as ProjectsIdRouteImport } from './routes/projects/$id'
 import { Route as ProjectsIdChaptersChapterIdRouteImport } from './routes/projects/$id.chapters.$chapterId'
 
@@ -36,6 +37,11 @@ const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
   path: '/projects/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OverviewIndexRoute = OverviewIndexRouteImport.update({
+  id: '/overview/',
+  path: '/overview/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProjectsIdRoute = ProjectsIdRouteImport.update({
   id: '/projects/$id',
   path: '/projects/$id',
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/pipeline': typeof PipelineRoute
   '/settings': typeof SettingsRoute
   '/projects/$id': typeof ProjectsIdRouteWithChildren
+  '/overview/': typeof OverviewIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$id/chapters/$chapterId': typeof ProjectsIdChaptersChapterIdRoute
 }
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/pipeline': typeof PipelineRoute
   '/settings': typeof SettingsRoute
   '/projects/$id': typeof ProjectsIdRouteWithChildren
+  '/overview': typeof OverviewIndexRoute
   '/projects': typeof ProjectsIndexRoute
   '/projects/$id/chapters/$chapterId': typeof ProjectsIdChaptersChapterIdRoute
 }
@@ -70,6 +78,7 @@ export interface FileRoutesById {
   '/pipeline': typeof PipelineRoute
   '/settings': typeof SettingsRoute
   '/projects/$id': typeof ProjectsIdRouteWithChildren
+  '/overview/': typeof OverviewIndexRoute
   '/projects/': typeof ProjectsIndexRoute
   '/projects/$id/chapters/$chapterId': typeof ProjectsIdChaptersChapterIdRoute
 }
@@ -80,6 +89,7 @@ export interface FileRouteTypes {
     | '/pipeline'
     | '/settings'
     | '/projects/$id'
+    | '/overview/'
     | '/projects/'
     | '/projects/$id/chapters/$chapterId'
   fileRoutesByTo: FileRoutesByTo
@@ -88,6 +98,7 @@ export interface FileRouteTypes {
     | '/pipeline'
     | '/settings'
     | '/projects/$id'
+    | '/overview'
     | '/projects'
     | '/projects/$id/chapters/$chapterId'
   id:
@@ -96,6 +107,7 @@ export interface FileRouteTypes {
     | '/pipeline'
     | '/settings'
     | '/projects/$id'
+    | '/overview/'
     | '/projects/'
     | '/projects/$id/chapters/$chapterId'
   fileRoutesById: FileRoutesById
@@ -105,6 +117,7 @@ export interface RootRouteChildren {
   PipelineRoute: typeof PipelineRoute
   SettingsRoute: typeof SettingsRoute
   ProjectsIdRoute: typeof ProjectsIdRouteWithChildren
+  OverviewIndexRoute: typeof OverviewIndexRoute
   ProjectsIndexRoute: typeof ProjectsIndexRoute
 }
 
@@ -136,6 +149,13 @@ declare module '@tanstack/react-router' {
       path: '/projects'
       fullPath: '/projects/'
       preLoaderRoute: typeof ProjectsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/overview/': {
+      id: '/overview/'
+      path: '/overview'
+      fullPath: '/overview/'
+      preLoaderRoute: typeof OverviewIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects/$id': {
@@ -172,6 +192,7 @@ const rootRouteChildren: RootRouteChildren = {
   PipelineRoute: PipelineRoute,
   SettingsRoute: SettingsRoute,
   ProjectsIdRoute: ProjectsIdRouteWithChildren,
+  OverviewIndexRoute: OverviewIndexRoute,
   ProjectsIndexRoute: ProjectsIndexRoute,
 }
 export const routeTree = rootRouteImport
