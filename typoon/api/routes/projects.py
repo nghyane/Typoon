@@ -25,8 +25,7 @@ class ImportBody(BaseModel):
 
 
 class RedoBody(BaseModel):
-    from_ch: float = 0
-    to_ch:   float = 0
+    chapter_ids: list[int] = []  # empty = redo all
 
 
 @router.get("")
@@ -73,15 +72,19 @@ async def redo_project(
     db:    Store = Depends(get_store),
     paths: Paths = Depends(get_paths),
 ):
+    all_projects = await db.list_projects()
+    proj = next((p for p in all_projects if p["slug"] == slug), None)
+    if proj is None:
+        raise HTTPException(404, "Project not found")
+
     indices = None
-    if body.from_ch > 0 or body.to_ch > 0:
-        projects = await db.list_projects()
-        proj = next((p for p in projects if p["slug"] == slug), None)
-        if proj is None:
-            raise HTTPException(404, "Project not found")
-        all_chs = await db.get_all_chapters(proj["id"])
-        lo = body.from_ch or all_chs[0]["idx"]
-        hi = body.to_ch   or all_chs[-1]["idx"]
-        indices = [c["idx"] for c in all_chs if lo <= c["idx"] <= hi]
+    if body.chapter_ids:
+        all_chs   = await db.get_all_chapters(proj["id"])
+        idx_by_id = {c["id"]: c["idx"] for c in all_chs}
+        unknown   = [cid for cid in body.chapter_ids if cid not in idx_by_id]
+        if unknown:
+            raise HTTPException(400, f"Unknown chapter ids: {unknown}")
+        indices = [idx_by_id[cid] for cid in body.chapter_ids]
+
     count = await Projects(db, paths).redo(slug, indices)
     return {"reset": count}
