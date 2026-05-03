@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Plus } from 'lucide-react'
+import { Plus, ChevronRight } from 'lucide-react'
 import { projectsApi, projectKeys } from '../../api/projects'
 import { Skeleton } from '../../components/ui/Skeleton'
 
@@ -15,34 +15,43 @@ function ProjectsPage() {
   })
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-6 h-14 border-b border-(--color-border) shrink-0">
-        <h1 className="text-sm font-semibold text-(--color-text-1)">Dự án</h1>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-(--color-accent) text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors">
+    <div className="max-w-3xl mx-auto px-6 py-8">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-xl font-semibold text-(--color-text-1)">Projects</h1>
+        <button className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors">
           <Plus size={14} />
-          Thêm dự án
+          New project
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-2">
+      <div className="border border-(--color-border) rounded-lg overflow-hidden">
         {isLoading
-          ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)
+          ? Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-(--color-border) last:border-0">
+                <Skeleton className="w-8 h-8 rounded-md shrink-0" />
+                <div className="flex-1 flex flex-col gap-1.5">
+                  <Skeleton className="h-3.5 w-40 rounded" />
+                  <Skeleton className="h-3 w-20 rounded" />
+                </div>
+              </div>
+            ))
           : data?.map((p) => (
               <Link
                 key={p.project_id}
                 to="/projects/$id"
                 params={{ id: String(p.project_id) }}
-                className="flex items-center gap-4 px-4 py-3 rounded-xl border border-(--color-border) bg-(--color-bg) hover:bg-(--color-surface-1) transition-colors"
+                className="flex items-center gap-3 px-4 py-3 border-b border-(--color-border) last:border-0 hover:bg-(--color-surface) transition-colors group"
               >
-                <div className="w-10 h-10 rounded-lg shrink-0 flex items-center justify-center text-lg font-bold bg-(--color-surface-2) text-(--color-text-3)">
+                <div className="w-8 h-8 rounded-md shrink-0 flex items-center justify-center text-sm font-bold bg-(--color-surface) border border-(--color-border) text-(--color-text-2)">
                   {p.title[0]}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate text-(--color-text-1)">{p.title}</p>
-                  <p className="text-xs mt-0.5 text-(--color-text-3)">
-                    {p.source_lang} → {p.target_lang}
+                  <p className="text-sm font-medium text-(--color-text-1) truncate">{p.title}</p>
+                  <p className="text-xs text-(--color-text-3) mt-0.5">
+                    {p.source_lang.toUpperCase()} → {p.target_lang.toUpperCase()}
                   </p>
                 </div>
+                <ChevronRight size={14} className="text-(--color-text-3) opacity-0 group-hover:opacity-100 transition-opacity" />
               </Link>
             ))}
       </div>

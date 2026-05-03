@@ -5,51 +5,55 @@
 @import "@fontsource/inter/700.css";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, system-ui, sans-serif;
 
-  /* ── Radius ─────────────────────────────── */
-  --radius-sm:  4px;
+  /* ── Radius — iOS/macOS subtle ────────────── */
+  --radius-sm:  5px;
   --radius-md:  8px;
-  --radius-lg:  12px;
-  --radius-xl:  16px;
+  --radius-lg:  10px;
+  --radius-xl:  12px;
 
-  /* ── Surface ────────────────────────────── */
-  --color-bg:        #ffffff;
-  --color-surface-1: #f9fafb;
-  --color-surface-2: #f3f4f6;
-  --color-surface-3: #e5e7eb;
-  --color-border:    #e5e7eb;
-  --color-border-subtle: #f3f4f6;
+  /* ── Surface — pure white system ──────────── */
+  --color-bg:            #ffffff;
+  --color-surface:       #f6f8fa;
+  --color-border:        #d0d7de;
+  --color-border-subtle: #eaeef2;
 
-  /* ── Text ───────────────────────────────── */
-  --color-text-1: #111827;
-  --color-text-2: #6b7280;
-  --color-text-3: #9ca3af;
-  --color-text-4: #d1d5db;
+  /* ── Text — GitHub/iOS scale ───────────────── */
+  --color-text-1: #1f2328;
+  --color-text-2: #656d76;
+  --color-text-3: #9198a1;
 
-  /* ── Accent (dark) ──────────────────────── */
-  --color-accent:       #111827;
+  /* ── Nav ────────────────────────────────────── */
+  --color-nav-active-bg:   #eaeef2;
+  --color-nav-active-text: #1f2328;
+  --color-nav-hover-bg:    #f6f8fa;
+  --color-nav-text:        #1f2328;
+
+  /* ── Accent — system blue (iOS) ─────────────── */
+  --color-accent:       #0969da;
+  --color-accent-hover: #0550ae;
   --color-accent-text:  #ffffff;
-  --color-accent-hover: #1f2937;
 
-  /* ── Nav active ─────────────────────────── */
-  --color-nav-active-bg:   #111827;
-  --color-nav-active-text: #ffffff;
-  --color-nav-hover-bg:    #f3f4f6;
+  /* ── Status ─────────────────────────────────── */
+  --color-done:    #1a7f37;
+  --color-running: #0969da;
+  --color-pending: #9a6700;
+  --color-idle:    #9198a1;
+  --color-error:   #d1242f;
 
-  /* ── Status ─────────────────────────────── */
-  --color-done:    #22c55e;
-  --color-running: #3b82f6;
-  --color-pending: #f59e0b;
-  --color-idle:    #d1d5db;
-  --color-error:   #ef4444;
+  /* ── Status bg ──────────────────────────────── */
+  --color-done-bg:    #dafbe1;
+  --color-running-bg: #ddf4ff;
+  --color-pending-bg: #fff8c5;
+  --color-error-bg:   #ffebe9;
 
-  /* ── Filter pill active ─────────────────── */
-  --color-pill-active-bg:   #111827;
+  /* ── Sidebar ────────────────────────────────── */
+  --sidebar-width: 220px;
+
+  /* ── Filter pill ─────────────────────────────── */
+  --color-pill-active-bg:   #1f2328;
   --color-pill-active-text: #ffffff;
-
-  /* ── Sidebar ────────────────────────────── */
-  --sidebar-width: 224px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -57,11 +61,14 @@ html, body, #root { height: 100%; margin: 0; }
 
 body {
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
   background: var(--color-bg);
   color: var(--color-text-1);
   -webkit-font-smoothing: antialiased;
 }
 
-::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-surface-3); border-radius: 999px; }
+::-webkit-scrollbar-thumb { background: var(--color-border-subtle); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border); }
