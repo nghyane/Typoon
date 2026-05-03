@@ -34,6 +34,16 @@ async def _require_project(project_id: int, db: Store) -> dict:
     return proj
 
 
+@router.get("/{project_id}/chapters")
+async def list_chapters(
+    project_id: int,
+    db:    Store = Depends(get_store),
+    paths: Paths = Depends(get_paths),
+):
+    proj = await _require_project(project_id, db)
+    return await db.get_chapters_with_status(project_id, paths.projects, proj["slug"])
+
+
 @router.get("")
 async def list_projects(db: Store = Depends(get_store)):
     return await db.list_projects()

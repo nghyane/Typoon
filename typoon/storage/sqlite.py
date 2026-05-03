@@ -257,6 +257,29 @@ class SqliteStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
+    async def get_chapters_with_status(self, project_id: int, projects_root, slug: str) -> list[dict]:
+        """Chapters with state/stage/page_count in one query batch."""
+        from typoon.paths import ProjectPaths
+        from typoon.adapters.projects import _derive_state
+        chapters = await self.get_all_chapters(project_id)
+        proj_paths = ProjectPaths(projects_root, slug)
+        result = []
+        for ch in chapters:
+            cp         = proj_paths.chapter(ch["id"])
+            tasks      = await self.get_tasks(ch["id"])
+            state, stage, error = _derive_state(cp, tasks)
+            page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
+                         len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
+            result.append({
+                "chapter_id": ch["id"],
+                "idx":        ch["idx"],
+                "state":      state,
+                "stage":      stage,
+                "page_count": page_count,
+                "error":      error,
+            })
+        return result
+
     # ── Tasks ─────────────────────────────────────────────────────
 
     async def enqueue(self, chapter_id: int, stage: str) -> None:
