@@ -173,47 +173,31 @@ export function OverviewPage() {
 
       {/* Right sidebar */}
       <div className="w-80 shrink-0 border-l border-(--color-border) px-5 py-7 overflow-y-auto flex flex-col gap-6">
-        {/* Pipeline hôm nay */}
+        {/* Pipeline stages — từ chapters đang running */}
         <div>
           <h3 className="text-sm font-semibold text-(--color-text) mb-4">Pipeline hôm nay</h3>
-          <div className="flex flex-col gap-3">
-            <PipelineRow label="OCR"      value={142} max={200} variant="running" />
-            <PipelineRow label="Dịch"     value={87}  max={200} variant="done" />
-            <PipelineRow label="Render"   value={31}  max={200} variant="purple" />
-            <PipelineRow label="Hoàn thành" value={56} max={200} variant="done" />
-          </div>
+          {(() => {
+            const scanning   = projects.length  // placeholder — chưa có per-stage count từ API
+            const total      = Math.max(scanning, 1)
+            return (
+              <div className="flex flex-col gap-3">
+                <PipelineRow label="Scan"     value={0} max={total} variant="running" />
+                <PipelineRow label="Dịch"     value={0} max={total} variant="done" />
+                <PipelineRow label="Render"   value={0} max={total} variant="purple" />
+                <PipelineRow label="Hoàn thành" value={0} max={total} variant="done" />
+              </div>
+            )
+          })()}
+          <p className="text-xs text-(--color-text-3) mt-3">Cần API trả stage count để hiển thị chính xác</p>
         </div>
 
         {/* Hàng chờ */}
         <div>
           <h3 className="text-sm font-semibold text-(--color-text) mb-2">Hàng chờ</h3>
-          <p className="text-2xl font-bold text-(--color-text) mb-1">88 <span className="text-sm font-normal text-(--color-text-3)">chương đang chờ</span></p>
-          <ProgressBar value={44} variant="running" className="mb-2" />
-          <p className="text-xs text-(--color-text-3) mb-3">Ưu tiên: One Piece, Jujutsu Kaisen, Blue Lock</p>
-          <button className="w-full flex items-center justify-center gap-2 h-9 rounded-lg border border-(--color-border) text-sm text-(--color-text-2) hover:bg-(--color-surface) transition-colors">
+          <p className="text-sm text-(--color-text-3)">Chưa có API worker status</p>
+          <Link to="/pipeline" className="mt-3 w-full flex items-center justify-center gap-2 h-9 rounded-lg border border-(--color-border) text-sm text-(--color-text-2) hover:bg-(--color-surface) transition-colors">
             Mở Pipeline
-          </button>
-        </div>
-
-        {/* Worker status */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-(--color-text)">Hiệu suất worker</h3>
-            <MoreHorizontal size={15} className="text-(--color-text-3)" />
-          </div>
-          {[
-            { name: 'worker-01', task: 'OCR',       taskColor: 'bg-blue-50 text-(--color-blue)',    status: 'Hoạt động', statusColor: 'text-(--color-green)', dot: 'bg-(--color-green)' },
-            { name: 'worker-02', task: 'Translate', taskColor: 'bg-purple-50 text-purple-500',     status: 'Hoạt động', statusColor: 'text-(--color-green)', dot: 'bg-(--color-green)' },
-            { name: 'worker-03', task: 'Render',    taskColor: 'bg-orange-50 text-(--color-orange)', status: 'Bận',       statusColor: 'text-(--color-orange)', dot: 'bg-(--color-orange)' },
-            { name: 'worker-04', task: 'Retry',     taskColor: 'bg-(--color-surface) text-(--color-text-3)', status: 'Rảnh', statusColor: 'text-(--color-text-3)', dot: 'bg-(--color-text-4)' },
-          ].map(w => (
-            <div key={w.name} className="flex items-center gap-2 py-2 border-b border-(--color-border) last:border-0">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${w.dot}`} />
-              <span className="flex-1 text-sm text-(--color-text-2)">{w.name}</span>
-              <span className={`text-xs px-2 py-0.5 rounded-md ${w.taskColor}`}>{w.task}</span>
-              <span className={`text-xs ${w.statusColor}`}>{w.status}</span>
-            </div>
-          ))}
+          </Link>
         </div>
 
         {/* Storage */}
