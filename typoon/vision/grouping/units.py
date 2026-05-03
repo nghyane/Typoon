@@ -96,7 +96,11 @@ def split_units(state: ScanState) -> None:
 
         qualifying: list[tuple[int, int, int]] = []
         for si, s in enumerate(state.scopes):
-            sx1, _, sx2, _ = s.bbox
+            sx1, sy1, sx2, sy2 = s.bbox
+            # scope must y-overlap with unit — prevents scopes from adjacent
+            # bubbles (different y-band) from triggering a spurious split
+            if sy2 <= uy1 or sy1 >= uy2:
+                continue
             ox1, ox2 = max(ux1, sx1), min(ux2, sx2)
             if ox2 > ox1 and (ox2 - ox1) / uw >= _SPLIT_MIN_COVERAGE:
                 qualifying.append((si, ox1, ox2))

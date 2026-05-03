@@ -46,7 +46,6 @@ def render_chapter(
         erase_masks = [
             m
             for tb in tp.bubbles
-            if tb.kind != "skip"
             for bm in [page_masks.get(tb.idx)]
             if bm is not None
             for m in bm.erase_masks

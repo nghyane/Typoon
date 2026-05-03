@@ -409,7 +409,7 @@ def _should_skip(g: GroupState, pw: int, ph: int) -> tuple[bool, str | None]:
         if _looks_like_narration(text, g.confidence): return False, None
         if g.confidence < 0.35:                      return True, "free_low_conf"
         if g.confidence < 0.60 and abs(g.median_angle) > 3: return True, "free_angled_low_conf"
-        if ar > 0.025 or wr > 0.24 or hr > 0.16:   return True, "free_large_sfx_like"
+        if (ar > 0.025 or wr > 0.24 or hr > 0.16) and g.confidence < 0.70: return True, "free_large_sfx_like"
         if len(text) <= 2 and g.confidence < 0.80:  return True, "free_short_low_conf"
         if bw < 20 or bh < 20:                      return True, "free_tiny"
     return False, None
