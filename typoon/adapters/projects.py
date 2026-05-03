@@ -115,7 +115,7 @@ class Projects:
         source_lang: str,
         target_lang: str,
         hook: Hook,
-    ) -> str:
+    ) -> int:
         slug       = slugify(title)
         project_id = await self._db.get_or_create_project(
             slug=slug, title=title,
@@ -124,7 +124,7 @@ class Projects:
         proj = await self._db.get_project(project_id)
         ProjectPaths(self._paths.projects, slug).ensure()
         await self._import_and_enqueue(proj, folder, hook)
-        return slug
+        return project_id
 
     async def import_more(self, slug: str, folder: Path, hook: Hook) -> None:
         proj = await self.require(slug)

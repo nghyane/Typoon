@@ -260,13 +260,12 @@ class SqliteStore:
     async def get_chapters_with_status(self, project_id: int, projects_root, slug: str) -> list[dict]:
         """Chapters with state/stage/page_count in one query batch."""
         from typoon.paths import ProjectPaths
-        from typoon.adapters.projects import _derive_state
-        chapters = await self.get_all_chapters(project_id)
+        chapters   = await self.get_all_chapters(project_id)
         proj_paths = ProjectPaths(projects_root, slug)
         result = []
         for ch in chapters:
-            cp         = proj_paths.chapter(ch["id"])
-            tasks      = await self.get_tasks(ch["id"])
+            cp    = proj_paths.chapter(ch["id"])
+            tasks = await self.get_tasks(ch["id"])
             state, stage, error = _derive_state(cp, tasks)
             page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
                          len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
@@ -279,6 +278,33 @@ class SqliteStore:
                 "error":      error,
             })
         return result
+
+    async def get_chapter_with_status(self, chapter_id: int, project_id: int, projects_root, slug: str) -> dict | None:
+        """Single chapter with state/stage/page_count/progress."""
+        from typoon.paths import ProjectPaths
+        ch = await self.get_chapter(chapter_id)
+        if ch is None or ch["project_id"] != project_id:
+            return None
+        cp         = ProjectPaths(projects_root, slug).chapter(chapter_id)
+        tasks      = await self.get_tasks(chapter_id)
+        state, stage, error = _derive_state(cp, tasks)
+        page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
+                     len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
+        progress   = await self.get_chapter_progress(chapter_id)
+        return {
+            "chapter_id": chapter_id,
+            "project_id": project_id,
+            "idx":        ch["idx"],
+            "state":      state,
+            "stage":      stage,
+            "page_count": page_count,
+            "error":      error,
+            "progress":   progress and {
+                "stage":      progress["stage"],
+                "page_index": progress["page_index"],
+                "page_total": progress["page_total"],
+            },
+        }
 
     # ── Tasks ─────────────────────────────────────────────────────
 
@@ -656,6 +682,24 @@ class SqliteStore:
 # ── Helpers ───────────────────────────────────────────────────────────
 
 _FTS_SPECIAL = _re.compile(r"[\"'\(\)\*\:\^\-\+\{\}\[\]~]")
+
+
+def _derive_state(cp, tasks: list[dict]) -> tuple[str, str, str]:
+    """Derive (state, stage, error) from filesystem + tasks table."""
+    if cp.is_rendered:
+        return "done", "", ""
+    if not tasks:
+        return "idle", "", ""
+    running = [t for t in tasks if t["claimed_by"]]
+    if running:
+        return "running", running[0]["stage"], ""
+    failed = [t for t in tasks if t["last_error"] and t["attempts"] >= 3]
+    if failed:
+        return "error", failed[0]["stage"], failed[0]["last_error"] or ""
+    pending = [t for t in tasks if not t["claimed_by"]]
+    if pending:
+        return "pending", pending[0]["stage"], ""
+    return "idle", "", ""
 
 
 def _fts_escape(query: str) -> str:

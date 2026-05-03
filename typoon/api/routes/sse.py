@@ -1,4 +1,4 @@
-"""SSE event stream — Redis Streams, supports reconnect via Last-Event-ID."""
+"""SSE event stream — supports reconnect via Last-Event-ID."""
 
 from __future__ import annotations
 

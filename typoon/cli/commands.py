@@ -137,7 +137,9 @@ async def _add(
             if not src.is_dir():
                 console.print(f"[red]Not a directory:[/] {src}")
                 raise typer.Exit(2)
-            slug = await projects.import_new(src, name or src.name, source_lang, target_lang, ConsoleHook())
+            project_id = await projects.import_new(src, name or src.name, source_lang, target_lang, ConsoleHook())
+            proj = await projects._db.get_project(project_id)
+            slug = proj["slug"]
             console.print(f"\n[dim]slug: [bold]{slug}[/][/]")
     finally:
         await projects.close()
