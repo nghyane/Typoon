@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from typoon.storage.store import Store
+from typoon.storage import Store
 from typoon.llm.ir import Provider
 from typoon.runs.events import Hook
 

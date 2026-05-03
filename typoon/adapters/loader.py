@@ -13,7 +13,7 @@ from typoon.domain import scan, translate
 from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.paths import ChapterPaths
-from typoon.storage.store import Store
+from typoon.storage import Store
 
 
 def load_prepared(cp: ChapterPaths) -> PreparedChapter:

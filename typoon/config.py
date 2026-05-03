@@ -57,6 +57,7 @@ class Config(BaseSettings):
     context_agent: ContextAgentConfig = ContextAgentConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
+    database_url: str = ""  # empty = SQLite default path, or "postgresql://..."
 
 
 # ── Loading ──────────────────────────────────────────────────────

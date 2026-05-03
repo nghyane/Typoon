@@ -18,7 +18,7 @@ from typoon.runs.events import (
 from typoon.sources.constants import IMAGE_EXTS
 from typoon.sources.local import LocalSource
 from typoon.stages.prepare import prepare_chapter
-from typoon.storage.sqlite import SqliteStore
+from typoon.storage import Store, SqliteStore
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class ProjectStatus:
 
 
 class Projects:
-    def __init__(self, db: SqliteStore, paths: Paths) -> None:
+    def __init__(self, db: Store, paths: Paths) -> None:
         self._db    = db
         self._paths = paths
 

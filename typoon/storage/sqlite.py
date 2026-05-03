@@ -143,6 +143,12 @@ CREATE TRIGGER IF NOT EXISTS glossary_au AFTER UPDATE ON glossary BEGIN
     INSERT INTO glossary_fts(glossary_fts, rowid, source_term) VALUES ('delete', old.id, old.source_term);
     INSERT INTO glossary_fts(rowid, source_term) VALUES (new.id, new.source_term);
 END;
+
+CREATE TABLE IF NOT EXISTS events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    data       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
@@ -593,6 +599,20 @@ class SqliteStore:
                         seen.add(h)
                         results.append(h)
         return results[:limit]
+
+    # ── Events ────────────────────────────────────────────────────
+
+    async def append_event(self, data: dict) -> None:
+        import json
+        await self._db.execute("INSERT INTO events (data) VALUES (?)", (json.dumps(data),))
+        await self._db.commit()
+
+    async def get_events_after(self, seq: int) -> list[dict]:
+        import json
+        cur = await self._db.execute(
+            "SELECT id, data FROM events WHERE id > ? ORDER BY id LIMIT 100", (seq,)
+        )
+        return [{"id": r["id"], **json.loads(r["data"])} async for r in cur]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

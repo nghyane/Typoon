@@ -24,7 +24,7 @@ from typoon.runs.events import Hook, LoggingHook, StageDone, StageFailed, StageS
 from typoon.stages.scan import scan_chapter
 from typoon.stages.translate import translate_chapter
 from typoon.stages.render import render_chapter
-from typoon.storage.sqlite import SqliteStore
+from typoon.storage import Store, SqliteStore
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,15 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
 
     db      = await SqliteStore.open(paths.db)
     runtime = VisionRuntime.from_config(config)[0]
-    hook    = LoggingHook()
+
+    from typoon.runs.events import CompositeHook
+    from typoon.api.events import EventHook, LocalEventBus, PostgresEventBus
+    url = getattr(config, "database_url", "")
+    if url.startswith(("postgresql://", "postgres://")):
+        event_bus = PostgresEventBus(url)
+    else:
+        event_bus = LocalEventBus(db)
+    hook = CompositeHook(LoggingHook(), EventHook(event_bus))
 
     try:
         await asyncio.gather(
@@ -162,6 +170,7 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
         )
     finally:
         await db.close()
+        await redis.aclose()
 
 
 # ── Helper ────────────────────────────────────────────────────────────
