@@ -641,6 +641,17 @@ class SqliteStore:
         )
         return [{"id": r["id"], **json.loads(r["data"])} async for r in cur]
 
+    async def get_chapter_progress(self, chapter_id: int) -> dict | None:
+        """Latest PageDone event for this chapter — for page-level progress."""
+        import json
+        cur = await self._db.execute(
+            "SELECT data FROM events WHERE json_extract(data,'$.type')='PageDone' "
+            "AND json_extract(data,'$.chapter_id')=? ORDER BY id DESC LIMIT 1",
+            (chapter_id,),
+        )
+        row = await cur.fetchone()
+        return json.loads(row["data"]) if row else None
+
 
 # ── Helpers ───────────────────────────────────────────────────────────
 

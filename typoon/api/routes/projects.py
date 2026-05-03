@@ -44,6 +44,43 @@ async def list_chapters(
     return await db.get_chapters_with_status(project_id, paths.projects, proj["slug"])
 
 
+@router.get("/{project_id}/chapters/{chapter_id}")
+async def get_chapter(
+    project_id: int,
+    chapter_id: int,
+    db:    Store = Depends(get_store),
+    paths: Paths = Depends(get_paths),
+):
+    proj = await _require_project(project_id, db)
+    ch   = await db.get_chapter(chapter_id)
+    if ch is None or ch["project_id"] != project_id:
+        raise HTTPException(404, "Chapter not found")
+
+    from typoon.adapters.projects import _derive_state
+    from typoon.paths import ProjectPaths
+    cp         = ProjectPaths(paths.projects, proj["slug"]).chapter(chapter_id)
+    tasks      = await db.get_tasks(chapter_id)
+    state, stage, error = _derive_state(cp, tasks)
+    page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
+                 len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
+    progress   = await db.get_chapter_progress(chapter_id)
+
+    return {
+        "chapter_id":  chapter_id,
+        "project_id":  project_id,
+        "idx":         ch["idx"],
+        "state":       state,
+        "stage":       stage,
+        "page_count":  page_count,
+        "error":       error,
+        "progress":    {
+            "page_index": progress["page_index"] if progress else None,
+            "page_total": progress["page_total"] if progress else None,
+            "stage":      progress["stage"]       if progress else None,
+        },
+    }
+
+
 @router.get("")
 async def list_projects(db: Store = Depends(get_store)):
     return await db.list_projects()
