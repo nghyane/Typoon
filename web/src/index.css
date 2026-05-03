@@ -23,10 +23,10 @@
   --color-text-3:          #aeaeb2;   /* iOS tertiaryLabel */
   --color-text-4:          #c7c7cc;   /* iOS quaternaryLabel */
 
-  /* ── Nav active — iOS dark fill ───────────────── */
-  --color-nav-active-bg:   #1c1c1e;
-  --color-nav-active-text: #ffffff;
-  --color-nav-hover-bg:    #f2f2f7;
+  /* ── Nav active — iOS light gray, NOT dark ──────── */
+  --color-nav-active-bg:   #f0f0f0;
+  --color-nav-active-text: #1c1c1e;
+  --color-nav-hover-bg:    #f7f7f7;
 
   /* ── Accent — iOS blue ────────────────────────── */
   --color-accent:          #007aff;
