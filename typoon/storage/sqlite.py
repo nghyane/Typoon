@@ -376,6 +376,12 @@ class SqliteStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
+    async def delete_chapter_data(self, chapter_id: int) -> None:
+        """Delete all derived data for a chapter — keeps identity row."""
+        for table in ("bubbles", "translations", "chapter_briefs", "tasks"):
+            await self._db.execute(f"DELETE FROM {table} WHERE chapter_id=?", (chapter_id,))
+        await self._db.commit()
+
     async def has_bubbles(self, chapter_id: int) -> bool:
         cur = await self._db.execute(
             "SELECT 1 FROM bubbles WHERE chapter_id=? LIMIT 1", (chapter_id,)

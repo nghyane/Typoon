@@ -88,6 +88,13 @@ class ChapterPaths:
         for d in (self.pages, self.masks, self.render):
             d.mkdir(parents=True, exist_ok=True)
 
+    def clear_artifacts(self) -> None:
+        """Delete scan/masks/render artifacts — keeps pages/ (source images)."""
+        import shutil
+        self.scan.unlink(missing_ok=True)
+        shutil.rmtree(self.masks,  ignore_errors=True)
+        shutil.rmtree(self.render, ignore_errors=True)
+
 
 @dataclass(frozen=True)
 class ProjectPaths:

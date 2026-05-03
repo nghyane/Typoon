@@ -23,8 +23,10 @@ from typoon.storage.sqlite import SqliteStore
 class ChapterStatus:
     chapter_id:   int
     idx:          float
+    state:        str    # done | running | error | pending | idle
+    stage:        str    # scan | translate | render | ""
     render_count: int
-    render_path:  str
+    error:        str    # last error message if state == error
 
 
 @dataclass(frozen=True)
@@ -126,29 +128,29 @@ class Projects:
         proj = await self.require(slug)
         await self._import_and_enqueue(proj, folder, hook)
 
-    # ── Enqueue translation ───────────────────────────────────────────
+    # ── Redo — full reset + re-enqueue ───────────────────────────────
 
-    async def enqueue_translate(
+    async def redo(
         self,
         slug: str,
         indices: list[float] | None = None,
-        redo: str | None = None,
-    ) -> None:
-        proj     = await self.require(slug)
-        chapters = await self._db.get_all_chapters(proj["id"])
+    ) -> int:
+        """Reset chapters to blank state and enqueue scan. Returns count."""
+        proj      = await self.require(slug)
+        chapters  = await self._db.get_all_chapters(proj["id"])
+        proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
 
         if indices is not None:
             idx_set  = set(indices)
             chapters = [c for c in chapters if c["idx"] in idx_set]
 
         for ch in chapters:
-            if redo:
-                await self._db.delete_tasks_from(ch["id"], redo)
-            first_stage = redo or _next_stage(
-                ProjectPaths(self._paths.projects, proj["slug"]).chapter(ch["id"])
-            )
-            if first_stage:
-                await self._db.enqueue(ch["id"], first_stage)
+            cp = proj_paths.chapter(ch["id"])
+            cp.clear_artifacts()
+            await self._db.delete_chapter_data(ch["id"])
+            await self._db.enqueue(ch["id"], "scan")
+
+        return len(chapters)
 
     # ── Status ────────────────────────────────────────────────────────
 
@@ -164,11 +166,15 @@ class Projects:
             for ch in await self._db.get_all_chapters(proj["id"]):
                 cp           = proj_paths.chapter(ch["id"])
                 render_count = len(list(cp.render.iterdir())) if cp.is_rendered else 0
+                tasks        = await self._db.get_tasks(ch["id"])
+                state, stage, error = _derive_state(cp, tasks)
                 chapters.append(ChapterStatus(
                     chapter_id=ch["id"],
                     idx=ch["idx"],
+                    state=state,
+                    stage=stage,
                     render_count=render_count,
-                    render_path=str(cp.render),
+                    error=error,
                 ))
             result.append(ProjectStatus(
                 project_id=proj["id"],
@@ -244,10 +250,22 @@ def _connector(url: str):
     return c
 
 
-def _next_stage(cp: ChapterPaths) -> str | None:
-    if not cp.is_prepared: return "prepare"
-    if not cp.is_scanned:  return "scan"
-    return "translate"
+def _derive_state(cp, tasks: list[dict]) -> tuple[str, str, str]:
+    """Derive (state, stage, error) from filesystem + tasks table."""
+    if cp.is_rendered:
+        return "done", "", ""
+    if not tasks:
+        return "idle", "", ""
+    running = [t for t in tasks if t["claimed_by"]]
+    if running:
+        return "running", running[0]["stage"], ""
+    failed = [t for t in tasks if t["last_error"] and t["attempts"] >= 3]
+    if failed:
+        return "error", failed[0]["stage"], failed[0]["last_error"] or ""
+    pending = [t for t in tasks if not t["claimed_by"]]
+    if pending:
+        return "pending", pending[0]["stage"], ""
+    return "idle", "", ""
 
 
 def _chapter_dirs(folder: Path) -> list[Path]:

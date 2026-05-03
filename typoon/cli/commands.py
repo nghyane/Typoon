@@ -99,11 +99,11 @@ async def _pull(
 
 @app.command()
 def add(
-    target:      str        = typer.Argument(..., help="Folder path or project slug"),
-    folder:      Path       = typer.Argument(None, help="Chapter folder (when slug given first)"),
-    target_lang: str        = typer.Option("vi", "--target-lang", "-t"),
-    source_lang: str        = typer.Option("ko", "--source-lang", "-s"),
-    name:        str        = typer.Option(None,  "--name", "-n"),
+    target:      str  = typer.Argument(..., help="Folder path or project slug"),
+    folder:      Path = typer.Argument(None, help="Chapter folder (when slug given first)"),
+    target_lang: str  = typer.Option("vi", "--target-lang", "-t"),
+    source_lang: str  = typer.Option("ko", "--source-lang", "-s"),
+    name:        str  = typer.Option(None, "--name", "-n"),
 ):
     """Import local chapter images and enqueue for translation.
 
@@ -143,28 +143,29 @@ async def _add(
         await projects.close()
 
 
-# ── translate ─────────────────────────────────────────────────────────
+# ── redo ──────────────────────────────────────────────────────────────
 
 
 @app.command()
-def translate(
+def redo(
     slug:    str   = typer.Argument(..., help="Project slug"),
-    from_ch: float = typer.Option(0, "--from"),
-    to_ch:   float = typer.Option(0, "--to"),
-    redo:    str   = typer.Option(None, "--redo", help="Re-run from: scan|translate|render"),
+    from_ch: float = typer.Option(0, "--from", help="First chapter"),
+    to_ch:   float = typer.Option(0, "--to",   help="Last chapter"),
 ):
-    """Enqueue pending chapters for translation.
+    """Reset chapters and re-run the full pipeline from scratch.
+
+    Deletes all artifacts and derived data, then re-enqueues scan.
+    Source images (pages/) are kept.
 
     \b
     Examples:
-      typoon translate solo-leveling
-      typoon translate solo-leveling --from 5 --to 10
-      typoon translate solo-leveling --redo translate
+      typoon redo solo-leveling
+      typoon redo solo-leveling --from 5 --to 10
     """
-    asyncio.run(_translate(slug, from_ch, to_ch, redo))
+    asyncio.run(_redo(slug, from_ch, to_ch))
 
 
-async def _translate(slug: str, from_ch: float, to_ch: float, redo: str | None) -> None:
+async def _redo(slug: str, from_ch: float, to_ch: float) -> None:
     from ..adapters.projects import Projects
     projects = await Projects.open()
     try:
@@ -175,8 +176,8 @@ async def _translate(slug: str, from_ch: float, to_ch: float, redo: str | None) 
             lo      = from_ch or all_chs[0]["idx"]
             hi      = to_ch   or all_chs[-1]["idx"]
             indices = [c["idx"] for c in all_chs if lo <= c["idx"] <= hi]
-        await projects.enqueue_translate(slug, indices, redo)
-        console.print("[green]✓[/] tasks enqueued — run 'typoon work' to process")
+        count = await projects.redo(slug, indices)
+        console.print(f"[green]✓[/] {count} chapter(s) reset and enqueued — run 'typoon work' to process")
     finally:
         await projects.close()
 
@@ -194,7 +195,7 @@ def work(
 
 async def _work(concurrency: int) -> None:
     from ..workers.loop import run_workers
-    console.print(f"[dim]workers started (translate×{concurrency})[/]")
+    console.print(f"[dim]workers started (translate×{concurrency}) — Ctrl+C to stop[/]")
     await run_workers(translate_concurrency=concurrency)
 
 
@@ -223,22 +224,37 @@ async def _status(slug: str | None) -> None:
 
 
 def _print_project(proj) -> None:
-    done  = sum(1 for c in proj.chapters if c.render_count > 0)
+    done  = sum(1 for c in proj.chapters if c.state == "done")
     total = len(proj.chapters)
     console.print(
         f"\n[bold]{proj.title}[/]  [dim]{proj.slug}[/]  "
         f"{proj.source_lang}→{proj.target_lang}  "
-        f"[green]{done}[/]/[dim]{total}[/] chapters"
+        f"[green]{done}[/]/[dim]{total}[/] done"
     )
     if not proj.chapters:
         console.print("  [dim]No chapters[/]")
         return
     t = Table(show_header=False, box=None, padding=(0, 1))
     for ch in proj.chapters:
-        icon = "[green]✓[/]" if ch.render_count > 0 else "[dim]○[/]"
-        info = f"[dim]{ch.render_count} pages[/]" if ch.render_count else ""
-        t.add_row(icon, f"ch#{ch.chapter_id}", f"[dim]idx {ch.idx:.4g}[/]", info)
+        icon = {
+            "done":    "[green]✓[/]",
+            "running": "[yellow]⟳[/]",
+            "error":   "[red]✗[/]",
+            "pending": "[dim]○[/]",
+            "idle":    "[dim]–[/]",
+        }.get(ch.state, "?")
+        detail = ""
+        if ch.state == "done":
+            detail = f"[dim]{ch.render_count} pages[/]"
+        elif ch.state in ("running", "pending"):
+            detail = f"[dim]{ch.stage}[/]"
+        elif ch.state == "error":
+            detail = f"[red]{ch.stage}: {ch.error[:60]}[/]"
+        t.add_row(icon, f"[dim]#{ch.chapter_id}[/]", f"ch{ch.idx:.4g}", detail)
     console.print(t)
+
+
+# ── helpers ───────────────────────────────────────────────────────────
 
 
 def _select_chapters(chapters, from_ch: float, to_ch: float) -> list:
