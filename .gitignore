@@ -14,8 +14,8 @@ data/
 # Cache / benchmark outputs
 cache/
 
-# Project data
-projects/
+# Project data (typoon storage, not web routes)
+/projects/
 
 # SQLite temp files
 *.db

@@ -1,10 +1,3 @@
-import { cn } from '../../lib/cn'
-
 export function Skeleton({ className }: { className?: string }) {
-  return (
-    <div
-      className={cn('animate-pulse rounded-md', className)}
-      style={{ background: 'var(--color-surface-3)' }}
-    />
-  )
+  return <div className={`animate-pulse rounded bg-(--color-surface-2) ${className ?? ''}`} />
 }

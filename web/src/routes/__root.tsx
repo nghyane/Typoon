@@ -11,17 +11,16 @@ function RootLayout() {
   return (
     <>
       <AppShell />
-
       <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
         {toasts.map((t) => (
           <div
             key={t.id}
             onClick={() => remove(t.id)}
             className={cn(
-              'px-4 py-2 rounded-lg text-sm cursor-pointer shadow-lg',
-              t.type === 'success' && 'bg-green-600 text-white',
-              t.type === 'error'   && 'bg-red-600 text-white',
-              t.type === 'info'    && 'bg-blue-600 text-white',
+              'px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer shadow-sm border',
+              t.type === 'success' && 'bg-white border-green-100 text-green-700',
+              t.type === 'error'   && 'bg-white border-red-100 text-red-600',
+              t.type === 'info'    && 'bg-white border-blue-100 text-blue-600',
             )}
           >
             {t.message}

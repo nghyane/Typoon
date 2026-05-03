@@ -5,69 +5,63 @@
 @import "@fontsource/inter/700.css";
 
 @theme {
-  /* ── Typography ───────────────────────────────────────── */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 
-  /* ── Radius ───────────────────────────────────────────── */
-  --radius-sm:  6px;
-  --radius-md:  10px;
-  --radius-lg:  14px;
-  --radius-xl:  18px;
-  --radius-2xl: 24px;
+  /* ── Radius ─────────────────────────────── */
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
 
-  /* ── Colors — surface ─────────────────────────────────── */
-  --color-bg:           #0a0a0f;
-  --color-surface-1:    #111118;
-  --color-surface-2:    #18181f;
-  --color-surface-3:    #22222c;
-  --color-surface-4:    #2c2c38;
-  --color-border:       #2e2e3a;
-  --color-border-subtle:#1e1e28;
+  /* ── Surface ────────────────────────────── */
+  --color-bg:        #ffffff;
+  --color-surface-1: #f9fafb;
+  --color-surface-2: #f3f4f6;
+  --color-surface-3: #e5e7eb;
+  --color-border:    #e5e7eb;
+  --color-border-subtle: #f3f4f6;
 
-  /* ── Colors — text ────────────────────────────────────── */
-  --color-text-1:  #f0f0f8;
-  --color-text-2:  #a0a0b8;
-  --color-text-3:  #606078;
-  --color-text-4:  #3a3a50;
+  /* ── Text ───────────────────────────────── */
+  --color-text-1: #111827;
+  --color-text-2: #6b7280;
+  --color-text-3: #9ca3af;
+  --color-text-4: #d1d5db;
 
-  /* ── Colors — accent ──────────────────────────────────── */
-  --color-accent:       #6366f1;
-  --color-accent-hover: #818cf8;
-  --color-accent-muted: #6366f11a;
+  /* ── Accent (dark) ──────────────────────── */
+  --color-accent:       #111827;
+  --color-accent-text:  #ffffff;
+  --color-accent-hover: #1f2937;
 
-  /* ── Colors — status ──────────────────────────────────── */
-  --color-success:       #22c55e;
-  --color-success-muted: #22c55e1a;
-  --color-warning:       #f59e0b;
-  --color-warning-muted: #f59e0b1a;
-  --color-error:         #ef4444;
-  --color-error-muted:   #ef44441a;
-  --color-info:          #3b82f6;
-  --color-info-muted:    #3b82f61a;
-  --color-idle:          #525268;
+  /* ── Nav active ─────────────────────────── */
+  --color-nav-active-bg:   #111827;
+  --color-nav-active-text: #ffffff;
+  --color-nav-hover-bg:    #f3f4f6;
 
-  /* ── Sidebar ──────────────────────────────────────────── */
-  --sidebar-width: 220px;
+  /* ── Status ─────────────────────────────── */
+  --color-done:    #22c55e;
+  --color-running: #3b82f6;
+  --color-pending: #f59e0b;
+  --color-idle:    #d1d5db;
+  --color-error:   #ef4444;
+
+  /* ── Filter pill active ─────────────────── */
+  --color-pill-active-bg:   #111827;
+  --color-pill-active-text: #ffffff;
+
+  /* ── Sidebar ────────────────────────────── */
+  --sidebar-width: 224px;
 }
 
-/* ── Base ─────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; }
-
-html, body, #root {
-  height: 100%;
-  margin: 0;
-}
+html, body, #root { height: 100%; margin: 0; }
 
 body {
   font-family: var(--font-sans);
-  background-color: var(--color-bg);
+  background: var(--color-bg);
   color: var(--color-text-1);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Scrollbar ────────────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-surface-4); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-text-3); }
+::-webkit-scrollbar-thumb { background: var(--color-surface-3); border-radius: 999px; }
