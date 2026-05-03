@@ -6,7 +6,7 @@ No pipeline execution. No stage logic. Workers consume tasks from DB.
 from __future__ import annotations
 
 import re
-import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +16,8 @@ from typoon.runs.events import (
     ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
 )
 from typoon.sources.constants import IMAGE_EXTS
+from typoon.sources.local import LocalSource
+from typoon.stages.prepare import prepare_chapter
 from typoon.storage.sqlite import SqliteStore
 
 
@@ -210,7 +212,9 @@ class Projects:
                 try:
                     from typoon.downloader import download_images
                     page_urls = await connector.get_page_urls(ch)
-                    await download_images(page_urls, cp.pages)
+                    with tempfile.TemporaryDirectory() as tmp:
+                        await download_images(page_urls, Path(tmp))
+                        prepare_chapter(LocalSource(Path(tmp)), cp)
                     hook.on(ChapterDownloaded(chapter_id=chapter_id, page_count=len(page_urls)))
                 except Exception as e:
                     hook.on(ChapterFailed(chapter_id=chapter_id, stage="download", error=e))
@@ -231,7 +235,7 @@ class Projects:
             if cp.is_prepared:
                 hook.on(ChapterSkipped(chapter_id=chapter_id, reason="images_exist"))
             else:
-                _copy_images(src_dir, cp.pages)
+                prepare_chapter(LocalSource(src_dir), cp)
                 hook.on(ChapterDownloaded(
                     chapter_id=chapter_id,
                     page_count=len(list(cp.pages.iterdir())),
@@ -284,9 +288,4 @@ def _parse_idx(name: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
-def _copy_images(src: Path, dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    for i, f in enumerate(sorted(
-        f for f in src.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-    )):
-        shutil.copy2(f, dest / f"{i:04d}{f.suffix.lower()}")
+

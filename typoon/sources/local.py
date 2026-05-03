@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageOps
 
 from typoon.sources.constants import IMAGE_EXTS
 
@@ -33,7 +34,10 @@ class LocalSource:
 
     def load_page(self, index: int) -> np.ndarray:
         files = self._discover()
-        bgr = cv2.imread(str(files[index]))
-        if bgr is None:
-            raise FileNotFoundError(f"Cannot read: {files[index]}")
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        path = files[index]
+        # Use PIL to respect EXIF orientation before converting to array.
+        # cv2.imread ignores EXIF orientation tags.
+        with Image.open(path) as img:
+            img = ImageOps.exif_transpose(img)
+            rgb = img.convert("RGB")
+            return np.array(rgb, dtype=np.uint8)
