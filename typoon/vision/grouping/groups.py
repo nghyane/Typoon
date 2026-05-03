@@ -201,9 +201,15 @@ def _rotate_crop(crop: np.ndarray, angle: float) -> np.ndarray:
         ch, cw = crop.shape[:2]
         M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
         crop = cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
-    # Adaptive binarization removes bubble-edge noise and improves manga font OCR
+    # Adaptive binarization removes bubble-edge noise and improves manga font OCR.
+    # Detect polarity: dark-on-light (manga/manhwa white bubble) vs light-on-dark
+    # (dark/colored bubble background). THRESH_BINARY_INV for the latter so text
+    # pixels always become black in the binarized crop fed to OCR.
     gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    thresh_type = (
+        cv2.THRESH_BINARY if gray.mean() > 127 else cv2.THRESH_BINARY_INV
+    )
+    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, thresh_type, 11, 2)
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
 
