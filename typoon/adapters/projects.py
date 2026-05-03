@@ -216,7 +216,8 @@ class Projects:
                     hook.on(ChapterFailed(chapter_id=chapter_id, stage="download", error=e))
                     continue
 
-            await self._db.enqueue(chapter_id, "scan")
+            if not cp.is_rendered:
+                await self._db.enqueue(chapter_id, "scan")
 
     async def _import_and_enqueue(self, proj: dict, folder: Path, hook: Hook) -> None:
         proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
@@ -236,7 +237,8 @@ class Projects:
                     page_count=len(list(cp.pages.iterdir())),
                 ))
 
-            await self._db.enqueue(chapter_id, "scan")
+            if not cp.is_rendered:
+                await self._db.enqueue(chapter_id, "scan")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
