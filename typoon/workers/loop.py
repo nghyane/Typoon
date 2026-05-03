@@ -19,6 +19,7 @@ from typoon.adapters.ctx import TranslateCtx, make_ctx
 from typoon.adapters.loader import load_prepared, load_scanned, load_translated_with_geometry
 from typoon.adapters.mask_store import save_scan_geometry
 from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.config import Config
 from typoon.paths import Paths, ProjectPaths, ChapterPaths
 from typoon.runs.events import Hook, LoggingHook, StageDone, StageFailed, StageStarted
 from typoon.stages.scan import scan_chapter
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 _POLL_INTERVAL = 2.0
 
 
-async def scan_loop(db: SqliteStore, runtime: VisionRuntime, paths: Paths, hook: Hook) -> None:
+async def scan_loop(db: Store, runtime: VisionRuntime, paths: Paths, hook: Hook) -> None:
     worker_id = str(uuid4())
     while True:
         chapter_id = await db.claim_task("scan", worker_id)
@@ -42,7 +43,7 @@ async def scan_loop(db: SqliteStore, runtime: VisionRuntime, paths: Paths, hook:
         await _run_scan(cp, chapter_id, db, runtime, hook)
 
 
-async def translate_loop(db: SqliteStore, paths: Paths, config, hook: Hook) -> None:
+async def translate_loop(db: Store, paths: Paths, config: Config, hook: Hook) -> None:
     worker_id = str(uuid4())
     while True:
         chapter_id = await db.claim_task("translate", worker_id)
@@ -63,7 +64,7 @@ async def translate_loop(db: SqliteStore, paths: Paths, config, hook: Hook) -> N
         await _run_translate(cp, chapter_id, ctx, db, hook)
 
 
-async def render_loop(db: SqliteStore, runtime: VisionRuntime, paths: Paths, hook: Hook) -> None:
+async def render_loop(db: Store, runtime: VisionRuntime, paths: Paths, hook: Hook) -> None:
     worker_id = str(uuid4())
     while True:
         chapter_id = await db.claim_task("render", worker_id)
@@ -80,7 +81,7 @@ async def render_loop(db: SqliteStore, runtime: VisionRuntime, paths: Paths, hoo
 async def _run_scan(
     cp: ChapterPaths,
     chapter_id: int,
-    db: SqliteStore,
+    db: Store,
     runtime: VisionRuntime,
     hook: Hook,
 ) -> None:
@@ -104,7 +105,7 @@ async def _run_translate(
     cp: ChapterPaths,
     chapter_id: int,
     ctx: TranslateCtx,
-    db: SqliteStore,
+    db: Store,
     hook: Hook,
 ) -> None:
     hook.on(StageStarted(chapter_id=chapter_id, stage="translate"))
@@ -125,7 +126,7 @@ async def _run_translate(
 async def _run_render(
     cp: ChapterPaths,
     chapter_id: int,
-    db: SqliteStore,
+    db: Store,
     runtime: VisionRuntime,
     hook: Hook,
 ) -> None:
@@ -144,8 +145,10 @@ async def _run_render(
 # ── Process entrypoint ────────────────────────────────────────────────
 
 
-async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
+async def run_workers(*, translate_concurrency: int = 3, config: Config | None = None) -> None:
     from typoon.config import load_config
+    from typoon.runs.events import CompositeHook
+    from typoon.api.events import EventHook, LocalEventBus, PostgresEventBus
 
     config, paths = load_config() if config is None else (config, Paths())
     paths.ensure()
@@ -153,13 +156,8 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
     db      = await SqliteStore.open(paths.db)
     runtime = VisionRuntime.from_config(config)[0]
 
-    from typoon.runs.events import CompositeHook
-    from typoon.api.events import EventHook, LocalEventBus, PostgresEventBus
-    url = getattr(config, "database_url", "")
-    if url.startswith(("postgresql://", "postgres://")):
-        event_bus = PostgresEventBus(url)
-    else:
-        event_bus = LocalEventBus(db)
+    url = config.database_url
+    event_bus = PostgresEventBus(url) if url.startswith(("postgresql://", "postgres://")) else LocalEventBus(db)
     hook = CompositeHook(LoggingHook(), EventHook(event_bus))
 
     try:
@@ -170,7 +168,6 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
         )
     finally:
         await db.close()
-        await redis.aclose()
 
 
 # ── Helper ────────────────────────────────────────────────────────────
@@ -178,7 +175,7 @@ async def run_workers(*, translate_concurrency: int = 3, config=None) -> None:
 
 async def _resolve(
     chapter_id: int,
-    db: SqliteStore,
+    db: Store,
     paths: Paths,
 ) -> tuple[ChapterPaths, dict, dict]:
     """Single DB round-trip: return (ChapterPaths, chapter_row, project_row)."""

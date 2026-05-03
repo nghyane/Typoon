@@ -600,6 +600,10 @@ class SqliteStore:
                         results.append(h)
         return results[:limit]
 
+    async def delete_project(self, project_id: int) -> None:
+        await self._db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        await self._db.commit()
+
     # ── Events ────────────────────────────────────────────────────
 
     async def append_event(self, data: dict) -> None:
