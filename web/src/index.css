@@ -1,1 +1,73 @@
 @import "tailwindcss";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+@theme {
+  /* ── Typography ───────────────────────────────────────── */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* ── Radius ───────────────────────────────────────────── */
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  14px;
+  --radius-xl:  18px;
+  --radius-2xl: 24px;
+
+  /* ── Colors — surface ─────────────────────────────────── */
+  --color-bg:           #0a0a0f;
+  --color-surface-1:    #111118;
+  --color-surface-2:    #18181f;
+  --color-surface-3:    #22222c;
+  --color-surface-4:    #2c2c38;
+  --color-border:       #2e2e3a;
+  --color-border-subtle:#1e1e28;
+
+  /* ── Colors — text ────────────────────────────────────── */
+  --color-text-1:  #f0f0f8;
+  --color-text-2:  #a0a0b8;
+  --color-text-3:  #606078;
+  --color-text-4:  #3a3a50;
+
+  /* ── Colors — accent ──────────────────────────────────── */
+  --color-accent:       #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-accent-muted: #6366f11a;
+
+  /* ── Colors — status ──────────────────────────────────── */
+  --color-success:       #22c55e;
+  --color-success-muted: #22c55e1a;
+  --color-warning:       #f59e0b;
+  --color-warning-muted: #f59e0b1a;
+  --color-error:         #ef4444;
+  --color-error-muted:   #ef44441a;
+  --color-info:          #3b82f6;
+  --color-info-muted:    #3b82f61a;
+  --color-idle:          #525268;
+
+  /* ── Sidebar ──────────────────────────────────────────── */
+  --sidebar-width: 220px;
+}
+
+/* ── Base ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-surface-4); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-3); }

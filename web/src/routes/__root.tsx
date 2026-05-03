@@ -1,6 +1,7 @@
-import { createRootRoute, Outlet } from '@tanstack/react-router'
-import { useInvalidateOn } from '../hooks/useInvalidateOn'
+import { createRootRoute } from '@tanstack/react-router'
 import { useToastStore } from '../stores/toast'
+import { useInvalidateOn } from '../hooks/useInvalidateOn'
+import { AppShell } from '../components/layout/AppShell'
 import { cn } from '../lib/cn'
 
 function RootLayout() {
@@ -8,10 +9,9 @@ function RootLayout() {
   const { toasts, remove } = useToastStore()
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100">
-      <Outlet />
+    <>
+      <AppShell />
 
-      {/* Toast container */}
       <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
         {toasts.map((t) => (
           <div
@@ -28,7 +28,7 @@ function RootLayout() {
           </div>
         ))}
       </div>
-    </div>
+    </>
   )
 }
 
