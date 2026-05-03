@@ -88,7 +88,8 @@ async def _run_scan(
     hook.on(StageStarted(chapter_id=chapter_id, stage="scan"))
     try:
         prepared = load_prepared(cp)
-        result   = await asyncio.to_thread(scan_chapter, prepared, runtime)
+        result   = await asyncio.to_thread(scan_chapter, prepared, runtime,
+                                            chapter_id=chapter_id, hook=hook)
         save_scan_geometry(cp, result.geometry)
         result.masks.save(cp)
         await db.save_bubbles(chapter_id, result.bubble_records())
@@ -133,7 +134,8 @@ async def _run_render(
     hook.on(StageStarted(chapter_id=chapter_id, stage="render"))
     try:
         translated, page_geoms = await load_translated_with_geometry(cp, db, chapter_id)
-        await asyncio.to_thread(render_chapter, translated, cp, runtime, page_geoms)
+        await asyncio.to_thread(render_chapter, translated, cp, runtime, page_geoms,
+                                chapter_id=chapter_id, hook=hook)
         await db.complete_task(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, stage="render"))
     except Exception as e:

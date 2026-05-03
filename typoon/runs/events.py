@@ -94,6 +94,14 @@ class StageDone(Event):
 
 
 @dataclass
+class PageDone(Event):
+    chapter_id: int = 0
+    stage:      str = ""
+    page_index: int = 0
+    page_total: int = 0
+
+
+@dataclass
 class ChapterDone(Event):
     chapter_id:   int = 0
     bubble_count: int = 0

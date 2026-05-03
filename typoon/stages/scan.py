@@ -14,6 +14,7 @@ from typoon.domain.prepared import Chapter
 from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
+from typoon.runs.events import Hook, PageDone
 from typoon.vision.grouping import ScanState, export_groups
 from typoon.vision.types import DetectedGroup
 
@@ -42,6 +43,8 @@ def scan_chapter(
     prepared: Chapter,
     runtime: VisionRuntime,
     *,
+    chapter_id: int = 0,
+    hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> ScanOutput:
     """Run vision pipeline on every prepared page. Returns ScanOutput."""
@@ -49,8 +52,9 @@ def scan_chapter(
     geometry: list[PageGeometry]     = []
     masks     = MaskStore()
     all_ocr:  list[dict]             = []
+    total = prepared.page_count
 
-    for index in range(prepared.page_count):
+    for index in range(total):
         image = _load_rgb(prepared.page_path(index))
         state = runtime.scan_page_state(image)
         h, w  = image.shape[:2]
@@ -65,6 +69,9 @@ def scan_chapter(
             bubbles=tuple(bubbles),
         ))
         geometry.append(page_geom)
+
+        if hook is not None:
+            hook.on(PageDone(chapter_id=chapter_id, stage="scan", page_index=index, page_total=total))
 
         if artifacts is not None:
             _write_artifacts(artifacts, index, image, state)

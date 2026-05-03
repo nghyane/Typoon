@@ -17,6 +17,7 @@ from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
 from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
+from typoon.runs.events import Hook, PageDone
 
 
 def render_chapter(
@@ -25,6 +26,8 @@ def render_chapter(
     runtime: VisionRuntime,
     page_geoms: dict[int, PageGeometry],
     *,
+    chapter_id: int = 0,
+    hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> render.Chapter:
     """Erase source text, render translations, write PNGs to cp.render/.
@@ -86,6 +89,10 @@ def render_chapter(
 
         image_path = cp.rendered(tp.index)
         _write_rgb(image_path, result.image)
+
+        if hook is not None:
+            hook.on(PageDone(chapter_id=chapter_id, stage="render",
+                             page_index=tp.index, page_total=len(translated.pages)))
 
         if artifacts is not None:
             artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
