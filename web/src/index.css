@@ -2,62 +2,39 @@
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
-@import "@fontsource/inter/700.css";
 
-/* ─────────────────────────────────────────────────────────
-   Design tokens — Tailwind v4 @theme
-   Reference: bg-(--token), text-(--token), border-(--token)
-───────────────────────────────────────────────────────── */
-@theme {
-  --font-sans: "Inter", -apple-system, "SF Pro Text", ui-sans-serif, system-ui, sans-serif;
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, monospace;
 
-  /* Surface */
-  --color-bg:        #ffffff;
-  --color-surface:   #f2f2f7;
-  --color-surface-2: #e5e5ea;
-
-  /* Border */
-  --color-border:        #e5e5ea;
-  --color-border-strong: #c6c6c8;
-
-  /* Text */
-  --color-text:     #1c1c1e;
-  --color-text-2:   #3c3c43;
-  --color-text-3:   #8e8e93;
-  --color-text-4:   #c7c7cc;
-
-  /* Nav active: light fill, dark text */
-  --color-nav-active: #f2f2f7;
-
-  /* Primary button: dark */
-  --color-btn-bg:    #1c1c1e;
-  --color-btn-text:  #ffffff;
-
-  /* Status */
-  --color-green:  #34c759;
-  --color-blue:   #007aff;
-  --color-orange: #ff9500;
-  --color-red:    #ff3b30;
-  --color-purple: #af52de;
-
-  /* Sidebar */
-  --sidebar-width: 220px;
+  /* layout only — không có native equivalent */
+  --spacing-sidebar: 252px;
+  --spacing-nav:     60px;
+  --spacing-bar:     52px;
 }
 
-/* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; }
+html { -webkit-font-smoothing: antialiased; }
+
 body {
+  margin: 0;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.5;
-  background: var(--color-bg);
-  color: var(--color-text);
-  -webkit-font-smoothing: antialiased;
+  background: white;
+  color: theme(colors.zinc.950);
 }
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; }
+/* focus ring chỉ cho button, không cho input */
+button:focus-visible {
+  outline: 2px solid theme(colors.zinc.950);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+input:focus-visible,
+label:focus-visible { outline: none; }
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: var(--color-border-strong); }
+::-webkit-scrollbar-thumb { background: theme(colors.zinc.300); border-radius: 9px; }
