@@ -8,6 +8,23 @@ from pathlib import Path
 
 import aiosqlite
 
+
+async def _migrate_chapters(db: aiosqlite.Connection) -> None:
+    """Idempotent ALTER TABLE for chapters columns added after initial release."""
+    cur = await db.execute("PRAGMA table_info(chapters)")
+    cols = {row["name"] for row in await cur.fetchall()}
+    additions = [
+        ("prepared_key",   "TEXT"),
+        ("render_key",     "TEXT"),
+        ("render_state",   "TEXT NOT NULL DEFAULT 'none'"),
+        ("render_job_id",  "TEXT"),
+        ("page_count",     "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for name, ddl in additions:
+        if name not in cols:
+            await db.execute(f"ALTER TABLE chapters ADD COLUMN {name} {ddl}")
+    await db.commit()
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id           INTEGER PRIMARY KEY,
@@ -163,6 +180,7 @@ class SqliteStore:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.executescript(_SCHEMA)
+        await _migrate_chapters(db)
         return SqliteStore(db)
 
     @staticmethod
@@ -677,6 +695,88 @@ class SqliteStore:
         )
         row = await cur.fetchone()
         return json.loads(row["data"]) if row else None
+
+    # ── Bunle artifact pointers ───────────────────────────────────
+
+    async def set_prepared_artifact(
+        self, chapter_id: int, *, prepared_key: str, page_count: int,
+    ) -> str | None:
+        cur = await self._db.execute(
+            "SELECT prepared_key FROM chapters WHERE id=?", (chapter_id,),
+        )
+        row = await cur.fetchone()
+        previous = row["prepared_key"] if row else None
+        await self._db.execute(
+            "UPDATE chapters SET "
+            "  prepared_key=?, page_count=?, "
+            "  render_key=NULL, render_state='none', render_job_id=NULL "
+            "WHERE id=?",
+            (prepared_key, page_count, chapter_id),
+        )
+        await self._db.commit()
+        return previous
+
+    async def claim_render_job(self, chapter_id: int, job_id: str) -> bool:
+        cur = await self._db.execute(
+            "UPDATE chapters SET "
+            "  render_state='rendering', render_job_id=? "
+            "WHERE id=? AND render_state <> 'rendering'",
+            (job_id, chapter_id),
+        )
+        await self._db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def finish_render_artifact(
+        self, chapter_id: int, *, job_id: str, render_key: str,
+    ) -> tuple[bool, str | None]:
+        cur = await self._db.execute(
+            "SELECT render_key, render_job_id FROM chapters WHERE id=?",
+            (chapter_id,),
+        )
+        row = await cur.fetchone()
+        if row is None or row["render_job_id"] != job_id:
+            return (False, None)
+        previous = row["render_key"]
+        upd = await self._db.execute(
+            "UPDATE chapters SET "
+            "  render_key=?, render_state='rendered' "
+            "WHERE id=? AND render_job_id=?",
+            (render_key, chapter_id, job_id),
+        )
+        await self._db.commit()
+        return ((upd.rowcount or 0) > 0, previous)
+
+    async def fail_render_job(
+        self, chapter_id: int, job_id: str, error: str,
+    ) -> None:
+        # error message belongs to tasks.last_error (existing flow); chapters
+        # only carries the render_state machine.
+        del error
+        await self._db.execute(
+            "UPDATE chapters SET render_state='failed' "
+            "WHERE id=? AND render_job_id=?",
+            (chapter_id, job_id),
+        )
+        await self._db.commit()
+
+    async def mark_render_stale(self, chapter_id: int) -> None:
+        await self._db.execute(
+            "UPDATE chapters SET "
+            "  render_state='stale' "
+            "WHERE id=? AND render_key IS NOT NULL "
+            "  AND render_state IN ('rendered','failed')",
+            (chapter_id,),
+        )
+        await self._db.commit()
+
+    async def get_chapter_artifacts(self, chapter_id: int) -> dict | None:
+        cur = await self._db.execute(
+            "SELECT prepared_key, render_key, render_state, render_job_id, page_count "
+            "FROM chapters WHERE id=?",
+            (chapter_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

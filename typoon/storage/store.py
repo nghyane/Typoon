@@ -47,3 +47,36 @@ class Store(Protocol):
     ) -> int: ...
     async def delete_project(self, project_id: int) -> None: ...
     async def get_chapter_progress(self, chapter_id: int) -> dict | None: ...
+
+    # ── Bunle artifact pointers ───────────────────────────────────
+    async def set_prepared_artifact(
+        self, chapter_id: int, *, prepared_key: str, page_count: int,
+    ) -> str | None:
+        """Atomically swap prepared_key. Returns the previous key (may be None)
+        so the caller can delete the old object after the pointer flip.
+        Resets render state to 'none' and clears render_key/render_job_id."""
+        ...
+
+    async def claim_render_job(self, chapter_id: int, job_id: str) -> bool:
+        """CAS: transition render_state -> 'rendering' iff not already rendering.
+        Returns True if claim succeeded (this worker holds the job)."""
+        ...
+
+    async def finish_render_artifact(
+        self, chapter_id: int, *, job_id: str, render_key: str,
+    ) -> tuple[bool, str | None]:
+        """CAS finish: set render_key + render_state='rendered' iff job_id matches.
+        Returns (won, previous_render_key) — won=False if another job took over."""
+        ...
+
+    async def fail_render_job(self, chapter_id: int, job_id: str, error: str) -> None:
+        """Mark current render attempt as failed. render_key is left intact."""
+        ...
+
+    async def mark_render_stale(self, chapter_id: int) -> None:
+        """Move render_state to 'stale' if a render_key already exists."""
+        ...
+
+    async def get_chapter_artifacts(self, chapter_id: int) -> dict | None:
+        """Return prepared_key/render_key/render_state/page_count or None."""
+        ...
