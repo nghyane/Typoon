@@ -1,8 +1,6 @@
 """Text detection — PP-OCR det (DBNet++) for all languages.
 
 Backends: MLX (Mac) or PyTorch (Windows/Server), safetensors only.
-
-Ported from crates/engine/src/vision/ocr/ppocr.rs (detection + postprocess).
 """
 
 from __future__ import annotations

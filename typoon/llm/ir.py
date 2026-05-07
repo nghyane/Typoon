@@ -1,6 +1,5 @@
 """Provider-agnostic intermediate representation for LLM messages.
 
-Port of crates/engine/src/llm/ir.rs + tool.rs + provider.rs.
 Each provider adapter serializes these to its own wire format.
 """
 
