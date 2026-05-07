@@ -27,3 +27,7 @@ debug/
 # Web UI
 web/node_modules/
 web/dist/
+
+# Secrets
+.env
+.jwt_secret
