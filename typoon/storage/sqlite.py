@@ -17,10 +17,15 @@ async def _migrate_chapters(db: aiosqlite.Connection) -> None:
         ("title",          "TEXT"),
         ("rendered",       "INTEGER NOT NULL DEFAULT 0"),
         ("page_count",     "INTEGER NOT NULL DEFAULT 0"),
+        # SQLite forbids non-constant DEFAULT in ADD COLUMN; backfill below.
+        ("updated_at",     "TEXT"),
     ]
     for name, ddl in additions:
         if name not in cols:
             await db.execute(f"ALTER TABLE chapters ADD COLUMN {name} {ddl}")
+    await db.execute(
+        "UPDATE chapters SET updated_at=created_at WHERE updated_at IS NULL"
+    )
     # Drop legacy columns from earlier RFC-004 drafts. Idempotent.
     for legacy in ("prepared_key", "render_key", "render_job_id", "render_state"):
         if legacy in cols:
@@ -32,9 +37,17 @@ async def _migrate_projects(db: aiosqlite.Connection) -> None:
     """Idempotent ALTER TABLE for projects metadata columns."""
     cur = await db.execute("PRAGMA table_info(projects)")
     cols = {row["name"] for row in await cur.fetchall()}
-    for name, ddl in [("description", "TEXT"), ("cover_path", "TEXT")]:
+    additions = [
+        ("description", "TEXT"),
+        ("cover_path",  "TEXT"),
+        ("updated_at",  "TEXT"),  # see _migrate_chapters note
+    ]
+    for name, ddl in additions:
         if name not in cols:
             await db.execute(f"ALTER TABLE projects ADD COLUMN {name} {ddl}")
+    await db.execute(
+        "UPDATE projects SET updated_at=created_at WHERE updated_at IS NULL"
+    )
     await db.commit()
 
 _SCHEMA = """
@@ -47,7 +60,8 @@ CREATE TABLE IF NOT EXISTS projects (
     source_url   TEXT,
     source_lang  TEXT NOT NULL,
     target_lang  TEXT NOT NULL,
-    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS chapters (
@@ -57,6 +71,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     title        TEXT,
     source_url   TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(project_id, idx)
 );
 
@@ -204,6 +219,58 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# Triggers run AFTER tables exist and AFTER migrations have backfilled
+# updated_at. Otherwise the cascade triggers fire during backfill and stomp
+# project.updated_at with `now()`.
+_TRIGGERS = """
+-- updated_at maintenance.
+-- Touch chapters.updated_at on any column change except updated_at itself
+-- (recursive_triggers=off in default mode prevents the loop, but the WHEN
+-- clause makes intent explicit and keeps things safe if it gets toggled).
+CREATE TRIGGER IF NOT EXISTS chapters_touch_updated_at
+AFTER UPDATE ON chapters
+WHEN NEW.updated_at IS OLD.updated_at
+BEGIN
+    UPDATE chapters SET updated_at=datetime('now') WHERE id=NEW.id;
+END;
+
+-- Cascade chapter writes to project.updated_at.
+CREATE TRIGGER IF NOT EXISTS chapters_touch_project_ai
+AFTER INSERT ON chapters
+BEGIN
+    UPDATE projects SET updated_at=datetime('now') WHERE id=NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS chapters_touch_project_au
+AFTER UPDATE ON chapters
+BEGIN
+    UPDATE projects SET updated_at=datetime('now') WHERE id=NEW.project_id;
+END;
+CREATE TRIGGER IF NOT EXISTS chapters_touch_project_ad
+AFTER DELETE ON chapters
+BEGIN
+    UPDATE projects SET updated_at=datetime('now') WHERE id=OLD.project_id;
+END;
+
+-- Cascade task lifecycle to chapter.updated_at — claim/complete/fail/enqueue
+-- all bump the chapter so the UI can show "đang chạy" freshness without a
+-- separate column.
+CREATE TRIGGER IF NOT EXISTS tasks_touch_chapter_ai
+AFTER INSERT ON tasks
+BEGIN
+    UPDATE chapters SET updated_at=datetime('now') WHERE id=NEW.chapter_id;
+END;
+CREATE TRIGGER IF NOT EXISTS tasks_touch_chapter_au
+AFTER UPDATE ON tasks
+BEGIN
+    UPDATE chapters SET updated_at=datetime('now') WHERE id=NEW.chapter_id;
+END;
+CREATE TRIGGER IF NOT EXISTS tasks_touch_chapter_ad
+AFTER DELETE ON tasks
+BEGIN
+    UPDATE chapters SET updated_at=datetime('now') WHERE id=OLD.chapter_id;
+END;
+"""
+
 
 class SqliteStore:
     def __init__(self, db: aiosqlite.Connection) -> None:
@@ -218,6 +285,8 @@ class SqliteStore:
         await db.executescript(_SCHEMA)
         await _migrate_projects(db)
         await _migrate_chapters(db)
+        # Triggers go last so the migration backfill above does not cascade.
+        await db.executescript(_TRIGGERS)
         return SqliteStore(db)
 
     @staticmethod
@@ -353,11 +422,14 @@ class SqliteStore:
             state, stage, error = _derive_state(ch, tasks)
             result.append({
                 "chapter_id": ch["id"],
+                "project_id": ch["project_id"],
                 "idx":        ch["idx"],
+                "title":      ch.get("title"),
                 "state":      state,
                 "stage":      stage,
                 "page_count": int(ch.get("page_count") or 0),
                 "error":      error,
+                "updated_at": ch.get("updated_at") or ch.get("created_at"),
             })
         return result
 
@@ -373,10 +445,12 @@ class SqliteStore:
             "chapter_id": chapter_id,
             "project_id": project_id,
             "idx":        ch["idx"],
+            "title":      ch.get("title"),
             "state":      state,
             "stage":      stage,
             "page_count": int(ch.get("page_count") or 0),
             "error":      error,
+            "updated_at": ch.get("updated_at") or ch.get("created_at"),
             "progress":   progress and {
                 "stage":      progress["stage"],
                 "page_index": progress["page_index"],
