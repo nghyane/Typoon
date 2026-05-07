@@ -94,6 +94,14 @@ export interface ApiSettings {
   settings:    Record<string, unknown>
 }
 
+export interface ApiSourceConnector {
+  id:          string
+  name:        string
+  source_lang: string
+  example_url: string
+  description: string
+}
+
 // ── Transport ────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -119,18 +127,30 @@ export const api = {
   base: API_BASE,
 
   // Projects
-  listProjects:  ()           => request<ApiProject[]>('/projects'),
-  getProject:    (id: number) => request<ApiProject>(`/projects/${id}`),
-  deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  listProjects:   ()           => request<ApiProject[]>('/projects'),
+  getProject:     (id: number) => request<ApiProject>(`/projects/${id}`),
+  deleteProject:  (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  createProject:  (body: { title: string; description?: string; source_lang: string; target_lang: string }) =>
+    request<ApiProject>('/projects', { method: 'POST', body: json(body) }),
+  uploadCover:    (id: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    // FormData → don't set Content-Type; let the browser add the boundary.
+    return fetch(`${API_BASE}/api/projects/${id}/cover`, { method: 'POST', body: fd })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText} — ${await r.text().catch(() => '')}`)
+        return r.json() as Promise<ApiProject>
+      })
+  },
+
+  // Sources
+  listSources: () => request<ApiSourceConnector[]>('/sources'),
 
   // Discovery + pull
   discover: (url: string) =>
     request<ApiSourceInfo>('/discover', { method: 'POST', body: json({ url }) }),
 
-  pullNew: (body: { url: string; target_lang: string; chapters?: number[]; from?: number; to?: number }) =>
-    request<ApiProject>('/projects/pull', { method: 'POST', body: json(remap(body)) }),
-
-  pullMore: (pid: number, body: { url: string; chapters?: number[]; from?: number; to?: number }) =>
+  pull: (pid: number, body: { url: string; chapters?: number[]; from?: number; to?: number }) =>
     request<{ project_id: number; queued: number }>(
       `/projects/${pid}/pull`, { method: 'POST', body: json(remap(body)) },
     ),

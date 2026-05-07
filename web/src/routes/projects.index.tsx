@@ -4,12 +4,12 @@ import { useState, useMemo } from 'react'
 import { Plus, Search, FolderOpen } from 'lucide-react'
 import { api } from '../lib/api'
 import { Cover } from '../components/Cover'
-import { AddProjectDialog } from '../components/AddProjectDialog'
+import { CreateProjectDialog } from '../components/CreateProjectDialog'
 import { timeAgo } from '../lib/time'
 
 function ProjectsPage() {
   const [q,        setQ]        = useState('')
-  const [addOpen,  setAddOpen]  = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
 
   const { data: projects = [], isLoading, isError } = useQuery({
     queryKey: ['projects'],
@@ -35,7 +35,7 @@ function ProjectsPage() {
           </p>
         </div>
         <button
-          onClick={() => setAddOpen(true)}
+          onClick={() => setCreateOpen(true)}
           className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-[0.98] transition-all cursor-pointer"
         >
           <Plus size={13} />
@@ -120,11 +120,11 @@ function ProjectsPage() {
         )}
 
         {!isLoading && !isError && filtered.length === 0 && (
-          <EmptyState query={q} onAdd={() => setAddOpen(true)} />
+          <EmptyState query={q} onAdd={() => setCreateOpen(true)} />
         )}
       </div>
 
-      <AddProjectDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      <CreateProjectDialog open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   )
 }
