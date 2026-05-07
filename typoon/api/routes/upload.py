@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_artifact_store, get_bus, get_paths, get_store
+from typoon.api.deps import get_artifact_store, get_bus, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut
 from typoon.api.routes._shared import chapter_out, require_project
 from typoon.paths import Paths
@@ -34,7 +34,10 @@ from typoon.storage import Store
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/projects", tags=["upload"])
+router = APIRouter(
+    prefix="/api/projects", tags=["upload"],
+    dependencies=[Depends(require_user)],
+)
 
 # Hard cap to keep a runaway upload from exhausting tmp. 1.5 GiB easily
 # fits a 200-page Kindle PDF (~700KB/page * 200 = ~140MB) plus headroom.

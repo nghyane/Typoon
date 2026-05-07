@@ -12,11 +12,14 @@ from fastapi.responses import Response
 
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import render_key
-from typoon.api.deps import get_artifact_store, get_paths, get_store
+from typoon.api.deps import get_artifact_store, get_paths, get_store, require_user
 from typoon.paths import Paths
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api/projects", tags=["pages"])
+router = APIRouter(
+    prefix="/api/projects", tags=["pages"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.get("/{project_id}/chapters/{chapter_id}/pages/{index}")

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from typoon.adapters.event_bus import is_postgres
 from typoon.api.routes import (
-    bubbles, glossary, pages, projects, search, sse, upload, workers,
+    auth, bubbles, glossary, pages, projects, search, sse, upload, workers,
 )
 from typoon.config import load_config
 
@@ -23,6 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(upload.router)
 app.include_router(bubbles.router)

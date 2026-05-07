@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from typoon.api.deps import get_store
+from typoon.api.deps import get_store, require_user
 from typoon.api.models import QueueStatsOut, StageStatsOut
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api", tags=["workers"])
+router = APIRouter(
+    prefix="/api", tags=["workers"],
+    dependencies=[Depends(require_user)],
+)
 
 
 @router.get("/workers", response_model=QueueStatsOut)

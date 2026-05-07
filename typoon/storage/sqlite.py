@@ -77,6 +77,29 @@ CREATE TABLE IF NOT EXISTS chapters (
     UNIQUE(project_id, idx)
 );
 
+-- Identity (Phase 1: Discord OAuth, designed polymorphic so other providers
+-- can be added without migration)
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY,
+    display_name  TEXT NOT NULL,
+    avatar_url    TEXT,
+    email         TEXT,
+    tier          TEXT NOT NULL DEFAULT 'member',  -- member | admin
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS identities (
+    id           INTEGER PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider     TEXT NOT NULL,                    -- 'discord' for Phase 1
+    external_id  TEXT NOT NULL,                    -- discord snowflake
+    metadata     TEXT,                             -- JSON: raw provider payload
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
+
 -- Worker coordination — row exists = pending/running, DELETE = done
 CREATE TABLE IF NOT EXISTS tasks (
     chapter_id   INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -1056,6 +1079,95 @@ class SqliteStore:
         )
         active = [r["claimed_by"] for r in await cur.fetchall()]
         return {"stages": stages, "active_workers": active}
+
+    # ── Users / identities ────────────────────────────────────────
+
+    async def upsert_user_from_identity(
+        self,
+        *,
+        provider:    str,
+        external_id: str,
+        display_name: str,
+        avatar_url:  str | None = None,
+        email:       str | None = None,
+        metadata:    dict | None = None,
+        promote_admin: bool = False,
+    ) -> dict:
+        """Find-or-create user from a (provider, external_id) tuple.
+
+        - If identity exists → update last_login_at + display_name/avatar/email,
+          return the linked user.
+        - If identity missing → create new user + identity in one transaction.
+        - `promote_admin=True` sets tier='admin' on user creation, used by
+          the bootstrap admin flow.
+        """
+        cur = await self._db.execute(
+            "SELECT user_id FROM identities WHERE provider=? AND external_id=?",
+            (provider, external_id),
+        )
+        row = await cur.fetchone()
+
+        if row:
+            user_id = row["user_id"]
+            await self._db.execute(
+                "UPDATE users SET display_name=?, avatar_url=?, email=COALESCE(?, email), "
+                "  last_login_at=datetime('now') WHERE id=?",
+                (display_name, avatar_url, email, user_id),
+            )
+            if metadata is not None:
+                await self._db.execute(
+                    "UPDATE identities SET metadata=? "
+                    "WHERE provider=? AND external_id=?",
+                    (json.dumps(metadata, ensure_ascii=False),
+                     provider, external_id),
+                )
+            await self._db.commit()
+            return await self.get_user(user_id)  # type: ignore[return-value]
+
+        # New user
+        try:
+            await self._db.execute("BEGIN")
+            cur = await self._db.execute(
+                "INSERT INTO users (display_name, avatar_url, email, tier, last_login_at) "
+                "VALUES (?,?,?,?, datetime('now'))",
+                (display_name, avatar_url, email,
+                 "admin" if promote_admin else "member"),
+            )
+            user_id = cur.lastrowid
+            await self._db.execute(
+                "INSERT INTO identities (user_id, provider, external_id, metadata) "
+                "VALUES (?,?,?,?)",
+                (user_id, provider, external_id,
+                 json.dumps(metadata or {}, ensure_ascii=False)),
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+        return await self.get_user(user_id)  # type: ignore[return-value]
+
+    async def get_user(self, user_id: int) -> dict | None:
+        cur = await self._db.execute("SELECT * FROM users WHERE id=?", (user_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_user_by_identity(
+        self, provider: str, external_id: str,
+    ) -> dict | None:
+        cur = await self._db.execute(
+            "SELECT u.* FROM users u "
+            "JOIN identities i ON i.user_id=u.id "
+            "WHERE i.provider=? AND i.external_id=?",
+            (provider, external_id),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def set_user_tier(self, user_id: int, tier: str) -> None:
+        await self._db.execute(
+            "UPDATE users SET tier=? WHERE id=?", (tier, user_id),
+        )
+        await self._db.commit()
 
     # ── Events ────────────────────────────────────────────────────
 

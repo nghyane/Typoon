@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from typoon.api.deps import get_store
+from typoon.api.deps import get_store, require_user
 from typoon.api.models import SearchHit, SearchResults
 from typoon.api.routes._shared import require_project
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api", tags=["search"])
+router = APIRouter(
+    prefix="/api", tags=["search"],
+    dependencies=[Depends(require_user)],
+)
 
 _VALID_SCOPES = {"all", "translations", "briefs", "glossary"}
 

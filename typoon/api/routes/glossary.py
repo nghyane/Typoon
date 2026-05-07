@@ -5,12 +5,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from typoon.api.deps import get_store
+from typoon.api.deps import get_store, require_user
 from typoon.api.models import GlossaryTermOut
 from typoon.api.routes._shared import require_project
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api/projects", tags=["glossary"])
+router = APIRouter(
+    prefix="/api/projects", tags=["glossary"],
+    dependencies=[Depends(require_user)],
+)
 
 
 class GlossaryBody(BaseModel):

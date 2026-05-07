@@ -10,12 +10,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from typoon.api.deps import get_store
+from typoon.api.deps import get_store, require_user
 from typoon.api.models import BubbleOut
 from typoon.api.routes._shared import require_chapter, require_project
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api/projects", tags=["bubbles"])
+router = APIRouter(
+    prefix="/api/projects", tags=["bubbles"],
+    dependencies=[Depends(require_user)],
+)
 
 
 class TranslationPatch(BaseModel):

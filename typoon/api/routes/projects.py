@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_artifact_store, get_paths, get_store
+from typoon.api.deps import get_artifact_store, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut, ProjectOut
 from typoon.api.routes._shared import (
     chapter_out, require_chapter, require_project,
@@ -17,7 +17,10 @@ from typoon.api.routes._shared import (
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.storage import Store
 
-router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(
+    prefix="/api/projects", tags=["projects"],
+    dependencies=[Depends(require_user)],
+)
 
 
 # ── Request bodies ────────────────────────────────────────────────────

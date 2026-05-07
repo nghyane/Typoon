@@ -47,6 +47,28 @@ class VisionAgentConfig(BaseModel):
     reasoning_effort: str | None = None
 
 
+class AuthConfig(BaseModel):
+    """Discord OAuth + JWT session config.
+
+    All values are read from environment variables in load_config() —
+    secrets do not belong in config.toml.
+    """
+    discord_client_id:     str = ""
+    discord_client_secret: str = ""
+    # Where Discord redirects after OAuth consent. Must match exactly the
+    # value registered in the Discord developer portal.
+    discord_redirect_uri:  str = "http://localhost:8000/api/auth/discord/callback"
+    # Optional gating: if set, user must be a member of this guild snowflake.
+    discord_guild_id:      str = ""
+    # Optional bootstrap admin: this discord_id is promoted to tier='admin'
+    # on first login. Empty string = no auto-promotion.
+    bootstrap_discord_id:  str = ""
+    # JWT signing key. MUST be set in production. Auto-generated for dev.
+    jwt_secret:            str = ""
+    # Session lifetime (days)
+    session_days:          int = 30
+
+
 class Config(BaseSettings):
     model_config = {"extra": "ignore"}
 
@@ -58,6 +80,7 @@ class Config(BaseSettings):
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
     database_url: str = ""  # empty = SQLite default path, or "postgresql://..."
+    auth:        AuthConfig = AuthConfig()
 
 
 # ── Loading ──────────────────────────────────────────────────────
@@ -96,4 +119,31 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         pcfg.extra_headers = {
             k: os.path.expandvars(v) for k, v in pcfg.extra_headers.items()
         }
+
+    # Auth: env vars take precedence over config.toml. Secrets should never
+    # land in toml. JWT secret is auto-generated and persisted to disk if
+    # missing so dev sessions don't get invalidated on restart.
+    config.auth.discord_client_id     = os.environ.get("DISCORD_CLIENT_ID",     config.auth.discord_client_id)
+    config.auth.discord_client_secret = os.environ.get("DISCORD_CLIENT_SECRET", config.auth.discord_client_secret)
+    config.auth.discord_redirect_uri  = os.environ.get("DISCORD_REDIRECT_URI",  config.auth.discord_redirect_uri)
+    config.auth.discord_guild_id      = os.environ.get("DISCORD_GUILD_ID",      config.auth.discord_guild_id)
+    config.auth.bootstrap_discord_id  = os.environ.get("TYPOON_BOOTSTRAP_DISCORD_ID", config.auth.bootstrap_discord_id)
+    config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)
+    if not config.auth.jwt_secret:
+        config.auth.jwt_secret = _ensure_jwt_secret(paths.root)
+
     return config, paths
+
+
+def _ensure_jwt_secret(root: Path) -> str:
+    """Persist a random JWT secret to disk so dev restarts don't log users
+    out. Production should always set JWT_SECRET via env."""
+    import secrets
+    secret_path = root / ".jwt_secret"
+    if secret_path.exists():
+        return secret_path.read_text().strip()
+    root.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(48)
+    secret_path.write_text(token)
+    secret_path.chmod(0o600)
+    return token
