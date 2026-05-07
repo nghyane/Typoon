@@ -7,8 +7,8 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from typoon.adapters.event_bus import EventBus
 from typoon.api.deps import get_bus
-from typoon.api.events import EventBus
 
 router = APIRouter(tags=["events"])
 
