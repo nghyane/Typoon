@@ -1,10 +1,10 @@
 """App path resolution.
 
 Chapter pixel and mask data live in the artifact store under deterministic
-keys. The filesystem layout under `~/.typoon/` carries only:
+keys. The DB is Postgres (RFC-005), reached via `DATABASE_URL`, so no
+file lives in `~/.typoon/` for it. Filesystem layout under `~/.typoon/`:
 
   config.toml        — app config
-  typoon.db          — SQLite knowledge store
   models/            — model weights
   artifacts/         — LocalArtifactStore root for prepared.bnl / render.bnl / masks.npz
   exports/<slug>/    — user-facing output (PDF / zip / WebP) produced by `typoon export`
@@ -69,9 +69,6 @@ class Paths:
 
     @property
     def config_file(self) -> Path: return self.root / "config.toml"
-
-    @property
-    def db(self) -> Path: return self.root / "typoon.db"
 
     @property
     def models(self) -> Path: return self.root / "models"

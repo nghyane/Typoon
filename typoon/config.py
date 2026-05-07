@@ -47,6 +47,20 @@ class VisionAgentConfig(BaseModel):
     reasoning_effort: str | None = None
 
 
+class ServerConfig(BaseModel):
+    """API + web URLs.
+
+    `public_api_url` is the public origin clients hit. `public_web_url`
+    is where the SPA is served. Both are also used by CORS and by the
+    SPA's OAuth bootstrap (the SPA owns the redirect_uri — engine never
+    sees the web origin in the OAuth call itself).
+    """
+    public_api_url: str = "http://localhost:8000"
+    public_web_url: str = "http://localhost:5173"
+    host:           str = "0.0.0.0"
+    port:           int = 8000
+
+
 class AuthConfig(BaseModel):
     """Discord OAuth + JWT session config.
 
@@ -63,9 +77,10 @@ class AuthConfig(BaseModel):
     # demand. The operator just needs to enable "Server Widget" in
     # Discord Server Settings — no extra config here.
     discord_guild_id:      str = ""
-    # Optional bootstrap admin: this discord_id is promoted to tier='admin'
-    # on first login. Empty string = no auto-promotion.
-    bootstrap_discord_id:  str = ""
+    # Discord role ID (snowflake) that grants admin privileges in the app.
+    # Right-click role in Discord (with developer mode on) → Copy Role ID.
+    # Empty = no app admin (engine refuses admin operations).
+    admin_role_id:         str = ""
     # JWT signing key. MUST be set in production. Auto-generated for dev.
     jwt_secret:            str = ""
     # Session lifetime (days)
@@ -82,8 +97,10 @@ class Config(BaseSettings):
     context_agent: ContextAgentConfig = ContextAgentConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
-    database_url: str = ""  # empty = SQLite default path, or "postgresql://..."
-    auth:        AuthConfig = AuthConfig()
+    # Postgres DSN. Required — RFC-005 dropped the SQLite fallback.
+    database_url: str = ""
+    server: ServerConfig = ServerConfig()
+    auth:   AuthConfig   = AuthConfig()
 
 
 # ── Loading ──────────────────────────────────────────────────────
@@ -101,8 +118,29 @@ def _find_config_file(root: Path | None = None) -> Path:
     return home() / "config.toml"
 
 
+def _load_dotenv(root: Path | None) -> None:
+    """Load `.env` from `root` or CWD if present. OS env wins."""
+    try:
+        from dotenv import load_dotenv as _ld
+    except ImportError:
+        return
+    for candidate in (
+        Path(root) / ".env" if root else None,
+        Path.cwd() / ".env",
+    ):
+        if candidate and candidate.exists():
+            _ld(candidate, override=False)
+            return
+
+
 def load_config(root: Path | None = None) -> tuple[Config, Paths]:
-    """Load config from nearest config.toml (CWD → root → app home)."""
+    """Load config from nearest config.toml (CWD → root → app home).
+
+    Also loads `.env` from CWD or `root` if present, so users don't have
+    to `source .env` before every shell invocation. Existing OS env wins
+    over `.env` (12-factor).
+    """
+    _load_dotenv(root)
     config_path = _find_config_file(root)
     if config_path.exists():
         data = tomllib.loads(config_path.read_text())
@@ -123,13 +161,40 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
             k: os.path.expandvars(v) for k, v in pcfg.extra_headers.items()
         }
 
+    # Server URLs — env wins over toml.
+    config.server.public_api_url = os.environ.get(
+        "PUBLIC_API_URL", config.server.public_api_url,
+    ).rstrip("/")
+    config.server.public_web_url = os.environ.get(
+        "PUBLIC_WEB_URL", config.server.public_web_url,
+    ).rstrip("/")
+    if env_port := os.environ.get("TYPOON_PORT"):
+        try:
+            config.server.port = int(env_port)
+        except ValueError:
+            pass
+
+    # Database — env wins over toml. RFC-005 requires a postgresql:// DSN.
+    config.database_url = os.environ.get("DATABASE_URL", config.database_url)
+    if not config.database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required (RFC-005). "
+            "Set it in .env or config.toml, e.g. "
+            "postgresql://typoon:typoon@localhost:5432/typoon"
+        )
+    if not config.database_url.startswith(("postgresql://", "postgres://")):
+        raise RuntimeError(
+            f"DATABASE_URL must be postgresql://… — got {config.database_url!r}. "
+            f"SQLite is not supported (RFC-005)."
+        )
+
     # Auth: env vars take precedence over config.toml. Secrets should never
     # land in toml. JWT secret is auto-generated and persisted to disk if
     # missing so dev sessions don't get invalidated on restart.
     config.auth.discord_client_id     = os.environ.get("DISCORD_CLIENT_ID",     config.auth.discord_client_id)
     config.auth.discord_client_secret = os.environ.get("DISCORD_CLIENT_SECRET", config.auth.discord_client_secret)
     config.auth.discord_guild_id      = os.environ.get("DISCORD_GUILD_ID",      config.auth.discord_guild_id)
-    config.auth.bootstrap_discord_id  = os.environ.get("TYPOON_BOOTSTRAP_DISCORD_ID", config.auth.bootstrap_discord_id)
+    config.auth.admin_role_id         = os.environ.get("DISCORD_ADMIN_ROLE_ID", config.auth.admin_role_id)
     config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)
     if not config.auth.jwt_secret:
         config.auth.jwt_secret = _ensure_jwt_secret(paths.root)

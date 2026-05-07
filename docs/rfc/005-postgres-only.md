@@ -1,6 +1,6 @@
 # RFC-005: Postgres-only storage + closed multi-host topology
 
-Status: **proposed** — implement on a separate branch
+Status: **implemented** (RFC-005 cutover complete on `main`).
 Owner: next agent / contributor
 
 ## Summary

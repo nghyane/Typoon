@@ -1,16 +1,17 @@
-"""Event bus — pipeline event transport.
+"""Event bus — Postgres LISTEN/NOTIFY transport.
 
-Two implementations, chosen by deploy mode:
+Single backend (RFC-005). API and workers connect to the same Postgres
+DSN; the API holds a LISTEN connection per SSE client and replays
+missed events from the `events` table on reconnect.
 
-  InProcessEventBus  — single-process (SQLite). API + workers in same loop.
-                       No persistence. asyncio.Queue fan-out.
-  PostgresEventBus   — multi-host (Postgres). LISTEN/NOTIFY for wakeup,
-                       `events` table for replay via Last-Event-ID.
+publish    INSERT events RETURNING id; NOTIFY chan, str(id)
+subscribe  SELECT events WHERE id > last_id (replay), then LISTEN.
+           On NOTIFY, SELECT new row by id.
 
-SQLite mode does NOT support multi-host. Workers and API must share the
-same Python process. Use Postgres for any scale-out deploy.
-
-Selection: make_event_bus(config, store) — single source of truth.
+Pool reused across publishes to avoid connection storms. A dedicated
+asyncpg connection per subscriber holds the LISTEN — Postgres LISTEN
+state is per-connection, so the pool's connection-recycling would lose
+notifications.
 """
 
 from __future__ import annotations
@@ -21,9 +22,7 @@ import json
 import logging
 from typing import AsyncIterator, Protocol, runtime_checkable
 
-from typoon.config import Config
 from typoon.runs.events import Event, Hook
-from typoon.storage import Store
 
 logger = logging.getLogger(__name__)
 
@@ -45,94 +44,34 @@ def event_to_dict(event: Event) -> dict:
 
 
 @runtime_checkable
-class EventBus(Protocol):
+class EventBusProtocol(Protocol):
     async def publish(self, event: Event) -> None: ...
     def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]: ...
     async def close(self) -> None: ...
 
 
-# ── In-process (SQLite single-process mode) ───────────────────────────
+# ── Implementation ────────────────────────────────────────────────────
 
 
-class InProcessEventBus:
-    """Single-process bus: asyncio.Queue fan-out. No persistence.
-
-    Reconnect (Last-Event-ID) replays from in-memory ring buffer (last 256).
-    On API restart the buffer is empty — tolerable in single-process mode
-    because workers restart together with API.
-    """
-
-    _BUFFER_SIZE = 256
-
-    def __init__(self) -> None:
-        self._seq = 0
-        self._buffer: list[tuple[int, dict]] = []
-        self._subscribers: set[asyncio.Queue[tuple[int, dict]]] = set()
-        self._lock = asyncio.Lock()
-
-    async def publish(self, event: Event) -> None:
-        async with self._lock:
-            self._seq += 1
-            data = event_to_dict(event)
-            entry = (self._seq, data)
-            self._buffer.append(entry)
-            if len(self._buffer) > self._BUFFER_SIZE:
-                self._buffer.pop(0)
-            for q in list(self._subscribers):
-                q.put_nowait(entry)
-
-    async def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]:
-        seq = int(last_id) if last_id.isdigit() else 0
-        q: asyncio.Queue[tuple[int, dict]] = asyncio.Queue()
-
-        async with self._lock:
-            for buffered_seq, data in self._buffer:
-                if buffered_seq > seq:
-                    q.put_nowait((buffered_seq, data))
-            self._subscribers.add(q)
-
-        try:
-            while True:
-                buffered_seq, data = await q.get()
-                yield str(buffered_seq), data
-        finally:
-            self._subscribers.discard(q)
-
-    async def close(self) -> None:
-        pass
-
-
-# ── Postgres (multi-host mode) ────────────────────────────────────────
-
-
-class PostgresEventBus:
-    """Multi-host bus: events table + LISTEN/NOTIFY.
-
-    publish    INSERT events RETURNING id; NOTIFY chan, str(id)
-    subscribe  SELECT events WHERE id > last_id (replay), then LISTEN.
-               On NOTIFY, SELECT new row by id.
-
-    Pool reused across publishes to avoid connection storms.
-    """
+class EventBus:
+    """Postgres-backed bus. See module docstring."""
 
     _CHANNEL = "typoon_events"
 
     def __init__(self, dsn: str) -> None:
+        if not dsn or not dsn.startswith(("postgresql://", "postgres://")):
+            raise RuntimeError(
+                f"EventBus requires a postgresql:// DSN, got: {dsn!r}"
+            )
         self._dsn = dsn
         self._pool = None  # asyncpg.Pool
 
     async def _ensure_pool(self):
         if self._pool is None:
             import asyncpg
-            self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
-            async with self._pool.acquire() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS events (
-                        id          BIGSERIAL PRIMARY KEY,
-                        data        JSONB NOT NULL,
-                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )
-                """)
+            self._pool = await asyncpg.create_pool(
+                self._dsn, min_size=1, max_size=4,
+            )
         return self._pool
 
     async def publish(self, event: Event) -> None:
@@ -140,7 +79,8 @@ class PostgresEventBus:
         payload = json.dumps(event_to_dict(event))
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO events (data) VALUES ($1::jsonb) RETURNING id", payload
+                "INSERT INTO events (data) VALUES ($1::jsonb) RETURNING id",
+                payload,
             )
             await conn.execute(f"NOTIFY {self._CHANNEL}, '{row['id']}'")
 
@@ -148,7 +88,7 @@ class PostgresEventBus:
         import asyncpg
         seq = int(last_id) if last_id.isdigit() else 0
 
-        # Dedicated connection for LISTEN (cannot share pool conn)
+        # Dedicated connection — LISTEN state is per-connection.
         conn = await asyncpg.connect(self._dsn)
         queue: asyncio.Queue[int] = asyncio.Queue()
 
@@ -160,21 +100,22 @@ class PostgresEventBus:
 
         await conn.add_listener(self._CHANNEL, _on_notify)
         try:
-            # Replay missed events
+            # Replay missed events.
             rows = await conn.fetch(
-                "SELECT id, data FROM events WHERE id > $1 ORDER BY id LIMIT 1000", seq
+                "SELECT id, data FROM events WHERE id > $1 ORDER BY id LIMIT 1000",
+                seq,
             )
             for row in rows:
                 seq = row["id"]
                 yield str(seq), _parse_json(row["data"])
 
-            # Live events
+            # Live events.
             while True:
                 new_id = await queue.get()
                 if new_id <= seq:
                     continue
                 row = await conn.fetchrow(
-                    "SELECT id, data FROM events WHERE id = $1", new_id
+                    "SELECT id, data FROM events WHERE id = $1", new_id,
                 )
                 if row is None:
                     continue
@@ -194,27 +135,6 @@ class PostgresEventBus:
 
 def _parse_json(value) -> dict:
     return value if isinstance(value, dict) else json.loads(value)
-
-
-# ── Factory ───────────────────────────────────────────────────────────
-
-
-def is_postgres(database_url: str) -> bool:
-    return database_url.startswith(("postgresql://", "postgres://"))
-
-
-def make_event_bus(config: Config, store: Store | None = None) -> EventBus:
-    """Pick the right bus for this deploy mode.
-
-    SQLite (or empty database_url) ⇒ InProcessEventBus (single-process only).
-    Postgres                       ⇒ PostgresEventBus (multi-host capable).
-
-    `store` is unused now but kept for future single-process modes that may
-    persist events to SQLite for offline inspection.
-    """
-    if is_postgres(config.database_url):
-        return PostgresEventBus(config.database_url)
-    return InProcessEventBus()
 
 
 # ── Hook bridge — thread-safe ─────────────────────────────────────────

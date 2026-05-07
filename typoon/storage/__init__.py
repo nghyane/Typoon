@@ -1,6 +1,6 @@
-"""Storage — persistence implementations."""
+"""Storage — Postgres, single backend."""
 
-from .sqlite import SqliteStore
+from .postgres import PostgresStore
 from .store import Store
 
-__all__ = ["SqliteStore", "Store"]
+__all__ = ["PostgresStore", "Store"]

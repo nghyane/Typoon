@@ -4,7 +4,7 @@ Roles (deployment topology):
   vision     — scan + render (needs GPU + VisionRuntime)
   llm        — translate (LLM I/O, no GPU)
   api        — FastAPI server only (no worker loops)
-  full       — everything in-process (dev / single-host SQLite mode)
+  full       — everything in-process (dev, single-host Mac)
 
 Each loop: claim → load → stage → save → complete.
 On failure: release claim, increment attempts, log error.
@@ -28,7 +28,7 @@ from uuid import uuid4
 from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
 from typoon.adapters.chapter_archive import masks_key, prepared_key
 from typoon.adapters.ctx import TranslateCtx, make_ctx
-from typoon.adapters.event_bus import EventBus, EventHook, is_postgres, make_event_bus
+from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.loader import (
     load_scanned, load_translated_with_geometry, open_prepared_reader,
 )
@@ -42,7 +42,7 @@ from typoon.runs.events import (
 from typoon.stages.render_archive import render_chapter_to_archive
 from typoon.stages.scan import scan_chapter
 from typoon.stages.translate import translate_chapter
-from typoon.storage import Store, SqliteStore
+from typoon.storage import PostgresStore, Store
 
 logger = logging.getLogger(__name__)
 
@@ -232,20 +232,19 @@ async def run_workers(
 ) -> None:
     """Start worker loops for a given role.
 
-    SQLite mode requires Role.full — workers must share the same process
-    as the API. Use Postgres for any multi-host deploy.
+    All roles work against Postgres (RFC-005). `--role full` keeps
+    everything in one process for dev; vision/llm/api split across hosts
+    in prod via Tailscale + a shared DATABASE_URL.
     """
     from typoon.config import load_config
 
     config, paths = load_config() if config is None else (config, Paths())
     paths.ensure()
 
-    _validate_role_vs_db(role, config)
-
-    db    = await SqliteStore.open(paths.db)
+    db    = await PostgresStore.open(config.database_url)
     store = LocalArtifactStore(paths.artifacts)
     loop  = asyncio.get_running_loop()
-    bus   = make_event_bus(config, db)
+    bus   = EventBus(config.database_url)
     hook  = CompositeHook(LoggingHook(), EventHook(bus, loop))
 
     runtime: VisionRuntime | None = None
@@ -272,16 +271,6 @@ async def run_workers(
     finally:
         await bus.close()
         await db.close()
-
-
-def _validate_role_vs_db(role: Role, config: Config) -> None:
-    if is_postgres(config.database_url):
-        return
-    if role != Role.full:
-        raise RuntimeError(
-            f"role={role} requires postgresql:// database_url. "
-            "SQLite is single-process only — use role=full or switch to Postgres."
-        )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

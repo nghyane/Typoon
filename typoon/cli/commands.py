@@ -116,18 +116,25 @@ async def _redo(slug: str, from_ch: float, to_ch: float) -> None:
 
 @app.command()
 def api(
-    host:   str  = typer.Option("0.0.0.0", "--host", help="Bind host"),
-    port:   int  = typer.Option(8000, "--port", "-p", help="Bind port"),
+    host:   str  = typer.Option(None, "--host", help="Bind host (default from [server].host)"),
+    port:   int  = typer.Option(None, "--port", "-p", help="Bind port (default from [server].port)"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)"),
 ):
     """Run the HTTP API (FastAPI on uvicorn).
 
-    SQLite mode is single-process — workers must run inside the API
-    process via `typoon work --role full` (default). Set TYPOON_ROLE=api
-    + DATABASE_URL=postgresql://... for multi-host deploys.
+    DATABASE_URL must point at a Postgres instance (RFC-005). Workers
+    can run in the same process via `typoon work --role full` or on a
+    separate host (vision/llm) sharing the same DB.
     """
     import uvicorn
-    uvicorn.run("typoon.api.app:app", host=host, port=port, reload=reload)
+    from ..config import load_config
+    cfg, _ = load_config()
+    uvicorn.run(
+        "typoon.api.app:app",
+        host=host or cfg.server.host,
+        port=port or cfg.server.port,
+        reload=reload,
+    )
 
 
 @app.command()
@@ -139,7 +146,7 @@ def work(
 ):
     """Start pipeline workers for a deployment role.
 
-    full    everything in-process (default; SQLite-compatible)
+    full    everything in-process (default; dev on Mac)
     vision  scan + render only (GPU node)
     llm     translate only (LLM I/O node)
     api     no worker loops (API server only)

@@ -21,7 +21,7 @@ from typoon.runs.events import (
 from typoon.sources.constants import IMAGE_EXTS
 from typoon.sources.local import LocalSource
 from typoon.stages.prepare_archive import prepare_chapter_to_archive
-from typoon.storage import Store, SqliteStore
+from typoon.storage import PostgresStore, Store
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,10 @@ class Projects:
     @classmethod
     async def open(cls) -> "Projects":
         from typoon.config import load_config
-        _config, paths = load_config()
+        config, paths = load_config()
         paths.ensure()
         return cls(
-            await SqliteStore.open(paths.db),
+            await PostgresStore.open(config.database_url),
             paths,
             LocalArtifactStore(paths.artifacts),
         )

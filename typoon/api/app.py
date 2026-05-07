@@ -2,23 +2,34 @@
 
 from __future__ import annotations
 
-import os
-
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from typoon.adapters.event_bus import is_postgres
+from typoon.api.deps import get_store
 from typoon.api.routes import (
     auth, bubbles, glossary, pages, projects, search, sse, upload, workers,
 )
 from typoon.config import load_config
+from typoon.storage import Store
 
 app = FastAPI(title="Typoon API")
 
+_config, _paths = load_config()
+_paths.ensure()
+
+# CORS — closed community, only the configured web origin plus the
+# Discord Activity sandbox origins (Phase 2). `allow_origins=["*"]` was
+# wrong for a closed deploy and would have to be tightened anyway when
+# the SPA started carrying JWTs in Authorization headers.
+_origins = [
+    _config.server.public_web_url,
+    "https://discord.com",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
+    allow_origin_regex=r"https://[a-z0-9-]+\.discordsays\.com",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -33,17 +44,18 @@ app.include_router(search.router)
 app.include_router(pages.router)
 app.include_router(sse.router)
 
-# Static project files (covers, future thumbnails) served via sendfile.
-_config, _paths = load_config()
-_paths.ensure()
-app.mount("/files", StaticFiles(directory=str(_paths.projects)), name="files")
 
-# Deploy-mode validation: SQLite ⇒ single-process only. If TYPOON_ROLE
-# explicitly says "api" (i.e. workers run elsewhere), Postgres is required.
-_role = os.environ.get("TYPOON_ROLE", "").strip().lower()
-if _role == "api" and not is_postgres(_config.database_url):
-    raise RuntimeError(
-        "TYPOON_ROLE=api requires postgresql:// database_url. "
-        "SQLite is single-process only — run `typoon work --role full` to "
-        "embed workers in the API process, or switch to Postgres."
-    )
+@app.get("/api/healthz")
+async def healthz(db: Store = Depends(get_store)):
+    """Liveness + DB connectivity. Used by reverse proxies / Tailscale
+    health probes. Returns 200 on a successful Postgres ping, 503
+    otherwise."""
+    try:
+        await db.ping()
+    except Exception as e:  # asyncpg can raise many shapes
+        raise HTTPException(503, f"db: {e}") from e
+    return {"ok": True}
+
+
+# Static project files (covers, future thumbnails) served via sendfile.
+app.mount("/files", StaticFiles(directory=str(_paths.projects)), name="files")
