@@ -1,8 +1,11 @@
 import type { ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { useServerEvents } from '../lib/events'
 
 export function AppLayout({ children }: { children: ReactNode }) {
+  useServerEvents()
+
   return (
     <div className="flex h-screen overflow-hidden bg-white text-zinc-950 text-sm">
       <Sidebar />

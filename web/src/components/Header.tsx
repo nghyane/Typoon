@@ -7,7 +7,7 @@ export function Header() {
   const back = crumbs[0]
 
   return (
-    <header className="flex items-center gap-2 px-5 h-[var(--spacing-bar)] bg-white shrink-0">
+    <header className="flex items-center gap-2 px-5 h-bar bg-white shrink-0">
 
       <div className="flex-1 min-w-0">
         {back ? (

@@ -3,6 +3,7 @@ import { useQuery, useQueries } from '@tanstack/react-query'
 import { useState, useMemo } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { api, type ApiChapter } from '../lib/api'
+import { Cover } from '../components/Cover'
 
 interface Stats { total: number; done: number; running: number; error: number }
 
@@ -113,11 +114,11 @@ function ProjectsPage() {
                 className="group"
               >
                 {/* cover */}
-                <div className="w-full aspect-[2/3] rounded-xl bg-zinc-100 border border-zinc-200 mb-2.5 overflow-hidden flex items-center justify-center group-hover:border-zinc-300 transition-colors">
-                  <span className="text-xl font-black text-zinc-300">
-                    {p.title.slice(0, 2).toUpperCase()}
-                  </span>
-                </div>
+                <Cover
+                  src={p.cover_url}
+                  title={p.title}
+                  className="w-full aspect-[2/3] rounded-xl border border-zinc-200 mb-2.5 group-hover:border-zinc-300 transition-colors"
+                />
 
                 {/* meta */}
                 <p className="text-sm font-medium text-zinc-900 truncate leading-snug">

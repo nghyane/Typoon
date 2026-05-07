@@ -24,6 +24,13 @@ const STORAGE_USED  = 128.6
 const STORAGE_TOTAL = 500
 const STORAGE_PCT   = Math.round((STORAGE_USED / STORAGE_TOTAL) * 100)
 
+// Sidebar widths. Icon lane widths are derived so every icon center sits at
+// sidebar_x = 30 in both states — no horizontal motion while width animates.
+const W_COLLAPSED = 60
+const W_EXPANDED  = 252
+const NAV_PAD_X   = 8                            // matches `px-2` on <nav>
+const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44 — icon lane inside a nav link
+
 export function Sidebar() {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
@@ -34,8 +41,7 @@ export function Sidebar() {
 
   function linkCls(isActive: boolean) {
     return cn(
-      'flex items-center gap-2.5 rounded-md text-sm transition-colors select-none cursor-pointer',
-      collapsed ? 'justify-center w-9 h-9 mx-auto px-0' : 'px-2.5 h-9',
+      'flex items-center h-9 w-full rounded-md text-sm select-none cursor-pointer transition-colors duration-200',
       isActive
         ? 'bg-zinc-900/[0.06] text-zinc-900 font-medium'
         : 'text-zinc-500 hover:bg-zinc-900/[0.04] hover:text-zinc-900',
@@ -44,39 +50,70 @@ export function Sidebar() {
 
   return (
     <aside
-      className={cn(
-        'flex flex-col h-full shrink-0 overflow-hidden bg-zinc-50 border-r border-zinc-200',
-        'transition-[width] duration-200 ease-in-out',
-        collapsed ? 'w-[var(--spacing-nav)]' : 'w-[var(--spacing-sidebar)]',
-      )}
+      style={{ width: collapsed ? W_COLLAPSED : W_EXPANDED, transition: 'width 200ms ease-in-out' }}
+      className="flex flex-col h-full shrink-0 overflow-hidden bg-zinc-50 border-r border-zinc-200"
     >
-      {/* brand */}
-      <div className="flex items-center h-[var(--spacing-bar)] px-3 shrink-0 gap-2.5">
-        <span className="size-7 rounded-lg bg-zinc-900 flex items-center justify-center shrink-0">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-            <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
+      {/* brand — icon sits in a 60px lane so it stays centered when sidebar = 60 */}
+      <div className="flex items-center h-bar shrink-0">
+        <div
+          style={{ width: W_COLLAPSED }}
+          className="h-full flex items-center justify-center shrink-0"
+        >
+          <button
+            onClick={collapsed ? toggle : undefined}
+            title={collapsed ? 'Mở rộng' : undefined}
+            className={cn(
+              'group relative size-6 rounded-md bg-zinc-900 flex items-center justify-center',
+              collapsed ? 'cursor-pointer' : 'cursor-default',
+            )}
+          >
+            <svg width="11" height="11" viewBox="0 0 13 13" fill="none"
+              className={cn(collapsed && 'group-hover:opacity-0 transition-opacity')}>
+              <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+            {collapsed && (
+              <ChevronRight size={11} className="absolute text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+            )}
+          </button>
+        </div>
+
+        {/* text: takes remaining width, fades out without affecting brand position */}
+        <span
+          className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-200"
+          style={{ opacity: collapsed ? 0 : 1 }}
+        >
+          Typoon
         </span>
-        {!collapsed && (
-          <span className="font-semibold text-sm tracking-tight text-zinc-900 truncate flex-1">
-            Typoon
-          </span>
-        )}
+
+        {/* chevron: fades + slides off-canvas when collapsed (overflow:hidden clips it) */}
         <button
           onClick={toggle}
-          title={collapsed ? 'Mở rộng' : 'Thu gọn'}
-          className="ml-auto size-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200 transition-colors cursor-pointer shrink-0"
+          title="Thu gọn"
+          aria-hidden={collapsed}
+          tabIndex={collapsed ? -1 : 0}
+          className="size-6 mr-2.5 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200 cursor-pointer shrink-0 transition-opacity duration-200"
+          style={{ opacity: collapsed ? 0 : 1, pointerEvents: collapsed ? 'none' : 'auto' }}
         >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          <ChevronLeft size={13} />
         </button>
       </div>
 
       {/* main nav */}
-      <nav className="py-2 px-2 space-y-0.5">
+      <nav className="px-2 py-2 flex flex-col gap-0.5">
         {NAV.map(({ to, label, icon: Icon }) => (
           <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
-            <Icon size={15} className="shrink-0" />
-            {!collapsed && <span className="truncate">{label}</span>}
+            <span
+              style={{ width: NAV_LANE }}
+              className="h-full flex items-center justify-center shrink-0"
+            >
+              <Icon size={18} />
+            </span>
+            <span
+              className="flex-1 min-w-0 truncate pr-2.5 transition-opacity duration-200"
+              style={{ opacity: collapsed ? 0 : 1 }}
+            >
+              {label}
+            </span>
           </Link>
         ))}
       </nav>
@@ -97,11 +134,21 @@ export function Sidebar() {
       )}
 
       {/* footer nav */}
-      <div className="px-2 pb-2 border-t border-zinc-200 pt-2 space-y-0.5">
+      <div className="px-2 pb-2 border-t border-zinc-200 pt-2 flex flex-col gap-0.5">
         {NAV_FOOT.map(({ to, label, icon: Icon }) => (
           <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
-            <Icon size={15} className="shrink-0" />
-            {!collapsed && <span className="truncate">{label}</span>}
+            <span
+              style={{ width: NAV_LANE }}
+              className="h-full flex items-center justify-center shrink-0"
+            >
+              <Icon size={18} />
+            </span>
+            <span
+              className="flex-1 min-w-0 truncate pr-2.5 transition-opacity duration-200"
+              style={{ opacity: collapsed ? 0 : 1 }}
+            >
+              {label}
+            </span>
           </Link>
         ))}
       </div>

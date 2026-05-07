@@ -5,11 +5,13 @@ import { useHeaderStore } from '../store/header'
 import {
   Plus, Search, Share2, MoreHorizontal, Download,
   Check, Eye, Pencil, ChevronDown,
-  BookOpen, Clock, User, Tag, SlidersHorizontal,
+  BookOpen, Clock, SlidersHorizontal,
   Type, Layers, Palette, FileText, Settings2,
 } from 'lucide-react'
-import { api, type ApiChapter } from '../lib/api'
+import { api } from '../lib/api'
 import { cn } from '../lib/cn'
+import { timeAgo } from '../lib/time'
+import { Cover } from '../components/Cover'
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -17,12 +19,6 @@ type Tab = 'chapters' | 'context'
 type Filter = 'all' | 'idle' | 'running' | 'done'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-function pct(ch: ApiChapter) {
-  if (ch.state === 'done') return 100
-  if (!ch.progress || ch.progress.page_total === 0) return 0
-  return Math.round((ch.progress.page_index / ch.progress.page_total) * 100)
-}
 
 function statusOf(state: string) {
   switch (state) {
@@ -180,11 +176,12 @@ function ProjectDetailPage() {
 
       {/* hero */}
       <div className="px-6 pt-6 pb-5 flex items-start gap-5">
-        <div className="w-32 h-44 rounded-xl bg-zinc-100 border border-zinc-200 shrink-0 flex items-center justify-center">
-          <span className="text-2xl font-black text-zinc-300">
-            {project.title.slice(0, 2).toUpperCase()}
-          </span>
-        </div>
+        <Cover
+          src={project.cover_url}
+          title={project.title}
+          fontSize="text-2xl"
+          className="w-32 h-44 rounded-xl border border-zinc-200 shrink-0"
+        />
 
         <div className="flex-1 min-w-0 pt-1">
           <h1 className="text-2xl font-bold tracking-tight text-zinc-900 mb-2">
@@ -205,16 +202,18 @@ function ProjectDetailPage() {
             <span className="inline-flex items-center gap-1.5">
               <BookOpen size={13} className="shrink-0" />{total} chương
             </span>
-            <span className="inline-flex items-center gap-1.5">
-              <User size={13} className="shrink-0" />Tác giả
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Tag size={13} className="shrink-0" />Shounen
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Clock size={13} className="shrink-0" />Cập nhật: 2 giờ trước
-            </span>
+            {project.updated_at && (
+              <span className="inline-flex items-center gap-1.5">
+                <Clock size={13} className="shrink-0" />Cập nhật: {timeAgo(project.updated_at)}
+              </span>
+            )}
           </div>
+
+          {project.description && (
+            <p className="mt-3 text-sm text-zinc-500 leading-relaxed line-clamp-3 max-w-2xl">
+              {project.description}
+            </p>
+          )}
 
           {total > 0 && (
             <div className="flex items-center gap-4 mt-4 text-xs text-zinc-400">
@@ -355,6 +354,11 @@ function ProjectDetailPage() {
                         </td>
                         <td className="px-3 py-3">
                           <span className="font-medium text-zinc-900">Chương {String(ch.idx).replace(/\./g, '-')}</span>
+                          {ch.title && (
+                            <span className="ml-2 text-xs text-zinc-400 truncate inline-block max-w-md align-middle">
+                              {ch.title}
+                            </span>
+                          )}
                         </td>
                         <td className="px-3 py-3 text-xs text-zinc-400 tabular-nums">
                           {ch.state === 'done'
@@ -369,7 +373,7 @@ function ProjectDetailPage() {
                             <span className={cn('text-sm', st.text)}>{st.label}</span>
                           </span>
                         </td>
-                        <td className="px-3 py-3 text-sm text-zinc-400 whitespace-nowrap">2 giờ trước</td>
+                        <td className="px-3 py-3 text-sm text-zinc-400 whitespace-nowrap">{timeAgo(ch.updated_at)}</td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-1 transition-opacity">
                             <button className={btn.ghost}><Eye size={14} /></button>
