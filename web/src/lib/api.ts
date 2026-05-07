@@ -3,6 +3,21 @@
 // fetches go through the Vite proxy / nginx.
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
+const TOKEN_KEY = 'typoon_token'
+
+// 401 from any request → kick the user back to /login. We can't import
+// from a TanStack Router file at module load, so use a window event the
+// AppLayout listens for.
+function onUnauthorized() {
+  localStorage.removeItem(TOKEN_KEY)
+  window.dispatchEvent(new CustomEvent('typoon:unauthorized'))
+}
+
+function authHeaders(): Record<string, string> {
+  const t = localStorage.getItem(TOKEN_KEY)
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ApiProject {
@@ -80,9 +95,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   })
+  if (res.status === 401) {
+    onUnauthorized()
+    throw new Error('401 Unauthorized')
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
@@ -93,7 +113,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function postForm<T>(path: string, fd: FormData): Promise<T> {
   // Browsers must set Content-Type with the multipart boundary themselves;
   // request() injects application/json which would corrupt the body.
-  const res = await fetch(`${API_BASE}/api${path}`, { method: 'POST', body: fd })
+  const res = await fetch(`${API_BASE}/api${path}`, {
+    method: 'POST',
+    body: fd,
+    headers: authHeaders(),
+  })
+  if (res.status === 401) {
+    onUnauthorized()
+    throw new Error('401 Unauthorized')
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)

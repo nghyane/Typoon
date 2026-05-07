@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
+import { getToken } from './auth'
 
 interface ServerEvent {
   type:        string
@@ -28,7 +29,12 @@ export function useServerEvents() {
   const qc = useQueryClient()
 
   useEffect(() => {
-    const es = new EventSource(`${api.base}/api/events`)
+    const token = getToken()
+    if (!token) return
+
+    // EventSource has no header API; engine accepts the token via ?token=.
+    const url = `${api.base}/api/events?token=${encodeURIComponent(token)}`
+    const es  = new EventSource(url)
 
     es.onmessage = (msg) => {
       let ev: ServerEvent
@@ -36,8 +42,6 @@ export function useServerEvents() {
       catch { return }
 
       if (ev.project_id) {
-        // Single chapter detail: cheap, refetch on every relevant event so
-        // progress bars stay live.
         qc.invalidateQueries({
           queryKey: ['projects', ev.project_id, 'chapters'],
         })
