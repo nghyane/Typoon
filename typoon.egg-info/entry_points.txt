@@ -1,3 +1,2 @@
 [console_scripts]
 typoon = typoon.cli:app
-typoon-api = typoon.api:serve

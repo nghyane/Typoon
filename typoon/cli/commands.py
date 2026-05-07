@@ -188,6 +188,22 @@ async def _redo(slug: str, from_ch: float, to_ch: float) -> None:
 
 
 @app.command()
+def api(
+    host:   str  = typer.Option("0.0.0.0", "--host", help="Bind host"),
+    port:   int  = typer.Option(8000, "--port", "-p", help="Bind port"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev)"),
+):
+    """Run the HTTP API (FastAPI on uvicorn).
+
+    SQLite mode is single-process — workers must run inside the API
+    process via `typoon work --role full` (default). Set TYPOON_ROLE=api
+    + DATABASE_URL=postgresql://... for multi-host deploys.
+    """
+    import uvicorn
+    uvicorn.run("typoon.api.app:app", host=host, port=port, reload=reload)
+
+
+@app.command()
 def work(
     role:        str = typer.Option("full", "--role", "-r",
                                     help="vision | llm | api | full"),

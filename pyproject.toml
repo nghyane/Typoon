@@ -16,4 +16,3 @@ cuda = ["onnxruntime-gpu>=1.17"]
 
 [project.scripts]
 typoon = "typoon.cli:app"
-typoon-api = "typoon.api:serve"
