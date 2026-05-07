@@ -46,7 +46,7 @@ async def event_stream(
     # Verify token before opening the stream. Failures must be 401, not
     # mid-stream errors.
     try:
-        user_id = verify_jwt(token, cfg=cfg)
+        user_id, _roles = verify_jwt(token, cfg=cfg)
     except jwt.InvalidTokenError as e:
         raise HTTPException(401, f"Invalid token: {e}") from e
     if await db.get_user(user_id) is None:

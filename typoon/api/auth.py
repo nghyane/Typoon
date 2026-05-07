@@ -60,23 +60,27 @@ class DiscordUser:
 # ── JWT ──────────────────────────────────────────────────────────────
 
 
-def issue_jwt(user_id: int, *, cfg: AuthConfig) -> str:
+def issue_jwt(user_id: int, *, cfg: AuthConfig, role_ids: list[str] | None = None) -> str:
     now = int(time.time())
     payload = {
         # PyJWT requires `sub` to be a string per RFC 7519. We store the
         # numeric user_id as its string repr; verify_jwt parses back to int.
-        "sub": str(user_id),
-        "iat": now,
-        "exp": now + cfg.session_days * 86400,
-        "jti": secrets.token_urlsafe(8),
+        "sub":   str(user_id),
+        "iat":   now,
+        "exp":   now + cfg.session_days * 86400,
+        "jti":   secrets.token_urlsafe(8),
+        # Discord role IDs the user held at OAuth time. Snapshotted in
+        # the token — role changes need a re-login. Trade-off: zero
+        # server-side cache, no bot listener.
+        "roles": role_ids or [],
     }
     return jwt.encode(payload, cfg.jwt_secret, algorithm=JWT_ALGORITHM)
 
 
-def verify_jwt(token: str, *, cfg: AuthConfig) -> int:
-    """Returns user_id. Raises jwt.InvalidTokenError on failure."""
+def verify_jwt(token: str, *, cfg: AuthConfig) -> tuple[int, list[str]]:
+    """Returns (user_id, role_ids). Raises jwt.InvalidTokenError on failure."""
     payload = jwt.decode(token, cfg.jwt_secret, algorithms=[JWT_ALGORITHM])
-    return int(payload["sub"])
+    return int(payload["sub"]), list(payload.get("roles") or [])
 
 
 # ── Discord OAuth ─────────────────────────────────────────────────────
@@ -137,6 +141,28 @@ async def fetch_user_guilds(access_token: str) -> list[dict]:
         if r.status_code != 200:
             logger.warning("/users/@me/guilds: %s %s", r.status_code, r.text[:200])
             return []
+        return r.json()
+
+
+async def fetch_guild_member(access_token: str, guild_id: str) -> dict | None:
+    """Return /users/@me/guilds/{guild_id}/member.
+
+    Requires OAuth scope `guilds.members.read`. Payload includes
+    `roles: [snowflake, ...]` — role IDs the user holds in that guild.
+    Returns None on 404 (not a member) or any non-200.
+    """
+    if not guild_id:
+        return None
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(
+            f"{DISCORD_API}/users/@me/guilds/{guild_id}/member",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if r.status_code != 200:
+            logger.info(
+                "/users/@me/guilds/%s/member: %s", guild_id, r.status_code,
+            )
+            return None
         return r.json()
 
 

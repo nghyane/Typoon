@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect } from 'react'
 import {
-  Plus, Search, Share2, MoreHorizontal, Download,
+  Plus, Search, Share2,
   Check, Eye, RefreshCw, AlertCircle, Trash2,
   BookOpen, Clock, SlidersHorizontal, Settings, Sparkles,
 } from 'lucide-react'
@@ -47,12 +47,13 @@ function matchFilter(ch: ApiChapter, f: Filter): boolean {
 // ── chapter row ───────────────────────────────────────────────────────────────
 
 function ChapterRow({
-  ch, checked, onToggle, projectId,
+  ch, checked, onToggle, projectId, isOwner,
 }: {
   ch:        ApiChapter
   checked:   boolean
   onToggle:  () => void
   projectId: number
+  isOwner:   boolean
 }) {
   const qc = useQueryClient()
   const st = STATE[ch.state]
@@ -141,24 +142,28 @@ function ChapterRow({
           <button className={btn.ghost} title="Xem render">
             <Eye size={14} />
           </button>
-          <button
-            className={btn.ghost}
-            title="Chạy lại"
-            disabled={redo.isPending || ch.state === 'running'}
-            onClick={() => redo.mutate()}
-          >
-            <RefreshCw size={14} className={redo.isPending ? 'animate-spin' : ''} />
-          </button>
-          <button
-            className={cn(btn.ghost, 'hover:text-red-600')}
-            title="Xoá"
-            disabled={del.isPending || ch.state === 'running'}
-            onClick={() => {
-              if (confirm(`Xoá chương ${ch.idx}?`)) del.mutate()
-            }}
-          >
-            <Trash2 size={14} />
-          </button>
+          {isOwner && (
+            <>
+              <button
+                className={btn.ghost}
+                title="Chạy lại"
+                disabled={redo.isPending || ch.state === 'running'}
+                onClick={() => redo.mutate()}
+              >
+                <RefreshCw size={14} className={redo.isPending ? 'animate-spin' : ''} />
+              </button>
+              <button
+                className={cn(btn.ghost, 'hover:text-red-600')}
+                title="Xoá"
+                disabled={del.isPending || ch.state === 'running'}
+                onClick={() => {
+                  if (confirm(`Xoá chương ${ch.idx}?`)) del.mutate()
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </>
+          )}
         </div>
       </td>
     </tr>
@@ -250,6 +255,7 @@ function ProjectDetailPage() {
       <Hero
         project={project}
         stats={stats}
+        isOwner={project.is_owner}
         onAddChapters={() => setUploadOpen(true)}
       />
 
@@ -283,6 +289,7 @@ function ProjectDetailPage() {
             sel={sel}       toggleOne={toggleOne} toggleAll={toggleAll}
             allChecked={allChecked}
             projectId={id}
+            isOwner={project.is_owner}
             onPull={() => setUploadOpen(true)}
           />
         )}
@@ -307,12 +314,31 @@ function ProjectDetailPage() {
 // ── hero ─────────────────────────────────────────────────────────────────────
 
 function Hero({
-  project, stats, onAddChapters,
+  project, stats, isOwner, onAddChapters,
 }: {
   project: ApiProject
   stats:   ReturnType<typeof chapterStats>
+  isOwner: boolean
   onAddChapters: () => void
 }) {
+  const qc = useQueryClient()
+  const togglePin = useMutation({
+    mutationFn: () =>
+      project.is_pinned ? api.unpinProject(project.project_id) : api.pinProject(project.project_id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+  const toggleShare = useMutation({
+    mutationFn: () =>
+      api.patchSettings(project.project_id, { shared: !project.shared }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      toast.success(project.shared ? 'Đã tắt chia sẻ' : 'Đã bật chia sẻ')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   return (
     <div className="px-6 pt-6 pb-5 flex items-start gap-5">
       <Cover
@@ -328,7 +354,7 @@ function Hero({
           {project.title}
         </h1>
 
-        <div className="flex items-center gap-2 mt-2">
+        <div className="flex items-center gap-2 mt-2 flex-wrap">
           <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-100 text-xs font-medium text-zinc-600 uppercase tracking-wide">
             {project.source_lang}
           </span>
@@ -336,6 +362,16 @@ function Hero({
           <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-900 text-xs font-medium text-white uppercase tracking-wide">
             {project.target_lang}
           </span>
+          {project.shared && (
+            <span className="inline-flex items-center gap-1 h-6 px-2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[11px] font-medium">
+              <Share2 size={10} /> Đã chia sẻ
+            </span>
+          )}
+          {!isOwner && (
+            <span className="inline-flex items-center h-6 px-2 rounded-full bg-zinc-50 text-zinc-500 border border-zinc-200 text-[11px] font-medium">
+              Chỉ xem
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-5 text-xs text-zinc-400 mt-3 flex-wrap">
@@ -365,14 +401,42 @@ function Hero({
       </div>
 
       <div className="flex items-center gap-2 shrink-0 pt-1">
-        <button className={btn.secondary}><Share2 size={14} />Chia sẻ</button>
-        <button className={btn.secondary}><Download size={14} />Xuất</button>
-        <button className={btn.iconBox}><MoreHorizontal size={15} /></button>
-        <button className={btn.primary} onClick={onAddChapters}>
-          <Plus size={14} />Tải chương
-        </button>
+        {!isOwner && (
+          <button
+            onClick={() => togglePin.mutate()}
+            className={btn.secondary}
+            title={project.is_pinned ? 'Bỏ lưu' : 'Lưu'}
+          >
+            <BookmarkIcon filled={project.is_pinned} />
+            {project.is_pinned ? 'Đã lưu' : 'Lưu'}
+          </button>
+        )}
+        {isOwner && (
+          <button
+            onClick={() => toggleShare.mutate()}
+            disabled={toggleShare.isPending}
+            className={btn.secondary}
+            title={project.shared ? 'Tắt chia sẻ' : 'Chia sẻ với cộng đồng'}
+          >
+            <Share2 size={14} />
+            {project.shared ? 'Đang chia sẻ' : 'Chia sẻ'}
+          </button>
+        )}
+        {isOwner && (
+          <button className={btn.primary} onClick={onAddChapters}>
+            <Plus size={14} />Tải chương
+          </button>
+        )}
       </div>
     </div>
+  )
+}
+
+function BookmarkIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2">
+      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+    </svg>
   )
 }
 
@@ -389,12 +453,13 @@ interface ChaptersTabProps {
   toggleAll:  () => void
   allChecked: boolean
   projectId:  number
+  isOwner:    boolean
   onPull:     () => void
 }
 
 function ChaptersTab({
   cLoad, filtered, stats, filter, setFilter, q, setQ,
-  sel, toggleOne, toggleAll, allChecked, projectId, onPull,
+  sel, toggleOne, toggleAll, allChecked, projectId, isOwner, onPull,
 }: ChaptersTabProps) {
   return (
     <>
@@ -459,7 +524,7 @@ function ChaptersTab({
                       ? 'Tải chương lên để bắt đầu dịch'
                       : (q || filter !== 'all' ? 'Thử bỏ bộ lọc' : 'Thêm chương để bắt đầu')}
                   </p>
-                  {stats.total === 0 && (
+                  {stats.total === 0 && isOwner && (
                     <button
                       onClick={onPull}
                       className="mt-4 inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 cursor-pointer"
@@ -477,6 +542,7 @@ function ChaptersTab({
                 key={ch.chapter_id}
                 ch={ch}
                 projectId={projectId}
+                isOwner={isOwner}
                 checked={sel.has(ch.chapter_id)}
                 onToggle={() => toggleOne(ch.chapter_id)}
               />

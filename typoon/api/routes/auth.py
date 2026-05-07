@@ -30,7 +30,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from typoon.api.auth import (
-    exchange_code, fetch_guild_widget, fetch_user, fetch_user_guilds, issue_jwt,
+    exchange_code, fetch_guild_member, fetch_guild_widget,
+    fetch_user, fetch_user_guilds, issue_jwt,
 )
 from typoon.api.deps import get_auth_cfg, get_store, require_user
 from typoon.config import AuthConfig
@@ -106,8 +107,9 @@ async def me(
     cfg:  AuthConfig = Depends(get_auth_cfg),
 ):
     name, _ = await _resolve_guild_invite(cfg.discord_guild_id) if cfg.discord_guild_id else (None, None)
+    is_admin = bool(cfg.admin_role_id) and cfg.admin_role_id in user.get("roles", [])
     return {
-        **_user_out(user),
+        **_user_out(user, is_admin=is_admin),
         "guild_name":     name,
         "guild_icon_url": _read_guild_icon(cfg.discord_guild_id),
     }
@@ -137,22 +139,25 @@ async def _exchange_and_issue(
 
     discord_user = await fetch_user(access_token)
 
+    role_ids: list[str] = []
+
     # Gate by guild membership. Empty guild_id → gating disabled.
     if cfg.discord_guild_id:
-        guilds   = await fetch_user_guilds(access_token)
-        match    = next((g for g in guilds if g.get("id") == cfg.discord_guild_id), None)
+        guilds = await fetch_user_guilds(access_token)
+        match  = next((g for g in guilds if g.get("id") == cfg.discord_guild_id), None)
         if match is None:
             raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
-        # First successful guild-gated login also captures the guild
-        # icon hash for SPA branding. The widget endpoint doesn't expose
-        # icons, so we piggyback on the user's guilds list (cheap, only
-        # runs at login time).
+        # Capture guild icon for branding (widget doesn't expose it).
         _persist_guild_meta(cfg.discord_guild_id, icon=match.get("icon"))
 
-    promote = (
-        cfg.bootstrap_discord_id
-        and discord_user.id == cfg.bootstrap_discord_id
-    )
+        # Pull role IDs the user holds in this guild. Requires
+        # `guilds.members.read` OAuth scope (added in RFC-006). When
+        # missing or 404, fall back to empty roles — user is still
+        # member, just no admin privileges.
+        member = await fetch_guild_member(access_token, cfg.discord_guild_id)
+        if member:
+            role_ids = [str(r) for r in member.get("roles", []) if r]
+
     user = await db.upsert_user_from_identity(
         provider="discord",
         external_id=discord_user.id,
@@ -164,19 +169,18 @@ async def _exchange_and_issue(
             "global_name": discord_user.global_name,
             "verified":    discord_user.verified,
         },
-        promote_admin=bool(promote),
     )
-    return issue_jwt(user["id"], cfg=cfg)
+    return issue_jwt(user["id"], cfg=cfg, role_ids=role_ids)
 
 
-def _user_out(row: dict) -> dict:
+def _user_out(row: dict, *, is_admin: bool = False) -> dict:
     return {
-        "id":           row["id"],
-        "display_name": row["display_name"],
-        "avatar_url":   row.get("avatar_url"),
-        "email":        row.get("email"),
-        "tier":         row["tier"],
-        "created_at":   row.get("created_at"),
+        "id":            row["id"],
+        "display_name":  row["display_name"],
+        "avatar_url":    row.get("avatar_url"),
+        "email":         row.get("email"),
+        "is_admin":      is_admin,
+        "created_at":    row.get("created_at"),
         "last_login_at": row.get("last_login_at"),
     }
 

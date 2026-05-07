@@ -24,7 +24,7 @@ from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.projects import Projects
 from typoon.api.deps import get_artifact_store, get_bus, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut
-from typoon.api.routes._shared import chapter_out, require_project
+from typoon.api.routes._shared import chapter_out, require_project_owner
 from typoon.paths import Paths
 from typoon.runs.events import Hook
 from typoon.sources.upload import (
@@ -54,6 +54,7 @@ async def upload_chapter(
     files:      list[UploadFile] = File(..., description="ZIP/CBZ/PDF or multiple images"),
     idx:        float | None     = Form(None, description="Chapter number; auto from filename if omitted"),
     title:      str | None       = Form(None),
+    user:  dict          = Depends(require_user),
     db:    Store         = Depends(get_store),
     paths: Paths         = Depends(get_paths),
     store: ArtifactStore = Depends(get_artifact_store),
@@ -65,7 +66,7 @@ async def upload_chapter(
     the filename; multi-image upload → idx must be supplied or we
     fall back to filename of the first image.
     """
-    proj = await require_project(project_id, db)
+    proj = await require_project_owner(project_id, user, db)
     files = [f for f in files if f.filename]
     if not files:
         raise HTTPException(400, "No files in upload")

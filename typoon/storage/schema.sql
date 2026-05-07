@@ -33,7 +33,6 @@ CREATE TABLE IF NOT EXISTS users (
     display_name  TEXT NOT NULL,
     avatar_url    TEXT,
     email         TEXT,
-    tier          TEXT NOT NULL DEFAULT 'member',  -- member | admin
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_login_at TIMESTAMPTZ
 );
@@ -60,10 +59,14 @@ CREATE TABLE IF NOT EXISTS projects (
     source_url   TEXT,
     source_lang  TEXT NOT NULL,
     target_lang  TEXT NOT NULL,
+    owner_id     BIGINT REFERENCES users(id),
+    shared       BOOLEAN NOT NULL DEFAULT FALSE,
     settings     JSONB,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_projects_owner_shared
+    ON projects (owner_id) WHERE shared = TRUE;
 
 CREATE TABLE IF NOT EXISTS chapters (
     id           BIGSERIAL PRIMARY KEY,
@@ -77,6 +80,16 @@ CREATE TABLE IF NOT EXISTS chapters (
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(project_id, idx)
 );
+
+-- ── Project pins (per-user bookmarks) ───────────────────────────────
+
+CREATE TABLE IF NOT EXISTS project_pins (
+    user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    pinned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_pins_user ON project_pins(user_id);
 
 -- ── Worker coordination ─────────────────────────────────────────────
 

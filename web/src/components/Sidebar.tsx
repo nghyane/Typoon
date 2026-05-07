@@ -1,14 +1,16 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../lib/cn'
-import { FolderOpen, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
+import { FolderOpen, Star, Globe, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const NAV = [
-  { to: '/projects', label: 'Dự án', icon: FolderOpen },
+  { to: '/projects',           label: 'Của tôi',    icon: FolderOpen, search: { filter: 'mine'      } },
+  { to: '/projects',           label: 'Đã lưu',     icon: Star,       search: { filter: 'pinned'    } },
+  { to: '/projects',           label: 'Cộng đồng',  icon: Globe,      search: { filter: 'community' } },
 ] as const
 
 const NAV_FOOT = [
-  { to: '/settings', label: 'Cài đặt', icon: Settings },
+  { to: '/settings', label: 'Cài đặt', icon: Settings, search: undefined },
 ] as const
 
 // Sidebar widths. Icon lane widths are derived so every icon center sits at
@@ -27,8 +29,17 @@ export function Sidebar({ brandName, brandIcon }: Props) {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
-  const active = (to: string) =>
-    to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
+  const active = (to: string, filter?: string) => {
+    if (to !== '/projects') {
+      return location.pathname.startsWith(to)
+    }
+    // Match the projects route + filter query param.
+    const onProjects = location.pathname === '/projects'
+                    || location.pathname.startsWith('/projects/')
+    if (!onProjects) return false
+    const current = (location.search as { filter?: string })?.filter ?? 'mine'
+    return current === (filter ?? 'mine')
+  }
 
   const linkCls = (isActive: boolean) =>
     cn(
@@ -38,8 +49,20 @@ export function Sidebar({ brandName, brandIcon }: Props) {
         : 'text-zinc-500 hover:bg-zinc-900/[0.04] hover:text-zinc-900',
     )
 
-  const renderLink = (to: string, label: string, Icon: typeof FolderOpen) => (
-    <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
+  const renderLink = (
+    to: string,
+    label: string,
+    Icon: typeof FolderOpen,
+    search?: Record<string, string>,
+  ) => (
+    <Link
+      key={`${to}:${search?.filter ?? ''}:${label}`}
+      to={to}
+      // @ts-expect-error — TanStack Router strict search type, single shape used across this route group.
+      search={search}
+      title={collapsed ? label : undefined}
+      className={linkCls(active(to, search?.filter))}
+    >
       <span style={{ width: NAV_LANE }} className="h-full flex items-center justify-center shrink-0">
         <Icon size={17} />
       </span>
@@ -123,14 +146,14 @@ export function Sidebar({ brandName, brandIcon }: Props) {
 
       {/* main nav */}
       <nav className="px-2 py-2 flex flex-col gap-0.5">
-        {NAV.map(({ to, label, icon }) => renderLink(to, label, icon))}
+        {NAV.map(({ to, label, icon, search }) => renderLink(to, label, icon, search))}
       </nav>
 
       <div className="flex-1" />
 
       {/* footer nav */}
       <div className="px-2 pb-2 pt-2 border-t border-zinc-200 flex flex-col gap-0.5">
-        {NAV_FOOT.map(({ to, label, icon }) => renderLink(to, label, icon))}
+        {NAV_FOOT.map(({ to, label, icon, search }) => renderLink(to, label, icon, search))}
       </div>
     </aside>
   )

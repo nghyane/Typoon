@@ -29,6 +29,7 @@ export function SettingsPanel({ project }: Props) {
     title:       project.title,
     description: project.description ?? '',
     target_lang: project.target_lang,
+    shared:      project.shared,
   })
 
   // Sync draft with settings (loaded async).
@@ -38,19 +39,24 @@ export function SettingsPanel({ project }: Props) {
       title:       settings.title,
       description: settings.description ?? '',
       target_lang: settings.target_lang,
+      shared:      settings.shared,
     })
   }, [settings])
+
+  const isOwner = settings?.is_owner ?? project.is_owner
 
   const dirty =
     draft.title       !== project.title ||
     draft.description !== (project.description ?? '') ||
-    draft.target_lang !== project.target_lang
+    draft.target_lang !== project.target_lang ||
+    draft.shared      !== project.shared
 
   const save = useMutation({
     mutationFn: () => api.patchSettings(project.project_id, {
       title:       draft.title.trim() || project.title,
       description: draft.description,
       target_lang: draft.target_lang,
+      shared:      draft.shared,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects'] })
@@ -120,6 +126,26 @@ export function SettingsPanel({ project }: Props) {
         </div>
       </Section>
 
+      {/* Sharing — owner only */}
+      {isOwner && (
+        <Section title="Chia sẻ">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={draft.shared}
+              onChange={(e) => setDraft({ ...draft, shared: e.target.checked })}
+              className="mt-1 size-4 accent-zinc-900"
+            />
+            <div>
+              <p className="text-sm font-medium text-zinc-900">Chia sẻ với cộng đồng</p>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Bật để các thành viên khác xem được dự án trong mục “Cộng đồng”. Chỉ chủ dự án mới có quyền sửa.
+              </p>
+            </div>
+          </label>
+        </Section>
+      )}
+
       {/* Source */}
       {project.source_url && (
         <Section title="Nguồn">
@@ -133,6 +159,7 @@ export function SettingsPanel({ project }: Props) {
       )}
 
       {/* Danger zone */}
+      {isOwner && (
       <Section title="Vùng nguy hiểm" tone="danger">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -154,6 +181,7 @@ export function SettingsPanel({ project }: Props) {
           </button>
         </div>
       </Section>
+      )}
     </div>
   )
 }

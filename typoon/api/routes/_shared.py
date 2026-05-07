@@ -9,9 +9,37 @@ from typoon.storage import Store
 
 
 async def require_project(project_id: int, db: Store) -> dict:
+    """Resolve project by id or 404. Permission-agnostic — caller must
+    pair with `_require_view`/`_require_owner` for access control."""
     proj = await db.get_project(project_id)
     if proj is None:
         raise HTTPException(404, "Project not found")
+    return proj
+
+
+async def require_project_view(project_id: int, user: dict, db: Store) -> dict:
+    """Project visible to user (owner OR shared). 404 hides existence
+    of private projects from non-owners."""
+    proj = await db.get_project(project_id)
+    if proj is None:
+        raise HTTPException(404, "Project not found")
+    if proj.get("owner_id") != user["id"] and not proj.get("shared"):
+        raise HTTPException(404, "Project not found")
+    return proj
+
+
+async def require_project_owner(project_id: int, user: dict, db: Store) -> dict:
+    """Project must be owned by user. Returns project row.
+
+    NULL owner_id (legacy projects pre-RFC-006) treated as no-owner —
+    nobody can mutate them via the API. Admin can backfill owner_id via
+    direct SQL or future admin endpoint.
+    """
+    proj = await db.get_project(project_id)
+    if proj is None:
+        raise HTTPException(404, "Project not found")
+    if proj.get("owner_id") != user["id"]:
+        raise HTTPException(403, "Only the owner can do this")
     return proj
 
 

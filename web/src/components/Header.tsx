@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Bell, Search, ArrowLeft, LogOut, Shield } from 'lucide-react'
+import { Search, ArrowLeft, LogOut, Shield } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { useHeaderStore } from '../store/header'
 import { WorkersIndicator } from './WorkersIndicator'
@@ -45,13 +45,6 @@ export function Header({ user }: Props) {
 
       <WorkersIndicator />
 
-      <button
-        title="Thông báo"
-        className="size-8 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 transition-colors cursor-pointer"
-      >
-        <Bell size={15} />
-      </button>
-
       <UserMenu user={user} />
     </header>
   )
@@ -90,7 +83,7 @@ function UserMenu({ user }: { user: AuthUser }) {
             {user.email && (
               <p className="text-xs text-zinc-400 truncate mt-0.5">{user.email}</p>
             )}
-            {user.tier === 'admin' && (
+            {user.is_admin && (
               <span className="inline-flex items-center gap-1 mt-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-100 rounded px-1.5 py-0.5">
                 <Shield size={9} />
                 Admin

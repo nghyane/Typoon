@@ -12,7 +12,9 @@ from pydantic import BaseModel
 
 from typoon.api.deps import get_store, require_user
 from typoon.api.models import BubbleOut
-from typoon.api.routes._shared import require_chapter, require_project
+from typoon.api.routes._shared import (
+    require_chapter, require_project_owner, require_project_view,
+)
 from typoon.storage import Store
 
 router = APIRouter(
@@ -33,9 +35,11 @@ class TranslationPatch(BaseModel):
 async def list_bubbles(
     project_id: int,
     chapter_id: int,
-    db: Store = Depends(get_store),
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
 ):
     """All bubbles in chapter — OCR text plus translation if available."""
+    await require_project_view(project_id, user, db)
     await require_chapter(project_id, chapter_id, db)
     bubbles = await db.get_bubbles(chapter_id)
     translations = await db.get_translations(chapter_id)
@@ -64,9 +68,11 @@ async def patch_translation(
     page_index: int,
     bubble_idx: int,
     body:       TranslationPatch,
+    user:       dict  = Depends(require_user),
     db:         Store = Depends(get_store),
 ):
-    """Manual edit. Re-enqueues render so the page reflects the change."""
+    """Manual edit. Owner only — re-enqueues render."""
+    await require_project_owner(project_id, user, db)
     await require_chapter(project_id, chapter_id, db)
     if body.kind is not None and body.kind not in ("dialogue", "sfx", "skip"):
         raise HTTPException(400, "kind must be one of: dialogue, sfx, skip")

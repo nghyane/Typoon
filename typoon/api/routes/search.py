@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from typoon.api.deps import get_store, require_user
 from typoon.api.models import SearchHit, SearchResults
-from typoon.api.routes._shared import require_project
+from typoon.api.routes._shared import require_project_view
 from typoon.storage import Store
 
 router = APIRouter(
@@ -27,11 +27,12 @@ async def search(
     pid:   int = Query(...,  alias="project_id"),
     scope: str = Query("all"),
     limit: int = Query(20, ge=1, le=100),
+    user:  dict  = Depends(require_user),
     db:    Store = Depends(get_store),
 ):
     if scope not in _VALID_SCOPES:
         raise HTTPException(400, f"scope must be one of: {sorted(_VALID_SCOPES)}")
-    await require_project(pid, db)
+    await require_project_view(pid, user, db)
 
     hits: list[SearchHit] = []
 

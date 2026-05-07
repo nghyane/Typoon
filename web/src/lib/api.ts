@@ -29,9 +29,15 @@ export interface ApiProject {
   source_lang:  string
   target_lang:  string
   source_url:   string | null
+  owner_id:     number | null
+  shared:       boolean
+  is_owner:     boolean
+  is_pinned:    boolean
   created_at:   string | null
   updated_at:   string | null
 }
+
+export type ProjectFilter = 'all' | 'mine' | 'pinned' | 'community'
 
 export type ChapterState = 'idle' | 'pending' | 'running' | 'error' | 'done'
 
@@ -85,6 +91,8 @@ export interface ApiSettings {
   target_lang: string
   title:       string
   description: string | null
+  shared:      boolean
+  is_owner:    boolean
   settings:    Record<string, unknown>
 }
 
@@ -137,7 +145,8 @@ export const api = {
   base: API_BASE,
 
   // Projects
-  listProjects:   ()           => request<ApiProject[]>('/projects'),
+  listProjects:   (filter: ProjectFilter = 'all') =>
+    request<ApiProject[]>(`/projects?filter=${filter}`),
   getProject:     (id: number) => request<ApiProject>(`/projects/${id}`),
   deleteProject:  (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   createProject:  (body: { title: string; description?: string; source_lang: string; target_lang: string }) =>
@@ -147,6 +156,10 @@ export const api = {
     fd.append('file', file)
     return postForm<ApiProject>(`/projects/${id}/cover`, fd)
   },
+
+  // Pin (bookmark)
+  pinProject:   (id: number) => request<void>(`/projects/${id}/pin`, { method: 'POST' }),
+  unpinProject: (id: number) => request<void>(`/projects/${id}/pin`, { method: 'DELETE' }),
 
   // Chapters
   listChapters:  (pid: number)              => request<ApiChapter[]>(`/projects/${pid}/chapters`),
@@ -198,7 +211,8 @@ export const api = {
   // Settings
   getSettings: (pid: number) => request<ApiSettings>(`/projects/${pid}/settings`),
   patchSettings: (pid: number, body: Partial<{
-    target_lang: string; title: string; description: string; settings: Record<string, unknown>
+    target_lang: string; title: string; description: string;
+    settings: Record<string, unknown>; shared: boolean;
   }>) =>
     request<ApiSettings>(`/projects/${pid}/settings`, { method: 'PATCH', body: json(body) }),
 

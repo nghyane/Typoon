@@ -33,13 +33,18 @@ class ProjectOut(BaseModel):
     source_lang:  str
     target_lang:  str
     source_url:   str | None = None
+    owner_id:     int | None = None
+    shared:       bool       = False
+    is_owner:     bool       = False
+    is_pinned:    bool       = False
     created_at:   str | None = None
     updated_at:   str | None = None
 
     model_config = {"populate_by_name": True}
 
     @classmethod
-    def from_row(cls, row: dict) -> "ProjectOut":
+    def from_row(cls, row: dict, *, viewer_id: int | None = None) -> "ProjectOut":
+        owner_id = row.get("owner_id")
         return cls(
             project_id=row["id"],
             slug=row["slug"],
@@ -49,6 +54,10 @@ class ProjectOut(BaseModel):
             source_lang=row["source_lang"],
             target_lang=row["target_lang"],
             source_url=row.get("source_url"),
+            owner_id=owner_id,
+            shared=bool(row.get("shared")),
+            is_owner=(viewer_id is not None and owner_id == viewer_id),
+            is_pinned=bool(row.get("is_pinned")),
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
         )

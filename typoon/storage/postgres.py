@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def _read_schema_sql() -> str:
@@ -48,7 +48,7 @@ def _clean_query(q: str) -> str:
 _ISO_FMT = "YYYY-MM-DD\"T\"HH24:MI:SSOF"
 _TS_PROJECTS = (
     "id, slug, title, description, cover_path, source_url, "
-    "source_lang, target_lang, settings, "
+    "source_lang, target_lang, owner_id, shared, settings, "
     f"to_char(created_at, '{_ISO_FMT}') AS created_at, "
     f"to_char(updated_at, '{_ISO_FMT}') AS updated_at"
 )
@@ -58,7 +58,7 @@ _TS_CHAPTERS = (
     f"to_char(updated_at, '{_ISO_FMT}') AS updated_at"
 )
 _TS_USERS = (
-    "id, display_name, avatar_url, email, tier, "
+    "id, display_name, avatar_url, email, "
     f"to_char(created_at, '{_ISO_FMT}') AS created_at, "
     f"to_char(last_login_at, '{_ISO_FMT}') AS last_login_at"
 )
@@ -102,6 +102,7 @@ class PostgresStore:
         source_lang: str,
         target_lang: str,
         source_url: str | None = None,
+        owner_id: int | None = None,
     ) -> int:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT id FROM projects WHERE slug=$1", slug)
@@ -114,9 +115,9 @@ class PostgresStore:
                 if row:
                     return row["id"]
             row = await conn.fetchrow(
-                "INSERT INTO projects (slug, title, source_lang, target_lang, source_url) "
-                "VALUES ($1,$2,$3,$4,$5) RETURNING id",
-                slug, title, source_lang, target_lang, source_url,
+                "INSERT INTO projects (slug, title, source_lang, target_lang, source_url, owner_id) "
+                "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+                slug, title, source_lang, target_lang, source_url, owner_id,
             )
             return row["id"]
 
@@ -132,12 +133,101 @@ class PostgresStore:
                 f"SELECT {_TS_PROJECTS} FROM projects WHERE slug=$1", slug,
             ))
 
-    async def list_projects(self) -> list[dict]:
+    async def list_projects(
+        self,
+        *,
+        viewer_id: int | None = None,
+        filter: str = "all",
+    ) -> list[dict]:
+        """List projects visible to `viewer_id`.
+
+        filter:
+          all       — owned by viewer + shared (default)
+          mine      — owned by viewer
+          pinned    — pinned by viewer
+          community — shared && owner_id != viewer (others' shared)
+
+        viewer_id=None returns everything (admin / migration use).
+        Each row carries `is_pinned` (bool, false when no viewer).
+        """
+        if viewer_id is None:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT {_TS_PROJECTS}, FALSE AS is_pinned "
+                    "FROM projects ORDER BY id DESC",
+                )
+            return [dict(r) for r in rows]
+
+        select = (
+            f"SELECT {_TS_PROJECTS}, "
+            "  EXISTS(SELECT 1 FROM project_pins pp "
+            "         WHERE pp.user_id=$1 AND pp.project_id=projects.id) "
+            "  AS is_pinned "
+            "FROM projects "
+        )
+        if filter == "mine":
+            where = "WHERE owner_id = $1"
+            params: list = [viewer_id]
+        elif filter == "pinned":
+            where = (
+                "WHERE id IN (SELECT project_id FROM project_pins WHERE user_id=$1) "
+                "  AND (owner_id = $1 OR shared = TRUE)"
+            )
+            params = [viewer_id]
+        elif filter == "community":
+            where = "WHERE shared = TRUE AND (owner_id IS NULL OR owner_id <> $1)"
+            params = [viewer_id]
+        else:  # all
+            where = "WHERE owner_id = $1 OR shared = TRUE"
+            params = [viewer_id]
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_TS_PROJECTS} FROM projects ORDER BY id DESC",
+                select + where + " ORDER BY updated_at DESC, id DESC",
+                *params,
             )
-            return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+
+    async def can_view_project(self, project_id: int, viewer_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM projects "
+                "WHERE id=$1 AND (owner_id=$2 OR shared=TRUE) LIMIT 1",
+                project_id, viewer_id,
+            )
+        return row is not None
+
+    async def is_project_owner(self, project_id: int, user_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 LIMIT 1",
+                project_id, user_id,
+            )
+        return row is not None
+
+    # ── Pins ──────────────────────────────────────────────────────
+
+    async def pin_project(self, user_id: int, project_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO project_pins (user_id, project_id) VALUES ($1,$2) "
+                "ON CONFLICT DO NOTHING",
+                user_id, project_id,
+            )
+
+    async def unpin_project(self, user_id: int, project_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM project_pins WHERE user_id=$1 AND project_id=$2",
+                user_id, project_id,
+            )
+
+    async def is_pinned(self, user_id: int, project_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM project_pins WHERE user_id=$1 AND project_id=$2",
+                user_id, project_id,
+            )
+        return row is not None
 
     async def update_project_metadata(
         self,
@@ -148,6 +238,8 @@ class PostgresStore:
         cover_path: str | None = None,
         target_lang: str | None = None,
         settings: dict | None = None,
+        shared: bool | None = None,
+        owner_id: int | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
@@ -162,6 +254,10 @@ class PostgresStore:
         if settings is not None:
             args.append(json.dumps(settings, ensure_ascii=False))
             sets.append(f"settings=${len(args)}::jsonb")
+        if shared is not None:
+            args.append(shared); sets.append(f"shared=${len(args)}")
+        if owner_id is not None:
+            args.append(owner_id); sets.append(f"owner_id=${len(args)}")
         if not sets:
             return
         args.append(project_id)
@@ -816,8 +912,12 @@ class PostgresStore:
         avatar_url:  str | None = None,
         email:       str | None = None,
         metadata:    dict | None = None,
-        promote_admin: bool = False,
     ) -> dict:
+        """Find-or-create user from a (provider, external_id) tuple.
+
+        Phase 1 (RFC-006) drops `users.tier` — admin status comes from
+        Discord role at OAuth time, not a DB column.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT user_id FROM identities WHERE provider=$1 AND external_id=$2",
@@ -840,10 +940,9 @@ class PostgresStore:
                     )
             else:
                 row = await conn.fetchrow(
-                    "INSERT INTO users (display_name, avatar_url, email, tier, last_login_at) "
-                    "VALUES ($1,$2,$3,$4, NOW()) RETURNING id",
+                    "INSERT INTO users (display_name, avatar_url, email, last_login_at) "
+                    "VALUES ($1,$2,$3, NOW()) RETURNING id",
                     display_name, avatar_url, email,
-                    "admin" if promote_admin else "member",
                 )
                 user_id = row["id"]
                 await conn.execute(
@@ -873,9 +972,17 @@ class PostgresStore:
                 provider, external_id,
             ))
 
-    async def set_user_tier(self, user_id: int, tier: str) -> None:
+    async def get_external_id(
+        self, user_id: int, provider: str = "discord",
+    ) -> str | None:
+        """Return the external_id for a user under the given provider."""
         async with self._pool.acquire() as conn:
-            await conn.execute("UPDATE users SET tier=$1 WHERE id=$2", tier, user_id)
+            row = await conn.fetchrow(
+                "SELECT external_id FROM identities "
+                "WHERE user_id=$1 AND provider=$2 LIMIT 1",
+                user_id, provider,
+            )
+        return row["external_id"] if row else None
 
     # ── Events ────────────────────────────────────────────────────
 

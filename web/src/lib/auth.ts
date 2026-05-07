@@ -12,7 +12,7 @@ export interface AuthUser {
   display_name: string
   avatar_url:   string | null
   email:        string | null
-  tier:         'member' | 'admin'
+  is_admin:     boolean
   created_at:   string | null
   last_login_at: string | null
   guild_name:    string | null
@@ -120,7 +120,7 @@ export function buildAuthorizeUrl(clientId: string): string {
     client_id:     clientId,
     redirect_uri:  redirectUri(),
     response_type: 'code',
-    scope:         'identify email guilds',
+    scope:         'identify email guilds guilds.members.read',
     state,
     prompt:        'consent',
   })

@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import render_key
 from typoon.api.deps import get_artifact_store, get_paths, get_store, require_user
+from typoon.api.routes._shared import require_project_view
 from typoon.paths import Paths
 from typoon.storage import Store
 
@@ -27,6 +28,7 @@ async def get_page(
     project_id: int,
     chapter_id: int,
     index:      int,
+    user:  dict           = Depends(require_user),
     db:    Store          = Depends(get_store),
     paths: Paths          = Depends(get_paths),
     store: ArtifactStore  = Depends(get_artifact_store),
@@ -38,9 +40,7 @@ async def get_page(
     byte range out of it. For local dev with `LocalArtifactStore` this is
     a single file copy.
     """
-    proj = await db.get_project(project_id)
-    if proj is None:
-        raise HTTPException(404, "Project not found")
+    await require_project_view(project_id, user, db)
 
     state = await db.get_chapter_render_state(chapter_id)
     if state is None or not state["rendered"]:
