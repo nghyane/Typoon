@@ -1,15 +1,16 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, ExternalLink } from 'lucide-react'
 import {
   buildAuthorizeUrl, fetchAuthConfig, getToken, takeLoginError,
+  type AuthConfig,
 } from '../lib/auth'
 
 function LoginPage() {
   const nav = useNavigate()
-  const [error,    setError]    = useState<string | null>(null)
-  const [clientId, setClientId] = useState<string | null>(null)
-  const [busy,     setBusy]     = useState(false)
+  const [error,  setError]  = useState<string | null>(null)
+  const [cfg,    setCfg]    = useState<AuthConfig | null>(null)
+  const [busy,   setBusy]   = useState(false)
 
   useEffect(() => {
     if (getToken()) {
@@ -19,15 +20,27 @@ function LoginPage() {
     setError(takeLoginError())
 
     fetchAuthConfig()
-      .then((cfg) => setClientId(cfg.discord_client_id))
+      .then(setCfg)
       .catch((e: Error) => setError(`Config error: ${e.message}`))
   }, [nav])
 
   const onLogin = () => {
-    if (!clientId) return
+    if (!cfg?.discord_client_id) return
     setBusy(true)
-    window.location.href = buildAuthorizeUrl(clientId)
+    window.location.href = buildAuthorizeUrl(cfg.discord_client_id)
   }
+
+  // The error message from the engine looks like
+  // "Bạn cần tham gia Discord 'Name': https://discord.gg/xxx".
+  // Pull the URL out so we can render a button instead of inline link.
+  const inviteFromError = error ? extractFirstUrl(error) : null
+  const errorText       = inviteFromError && error
+    ? error.replace(inviteFromError, '').replace(/[:\s]+$/, '').trim()
+    : error
+
+  // Always-visible invite (config-supplied) for users who never logged in
+  // before but aren't in the guild yet.
+  const standingInvite = cfg?.discord_invite_url ?? null
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
@@ -44,9 +57,22 @@ function LoginPage() {
 
         <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-6">
           {error && (
-            <div className="mb-4 flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700">
-              <AlertCircle size={14} className="shrink-0 mt-0.5" />
-              <span>{error}</span>
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700 space-y-2.5">
+              <div className="flex items-start gap-2">
+                <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                <span className="break-words">{errorText}</span>
+              </div>
+              {inviteFromError && (
+                <a
+                  href={inviteFromError}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer"
+                >
+                  Tham gia Discord
+                  <ExternalLink size={11} />
+                </a>
+              )}
             </div>
           )}
 
@@ -56,16 +82,31 @@ function LoginPage() {
 
           <button
             onClick={onLogin}
-            disabled={!clientId || busy}
+            disabled={!cfg?.discord_client_id || busy}
             className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
           >
             <DiscordIcon />
             {busy ? 'Đang chuyển hướng…' : 'Đăng nhập với Discord'}
           </button>
 
-          <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
-            Bạn cần là thành viên Discord guild của Typoon để truy cập.
-          </p>
+          {cfg?.guild_gated && (
+            <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
+              Bạn cần là thành viên Discord guild để truy cập.
+              {standingInvite && (
+                <>
+                  {' '}
+                  <a
+                    href={standingInvite}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-zinc-600 underline hover:text-zinc-900"
+                  >
+                    Tham gia tại đây
+                  </a>.
+                </>
+              )}
+            </p>
+          )}
         </div>
 
         <p className="text-xs text-zinc-400 text-center mt-6">
@@ -74,6 +115,11 @@ function LoginPage() {
       </div>
     </div>
   )
+}
+
+function extractFirstUrl(text: string): string | null {
+  const m = text.match(/https?:\/\/\S+/)
+  return m ? m[0] : null
 }
 
 function DiscordIcon() {

@@ -59,6 +59,12 @@ class AuthConfig(BaseModel):
     discord_client_secret: str = ""
     # Optional gating: if set, user must be a member of this guild snowflake.
     discord_guild_id:      str = ""
+    # Friendly invite URL the engine surfaces when the gate fails. The
+    # operator pastes a stable invite from Discord (Server → Invite People
+    # → Edit invite link → Never expire). Used in the 403 message and the
+    # /api/auth/config endpoint so the SPA can show a "Join the server"
+    # button on /login.
+    discord_invite_url:    str = ""
     # Optional bootstrap admin: this discord_id is promoted to tier='admin'
     # on first login. Empty string = no auto-promotion.
     bootstrap_discord_id:  str = ""
@@ -125,6 +131,7 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     config.auth.discord_client_id     = os.environ.get("DISCORD_CLIENT_ID",     config.auth.discord_client_id)
     config.auth.discord_client_secret = os.environ.get("DISCORD_CLIENT_SECRET", config.auth.discord_client_secret)
     config.auth.discord_guild_id      = os.environ.get("DISCORD_GUILD_ID",      config.auth.discord_guild_id)
+    config.auth.discord_invite_url    = os.environ.get("DISCORD_INVITE_URL",    config.auth.discord_invite_url)
     config.auth.bootstrap_discord_id  = os.environ.get("TYPOON_BOOTSTRAP_DISCORD_ID", config.auth.bootstrap_discord_id)
     config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)
     if not config.auth.jwt_secret:

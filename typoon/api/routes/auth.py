@@ -51,8 +51,12 @@ async def auth_config(cfg: AuthConfig = Depends(get_auth_cfg)):
     if not cfg.discord_client_id:
         raise HTTPException(503, "Discord OAuth not configured")
     return {
-        "discord_client_id": cfg.discord_client_id,
-        "guild_gated":       bool(cfg.discord_guild_id),
+        "discord_client_id":  cfg.discord_client_id,
+        "guild_gated":        bool(cfg.discord_guild_id),
+        # Optional: operator-supplied invite URL the SPA can show on /login
+        # so users who are not yet in the guild get a one-click path to
+        # join. Empty when the operator hasn't configured it.
+        "discord_invite_url": cfg.discord_invite_url or None,
     }
 
 
@@ -105,7 +109,7 @@ async def _exchange_and_issue(
         guilds   = await fetch_user_guilds(access_token)
         in_guild = any(g.get("id") == cfg.discord_guild_id for g in guilds)
         if not in_guild:
-            raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
+            raise HTTPException(403, await _gate_message(cfg))
 
     promote = (
         cfg.bootstrap_discord_id
@@ -139,19 +143,28 @@ def _user_out(row: dict) -> dict:
     }
 
 
-async def _gate_message(guild_id: str) -> str:
+async def _gate_message(cfg: AuthConfig) -> str:
     """Build a user-friendly 403 message that names the guild and links
     the invite when possible.
 
-    Tries the public widget endpoint first; falls back to a generic
-    message if the guild has the widget disabled (Server Settings →
-    Widget → Enable Server Widget).
+    Resolution order:
+      1. Operator-supplied invite URL (cfg.discord_invite_url) — stable,
+         no Discord API call.
+      2. Public widget endpoint — auto if 'Enable Server Widget' is on.
+      3. Generic fallback.
     """
-    widget = await fetch_guild_widget(guild_id)
+    invite = cfg.discord_invite_url
+    name:   str | None = None
+
+    widget = await fetch_guild_widget(cfg.discord_guild_id)
     if widget:
-        name   = widget.get("name") or "the Typoon guild"
-        invite = widget.get("instant_invite")
-        if invite:
-            return f"Bạn cần tham gia Discord '{name}': {invite}"
+        name   = widget.get("name") or name
+        invite = invite or widget.get("instant_invite")
+
+    if invite and name:
+        return f"Bạn cần tham gia Discord '{name}': {invite}"
+    if invite:
+        return f"Bạn cần tham gia Discord guild: {invite}"
+    if name:
         return f"Bạn cần tham gia Discord '{name}' để truy cập."
-    return "Bạn cần tham gia Discord guild để truy cập (server widget chưa bật)."
+    return "Bạn cần tham gia Discord guild để truy cập."

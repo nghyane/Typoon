@@ -17,9 +17,10 @@ export interface AuthUser {
   last_login_at: string | null
 }
 
-interface AuthConfig {
-  discord_client_id: string
-  guild_gated:       boolean
+export interface AuthConfig {
+  discord_client_id:  string
+  guild_gated:        boolean
+  discord_invite_url: string | null
 }
 
 // ── Token storage ────────────────────────────────────────────────────────────
@@ -126,7 +127,10 @@ export function verifyState(received: string | null): boolean {
   return !!expected && expected === received
 }
 
-/** POST the code to the engine, get JWT back. */
+/** POST the code to the engine, get JWT back. The engine returns an
+ *  HTTPException-shaped JSON ({ detail }) on errors; surface that text
+ *  directly so the gate message ("Bạn cần tham gia Discord …") reaches
+ *  the user instead of a stack-traceish 'exchange: 403 …'. */
 export async function exchangeCode(code: string): Promise<string> {
   const r = await fetch(`${API_BASE}/api/auth/discord/exchange`, {
     method:  'POST',
@@ -134,8 +138,12 @@ export async function exchangeCode(code: string): Promise<string> {
     body:    JSON.stringify({ code, redirect_uri: redirectUri() }),
   })
   if (!r.ok) {
-    const text = await r.text().catch(() => '')
-    throw new Error(`exchange: ${r.status} ${text.slice(0, 200)}`)
+    let detail = `${r.status} ${r.statusText}`
+    try {
+      const body = await r.json()
+      if (body?.detail) detail = String(body.detail)
+    } catch { /* not JSON */ }
+    throw new Error(detail)
   }
   const { token } = await r.json()
   return token as string

@@ -1,17 +1,27 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { exchangeCode, setLoginError, setToken, verifyState } from '../lib/auth'
 
 function CallbackPage() {
   const nav = useNavigate()
-  const [status, setStatus] = useState<'working' | 'error'>('working')
+  const [status,  setStatus]  = useState<'working' | 'error'>('working')
   const [message, setMessage] = useState('Đang đăng nhập…')
 
+  // React StrictMode runs effects twice in dev. The first run consumes
+  // the OAuth `code` (single-use!) and the CSRF state token (also
+  // single-use — we delete it from sessionStorage on read). The second
+  // run would always fail. Guard with a ref so only the first execution
+  // touches the network and storage.
+  const ranRef = useRef(false)
+
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const code   = params.get('code')
-    const state  = params.get('state')
-    const error  = params.get('error')
+    if (ranRef.current) return
+    ranRef.current = true
+
+    const params  = new URLSearchParams(window.location.search)
+    const code    = params.get('code')
+    const state   = params.get('state')
+    const error   = params.get('error')
     const errDesc = params.get('error_description')
 
     const fail = (msg: string) => {
@@ -30,7 +40,7 @@ function CallbackPage() {
       return
     }
     if (!verifyState(state)) {
-      fail('CSRF state không khớp — phiên đăng nhập đã hết hạn, thử lại.')
+      fail('Phiên đăng nhập đã hết hạn — vui lòng thử lại.')
       return
     }
 
