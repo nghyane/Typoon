@@ -3,7 +3,7 @@
 Single source of truth per data type:
   PreparedReader    — Bunle archive at ArtifactStore (random-access pixels)
   PreparedChapter   — metadata view derived from the reader's index
-  scan.Chapter      — scan.npz geometry + DB bubble text + reader-derived prepared
+  scan.Chapter      — DB geometry + DB bubble text + reader-derived prepared
   translate.Chapter — same as scan, plus DB translations
 """
 
@@ -12,12 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from typoon.adapters.artifact_store import ArtifactStore
-from typoon.adapters.mask_store import load_scan_geometry
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain import scan, translate
 from typoon.domain.prepared import Chapter as PreparedChapter
-from typoon.domain.scan import PageGeometry
-from typoon.paths import ChapterPaths
+from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.storage import Store
 
 
@@ -28,7 +26,7 @@ async def open_prepared_reader(
 ) -> PreparedReader:
     """Download a prepared archive from the store and open it.
 
-    Caller is responsible for the workdir lifecycle and for closing the reader.
+    Caller owns workdir lifecycle and reader.close().
     """
     workdir.mkdir(parents=True, exist_ok=True)
     local = workdir / "prepared.bnl"
@@ -37,30 +35,25 @@ async def open_prepared_reader(
 
 
 async def load_scanned(
-    cp: ChapterPaths,
     reader: PreparedReader,
     db: Store,
     chapter_id: int,
 ) -> scan.Chapter:
-    page_geoms = {pg.page_index: pg for pg in load_scan_geometry(cp)}
+    page_geoms = await _load_page_geometry(db, chapter_id)
     bubbles_db = await db.get_bubbles(chapter_id)
-    prepared   = reader.chapter()
-    return _build_scanned(prepared, bubbles_db, page_geoms)
+    return _build_scanned(reader.chapter(), bubbles_db, page_geoms)
 
 
 async def load_translated_with_geometry(
-    cp: ChapterPaths,
     reader: PreparedReader,
     db: Store,
     chapter_id: int,
 ) -> tuple[translate.Chapter, dict[int, PageGeometry]]:
-    """Load translate.Chapter and geometry in one pass — scan.npz read once."""
-    page_geoms   = {pg.page_index: pg for pg in load_scan_geometry(cp)}
+    page_geoms   = await _load_page_geometry(db, chapter_id)
     bubbles_db   = await db.get_bubbles(chapter_id)
     translations = await db.get_translations(chapter_id)
-    prepared     = reader.chapter()
 
-    scanned = _build_scanned(prepared, bubbles_db, page_geoms)
+    scanned = _build_scanned(reader.chapter(), bubbles_db, page_geoms)
 
     pages = tuple(
         translate.Page(
@@ -81,6 +74,28 @@ async def load_translated_with_geometry(
 
 
 # ── Internal ──────────────────────────────────────────────────────────
+
+
+async def _load_page_geometry(db: Store, chapter_id: int) -> dict[int, PageGeometry]:
+    rows = await db.get_geometry(chapter_id)
+    return {
+        p["page_index"]: PageGeometry(
+            page_index=p["page_index"],
+            width=p["width"],
+            height=p["height"],
+            bubbles=tuple(
+                BubbleGeometry(
+                    bubble_idx=b["bubble_idx"],
+                    polygon=b["polygon"],
+                    fit_box=b["fit_box"],
+                    erase_box=b["erase_box"],
+                    text_box=b["text_box"],
+                )
+                for b in p["bubbles"]
+            ),
+        )
+        for p in rows
+    }
 
 
 def _build_scanned(

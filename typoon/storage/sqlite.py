@@ -70,6 +70,27 @@ CREATE TABLE IF NOT EXISTS bubbles (
     PRIMARY KEY (chapter_id, page_index, bubble_idx)
 );
 
+-- Bubble geometry — replaces the legacy scan.npz file.
+-- One row per bubble; polygon/box payloads are JSON arrays.
+CREATE TABLE IF NOT EXISTS bubble_geometry (
+    chapter_id   INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    page_index   INTEGER NOT NULL,
+    bubble_idx   INTEGER NOT NULL,
+    polygon      TEXT NOT NULL,
+    fit_box      TEXT NOT NULL,
+    erase_box    TEXT NOT NULL,
+    text_box     TEXT NOT NULL,
+    PRIMARY KEY (chapter_id, page_index, bubble_idx)
+);
+
+CREATE TABLE IF NOT EXISTS page_geometry (
+    chapter_id   INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    page_index   INTEGER NOT NULL,
+    width        INTEGER NOT NULL,
+    height       INTEGER NOT NULL,
+    PRIMARY KEY (chapter_id, page_index)
+);
+
 -- Translations — knowledge, reusable across reruns
 CREATE TABLE IF NOT EXISTS translations (
     chapter_id      INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -277,47 +298,38 @@ class SqliteStore:
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def get_chapters_with_status(self, project_id: int, projects_root, slug: str) -> list[dict]:
-        """Chapters with state/stage/page_count in one query batch."""
-        from typoon.paths import ProjectPaths
-        chapters   = await self.get_all_chapters(project_id)
-        proj_paths = ProjectPaths(projects_root, slug)
+    async def get_chapters_with_status(self, project_id: int) -> list[dict]:
+        """Chapters with state/stage/page_count, derived from DB only."""
+        chapters = await self.get_all_chapters(project_id)
         result = []
         for ch in chapters:
-            cp    = proj_paths.chapter(ch["id"])
             tasks = await self.get_tasks(ch["id"])
-            state, stage, error = _derive_state(cp, tasks)
-            page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
-                         len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
+            state, stage, error = _derive_state(ch, tasks)
             result.append({
                 "chapter_id": ch["id"],
                 "idx":        ch["idx"],
                 "state":      state,
                 "stage":      stage,
-                "page_count": page_count,
+                "page_count": int(ch.get("page_count") or 0),
                 "error":      error,
             })
         return result
 
-    async def get_chapter_with_status(self, chapter_id: int, project_id: int, projects_root, slug: str) -> dict | None:
+    async def get_chapter_with_status(self, chapter_id: int, project_id: int) -> dict | None:
         """Single chapter with state/stage/page_count/progress."""
-        from typoon.paths import ProjectPaths
         ch = await self.get_chapter(chapter_id)
         if ch is None or ch["project_id"] != project_id:
             return None
-        cp         = ProjectPaths(projects_root, slug).chapter(chapter_id)
-        tasks      = await self.get_tasks(chapter_id)
-        state, stage, error = _derive_state(cp, tasks)
-        page_count = len(list(cp.render.iterdir())) if cp.is_rendered else \
-                     len(list(cp.pages.iterdir()))  if cp.is_prepared  else 0
-        progress   = await self.get_chapter_progress(chapter_id)
+        tasks    = await self.get_tasks(chapter_id)
+        state, stage, error = _derive_state(ch, tasks)
+        progress = await self.get_chapter_progress(chapter_id)
         return {
             "chapter_id": chapter_id,
             "project_id": project_id,
             "idx":        ch["idx"],
             "state":      state,
             "stage":      stage,
-            "page_count": page_count,
+            "page_count": int(ch.get("page_count") or 0),
             "error":      error,
             "progress":   progress and {
                 "stage":      progress["stage"],
@@ -462,6 +474,81 @@ class SqliteStore:
             "SELECT 1 FROM bubbles WHERE chapter_id=? LIMIT 1", (chapter_id,)
         )
         return await cur.fetchone() is not None
+
+    # ── Geometry ──────────────────────────────────────────────────
+
+    async def save_geometry(
+        self, chapter_id: int, pages: list[dict],
+    ) -> None:
+        """Replace all geometry rows for a chapter.
+
+        `pages`: list of {page_index, width, height,
+                          bubbles: [{bubble_idx, polygon, fit_box, erase_box, text_box}]}
+        Each polygon/box value is a list (serialized to JSON for storage).
+        """
+        await self._db.execute(
+            "DELETE FROM page_geometry WHERE chapter_id=?", (chapter_id,),
+        )
+        await self._db.execute(
+            "DELETE FROM bubble_geometry WHERE chapter_id=?", (chapter_id,),
+        )
+        await self._db.executemany(
+            "INSERT INTO page_geometry (chapter_id, page_index, width, height) "
+            "VALUES (?,?,?,?)",
+            [(chapter_id, p["page_index"], p["width"], p["height"]) for p in pages],
+        )
+        rows = [
+            (
+                chapter_id, p["page_index"], b["bubble_idx"],
+                json.dumps(b["polygon"]),
+                json.dumps(b["fit_box"]),
+                json.dumps(b["erase_box"]),
+                json.dumps(b["text_box"]),
+            )
+            for p in pages for b in p["bubbles"]
+        ]
+        await self._db.executemany(
+            "INSERT INTO bubble_geometry "
+            "(chapter_id, page_index, bubble_idx, polygon, fit_box, erase_box, text_box) "
+            "VALUES (?,?,?,?,?,?,?)",
+            rows,
+        )
+        await self._db.commit()
+
+    async def get_geometry(self, chapter_id: int) -> list[dict]:
+        """Return chapter geometry as list of page dicts.
+
+        Same shape as save_geometry input (lists, not JSON strings).
+        """
+        cur = await self._db.execute(
+            "SELECT page_index, width, height FROM page_geometry "
+            "WHERE chapter_id=? ORDER BY page_index",
+            (chapter_id,),
+        )
+        page_rows = [dict(r) for r in await cur.fetchall()]
+        cur = await self._db.execute(
+            "SELECT page_index, bubble_idx, polygon, fit_box, erase_box, text_box "
+            "FROM bubble_geometry WHERE chapter_id=? ORDER BY page_index, bubble_idx",
+            (chapter_id,),
+        )
+        page_bubbles: dict[int, list[dict]] = {}
+        for r in await cur.fetchall():
+            page_bubbles.setdefault(r["page_index"], []).append({
+                "bubble_idx": r["bubble_idx"],
+                "polygon":   json.loads(r["polygon"]),
+                "fit_box":   json.loads(r["fit_box"]),
+                "erase_box": json.loads(r["erase_box"]),
+                "text_box":  json.loads(r["text_box"]),
+            })
+        return [
+            {
+                "page_index": p["page_index"],
+                "width":      p["width"],
+                "height":     p["height"],
+                "bubbles":    page_bubbles.get(p["page_index"], []),
+            }
+            for p in page_rows
+        ]
 
     # ── Translations ──────────────────────────────────────────────
 
@@ -765,9 +852,9 @@ class SqliteStore:
 _FTS_SPECIAL = _re.compile(r"[\"'\(\)\*\:\^\-\+\{\}\[\]~]")
 
 
-def _derive_state(cp, tasks: list[dict]) -> tuple[str, str, str]:
-    """Derive (state, stage, error) from filesystem + tasks table."""
-    if cp.is_rendered:
+def _derive_state(chapter_row: dict, tasks: list[dict]) -> tuple[str, str, str]:
+    """Derive (state, stage, error) from chapter row + tasks table."""
+    if chapter_row.get("render_state") == "rendered":
         return "done", "", ""
     if not tasks:
         return "idle", "", ""

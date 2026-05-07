@@ -1,47 +1,48 @@
-"""Render stage — TranslatedChapter → RenderedChapter.
+"""Render stage — TranslatedChapter + masks → RenderedChapter on disk.
 
-Receives pre-loaded geometry — caller must pass page_geoms from
-adapters.loader.load_translated_with_geometry to avoid double scan.npz read.
-Source page pixels come from a PreparedReader; render output is still
-written as loose PNGs into cp.render/ (archive packing happens in the
-render orchestrator, not here).
+Receives pre-loaded geometry and an in-memory MaskStore. Source pixels
+come from a PreparedReader. Render output is written as WebP q=95 files
+into `out_dir`; the orchestrator (render_archive) packs them into a Bunle
+archive and uploads it.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import numpy as np
+from PIL import Image
 
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
-from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import Hook, PageDone
+
+_RENDER_QUALITY = 95
 
 
 def render_chapter(
     translated: translate.Chapter,
-    cp: ChapterPaths,
+    out_dir: Path,
     reader: PreparedReader,
     runtime: VisionRuntime,
     page_geoms: dict[int, PageGeometry],
+    masks: MaskStore,
     *,
     chapter_id: int = 0,
     project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> render.Chapter:
-    """Erase source text, render translations, write PNGs to cp.render/.
+    """Erase source text, render translations, write WebP pages into out_dir.
 
-    page_geoms: pre-loaded from load_translated_with_geometry — not re-read here.
-    Masks loaded per-page from cp.masks/ — one file open per page.
+    page_geoms: pre-loaded from load_translated_with_geometry.
+    masks:      in-memory mask store (typically loaded from masks.npz).
     """
-    cp.render.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     import typoon_render
 
@@ -50,7 +51,7 @@ def render_chapter(
     for tp in translated.pages:
         original   = reader.read_rgb(tp.index)
         canvas     = _to_rgba(original)
-        page_masks = MaskStore.load_page(cp, tp.index)
+        page_masks = masks.page_masks(tp.index)
 
         erase_masks = [
             m
@@ -67,7 +68,6 @@ def render_chapter(
         pg_geom     = page_geoms.get(tp.index)
         geom_by_idx = {bg.bubble_idx: bg for bg in pg_geom.bubbles} if pg_geom else {}
 
-        # Build aligned (active, polygons, texts) in one pass — no reassign
         active_triples = [
             (tb, geom_by_idx[tb.idx].polygon, tb.translated_text)
             for tb in tp.bubbles
@@ -93,8 +93,7 @@ def render_chapter(
             for tb in tp.bubbles
         )
 
-        image_path = cp.rendered(tp.index)
-        _write_rgb(image_path, result.image)
+        _write_webp(out_dir / f"{tp.index:04d}.webp", result.image)
 
         if hook is not None:
             hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",
@@ -103,9 +102,7 @@ def render_chapter(
         if artifacts is not None:
             artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
 
-        rendered_pages.append(render.Page(
-            source=tp, bubbles=rendered_bubbles, image_path=image_path,
-        ))
+        rendered_pages.append(render.Page(source=tp, bubbles=rendered_bubbles))
 
     return render.Chapter(source=translated, pages=tuple(rendered_pages))
 
@@ -115,8 +112,8 @@ def _to_rgba(image: np.ndarray) -> np.ndarray:
     return np.dstack([image, np.full((h, w), 255, dtype=np.uint8)])
 
 
-def _write_rgb(path: Path, image: np.ndarray) -> None:
+def _write_webp(path: Path, rgb: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    if not cv2.imwrite(str(path), bgr):
-        raise RuntimeError(f"Failed to write rendered page: {path}")
+    Image.fromarray(rgb, mode="RGB").save(
+        path, format="WEBP", quality=_RENDER_QUALITY, method=6
+    )

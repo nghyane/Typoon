@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from .translate import Bubble as TranslatedBubble, Chapter as TranslatedChapter, Page as TranslatedPage
 
@@ -26,9 +25,8 @@ class Bubble:
 
 @dataclass(frozen=True)
 class Page:
-    source:     TranslatedPage
-    bubbles:    tuple[Bubble, ...]
-    image_path: Path | None = None
+    source:  TranslatedPage
+    bubbles: tuple[Bubble, ...]
 
     @property
     def index(self) -> int:

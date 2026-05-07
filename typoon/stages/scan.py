@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from typoon.adapters.mask_store import BubbleMasks, MaskStore, save_scan_geometry
+from typoon.adapters.mask_store import BubbleMasks, MaskStore
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import scan
@@ -35,6 +35,27 @@ class ScanOutput:
                 "confidence": b.confidence,
             }
             for b in self.chapter.all_bubbles
+        ]
+
+    def geometry_records(self) -> list[dict]:
+        """Page-shaped geometry for store.save_geometry()."""
+        return [
+            {
+                "page_index": pg.page_index,
+                "width":  pg.width,
+                "height": pg.height,
+                "bubbles": [
+                    {
+                        "bubble_idx": bg.bubble_idx,
+                        "polygon":   bg.polygon,
+                        "fit_box":   bg.fit_box,
+                        "erase_box": bg.erase_box,
+                        "text_box":  bg.text_box,
+                    }
+                    for bg in pg.bubbles
+                ],
+            }
+            for pg in self.geometry
         ]
 
 

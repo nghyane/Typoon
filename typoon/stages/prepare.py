@@ -1,4 +1,4 @@
-"""Prepare raw source images into a Chapter of prepared pages.
+"""Prepare raw source images into a Chapter of prepared WebP-lossless pages.
 
 Strategy auto-detection:
   - Sample pages at 25%, 50%, 75% of chapter.
@@ -13,17 +13,22 @@ Stitch strategy:
       confirmed row = window consecutive valid rows (avoids single-row false positives)
       nearest confirmed row to each target cut point wins; hard cut fallback if none.
   - Guarantees no bubble is split at a prepared page boundary.
+
+Output is a directory of `<i:04d>.webp` files (WebP lossless), ready for
+`bunle.pack_dir` passthrough. Prepared pixels are the canonical coordinate
+source for all downstream stages.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal, Protocol
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from typoon.domain.prepared import Chapter, Page
-from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -48,22 +53,22 @@ class RawChapterSource(Protocol):
 
 def prepare_chapter(
     source: RawChapterSource,
-    cp: ChapterPaths,
+    out_dir: Path,
     *,
     strategy: Literal["auto", "one_to_one", "stitch"] = "auto",
     source_label: str = "",
     artifacts: ArtifactSink | None = None,
 ) -> Chapter:
-    """Write prepared PNGs to cp.pages/. Returns PreparedChapter."""
-    cp.pages.mkdir(parents=True, exist_ok=True)
+    """Write `<i:04d>.webp` (lossless) into `out_dir`. Returns PreparedChapter."""
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if strategy == "auto":
         strategy = _detect_strategy(source)
 
     if strategy == "stitch":
-        pages, groups = _prepare_stitch(source, cp, artifacts)
+        pages, groups = _prepare_stitch(source, out_dir, artifacts)
     else:
-        pages, groups = _prepare_one_to_one(source, cp, artifacts)
+        pages, groups = _prepare_one_to_one(source, out_dir, artifacts)
 
     chapter = Chapter(source=source_label, pages=tuple(pages))
 
@@ -100,7 +105,7 @@ def _color_ratio(image: np.ndarray) -> float:
 
 def _prepare_one_to_one(
     source: RawChapterSource,
-    cp: ChapterPaths,
+    out_dir: Path,
     artifacts: ArtifactSink | None,
 ) -> tuple[list[Page], list[list[int]]]:
     pages:  list[Page]      = []
@@ -108,8 +113,7 @@ def _prepare_one_to_one(
     for i in range(source.page_count()):
         img  = source.load_page(i)
         h, w = img.shape[:2]
-        dest = cp.page(i)
-        _write_rgb_png(dest, img)
+        _write_lossless(out_dir / f"{i:04d}.webp", img)
         pages.append(Page(index=i, width=w, height=h))
         groups.append([i])
         if artifacts is not None:
@@ -122,7 +126,7 @@ def _prepare_one_to_one(
 
 def _prepare_stitch(
     source: RawChapterSource,
-    cp: ChapterPaths,
+    out_dir: Path,
     artifacts: ArtifactSink | None,
 ) -> tuple[list[Page], list[list[int]]]:
     raw = [source.load_page(i) for i in range(source.page_count())]
@@ -141,23 +145,21 @@ def _prepare_stitch(
     target  = _MAX_PAGE_HEIGHT
 
     while target < total_h:
-        lo  = prev + _MIN_PAGE_HEIGHT   # enforce minimum page height
+        lo  = prev + _MIN_PAGE_HEIGHT
         hi  = min(prev + int(_MAX_PAGE_HEIGHT * 1.5), total_h)
         cut = _nearest_confirmed(confirmed, lo, hi, prev + _MAX_PAGE_HEIGHT)
         if cut is None:
-            # Widen search to full remaining strip before hard cut
             cut = _nearest_confirmed(confirmed, lo, total_h, prev + _MAX_PAGE_HEIGHT)
         if cut is None:
             cut = prev + _MAX_PAGE_HEIGHT  # hard fallback: no valid row anywhere
 
-        _write_segment(strip, prev, cut, cp, out_idx, pages, groups, boundaries, artifacts)
+        _write_segment(strip, prev, cut, out_dir, out_idx, pages, groups, boundaries, artifacts)
         out_idx += 1
         prev    = cut
         target  = prev + _MAX_PAGE_HEIGHT
 
-    # last segment
     if prev < total_h:
-        _write_segment(strip, prev, total_h, cp, out_idx, pages, groups, boundaries, artifacts)
+        _write_segment(strip, prev, total_h, out_dir, out_idx, pages, groups, boundaries, artifacts)
 
     return pages, groups
 
@@ -165,7 +167,7 @@ def _prepare_stitch(
 def _write_segment(
     strip: np.ndarray,
     start: int, end: int,
-    cp: ChapterPaths,
+    out_dir: Path,
     out_idx: int,
     pages: list[Page],
     groups: list[list[int]],
@@ -174,8 +176,7 @@ def _write_segment(
 ) -> None:
     seg  = strip[start:end]
     h, w = seg.shape[:2]
-    dest = cp.page(out_idx)
-    _write_rgb_png(dest, seg)
+    _write_lossless(out_dir / f"{out_idx:04d}.webp", seg)
     pages.append(Page(index=out_idx, width=w, height=h))
     groups.append([i for i, (rs, re) in enumerate(boundaries) if rs < end and re > start])
     if artifacts is not None:
@@ -196,7 +197,6 @@ def _confirmed_rows(strip: np.ndarray) -> np.ndarray:
         (arr.max(axis=1).astype(np.int16) - arr.min(axis=1).astype(np.int16)) <= threshold
     )
 
-    # cumsum window trick: confirmed[i] = True iff valid[i:i+WINDOW] all True
     H   = len(valid)
     cum = np.concatenate([[0], np.cumsum(valid.astype(np.int32))])
     confirmed = np.zeros(H, dtype=bool)
@@ -241,8 +241,7 @@ def _raw_boundaries(images: list[np.ndarray]) -> list[tuple[int, int]]:
     return boundaries
 
 
-def _write_rgb_png(path, image: np.ndarray) -> None:
+def _write_lossless(path: Path, image: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) if image.ndim == 3 else image
-    if not cv2.imwrite(str(path), bgr):
-        raise RuntimeError(f"Failed to write prepared page: {path}")
+    rgb = image if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    Image.fromarray(rgb, mode="RGB").save(path, format="WEBP", lossless=True, quality=100)

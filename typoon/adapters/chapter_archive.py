@@ -29,6 +29,10 @@ def render_key(project_id: int, chapter_id: int) -> str:
     return f"{archive_dir_prefix(project_id, chapter_id)}/render.bnl"
 
 
+def masks_key(project_id: int, chapter_id: int) -> str:
+    return f"{archive_dir_prefix(project_id, chapter_id)}/masks.npz"
+
+
 async def pack_and_upload(
     *,
     src_dir: Path,

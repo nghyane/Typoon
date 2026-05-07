@@ -1,9 +1,9 @@
 """Prepare a chapter and persist it as a Bunle archive.
 
-Wraps `stages.prepare.prepare_chapter`. Re-encodes the produced PNGs as
-WebP lossless so `bunle.pack_dir` stores them passthrough, then uploads
-to the chapter's deterministic prepared key. Caller (worker loop) marks
-the chapter as prepared in DB once this returns.
+`stages.prepare.prepare_chapter` writes lossless WebP pages into a temp
+directory; this orchestrator packs them into `prepared.bnl` and uploads
+to the chapter's prepared key. The DB pointer flip
+(`Store.set_prepared_done`) is the caller's responsibility.
 """
 
 from __future__ import annotations
@@ -11,11 +11,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from PIL import Image
-
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import pack_and_upload, prepared_key
-from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 from typoon.stages.prepare import RawChapterSource, prepare_chapter
 
@@ -31,40 +28,23 @@ async def prepare_chapter_to_archive(
     artifacts: ArtifactSink | None = None,
     workdir: Path | None = None,
 ) -> tuple[str, int]:
-    """Run prepare, pack the prepared archive, upload. Returns (key, page_count).
-
-    The DB pointer flip (mark prepared done, reset render state) is the
-    caller's responsibility; this function does not touch the store after
-    upload.
-    """
+    """Run prepare → pack `prepared.bnl` → upload. Returns (key, page_count)."""
     workdir_ctx = (
         _NullCtx(workdir) if workdir else tempfile.TemporaryDirectory()
     )
     with workdir_ctx as tmp_str:
         tmp = Path(tmp_str)
-        webp_dir = tmp / "prepared_webp"
+        webp_dir = tmp / "prepared"
         archive_path = tmp / "prepared.bnl"
         webp_dir.mkdir(parents=True, exist_ok=True)
 
-        cp = ChapterPaths(
-            projects_root=tmp / "_projects",
-            slug="_prepare",
-            chapter_id=chapter_id,
-        )
-        cp.pages.mkdir(parents=True, exist_ok=True)
-        chapter = prepare_chapter(
+        prepare_chapter(
             source,
-            cp,
+            webp_dir,
             strategy=strategy,
             source_label=source_label,
             artifacts=artifacts,
         )
-
-        for page in chapter.pages:
-            src_png = cp.page(page.index)
-            dst_webp = webp_dir / f"{page.index:04d}.webp"
-            with Image.open(src_png) as img:
-                img.save(dst_webp, format="WEBP", lossless=True, quality=100)
 
         key = prepared_key(project_id, chapter_id)
         page_count = await pack_and_upload(

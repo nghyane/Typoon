@@ -39,16 +39,24 @@ async def _require_project(project_id: int, db: Store) -> dict:
 
 
 def _chapter_out(data: dict) -> ChapterOut:
-    progress = data.get("progress")
+    pages_done  = int(data.get("pages_done") or 0)
+    pages_total = int(data.get("pages_total") or 0)
+    progress = (
+        Progress(stage=data.get("stage") or "", page_index=pages_done, page_total=pages_total)
+        if pages_total > 0 and data["state"] == "running"
+        else None
+    )
     return ChapterOut(
         chapter_id=data["chapter_id"],
         project_id=data["project_id"],
         idx=data["idx"],
+        title=data.get("title"),
         state=data["state"],
-        stage=data["stage"],
-        page_count=data["page_count"],
-        error=data["error"],
-        progress=Progress(**progress) if progress else None,
+        stage=data.get("stage") or "",
+        page_count=pages_total,
+        error=data.get("error") or "",
+        updated_at=data.get("updated_at"),
+        progress=progress,
     )
 
 
@@ -91,6 +99,7 @@ async def delete_project(
     proj = await _require_project(project_id, db)
     await db.delete_project(project_id)
     shutil.rmtree(ProjectPaths(paths.projects, proj["slug"]).root, ignore_errors=True)
+    shutil.rmtree(paths.artifacts / "p" / str(project_id), ignore_errors=True)
 
 
 # ── Chapters ──────────────────────────────────────────────────────────
@@ -100,11 +109,10 @@ async def delete_project(
 async def list_chapters(
     project_id: int,
     db:    Store = Depends(get_store),
-    paths: Paths = Depends(get_paths),
 ):
-    proj = await _require_project(project_id, db)
-    rows = await db.get_chapters_with_status(project_id, paths.projects, proj["slug"])
-    return [_chapter_out({**r, "project_id": project_id, "progress": None}) for r in rows]
+    await _require_project(project_id, db)
+    rows = await db.get_chapters_with_status(project_id)
+    return [_chapter_out(r) for r in rows]
 
 
 @router.get("/{project_id}/chapters/{chapter_id}", response_model=ChapterOut)
@@ -112,10 +120,9 @@ async def get_chapter(
     project_id: int,
     chapter_id: int,
     db:    Store = Depends(get_store),
-    paths: Paths = Depends(get_paths),
 ):
-    proj = await _require_project(project_id, db)
-    data = await db.get_chapter_with_status(chapter_id, project_id, paths.projects, proj["slug"])
+    await _require_project(project_id, db)
+    data = await db.get_chapter_with_status(chapter_id, project_id)
     if data is None:
         raise HTTPException(404, "Chapter not found")
     return _chapter_out(data)
@@ -133,5 +140,5 @@ async def redo_chapter(
     if ch is None or ch["project_id"] != project_id:
         raise HTTPException(404, "Chapter not found")
     await Projects(db, paths).redo(proj["slug"], [ch["idx"]])
-    data = await db.get_chapter_with_status(chapter_id, project_id, paths.projects, proj["slug"])
+    data = await db.get_chapter_with_status(chapter_id, project_id)
     return _chapter_out(data)

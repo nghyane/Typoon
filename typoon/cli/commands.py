@@ -81,7 +81,7 @@ async def _pull(
             if not selected:
                 return
             console.print(f"\n[bold]{info.suggested_title}[/]  {len(selected)} chapter(s)\n")
-            await projects.pull_more(target, url, selected, ConsoleHook())
+            await projects.pull_more(target, url, info, selected, ConsoleHook())
         else:
             info     = await projects.discover(target)
             selected = _select_chapters(info.chapters, from_ch, to_ch)
@@ -189,22 +189,36 @@ async def _redo(slug: str, from_ch: float, to_ch: float) -> None:
 
 @app.command()
 def work(
-    concurrency: int = typer.Option(3, "--concurrency", "-c", help="Translate workers"),
+    role:        str = typer.Option("full", "--role", "-r",
+                                    help="vision | llm | api | full"),
+    concurrency: int = typer.Option(3, "--concurrency", "-c",
+                                    help="Translate workers (only used when role=llm/full)"),
 ):
-    """Start pipeline workers — processes all enqueued tasks."""
-    asyncio.run(_work(concurrency))
+    """Start pipeline workers for a deployment role.
+
+    full    everything in-process (default; SQLite-compatible)
+    vision  scan + render only (GPU node)
+    llm     translate only (LLM I/O node)
+    api     no worker loops (API server only)
+    """
+    asyncio.run(_work(role, concurrency))
 
 
-async def _work(concurrency: int) -> None:
+async def _work(role: str, concurrency: int) -> None:
     import logging
-    from ..workers.loop import run_workers
+    from ..workers.loop import Role, run_workers
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
         datefmt="%H:%M:%S",
     )
-    console.print(f"[dim]workers started (translate×{concurrency}) — Ctrl+C to stop[/]")
-    await run_workers(translate_concurrency=concurrency)
+    try:
+        role_enum = Role(role)
+    except ValueError:
+        console.print(f"[red]invalid role: {role}[/] — use vision|llm|api|full")
+        raise typer.Exit(1)
+    console.print(f"[dim]workers started role={role_enum} translate×{concurrency} — Ctrl+C to stop[/]")
+    await run_workers(role_enum, translate_concurrency=concurrency)
 
 
 # ── pdf ───────────────────────────────────────────────────────────────
@@ -222,10 +236,18 @@ def pdf(
 
 
 async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> None:
+    import io
     import subprocess
     import sys
+    import tempfile
+
+    import bunle
     from PIL import Image
+
+    from ..adapters.artifact_store import LocalArtifactStore
+    from ..adapters.chapter_archive import render_key
     from ..adapters.projects import Projects
+    from ..paths import Paths
 
     projects = await Projects.open()
     try:
@@ -237,16 +259,25 @@ async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> Non
         if not chapters:
             console.print("[red]No chapters found in range.[/]")
             return
-        from ..paths import Paths, ProjectPaths
         paths = Paths()
+        store = LocalArtifactStore(paths.artifacts)
         for ch in chapters:
-            cp      = ProjectPaths(paths.projects, slug).chapter(ch["id"])
-            renders = sorted(cp.render.glob("*.png"))
-            if not renders:
-                console.print(f"[yellow]ch{ch['idx']:.4g}: no render output, skipping[/]")
+            state = await projects._db.get_chapter_render_state(ch["id"])
+            if state is None or state.get("render_state") != "rendered":
+                console.print(f"[yellow]ch{ch['idx']:.4g}: not rendered, skipping[/]")
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                local = Path(tmp) / "render.bnl"
+                await store.get_file(render_key(proj["id"], ch["id"]), local)
+                with bunle.Reader(str(local)) as reader:
+                    images = [
+                        Image.open(io.BytesIO(reader.page(i))).convert("RGB")
+                        for i in range(reader.page_count)
+                    ]
+            if not images:
+                console.print(f"[yellow]ch{ch['idx']:.4g}: empty render archive, skipping[/]")
                 continue
             dest = out or Path(f"{slug}-ch{ch['idx']:.4g}.pdf")
-            images = [Image.open(p).convert("RGB") for p in renders]
             images[0].save(dest, save_all=True, append_images=images[1:])
             console.print(f"[green]✓[/] {dest} ({len(images)} pages)")
             if sys.platform == "darwin":
