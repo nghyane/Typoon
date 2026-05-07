@@ -75,7 +75,7 @@ class TestImageOverlay:
 class TestTranslate:
     @pytest.mark.asyncio
     async def test_keyed_xml_translation(self):
-        scanned, ctx = make_session(3)
+        scanned, reader, ctx = make_session(3)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
         key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
         keys = [bk.key for bk in key_list]
@@ -90,7 +90,7 @@ class TestTranslate:
         provider = MockProvider([])
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
-        result, _brief = await translate_chapter(scanned, ctx)
+        result, _brief = await translate_chapter(scanned, reader, ctx)
         bubbles = result.all_bubbles
         assert bubbles[0].translated_text == "A"
         assert bubbles[1].translated_text == ""
@@ -99,7 +99,7 @@ class TestTranslate:
 
     @pytest.mark.asyncio
     async def test_no_tool_call_raises(self):
-        scanned, ctx = make_session(1)
+        scanned, reader, ctx = make_session(1)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
 
         async def call(messages, tools):
@@ -109,11 +109,11 @@ class TestTranslate:
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
         with pytest.raises(Exception):
-            await translate_chapter(scanned, ctx)
+            await translate_chapter(scanned, reader, ctx)
 
     @pytest.mark.asyncio
     async def test_brief_saved_after_success(self):
-        scanned, ctx = make_session(1)
+        scanned, reader, ctx = make_session(1)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
         key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
         keys = [bk.key for bk in key_list]
@@ -124,7 +124,7 @@ class TestTranslate:
         provider = MockProvider([])
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
-        _translated, brief = await translate_chapter(scanned, ctx)
+        _translated, brief = await translate_chapter(scanned, reader, ctx)
         await ctx.store.save_chapter_brief(ctx.chapter_id, brief.to_dict())
         saved = await ctx.store.get_recent_chapter_briefs(ctx.project_id, 99, limit=1)
         assert saved
@@ -132,7 +132,7 @@ class TestTranslate:
 
     @pytest.mark.asyncio
     async def test_no_brief_tool_call_raises(self):
-        scanned, ctx = make_session(1)
+        scanned, reader, ctx = make_session(1)
         ctx = dataclasses.replace(ctx, context_provider=MockProvider([CallResponse(text="no tool")]))
         with pytest.raises(Exception):
-            await translate_chapter(scanned, ctx)
+            await translate_chapter(scanned, reader, ctx)

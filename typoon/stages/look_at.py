@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import cv2
-
+from typoon.adapters.prepared_reader import PreparedReader
 from typoon.stages.image import encode_page_jpeg
 from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import BubbleKey
@@ -15,6 +14,7 @@ _MAX_PAGES = 3
 async def look_at(
     ctx,  # TranslateCtx — avoid circular import
     prepared: PreparedChapter,
+    reader: PreparedReader,
     *,
     pages: list[int],
     keys: list[str],
@@ -40,10 +40,9 @@ async def look_at(
 
     labels = {k: bk.box.polygon for k, bk in relevant.items()}
     for pi in pages:
-        bgr = cv2.imread(str(prepared.page_path(pi)))
-        if bgr is None:
+        if pi < 0 or pi >= prepared.page_count:
             continue
-        img = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        img = reader.read_rgb(pi)
         parts.append(ContentPart.of_text(f"--- Page {pi} ---"))
         parts.append(ContentPart.of_image(encode_page_jpeg(img, labels=labels)))
 

@@ -65,7 +65,7 @@ def prepare_chapter(
     else:
         pages, groups = _prepare_one_to_one(source, cp, artifacts)
 
-    chapter = Chapter(root=cp.root, source=source_label, pages=tuple(pages))
+    chapter = Chapter(source=source_label, pages=tuple(pages))
 
     if artifacts is not None:
         artifacts.write_json("01_prepare", "groups.json", {
@@ -110,7 +110,7 @@ def _prepare_one_to_one(
         h, w = img.shape[:2]
         dest = cp.page(i)
         _write_rgb_png(dest, img)
-        pages.append(Page(index=i, file=f"pages/{dest.name}", width=w, height=h))
+        pages.append(Page(index=i, width=w, height=h))
         groups.append([i])
         if artifacts is not None:
             artifacts.write_image("01_prepare", f"prepared_{i:04d}.png", img)
@@ -176,7 +176,7 @@ def _write_segment(
     h, w = seg.shape[:2]
     dest = cp.page(out_idx)
     _write_rgb_png(dest, seg)
-    pages.append(Page(index=out_idx, file=f"pages/{dest.name}", width=w, height=h))
+    pages.append(Page(index=out_idx, width=w, height=h))
     groups.append([i for i, (rs, re) in enumerate(boundaries) if rs < end and re > start])
     if artifacts is not None:
         artifacts.write_image("01_prepare", f"prepared_{out_idx:04d}.png", seg)

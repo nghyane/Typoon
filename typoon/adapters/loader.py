@@ -1,34 +1,56 @@
-"""Chapter domain loaders — assemble domain objects from DB + filesystem.
+"""Chapter domain loaders — assemble domain objects from DB + storage.
 
 Single source of truth per data type:
-  prepared.Chapter  — filesystem (pages/ directory)
-  scan.Chapter      — filesystem (scan.npz geometry) + DB (bubble text)
-  translate.Chapter — filesystem (scan.npz) + DB (bubbles + translations)
+  PreparedReader    — Bunle archive at ArtifactStore (random-access pixels)
+  PreparedChapter   — metadata view derived from the reader's index
+  scan.Chapter      — scan.npz geometry + DB bubble text + reader-derived prepared
+  translate.Chapter — same as scan, plus DB translations
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.mask_store import load_scan_geometry
+from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain import scan, translate
 from typoon.domain.prepared import Chapter as PreparedChapter
-from typoon.domain.scan import BubbleGeometry, PageGeometry
+from typoon.domain.scan import PageGeometry
 from typoon.paths import ChapterPaths
 from typoon.storage import Store
 
 
-def load_prepared(cp: ChapterPaths) -> PreparedChapter:
-    return PreparedChapter.from_paths(cp)
+async def open_prepared_reader(
+    store: ArtifactStore,
+    prepared_key: str,
+    workdir: Path,
+) -> PreparedReader:
+    """Download a prepared archive from the store and open it.
+
+    Caller is responsible for the workdir lifecycle and for closing the reader.
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    local = workdir / "prepared.bnl"
+    await store.get_file(prepared_key, local)
+    return PreparedReader.open(local)
 
 
-async def load_scanned(cp: ChapterPaths, db: Store, chapter_id: int) -> scan.Chapter:
+async def load_scanned(
+    cp: ChapterPaths,
+    reader: PreparedReader,
+    db: Store,
+    chapter_id: int,
+) -> scan.Chapter:
     page_geoms = {pg.page_index: pg for pg in load_scan_geometry(cp)}
     bubbles_db = await db.get_bubbles(chapter_id)
-    prepared   = load_prepared(cp)
+    prepared   = reader.chapter()
     return _build_scanned(prepared, bubbles_db, page_geoms)
 
 
 async def load_translated_with_geometry(
     cp: ChapterPaths,
+    reader: PreparedReader,
     db: Store,
     chapter_id: int,
 ) -> tuple[translate.Chapter, dict[int, PageGeometry]]:
@@ -36,7 +58,7 @@ async def load_translated_with_geometry(
     page_geoms   = {pg.page_index: pg for pg in load_scan_geometry(cp)}
     bubbles_db   = await db.get_bubbles(chapter_id)
     translations = await db.get_translations(chapter_id)
-    prepared     = load_prepared(cp)
+    prepared     = reader.chapter()
 
     scanned = _build_scanned(prepared, bubbles_db, page_geoms)
 

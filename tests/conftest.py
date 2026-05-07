@@ -108,10 +108,41 @@ _BOX = Box(
     text=[5, 5, 95, 45],
 )
 _PREPARED = Chapter(
-    root=Path("/tmp/test_chapter"),
     source="test",
-    pages=(PreparedPage(index=0, file="page_0000.png", width=800, height=1200),),
+    pages=(PreparedPage(index=0, width=800, height=1200),),
 )
+
+
+class FakePreparedReader:
+    """In-memory PreparedReader stand-in for tests that don't decode pixels.
+
+    The translate/context paths only call read_rgb when build_chapter_brief
+    requests visual context for address-sensitive bubbles. Tests using
+    MockProvider never trigger that path, so a stub is enough.
+    """
+
+    def __init__(self, pages: tuple[PreparedPage, ...] = _PREPARED.pages) -> None:
+        self._pages = pages
+
+    @property
+    def page_count(self) -> int:
+        return len(self._pages)
+
+    def chapter(self, source: str = "") -> Chapter:
+        return Chapter(source=source, pages=self._pages)
+
+    def read_rgb(self, index: int) -> np.ndarray:
+        page = self._pages[index]
+        return np.zeros((page.height, page.width, 3), dtype=np.uint8)
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self) -> "FakePreparedReader":
+        return self
+
+    def __exit__(self, *_) -> None:
+        pass
 
 
 def make_scanned_chapter(n_bubbles: int = 3) -> ScannedChapter:
@@ -132,9 +163,10 @@ def make_session(
     n_bubbles: int = 3,
     provider_responses: list[CallResponse] | None = None,
     glossary: dict[str, str] | None = None,
-) -> tuple[ScannedChapter, TranslateCtx]:
-    """Create a ScannedChapter + TranslateCtx with mock providers."""
+) -> tuple[ScannedChapter, FakePreparedReader, TranslateCtx]:
+    """Create a ScannedChapter + PreparedReader stub + TranslateCtx."""
     scanned = make_scanned_chapter(n_bubbles)
+    reader  = FakePreparedReader()
     provider = MockProvider(provider_responses)
     ctx = TranslateCtx(
         translation_provider=provider,
@@ -148,7 +180,7 @@ def make_session(
         target_lang="vi",
         hook=Hook(),
     )
-    return scanned, ctx
+    return scanned, reader, ctx
 
 
 def make_text_response(text: str) -> CallResponse:

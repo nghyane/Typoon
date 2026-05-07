@@ -2,6 +2,9 @@
 
 Receives pre-loaded geometry — caller must pass page_geoms from
 adapters.loader.load_translated_with_geometry to avoid double scan.npz read.
+Source page pixels come from a PreparedReader; render output is still
+written as loose PNGs into cp.render/ (archive packing happens in the
+render orchestrator, not here).
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ import cv2
 import numpy as np
 
 from typoon.adapters.mask_store import MaskStore
+from typoon.adapters.prepared_reader import PreparedReader
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
@@ -23,10 +27,12 @@ from typoon.runs.events import Hook, PageDone
 def render_chapter(
     translated: translate.Chapter,
     cp: ChapterPaths,
+    reader: PreparedReader,
     runtime: VisionRuntime,
     page_geoms: dict[int, PageGeometry],
     *,
     chapter_id: int = 0,
+    project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> render.Chapter:
@@ -42,7 +48,7 @@ def render_chapter(
     rendered_pages = []
 
     for tp in translated.pages:
-        original   = _load_rgb(translated.scan.prepared.page_path(tp.index))
+        original   = reader.read_rgb(tp.index)
         canvas     = _to_rgba(original)
         page_masks = MaskStore.load_page(cp, tp.index)
 
@@ -91,7 +97,7 @@ def render_chapter(
         _write_rgb(image_path, result.image)
 
         if hook is not None:
-            hook.on(PageDone(chapter_id=chapter_id, stage="render",
+            hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",
                              page_index=tp.index, page_total=len(translated.pages)))
 
         if artifacts is not None:
@@ -102,13 +108,6 @@ def render_chapter(
         ))
 
     return render.Chapter(source=translated, pages=tuple(rendered_pages))
-
-
-def _load_rgb(path) -> np.ndarray:
-    bgr = cv2.imread(str(path))
-    if bgr is None:
-        raise FileNotFoundError(f"Cannot read prepared page: {path}")
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 def _to_rgba(image: np.ndarray) -> np.ndarray:

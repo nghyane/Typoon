@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from typoon.adapters.mask_store import BubbleMasks, MaskStore, save_scan_geometry
+from typoon.adapters.prepared_reader import PreparedReader
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.domain import scan
 from typoon.domain.prepared import Chapter
 from typoon.domain.scan import BubbleGeometry, PageGeometry
-from typoon.paths import ChapterPaths
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import Hook, PageDone
 from typoon.vision.grouping import ScanState, export_groups
@@ -41,9 +40,11 @@ class ScanOutput:
 
 def scan_chapter(
     prepared: Chapter,
+    reader: PreparedReader,
     runtime: VisionRuntime,
     *,
     chapter_id: int = 0,
+    project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> ScanOutput:
@@ -55,7 +56,7 @@ def scan_chapter(
     total = prepared.page_count
 
     for index in range(total):
-        image = _load_rgb(prepared.page_path(index))
+        image = reader.read_rgb(index)
         state = runtime.scan_page_state(image)
         h, w  = image.shape[:2]
 
@@ -71,7 +72,7 @@ def scan_chapter(
         geometry.append(page_geom)
 
         if hook is not None:
-            hook.on(PageDone(chapter_id=chapter_id, stage="scan", page_index=index, page_total=total))
+            hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="scan", page_index=index, page_total=total))
 
         if artifacts is not None:
             _write_artifacts(artifacts, index, image, state)
@@ -140,13 +141,6 @@ def _extract_page(
         bubbles=tuple(geom_list),
     )
     return bubbles, page_geom, masks_out
-
-
-def _load_rgb(path) -> np.ndarray:
-    bgr = cv2.imread(str(path))
-    if bgr is None:
-        raise FileNotFoundError(f"Cannot read prepared page: {path}")
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 # ── Artifact helpers ──────────────────────────────────────────────────

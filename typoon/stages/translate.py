@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 from typoon.adapters.ctx import TranslateCtx
+from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain import scan, translate
 from typoon.domain.scan import BubbleKey
 from typoon.runs.artifacts import ArtifactSink
@@ -22,6 +23,7 @@ _WINDOW_CHAR_BUDGET = 600
 
 async def translate_chapter(
     scanned: scan.Chapter,
+    reader: PreparedReader,
     ctx: TranslateCtx,
     *,
     artifacts: ArtifactSink | None = None,
@@ -36,7 +38,7 @@ async def translate_chapter(
         return _empty(scanned), ChapterBrief()
 
     keyed  = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
-    brief  = await build_chapter_brief(ctx, scanned.prepared, keyed)
+    brief  = await build_chapter_brief(ctx, scanned.prepared, reader, keyed)
 
     windows = _make_windows(keyed)
     total   = len(windows)

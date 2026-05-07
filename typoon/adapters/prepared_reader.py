@@ -1,8 +1,8 @@
 """PreparedReader — decode RGB ndarrays from a Bunle prepared archive.
 
-Stage code receives (PreparedChapter, PreparedReader) instead of reading
-files via `chapter.page_path(...)`. The reader is mmap-backed; pages are
-decoded on demand and not cached.
+Stage code receives `(PreparedChapter, PreparedReader)` together. The
+chapter carries metadata (page count + dimensions); the reader provides
+random-access pixel decode backed by mmap.
 """
 
 from __future__ import annotations
@@ -18,15 +18,7 @@ from typoon.domain.prepared import Chapter, Page
 
 
 class PreparedReader:
-    """Random-access reader for a prepared Bunle archive.
-
-    Use as a context manager:
-
-        with PreparedReader.open(archive_path) as reader:
-            chapter = reader.chapter()
-            for i in range(chapter.page_count):
-                rgb = reader.read_rgb(i)
-    """
+    """Random-access reader for a prepared Bunle archive."""
 
     def __init__(self, archive_path: Path, reader: bunle.Reader) -> None:
         self._archive_path = archive_path
@@ -55,11 +47,10 @@ class PreparedReader:
                 index=i,
                 width=self._reader.info(i)["width"],
                 height=self._reader.info(i)["height"],
-                file="",  # archive-backed: no on-disk file
             )
             for i in range(self._reader.page_count)
         )
-        return Chapter(root=Path(self._archive_path), source=source, pages=pages)
+        return Chapter(source=source, pages=pages)
 
     def read_rgb(self, index: int) -> np.ndarray:
         data = self._reader.page(index)
