@@ -74,26 +74,26 @@ async def discord_callback(
     pass it to the web SPA via a tiny HTML bootstrap that stashes the
     token in localStorage and navigates to /."""
     if error:
-        return _login_failed(f"Discord error: {error}")
+        return _login_failed(f"Discord error: {error}", web_url=cfg.web_url)
     if not code or not state:
-        return _login_failed("Missing code or state")
+        return _login_failed("Missing code or state", web_url=cfg.web_url)
 
     expected_state = request.cookies.get(_STATE_COOKIE)
     if not expected_state or not secrets.compare_digest(state, expected_state):
-        return _login_failed("State mismatch (possible CSRF)")
+        return _login_failed("State mismatch (possible CSRF)", web_url=cfg.web_url)
 
     try:
         token = await _exchange_and_issue(code=code, cfg=cfg, db=db)
     except HTTPException as e:
-        return _login_failed(e.detail)
+        return _login_failed(e.detail, web_url=cfg.web_url)
     except Exception as e:
         logger.exception("OAuth callback failed")
-        return _login_failed(str(e))
+        return _login_failed(str(e), web_url=cfg.web_url)
 
     # Hand the JWT to the SPA via a one-shot bootstrap page. We avoid
     # putting it in the URL fragment because the web router would race
     # the storage write.
-    html = _BOOTSTRAP_HTML.format(token=token, error="")
+    html = _BOOTSTRAP_HTML.format(token=token, error="", web_url=cfg.web_url)
     response = HTMLResponse(html)
     response.delete_cookie(_STATE_COOKIE)
     return response
@@ -180,15 +180,17 @@ def _user_out(row: dict) -> dict:
     }
 
 
-def _login_failed(reason: str) -> HTMLResponse:
+def _login_failed(reason: str, *, web_url: str) -> HTMLResponse:
     safe = reason.replace("<", "&lt;").replace(">", "&gt;")
     return HTMLResponse(
-        _BOOTSTRAP_HTML.format(token="", error=quote(safe)),
+        _BOOTSTRAP_HTML.format(token="", error=quote(safe), web_url=web_url),
         status_code=200,
     )
 
 
-# Tiny bootstrap page: stores the JWT (or error), then SPA takes over.
+# Tiny bootstrap page: stores the JWT (or error), then redirects to the
+# web app. {web_url} comes from cfg.auth.web_url so the API and the SPA
+# can run on different origins (Phase 1 dev: API :8000, web :5173).
 _BOOTSTRAP_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Đang đăng nhập…</title>
 <style>body{{margin:0;font:14px system-ui,sans-serif;color:#52525b;display:flex;align-items:center;justify-content:center;height:100vh;background:#fafafa}}</style>
@@ -202,6 +204,6 @@ _BOOTSTRAP_HTML = """<!doctype html>
   }} else if (token) {{
     localStorage.setItem("typoon_token", token);
   }}
-  window.location.replace("/");
+  window.location.replace("{web_url}");
 }})();
 </script></body></html>"""
