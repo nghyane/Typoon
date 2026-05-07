@@ -1,41 +1,28 @@
-"""ArtifactStore — opaque blob storage with the same logical keys for local
-dev (`~/.typoon/artifacts/<key>`) and R2 (`r2://<bucket>/<key>`).
+"""ArtifactStore — opaque blob storage for chapter archives.
 
-Stages and storage code never know whether they're talking to disk or R2.
-Both implementations honor the same atomicity/idempotency contract.
+Two operations only: put and get. A queue worker writes archives to the
+store and the next stage reads them; nothing else touches storage. Other
+operations (delete, head, signed URL, listing) belong to the app/UI layer
+and are added there when needed.
+
+LocalArtifactStore writes to disk. R2ArtifactStore lands when SaaS does.
 """
 
 from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-
-
-@dataclass(frozen=True)
-class ArtifactHead:
-    size: int
-    etag: str | None = None
 
 
 class ArtifactStore(Protocol):
     async def put_file(self, key: str, src: Path) -> None: ...
     async def get_file(self, key: str, dest: Path) -> None: ...
-    async def delete(self, key: str) -> None: ...
-    async def head(self, key: str) -> ArtifactHead | None: ...
-    async def url(self, key: str, expires: int = 3600) -> str: ...
 
 
 class LocalArtifactStore:
-    """File-based store under a single root.
-
-    Atomicity: put_file writes to `<key>.tmp.<pid>` then `os.replace` to `<key>`.
-    delete is a no-op on missing keys.
-    url returns `file://` paths for local-dev convenience; the API server
-    serves them via a signed-URL wrapper in production.
-    """
+    """File-based store under a single root."""
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
@@ -62,18 +49,3 @@ class LocalArtifactStore:
         src = self._path(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
-
-    async def delete(self, key: str) -> None:
-        path = self._path(key)
-        path.unlink(missing_ok=True)
-
-    async def head(self, key: str) -> ArtifactHead | None:
-        path = self._path(key)
-        try:
-            stat = path.stat()
-        except FileNotFoundError:
-            return None
-        return ArtifactHead(size=stat.st_size, etag=None)
-
-    async def url(self, key: str, expires: int = 3600) -> str:
-        return self._path(key).resolve().as_uri()

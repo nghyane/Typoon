@@ -14,8 +14,6 @@ async def _migrate_chapters(db: aiosqlite.Connection) -> None:
     cur = await db.execute("PRAGMA table_info(chapters)")
     cols = {row["name"] for row in await cur.fetchall()}
     additions = [
-        ("prepared_key",   "TEXT"),
-        ("render_key",     "TEXT"),
         ("render_state",   "TEXT NOT NULL DEFAULT 'none'"),
         ("render_job_id",  "TEXT"),
         ("page_count",     "INTEGER NOT NULL DEFAULT 0"),
@@ -23,6 +21,10 @@ async def _migrate_chapters(db: aiosqlite.Connection) -> None:
     for name, ddl in additions:
         if name not in cols:
             await db.execute(f"ALTER TABLE chapters ADD COLUMN {name} {ddl}")
+    # Drop legacy columns from earlier RFC-004 drafts. Idempotent.
+    for legacy in ("prepared_key", "render_key"):
+        if legacy in cols:
+            await db.execute(f"ALTER TABLE chapters DROP COLUMN {legacy}")
     await db.commit()
 
 _SCHEMA = """
@@ -696,27 +698,21 @@ class SqliteStore:
         row = await cur.fetchone()
         return json.loads(row["data"]) if row else None
 
-    # ── Bunle artifact pointers ───────────────────────────────────
+    # ── Chapter archive state ─────────────────────────────────────
 
-    async def set_prepared_artifact(
-        self, chapter_id: int, *, prepared_key: str, page_count: int,
-    ) -> str | None:
-        cur = await self._db.execute(
-            "SELECT prepared_key FROM chapters WHERE id=?", (chapter_id,),
-        )
-        row = await cur.fetchone()
-        previous = row["prepared_key"] if row else None
+    async def set_prepared_done(self, chapter_id: int, page_count: int) -> None:
+        """Mark chapter as prepared. Resets render to 'none' so a stale
+        render does not survive a reprepare."""
         await self._db.execute(
             "UPDATE chapters SET "
-            "  prepared_key=?, page_count=?, "
-            "  render_key=NULL, render_state='none', render_job_id=NULL "
+            "  page_count=?, render_state='none', render_job_id=NULL "
             "WHERE id=?",
-            (prepared_key, page_count, chapter_id),
+            (page_count, chapter_id),
         )
         await self._db.commit()
-        return previous
 
     async def claim_render_job(self, chapter_id: int, job_id: str) -> bool:
+        """CAS render claim. Returns True iff this worker holds the slot."""
         cur = await self._db.execute(
             "UPDATE chapters SET "
             "  render_state='rendering', render_job_id=? "
@@ -726,32 +722,18 @@ class SqliteStore:
         await self._db.commit()
         return (cur.rowcount or 0) > 0
 
-    async def finish_render_artifact(
-        self, chapter_id: int, *, job_id: str, render_key: str,
-    ) -> tuple[bool, str | None]:
+    async def finish_render_job(self, chapter_id: int, job_id: str) -> bool:
+        """Mark render done iff this worker still holds the job."""
         cur = await self._db.execute(
-            "SELECT render_key, render_job_id FROM chapters WHERE id=?",
-            (chapter_id,),
-        )
-        row = await cur.fetchone()
-        if row is None or row["render_job_id"] != job_id:
-            return (False, None)
-        previous = row["render_key"]
-        upd = await self._db.execute(
-            "UPDATE chapters SET "
-            "  render_key=?, render_state='rendered' "
+            "UPDATE chapters SET render_state='rendered' "
             "WHERE id=? AND render_job_id=?",
-            (render_key, chapter_id, job_id),
+            (chapter_id, job_id),
         )
         await self._db.commit()
-        return ((upd.rowcount or 0) > 0, previous)
+        return (cur.rowcount or 0) > 0
 
-    async def fail_render_job(
-        self, chapter_id: int, job_id: str, error: str,
-    ) -> None:
-        # error message belongs to tasks.last_error (existing flow); chapters
-        # only carries the render_state machine.
-        del error
+    async def fail_render_job(self, chapter_id: int, job_id: str) -> None:
+        """Mark render attempt as failed. tasks.last_error carries the message."""
         await self._db.execute(
             "UPDATE chapters SET render_state='failed' "
             "WHERE id=? AND render_job_id=?",
@@ -760,18 +742,17 @@ class SqliteStore:
         await self._db.commit()
 
     async def mark_render_stale(self, chapter_id: int) -> None:
+        """Move render_state to 'stale' if a render currently exists."""
         await self._db.execute(
-            "UPDATE chapters SET "
-            "  render_state='stale' "
-            "WHERE id=? AND render_key IS NOT NULL "
-            "  AND render_state IN ('rendered','failed')",
+            "UPDATE chapters SET render_state='stale' "
+            "WHERE id=? AND render_state IN ('rendered','failed')",
             (chapter_id,),
         )
         await self._db.commit()
 
-    async def get_chapter_artifacts(self, chapter_id: int) -> dict | None:
+    async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         cur = await self._db.execute(
-            "SELECT prepared_key, render_key, render_state, render_job_id, page_count "
+            "SELECT render_state, render_job_id, page_count "
             "FROM chapters WHERE id=?",
             (chapter_id,),
         )
