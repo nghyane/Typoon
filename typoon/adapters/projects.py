@@ -107,7 +107,7 @@ class Projects:
         )
         proj_paths = ProjectPaths(self._paths.projects, slug)
         proj_paths.ensure()
-        await self._apply_metadata(project_id, proj_paths, connector, info)
+        await self._apply_metadata(project_id, proj_paths, connector, info, url)
         return slug
 
     async def pull_new(
@@ -139,7 +139,7 @@ class Projects:
         proj       = await self.require(slug)
         proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
         connector  = _connector(url)
-        await self._apply_metadata(proj["id"], proj_paths, connector, info)
+        await self._apply_metadata(proj["id"], proj_paths, connector, info, url)
         await self._download_and_enqueue(proj, selected, connector, hook)
 
     async def _apply_metadata(
@@ -148,17 +148,26 @@ class Projects:
         proj_paths: ProjectPaths,
         connector,
         info: SourceInfo,
+        url: str,
     ) -> None:
-        """Patch title/description and download cover if missing."""
-        await self._db.update_project_metadata(
-            project_id,
-            title=info.suggested_title,
-            description=info.description,
-        )
+        """Backfill metadata from the source.
+
+        Title/description are only set if the user hasn't already populated
+        them — the new flow has the user create the project with their own
+        title before pulling, and we shouldn't overwrite that. source_url is
+        recorded on the first pull so DELETE / future pulls know the origin.
+        """
+        proj = await self._db.get_project(project_id) or {}
+        if not proj.get("description") and info.description:
+            await self._db.update_project_metadata(
+                project_id, description=info.description,
+            )
+        if not proj.get("source_url"):
+            await self._db.set_project_source_url(project_id, url)
         if info.cover_url and not proj_paths.cover.exists():
             await _download_cover(info.cover_url, proj_paths, connector)
             await self._db.update_project_metadata(
-                project_id, cover_path=str(proj_paths.cover)
+                project_id, cover_path=str(proj_paths.cover),
             )
 
     # ── Import local folder ───────────────────────────────────────────

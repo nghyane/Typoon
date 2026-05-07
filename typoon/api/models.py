@@ -57,6 +57,14 @@ class ProjectOut(BaseModel):
 # ── Discovery ─────────────────────────────────────────────────────────
 
 
+class SourceConnectorOut(BaseModel):
+    id:          str
+    name:        str
+    source_lang: str
+    example_url: str
+    description: str
+
+
 class ChapterVariantOut(BaseModel):
     id:    str
     url:   str

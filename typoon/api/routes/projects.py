@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from typoon.adapters.artifact_store import ArtifactStore
@@ -15,8 +14,7 @@ from typoon.api.models import ChapterOut, ProjectOut
 from typoon.api.routes._shared import (
     chapter_out, require_chapter, require_project,
 )
-from typoon.paths import Paths, ProjectPaths
-from typoon.runs.events import Hook
+from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.storage import Store
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -25,11 +23,11 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 # ── Request bodies ────────────────────────────────────────────────────
 
 
-class ImportBody(BaseModel):
-    folder:      str
+class CreateProjectBody(BaseModel):
     title:       str
-    source_lang: str = "ko"
-    target_lang: str = "vi"
+    description: str | None = None
+    source_lang: str        = "en"
+    target_lang: str        = "vi"
 
 
 class SettingsBody(BaseModel):
@@ -48,18 +46,55 @@ async def list_projects(db: Store = Depends(get_store)):
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
-async def import_project(
-    body:  ImportBody,
-    db:    Store         = Depends(get_store),
-    paths: Paths         = Depends(get_paths),
-    store: ArtifactStore = Depends(get_artifact_store),
+async def create_project(
+    body:  CreateProjectBody,
+    db:    Store = Depends(get_store),
+    paths: Paths = Depends(get_paths),
 ):
-    folder = Path(body.folder)
-    if not folder.is_dir():
-        raise HTTPException(400, f"Not a directory: {body.folder}")
-    project_id = await Projects(db, paths, store).import_new(
-        folder, body.title, body.source_lang, body.target_lang, Hook(),
+    """Create an empty project. Cover, chapters etc come later via dedicated
+    endpoints (POST /{id}/cover, POST /{id}/pull)."""
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, "title required")
+
+    slug = slugify(title)
+    pid  = await db.get_or_create_project(
+        slug=slug, title=title,
+        source_lang=body.source_lang, target_lang=body.target_lang,
     )
+    if body.description:
+        await db.update_project_metadata(pid, description=body.description)
+    ProjectPaths(paths.projects, slug).ensure()
+
+    proj = await db.get_project(pid)
+    return ProjectOut.from_row(proj)
+
+
+@router.post("/{project_id}/cover", response_model=ProjectOut)
+async def upload_cover(
+    project_id: int,
+    file:       UploadFile = File(...),
+    db:    Store = Depends(get_store),
+    paths: Paths = Depends(get_paths),
+):
+    """Upload a cover image. Re-encoded to JPEG q=88 under projects/<slug>/cover.jpg."""
+    proj = await require_project(project_id, db)
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(400, "cover must be an image")
+
+    raw = await file.read()
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(400, f"invalid image: {e}") from e
+
+    proj_paths = ProjectPaths(paths.projects, proj["slug"])
+    proj_paths.ensure()
+    img.save(proj_paths.cover, format="JPEG", quality=88)
+    await db.update_project_metadata(project_id, cover_path=str(proj_paths.cover))
+
     proj = await db.get_project(project_id)
     return ProjectOut.from_row(proj)
 

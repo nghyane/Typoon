@@ -36,12 +36,25 @@ class ComixConnector:
         self._browser = browser or BrowserClient()
 
     @property
-    def site_name(self) -> str:
+    def site_id(self) -> str:
+        """Stable identifier — used by the API source listing."""
         return _DOMAIN
+
+    @property
+    def site_name(self) -> str:
+        return "Comix"
 
     @property
     def source_lang(self) -> str:
         return _SOURCE_LANG
+
+    @property
+    def example_url(self) -> str:
+        return f"{_BASE}/title/<id>-<slug>"
+
+    @property
+    def description(self) -> str:
+        return "English scanlation aggregator. Cloudflare-protected; works in dev."
 
     def accepts(self, url: str) -> bool:
         return _DOMAIN in url

@@ -328,7 +328,8 @@ class SqliteStore:
         source_url: str | None = None,
     ) -> int:
         cur = await self._db.execute(
-            "INSERT INTO projects (slug, title, source_lang, target_lang, source_url) VALUES (?,?,?,?,?)",
+            "INSERT INTO projects (slug, title, source_lang, target_lang, source_url, updated_at) "
+            "VALUES (?,?,?,?,?, datetime('now'))",
             (slug, title, source_lang, target_lang, source_url),
         )
         await self._db.commit()
@@ -376,6 +377,14 @@ class SqliteStore:
         await self._db.execute(
             f"UPDATE projects SET {', '.join(sets)} WHERE id=?",
             tuple(args),
+        )
+        await self._db.commit()
+
+    async def set_project_source_url(self, project_id: int, url: str) -> None:
+        """One-shot helper for backfilling source_url on the first pull."""
+        await self._db.execute(
+            "UPDATE projects SET source_url=? WHERE id=?",
+            (url, project_id),
         )
         await self._db.commit()
 
