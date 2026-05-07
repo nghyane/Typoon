@@ -7,6 +7,7 @@ keys. The filesystem layout under `~/.typoon/` carries only:
   typoon.db          — SQLite knowledge store
   models/            — model weights
   artifacts/         — LocalArtifactStore root for prepared.bnl / render.bnl / masks.npz
+  exports/<slug>/    — user-facing output (PDF / zip / WebP) produced by `typoon export`
   projects/<slug>/   — per-project metadata (cover image, etc.); no per-chapter dirs
   cache/             — transient
 
@@ -82,8 +83,11 @@ class Paths:
     def artifacts(self) -> Path: return self.root / "artifacts"
 
     @property
+    def exports(self) -> Path: return self.root / "exports"
+
+    @property
     def cache(self) -> Path: return self.root / "cache"
 
     def ensure(self) -> None:
-        for d in (self.root, self.projects, self.artifacts):
+        for d in (self.root, self.projects, self.artifacts, self.exports):
             d.mkdir(parents=True, exist_ok=True)

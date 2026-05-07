@@ -225,76 +225,117 @@ async def _work(role: str, concurrency: int) -> None:
 
 
 @app.command()
-def pdf(
+def export(
     slug:    str   = typer.Argument(..., help="Project slug"),
-    from_ch: float = typer.Option(0, "--from", help="First chapter"),
-    to_ch:   float = typer.Option(0, "--to",   help="Last chapter"),
-    out:     Path  = typer.Option(None, "--out", "-o", help="Output path (default: <slug>-ch<N>.pdf)"),
+    formats: str   = typer.Option("pdf", "--format", "-f", help="Comma-separated: pdf,zip,webp"),
+    range_:  str   = typer.Option("", "--range", "-r", help="Chapter range e.g. 1-3 or 5"),
+    to:      Path  = typer.Option(None, "--to",   help="Override output dir (default: ~/.typoon/exports/<slug>/)"),
+    force:   bool  = typer.Option(False, "--force", help="Re-export even if manifest is fresh"),
+    open_:   bool  = typer.Option(True,  "--open/--no-open", help="Open the first PDF in system viewer"),
 ):
-    """Export rendered chapter(s) to PDF and open in system viewer."""
-    asyncio.run(_pdf(slug, from_ch, to_ch, out))
+    """Export rendered chapters to a folder (PDF / zip / individual WebP)."""
+    asyncio.run(_export(slug, formats, range_, to, force, open_))
 
 
-async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> None:
-    import io
+async def _export(
+    slug: str,
+    formats: str,
+    range_: str,
+    to: Path | None,
+    force: bool,
+    open_: bool,
+) -> None:
     import subprocess
     import sys
-    import tempfile
-
-    import bunle
-    import img2pdf
-    from PIL import Image
 
     from ..adapters.artifact_store import LocalArtifactStore
-    from ..adapters.chapter_archive import render_key
     from ..adapters.projects import Projects
     from ..paths import Paths
+    from ..stages.export import ChapterRef, export_chapters
+
+    fmt_list = [f.strip() for f in formats.split(",") if f.strip()]
+    valid = {"pdf", "zip", "webp"}
+    bad = [f for f in fmt_list if f not in valid]
+    if bad:
+        console.print(f"[red]Unknown format(s): {', '.join(bad)}. Choose from {sorted(valid)}.[/]")
+        return
+
+    lo, hi = _parse_range(range_)
 
     projects = await Projects.open()
     try:
-        proj     = await projects.require(slug)
-        all_chs  = await projects._db.get_all_chapters(proj["id"])
-        lo       = from_ch or (all_chs[0]["idx"] if all_chs else 1)
-        hi       = to_ch   or lo
-        chapters = [c for c in all_chs if lo <= c["idx"] <= hi]
-        if not chapters:
-            console.print("[red]No chapters found in range.[/]")
+        proj = await projects.require(slug)
+        all_chs = await projects._db.get_all_chapters(proj["id"])
+        if not all_chs:
+            console.print("[yellow]No chapters in project.[/]")
             return
-        paths = Paths()
-        store = LocalArtifactStore(paths.artifacts)
-        for ch in chapters:
+
+        # Filter to rendered chapters within the requested range.
+        refs: list[ChapterRef] = []
+        for ch in all_chs:
+            if lo is not None and ch["idx"] < lo:
+                continue
+            if hi is not None and ch["idx"] > hi:
+                continue
             state = await projects._db.get_chapter_render_state(ch["id"])
             if state is None or not state["rendered"]:
-                console.print(f"[yellow]ch{ch['idx']:.4g}: not rendered, skipping[/]")
                 continue
-            with tempfile.TemporaryDirectory() as tmp:
-                local = Path(tmp) / "render.bnl"
-                await store.get_file(render_key(proj["id"], ch["id"]), local)
-                # Decode each page from WebP, re-encode as JPEG q=95 for PDF
-                # embedding. img2pdf passthrough JPEG bytes — no further
-                # re-encode happens at the PDF layer.
-                jpeg_pages: list[bytes] = []
-                with bunle.Reader(str(local)) as reader:
-                    for i in range(reader.page_count):
-                        img = Image.open(io.BytesIO(reader.page(i))).convert("RGB")
-                        buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=95, subsampling=0)
-                        jpeg_pages.append(buf.getvalue())
-            if not jpeg_pages:
-                console.print(f"[yellow]ch{ch['idx']:.4g}: empty render archive, skipping[/]")
-                continue
-            dest = out or Path(f"{slug}-ch{ch['idx']:.4g}.pdf")
-            with dest.open("wb") as f:
-                f.write(img2pdf.convert(jpeg_pages))
-            console.print(f"[green]✓[/] {dest} ({len(jpeg_pages)} pages)")
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", str(dest)])
-            elif sys.platform.startswith("linux"):
-                subprocess.Popen(["xdg-open", str(dest)])
-            else:
-                subprocess.Popen(["start", str(dest)], shell=True)
+            refs.append(ChapterRef(
+                chapter_id=ch["id"],
+                chapter_idx=ch["idx"],
+                rendered_at=str(ch.get("updated_at") or ""),
+            ))
+
+        if not refs:
+            console.print("[yellow]No rendered chapters match the range.[/]")
+            return
+
+        paths = Paths()
+        store = LocalArtifactStore(paths.artifacts)
+        dest = (to / slug) if to else (paths.exports / slug)
+
+        results = await export_chapters(
+            project_id=proj["id"],
+            slug=slug,
+            chapters=refs,
+            formats=fmt_list,
+            store=store,
+            dest_dir=dest,
+            force=force,
+        )
+
+        for r in results:
+            for fmt, path in r.formats.items():
+                console.print(f"[green]✓[/] ch{r.chapter_idx:.4g} [{fmt}]  {path}")
+
+        if open_ and "pdf" in fmt_list and results:
+            first_pdf = results[0].formats.get("pdf")
+            if first_pdf:
+                _open_in_viewer(first_pdf)
     finally:
         await projects.close()
+
+
+def _parse_range(spec: str) -> tuple[float | None, float | None]:
+    spec = spec.strip()
+    if not spec:
+        return None, None
+    if "-" in spec:
+        lo_s, hi_s = (s.strip() for s in spec.split("-", 1))
+        return (float(lo_s) if lo_s else None, float(hi_s) if hi_s else None)
+    n = float(spec)
+    return n, n
+
+
+def _open_in_viewer(path: Path) -> None:
+    import subprocess
+    import sys
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(path)])
+    else:
+        subprocess.Popen(["start", str(path)], shell=True)
 
 
 # ── status ────────────────────────────────────────────────────────────
