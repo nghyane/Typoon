@@ -242,6 +242,7 @@ async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> Non
     import tempfile
 
     import bunle
+    import img2pdf
     from PIL import Image
 
     from ..adapters.artifact_store import LocalArtifactStore
@@ -269,17 +270,23 @@ async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> Non
             with tempfile.TemporaryDirectory() as tmp:
                 local = Path(tmp) / "render.bnl"
                 await store.get_file(render_key(proj["id"], ch["id"]), local)
+                # Decode each page from WebP, re-encode as JPEG q=95 for PDF
+                # embedding. img2pdf passthrough JPEG bytes — no further
+                # re-encode happens at the PDF layer.
+                jpeg_pages: list[bytes] = []
                 with bunle.Reader(str(local)) as reader:
-                    images = [
-                        Image.open(io.BytesIO(reader.page(i))).convert("RGB")
-                        for i in range(reader.page_count)
-                    ]
-            if not images:
+                    for i in range(reader.page_count):
+                        img = Image.open(io.BytesIO(reader.page(i))).convert("RGB")
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=95, subsampling=0)
+                        jpeg_pages.append(buf.getvalue())
+            if not jpeg_pages:
                 console.print(f"[yellow]ch{ch['idx']:.4g}: empty render archive, skipping[/]")
                 continue
             dest = out or Path(f"{slug}-ch{ch['idx']:.4g}.pdf")
-            images[0].save(dest, save_all=True, append_images=images[1:])
-            console.print(f"[green]✓[/] {dest} ({len(images)} pages)")
+            with dest.open("wb") as f:
+                f.write(img2pdf.convert(jpeg_pages))
+            console.print(f"[green]✓[/] {dest} ({len(jpeg_pages)} pages)")
             if sys.platform == "darwin":
                 subprocess.Popen(["open", str(dest)])
             elif sys.platform.startswith("linux"):
