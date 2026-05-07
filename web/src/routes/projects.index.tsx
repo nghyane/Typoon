@@ -1,28 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useQuery, useQueries } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useState, useMemo } from 'react'
-import { Plus, Search } from 'lucide-react'
-import { api, type ApiChapter } from '../lib/api'
+import { Plus, Search, FolderOpen } from 'lucide-react'
+import { api } from '../lib/api'
 import { Cover } from '../components/Cover'
-
-interface Stats { total: number; done: number; running: number; error: number }
-
-function toStats(chs: ApiChapter[]): Stats {
-  return chs.reduce(
-    (acc, c) => {
-      acc.total++
-      if (c.state === 'done')    acc.done++
-      if (c.state === 'running') acc.running++
-      if (c.state === 'error')   acc.error++
-      return acc
-    },
-    { total: 0, done: 0, running: 0, error: 0 },
-  )
-}
-
-function pct(s: Stats) {
-  return s.total === 0 ? 0 : Math.round(((s.done + s.error) / s.total) * 100)
-}
+import { timeAgo } from '../lib/time'
 
 function ProjectsPage() {
   const [q, setQ] = useState('')
@@ -32,34 +14,25 @@ function ProjectsPage() {
     queryFn:  api.listProjects,
   })
 
-  const chQ = useQueries({
-    queries: projects.map((p) => ({
-      queryKey: ['projects', p.project_id, 'chapters'],
-      queryFn:  () => api.listChapters(p.project_id),
-      enabled:  projects.length > 0,
-    })),
-  })
-
-  const rows = useMemo(() => {
-    const all = projects.map((p, i) => {
-      const s = toStats(chQ[i]?.data ?? [])
-      return { p, s, pct: pct(s) }
-    })
-    return all.filter(({ p }) =>
-      p.title.toLowerCase().includes(q.toLowerCase()),
-    )
-  }, [projects, chQ, q])
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    if (!needle) return projects
+    return projects.filter((p) => p.title.toLowerCase().includes(needle))
+  }, [projects, q])
 
   return (
     <div>
-
       {/* header */}
-      <div className="px-6 pt-6 pb-5 flex items-start justify-between gap-4">
+      <div className="px-6 pt-6 pb-5 flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-zinc-900">Dự án</h1>
-          <p className="text-sm text-zinc-400 mt-1">Quản lý và theo dõi tiến độ dịch thuật</p>
+          <p className="text-sm text-zinc-400 mt-1">
+            {projects.length > 0
+              ? `${projects.length} dự án • cập nhật theo thời gian thực`
+              : 'Quản lý và theo dõi tiến độ dịch thuật'}
+          </p>
         </div>
-        <button className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-95 transition-all cursor-pointer">
+        <button className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-[0.98] transition-all cursor-pointer">
           <Plus size={13} />
           Thêm dự án
         </button>
@@ -67,8 +40,8 @@ function ProjectsPage() {
 
       {/* search */}
       <div className="px-6 mb-5">
-        <label className="flex items-center gap-2 h-8 px-3 w-52 rounded-lg border border-zinc-200 hover:border-zinc-300 transition-colors cursor-text outline-none">
-          <Search size={13} className="text-zinc-400 shrink-0" />
+        <label className="flex items-center gap-2 h-9 px-3 max-w-sm rounded-lg border border-zinc-200 hover:border-zinc-300 focus-within:border-zinc-400 transition-colors cursor-text">
+          <Search size={14} className="text-zinc-400 shrink-0" />
           <input
             type="text"
             placeholder="Tìm dự án..."
@@ -76,16 +49,22 @@ function ProjectsPage() {
             onChange={(e) => setQ(e.target.value)}
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-zinc-300"
           />
+          {q && (
+            <button
+              onClick={() => setQ('')}
+              className="text-xs text-zinc-400 hover:text-zinc-600 cursor-pointer"
+            >
+              Xoá
+            </button>
+          )}
         </label>
       </div>
 
       {/* grid */}
-      <div className="px-6">
-
-        {/* skeleton */}
+      <div className="px-6 pb-8">
         {isLoading && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-            {Array.from({ length: 8 }).map((_, i) => (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-x-4 gap-y-6">
+            {Array.from({ length: 12 }).map((_, i) => (
               <div key={i} className="animate-pulse">
                 <div className="w-full aspect-[2/3] rounded-xl bg-zinc-100 mb-2.5" />
                 <div className="h-3 w-3/4 rounded bg-zinc-100 mb-1.5" />
@@ -95,67 +74,66 @@ function ProjectsPage() {
           </div>
         )}
 
-        {/* error */}
         {isError && (
-          <div className="py-10 text-center">
+          <div className="py-16 text-center">
             <p className="text-sm text-red-500 font-medium">Không thể tải danh sách</p>
             <p className="text-xs text-zinc-400 mt-1">Kiểm tra kết nối rồi thử lại</p>
           </div>
         )}
 
-        {/* cards */}
-        {!isLoading && !isError && rows.length > 0 && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-4">
-            {rows.map(({ p, s, pct: prog }) => (
+        {!isLoading && !isError && filtered.length > 0 && (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-x-4 gap-y-6">
+            {filtered.map((p) => (
               <Link
                 key={p.project_id}
                 to="/projects/$projectId"
                 params={{ projectId: String(p.project_id) }}
-                className="group"
+                className="group block"
               >
-                {/* cover */}
                 <Cover
                   src={p.cover_url}
                   title={p.title}
-                  className="w-full aspect-[2/3] rounded-xl border border-zinc-200 mb-2.5 group-hover:border-zinc-300 transition-colors"
+                  version={p.updated_at}
+                  className="w-full aspect-[2/3] rounded-xl border border-zinc-200 mb-3 group-hover:border-zinc-300 group-hover:shadow-sm transition-all"
                 />
-
-                {/* meta */}
-                <p className="text-sm font-medium text-zinc-900 truncate leading-snug">
+                <p className="text-sm font-medium text-zinc-900 leading-snug line-clamp-2 group-hover:text-zinc-700 transition-colors">
                   {p.title}
                 </p>
-                <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-zinc-400">
-                    {p.source_lang.toUpperCase()} → {p.target_lang.toUpperCase()}
+                <div className="flex items-center justify-between mt-1.5 text-xs text-zinc-400">
+                  <span className="uppercase tracking-wide">
+                    {p.source_lang} → {p.target_lang}
                   </span>
-                  <span className="text-xs text-zinc-400 tabular-nums">{s.total}</span>
-                </div>
-
-                {/* progress */}
-                <div className="mt-2 h-1 rounded-full bg-zinc-100 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-zinc-300 transition-[width]"
-                    style={{ width: `${prog}%` }}
-                  />
+                  {p.updated_at && (
+                    <span className="tabular-nums" title={p.updated_at}>
+                      {timeAgo(p.updated_at)}
+                    </span>
+                  )}
                 </div>
               </Link>
             ))}
           </div>
         )}
 
-        {/* empty */}
-        {!isLoading && !isError && rows.length === 0 && (
-          <div className="py-16 flex flex-col items-center gap-3">
-            <p className="text-sm font-medium text-zinc-500">
-              {q ? 'Không tìm thấy kết quả' : 'Chưa có dự án nào'}
-            </p>
-            <p className="text-xs text-zinc-400">
-              {q ? 'Thử từ khoá khác' : 'Tạo dự án để bắt đầu'}
-            </p>
-          </div>
+        {!isLoading && !isError && filtered.length === 0 && (
+          <EmptyState query={q} />
         )}
-
       </div>
+    </div>
+  )
+}
+
+function EmptyState({ query }: { query: string }) {
+  return (
+    <div className="py-20 flex flex-col items-center text-center">
+      <div className="size-12 rounded-2xl bg-zinc-100 flex items-center justify-center mb-3">
+        <FolderOpen size={20} className="text-zinc-400" />
+      </div>
+      <p className="text-sm font-medium text-zinc-700">
+        {query ? 'Không tìm thấy kết quả' : 'Chưa có dự án nào'}
+      </p>
+      <p className="text-xs text-zinc-400 mt-1">
+        {query ? 'Thử từ khoá khác' : 'Tạo dự án để bắt đầu dịch'}
+      </p>
     </div>
   )
 }

@@ -1,3 +1,6 @@
+// VITE_API_URL is set when the web build runs cross-origin from the API
+// (e.g. preview deploys). In dev/prod-same-origin it stays empty so all
+// fetches go through the Vite proxy / nginx.
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
 export interface ApiProject {
@@ -13,13 +16,15 @@ export interface ApiProject {
   updated_at:   string | null
 }
 
+export type ChapterState = 'idle' | 'pending' | 'running' | 'error' | 'done'
+
 export interface ApiChapter {
   chapter_id: number
   project_id: number
   idx:        number
   title:      string | null
-  state:      'idle' | 'pending' | 'running' | 'error' | 'done'
-  stage:      string
+  state:      ChapterState
+  stage:      string  // '' | 'scan' | 'translate' | 'render'
   page_count: number
   error:      string
   updated_at: string | null
@@ -30,17 +35,32 @@ export interface ApiChapter {
   } | null
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}/api${path}`)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}/api${path}`, init)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
+  }
+  return res.status === 204 ? (undefined as T) : res.json()
 }
 
 export const api = {
-  base:         API_BASE,
-  listProjects: () => fetchJson<ApiProject[]>('/projects'),
-  listChapters: (projectId: number) =>
-    fetchJson<ApiChapter[]>(`/projects/${projectId}/chapters`),
-  getProject: (projectId: number) =>
-    fetchJson<ApiProject>(`/projects/${projectId}`),
+  base: API_BASE,
+
+  // Queries ────────────────────────────────────────────────────────
+  listProjects: () => request<ApiProject[]>('/projects'),
+  getProject:   (id: number) => request<ApiProject>(`/projects/${id}`),
+  listChapters: (id: number) => request<ApiChapter[]>(`/projects/${id}/chapters`),
+  getChapter:   (pid: number, cid: number) =>
+    request<ApiChapter>(`/projects/${pid}/chapters/${cid}`),
+
+  // Mutations ──────────────────────────────────────────────────────
+  redoChapter: (pid: number, cid: number) =>
+    request<ApiChapter>(`/projects/${pid}/chapters/${cid}/redo`, { method: 'POST' }),
+  deleteProject: (pid: number) =>
+    request<void>(`/projects/${pid}`, { method: 'DELETE' }),
+
+  // Asset URLs (no JSON wrapping) ──────────────────────────────────
+  pageUrl: (pid: number, cid: number, idx: number) =>
+    `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
 }

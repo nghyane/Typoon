@@ -3,7 +3,7 @@ import { useSidebar } from '../store/sidebar'
 import { cn } from '../lib/cn'
 import {
   LayoutDashboard, FolderOpen, Library, BookOpen,
-  Users, BarChart2, Settings, Cloud,
+  Users, BarChart2, Settings,
   ChevronLeft, ChevronRight,
 } from 'lucide-react'
 
@@ -19,10 +19,6 @@ const NAV = [
 const NAV_FOOT = [
   { to: '/settings', label: 'Cài đặt', icon: Settings },
 ] as const
-
-const STORAGE_USED  = 128.6
-const STORAGE_TOTAL = 500
-const STORAGE_PCT   = Math.round((STORAGE_USED / STORAGE_TOTAL) * 100)
 
 // Sidebar widths. Icon lane widths are derived so every icon center sits at
 // sidebar_x = 30 in both states — no horizontal motion while width animates.
@@ -119,19 +115,6 @@ export function Sidebar() {
       </nav>
 
       <div className="flex-1" />
-
-      {/* storage */}
-      {!collapsed && (
-        <div className="px-3 mb-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Cloud size={12} className="text-zinc-400" />
-            <span className="text-xs text-zinc-500">{STORAGE_USED} GB / {STORAGE_TOTAL} GB</span>
-          </div>
-          <div className="h-1 rounded-full bg-zinc-200 overflow-hidden">
-            <div className="h-full rounded-full bg-zinc-400 transition-[width]" style={{ width: `${STORAGE_PCT}%` }} />
-          </div>
-        </div>
-      )}
 
       {/* footer nav */}
       <div className="px-2 pb-2 border-t border-zinc-200 pt-2 flex flex-col gap-0.5">
