@@ -15,16 +15,15 @@ export interface AuthUser {
   tier:         'member' | 'admin'
   created_at:   string | null
   last_login_at: string | null
-  /** Discord guild name for the gated server, or null when gating is
-   *  disabled / widget is off. The SPA uses this for branding so we
-   *  don't hardcode 'Typoon' anywhere. */
-  guild_name:   string | null
+  guild_name:    string | null
+  guild_icon_url: string | null
 }
 
 export interface AuthConfig {
   discord_client_id:  string
   guild_gated:        boolean
   guild_name:         string | null
+  guild_icon_url:     string | null
   discord_invite_url: string | null
 }
 
@@ -99,10 +98,15 @@ export function redirectUri(): string {
   return `${window.location.origin}${REDIRECT_PATH}`
 }
 
-/** Fetch public auth config (client_id, guild_gated hint). */
+/** Fetch public auth config. Throws with the engine's detail message on
+ *  503 so the /login page can surface operator setup errors verbatim. */
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   const r = await fetch(`${API_BASE}/api/auth/config`)
-  if (!r.ok) throw new Error(`auth config: ${r.status}`)
+  if (!r.ok) {
+    let msg = `auth config: ${r.status}`
+    try { const b = await r.json(); if (b?.detail) msg = b.detail } catch { /* */ }
+    throw new Error(msg)
+  }
   return r.json()
 }
 

@@ -18,9 +18,12 @@ const W_EXPANDED  = 240
 const NAV_PAD_X   = 8                            // matches `px-2` on <nav>
 const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44 — icon lane inside a nav link
 
-interface Props { brandName: string }
+interface Props {
+  brandName: string | null
+  brandIcon: string | null
+}
 
-export function Sidebar({ brandName }: Props) {
+export function Sidebar({ brandName, brandIcon }: Props) {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
@@ -64,32 +67,47 @@ export function Sidebar({ brandName }: Props) {
             onClick={collapsed ? toggle : undefined}
             title={collapsed ? 'Mở rộng' : undefined}
             className={cn(
-              'group relative size-7 rounded-md bg-zinc-900 flex items-center justify-center',
+              'group relative size-7 rounded-md flex items-center justify-center overflow-hidden',
+              brandIcon ? 'bg-white border border-zinc-200' : 'bg-zinc-900 text-white text-xs font-bold',
               collapsed ? 'cursor-pointer' : 'cursor-default',
             )}
           >
-            <svg
-              width="12" height="12" viewBox="0 0 13 13" fill="none"
-              className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}
-            >
-              <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
+            {brandIcon ? (
+              <img
+                src={brandIcon}
+                alt={brandName ?? ''}
+                className={cn(
+                  'w-full h-full object-cover',
+                  collapsed && 'group-hover:opacity-0 transition-opacity',
+                )}
+              />
+            ) : (
+              <span className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}>
+                {brandName ? brandName.charAt(0).toUpperCase() : '·'}
+              </span>
+            )}
             {collapsed && (
               <ChevronRight
                 size={12}
-                className="absolute text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                className={cn(
+                  'absolute opacity-0 group-hover:opacity-100 transition-opacity',
+                  brandIcon ? 'text-zinc-900' : 'text-white',
+                )}
               />
             )}
           </button>
         </div>
 
-        <span
-          className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-150"
-          style={{ opacity: collapsed ? 0 : 1 }}
-          title={brandName}
-        >
-          {brandName}
-        </span>
+        {brandName && (
+          <span
+            className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-150"
+            style={{ opacity: collapsed ? 0 : 1 }}
+            title={brandName}
+          >
+            {brandName}
+          </span>
+        )}
+        {!brandName && <div className="flex-1" />}
 
         <button
           onClick={toggle}

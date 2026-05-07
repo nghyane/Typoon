@@ -10,12 +10,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const nav = useNavigate()
   const { user, loading } = useCurrentUser()
 
-  // Redirect to /login when no token / 401. Listen for runtime 401s from
-  // any API call (api.ts dispatches 'typoon:unauthorized').
   useEffect(() => {
-    if (!loading && !user) {
-      nav({ to: '/login' })
-    }
+    if (!loading && !user) nav({ to: '/login' })
   }, [loading, user, nav])
 
   useEffect(() => {
@@ -24,31 +20,24 @@ export function AppLayout({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('typoon:unauthorized', onUnauth)
   }, [nav])
 
-  // Activate SSE only after we know we're authenticated — events.ts
-  // bails out internally if no token, but skipping the call avoids a
-  // useless mount cycle.
   useServerEvents()
 
-  // Update the document title to the gated guild name (or fall back to
-  // 'Typoon'). One source of truth so we don't hardcode the brand in
-  // index.html.
+  // Document title follows the brand. Only set when we have a real name —
+  // never fall back to a hardcoded string. The HTML <title> in index.html
+  // is a one-time placeholder shown before the SPA boots.
   useEffect(() => {
-    if (user?.guild_name) {
-      document.title = user.guild_name
-    }
+    if (user?.guild_name) document.title = user.guild_name
   }, [user])
 
-  if (loading) {
-    return <FullScreenSpinner />
-  }
-  if (!user) {
-    // Redirect already kicked; render nothing instead of flashing UI.
-    return null
-  }
+  if (loading)  return <FullScreenSpinner />
+  if (!user)    return null
 
   return (
     <div className="flex h-screen overflow-hidden bg-white text-zinc-950 text-sm">
-      <Sidebar brandName={user.guild_name ?? 'Typoon'} />
+      <Sidebar
+        brandName={user.guild_name}
+        brandIcon={user.guild_icon_url}
+      />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header user={user} />
         <main className="flex-1 overflow-auto">

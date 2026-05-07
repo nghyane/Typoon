@@ -20,8 +20,11 @@ function LoginPage() {
     setError(takeLoginError())
 
     fetchAuthConfig()
-      .then(setCfg)
-      .catch((e: Error) => setError(`Config error: ${e.message}`))
+      .then((c) => {
+        setCfg(c)
+        if (c.guild_name) document.title = c.guild_name
+      })
+      .catch((e: Error) => setError(e.message))
   }, [nav])
 
   const onLogin = () => {
@@ -45,17 +48,31 @@ function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
       <div className="w-full max-w-sm">
-        <div className="text-center mb-6">
-          <div className="size-12 mx-auto rounded-2xl bg-zinc-900 flex items-center justify-center mb-3">
-            <svg width="20" height="20" viewBox="0 0 13 13" fill="none">
-              <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
+        {/* Brand block — only renders when the engine has guild metadata.
+            Until then we show nothing instead of a placeholder name; that
+            way an unconfigured deployment is visibly broken (operator
+            knows to fix Discord setup) rather than silently labelled. */}
+        {cfg?.guild_name && (
+          <div className="text-center mb-6">
+            <div className={`size-14 mx-auto rounded-2xl flex items-center justify-center mb-3 overflow-hidden ${
+              cfg.guild_icon_url ? 'border border-zinc-200 bg-white' : 'bg-zinc-900 text-white text-lg font-bold'
+            }`}>
+              {cfg.guild_icon_url ? (
+                <img
+                  src={cfg.guild_icon_url}
+                  alt={cfg.guild_name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                cfg.guild_name.charAt(0).toUpperCase()
+              )}
+            </div>
+            <h1 className="text-xl font-bold tracking-tight text-zinc-900">
+              {cfg.guild_name}
+            </h1>
+            <p className="text-sm text-zinc-500 mt-1">Cộng đồng dịch manga</p>
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-zinc-900">
-            {cfg?.guild_name || 'Typoon'}
-          </h1>
-          <p className="text-sm text-zinc-500 mt-1">Cộng đồng dịch manga</p>
-        </div>
+        )}
 
         <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-6">
           {error && (
@@ -112,10 +129,6 @@ function LoginPage() {
             </p>
           )}
         </div>
-
-        <p className="text-xs text-zinc-400 text-center mt-6">
-          Self-hosted · Phase 1
-        </p>
       </div>
     </div>
   )

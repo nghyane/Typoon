@@ -22,7 +22,9 @@ boundary is per-tab anyway.
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -45,16 +47,42 @@ class ExchangeBody(BaseModel):
 
 @router.get("/config")
 async def auth_config(cfg: AuthConfig = Depends(get_auth_cfg)):
-    """Public auth config the SPA needs at /login: client_id, gating
-    hint, and the guild's public invite (when widget is enabled)."""
+    """Public auth config the SPA needs at /login.
+
+    Refuses to start a login flow when the deployment is misconfigured.
+    Better the operator sees a 503 with fix instructions than the SPA
+    silently rendering with a fake brand name.
+    """
     if not cfg.discord_client_id:
-        raise HTTPException(503, "Discord OAuth not configured")
-    guild_name, invite_url = await _resolve_guild_invite(cfg.discord_guild_id)
+        raise HTTPException(503, "Discord OAuth chưa được cấu hình.")
+
+    # Open mode (no gating). Brand is None — the SPA renders a generic,
+    # unbranded shell.
+    if not cfg.discord_guild_id:
+        return {
+            "discord_client_id":  cfg.discord_client_id,
+            "guild_gated":        False,
+            "guild_name":         None,
+            "guild_icon_url":     None,
+            "discord_invite_url": None,
+        }
+
+    # Gated: widget must expose at least the guild name. Without it the
+    # SPA has nothing to brand the login page with, and gating-failure
+    # users see no name in the 403 message either.
+    name, invite = await _resolve_guild_invite(cfg.discord_guild_id)
+    if not name:
+        raise HTTPException(
+            503,
+            "Discord Server Widget chưa được bật. "
+            "Discord Server Settings → Widget → Enable Server Widget.",
+        )
     return {
         "discord_client_id":  cfg.discord_client_id,
-        "guild_gated":        bool(cfg.discord_guild_id),
-        "guild_name":         guild_name,
-        "discord_invite_url": invite_url,
+        "guild_gated":        True,
+        "guild_name":         name,
+        "guild_icon_url":     _read_guild_icon(cfg.discord_guild_id),
+        "discord_invite_url": invite,
     }
 
 
@@ -77,13 +105,11 @@ async def me(
     user: dict = Depends(require_user),
     cfg:  AuthConfig = Depends(get_auth_cfg),
 ):
-    """Returns the current authenticated user + branding (guild name)
-    so the SPA can render 'Hội Mê Truyện' in the sidebar / window title
-    without an extra round-trip to /api/auth/config."""
-    name, _ = await _resolve_guild_invite(cfg.discord_guild_id)
+    name, _ = await _resolve_guild_invite(cfg.discord_guild_id) if cfg.discord_guild_id else (None, None)
     return {
         **_user_out(user),
-        "guild_name": name,
+        "guild_name":     name,
+        "guild_icon_url": _read_guild_icon(cfg.discord_guild_id),
     }
 
 
@@ -114,9 +140,14 @@ async def _exchange_and_issue(
     # Gate by guild membership. Empty guild_id → gating disabled.
     if cfg.discord_guild_id:
         guilds   = await fetch_user_guilds(access_token)
-        in_guild = any(g.get("id") == cfg.discord_guild_id for g in guilds)
-        if not in_guild:
+        match    = next((g for g in guilds if g.get("id") == cfg.discord_guild_id), None)
+        if match is None:
             raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
+        # First successful guild-gated login also captures the guild
+        # icon hash for SPA branding. The widget endpoint doesn't expose
+        # icons, so we piggyback on the user's guilds list (cheap, only
+        # runs at login time).
+        _persist_guild_meta(cfg.discord_guild_id, icon=match.get("icon"))
 
     promote = (
         cfg.bootstrap_discord_id
@@ -163,6 +194,46 @@ async def _resolve_guild_invite(guild_id: str) -> tuple[str | None, str | None]:
     if not widget:
         return None, None
     return widget.get("name"), widget.get("instant_invite")
+
+
+# ── Guild icon caching ───────────────────────────────────────────────
+#
+# Discord's widget endpoint exposes the guild name + invite but not the
+# icon hash. The hash *is* in /users/@me/guilds, which we already call
+# during login. We cache it to disk on the first guild-gated login so
+# /api/auth/config can return guild_icon_url without an authenticated
+# Discord call (and so unauthenticated /login can show the icon).
+
+def _meta_path() -> Path:
+    from typoon.api.deps import _config_and_paths
+    _, paths = _config_and_paths()
+    return paths.root / ".guild_meta.json"
+
+
+def _persist_guild_meta(guild_id: str, *, icon: str | None) -> None:
+    if not icon:
+        return
+    path = _meta_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"guild_id": guild_id, "icon": icon}
+    path.write_text(json.dumps(data))
+
+
+def _read_guild_icon(guild_id: str) -> str | None:
+    """Build the CDN URL for the cached icon, or None if we don't have one
+    yet (no admin has logged in since the engine started fresh)."""
+    if not guild_id:
+        return None
+    path = _meta_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if data.get("guild_id") != guild_id or not data.get("icon"):
+        return None
+    return f"https://cdn.discordapp.com/icons/{guild_id}/{data['icon']}.png?size=128"
 
 
 async def _gate_message(guild_id: str) -> str:
