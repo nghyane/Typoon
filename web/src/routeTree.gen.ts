@@ -10,11 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ProjectsRouteImport } from './routes/projects'
-import { Route as LibraryRouteImport } from './routes/library'
-import { Route as GroupsRouteImport } from './routes/groups'
-import { Route as GlossaryRouteImport } from './routes/glossary'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
@@ -24,29 +20,9 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ReportsRoute = ReportsRouteImport.update({
-  id: '/reports',
-  path: '/reports',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ProjectsRoute = ProjectsRouteImport.update({
   id: '/projects',
   path: '/projects',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LibraryRoute = LibraryRouteImport.update({
-  id: '/library',
-  path: '/library',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const GroupsRoute = GroupsRouteImport.update({
-  id: '/groups',
-  path: '/groups',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const GlossaryRoute = GlossaryRouteImport.update({
-  id: '/glossary',
-  path: '/glossary',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -67,21 +43,13 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/glossary': typeof GlossaryRoute
-  '/groups': typeof GroupsRoute
-  '/library': typeof LibraryRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/': typeof ProjectsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/glossary': typeof GlossaryRoute
-  '/groups': typeof GroupsRoute
-  '/library': typeof LibraryRoute
-  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects': typeof ProjectsIndexRoute
@@ -89,11 +57,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/glossary': typeof GlossaryRoute
-  '/groups': typeof GroupsRoute
-  '/library': typeof LibraryRoute
   '/projects': typeof ProjectsRouteWithChildren
-  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/projects/$projectId': typeof ProjectsProjectIdRoute
   '/projects/': typeof ProjectsIndexRoute
@@ -102,32 +66,16 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/glossary'
-    | '/groups'
-    | '/library'
     | '/projects'
-    | '/reports'
     | '/settings'
     | '/projects/$projectId'
     | '/projects/'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/glossary'
-    | '/groups'
-    | '/library'
-    | '/reports'
-    | '/settings'
-    | '/projects/$projectId'
-    | '/projects'
+  to: '/' | '/settings' | '/projects/$projectId' | '/projects'
   id:
     | '__root__'
     | '/'
-    | '/glossary'
-    | '/groups'
-    | '/library'
     | '/projects'
-    | '/reports'
     | '/settings'
     | '/projects/$projectId'
     | '/projects/'
@@ -135,11 +83,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  GlossaryRoute: typeof GlossaryRoute
-  GroupsRoute: typeof GroupsRoute
-  LibraryRoute: typeof LibraryRoute
   ProjectsRoute: typeof ProjectsRouteWithChildren
-  ReportsRoute: typeof ReportsRoute
   SettingsRoute: typeof SettingsRoute
 }
 
@@ -152,39 +96,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/reports': {
-      id: '/reports'
-      path: '/reports'
-      fullPath: '/reports'
-      preLoaderRoute: typeof ReportsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/projects': {
       id: '/projects'
       path: '/projects'
       fullPath: '/projects'
       preLoaderRoute: typeof ProjectsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/library': {
-      id: '/library'
-      path: '/library'
-      fullPath: '/library'
-      preLoaderRoute: typeof LibraryRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/groups': {
-      id: '/groups'
-      path: '/groups'
-      fullPath: '/groups'
-      preLoaderRoute: typeof GroupsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/glossary': {
-      id: '/glossary'
-      path: '/glossary'
-      fullPath: '/glossary'
-      preLoaderRoute: typeof GlossaryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -227,11 +143,7 @@ const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  GlossaryRoute: GlossaryRoute,
-  GroupsRoute: GroupsRoute,
-  LibraryRoute: LibraryRoute,
   ProjectsRoute: ProjectsRouteWithChildren,
-  ReportsRoute: ReportsRoute,
   SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport

@@ -1,19 +1,10 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../lib/cn'
-import {
-  LayoutDashboard, FolderOpen, Library, BookOpen,
-  Users, BarChart2, Settings,
-  ChevronLeft, ChevronRight,
-} from 'lucide-react'
+import { FolderOpen, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const NAV = [
-  { to: '/',         label: 'Tổng quan', icon: LayoutDashboard },
-  { to: '/projects', label: 'Dự án',     icon: FolderOpen },
-  { to: '/library',  label: 'Thư viện',  icon: Library },
-  { to: '/glossary', label: 'Thuật ngữ', icon: BookOpen },
-  { to: '/groups',   label: 'Nhóm',      icon: Users },
-  { to: '/reports',  label: 'Báo cáo',   icon: BarChart2 },
+  { to: '/projects', label: 'Dự án', icon: FolderOpen },
 ] as const
 
 const NAV_FOOT = [
@@ -23,7 +14,7 @@ const NAV_FOOT = [
 // Sidebar widths. Icon lane widths are derived so every icon center sits at
 // sidebar_x = 30 in both states — no horizontal motion while width animates.
 const W_COLLAPSED = 60
-const W_EXPANDED  = 252
+const W_EXPANDED  = 240
 const NAV_PAD_X   = 8                            // matches `px-2` on <nav>
 const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44 — icon lane inside a nav link
 
@@ -31,25 +22,37 @@ export function Sidebar() {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
-  function active(to: string) {
-    return to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
-  }
+  const active = (to: string) =>
+    to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
 
-  function linkCls(isActive: boolean) {
-    return cn(
-      'flex items-center h-9 w-full rounded-md text-sm select-none cursor-pointer transition-colors duration-200',
+  const linkCls = (isActive: boolean) =>
+    cn(
+      'flex items-center h-9 w-full rounded-md text-sm select-none cursor-pointer transition-colors duration-150',
       isActive
         ? 'bg-zinc-900/[0.06] text-zinc-900 font-medium'
         : 'text-zinc-500 hover:bg-zinc-900/[0.04] hover:text-zinc-900',
     )
-  }
+
+  const renderLink = (to: string, label: string, Icon: typeof FolderOpen) => (
+    <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
+      <span style={{ width: NAV_LANE }} className="h-full flex items-center justify-center shrink-0">
+        <Icon size={17} />
+      </span>
+      <span
+        className="flex-1 min-w-0 truncate pr-2.5 transition-opacity duration-150"
+        style={{ opacity: collapsed ? 0 : 1 }}
+      >
+        {label}
+      </span>
+    </Link>
+  )
 
   return (
     <aside
-      style={{ width: collapsed ? W_COLLAPSED : W_EXPANDED, transition: 'width 200ms ease-in-out' }}
+      style={{ width: collapsed ? W_COLLAPSED : W_EXPANDED, transition: 'width 180ms ease-in-out' }}
       className="flex flex-col h-full shrink-0 overflow-hidden bg-zinc-50 border-r border-zinc-200"
     >
-      {/* brand — icon sits in a 60px lane so it stays centered when sidebar = 60 */}
+      {/* brand */}
       <div className="flex items-center h-bar shrink-0">
         <div
           style={{ width: W_COLLAPSED }}
@@ -59,81 +62,54 @@ export function Sidebar() {
             onClick={collapsed ? toggle : undefined}
             title={collapsed ? 'Mở rộng' : undefined}
             className={cn(
-              'group relative size-6 rounded-md bg-zinc-900 flex items-center justify-center',
+              'group relative size-7 rounded-md bg-zinc-900 flex items-center justify-center',
               collapsed ? 'cursor-pointer' : 'cursor-default',
             )}
           >
-            <svg width="11" height="11" viewBox="0 0 13 13" fill="none"
-              className={cn(collapsed && 'group-hover:opacity-0 transition-opacity')}>
+            <svg
+              width="12" height="12" viewBox="0 0 13 13" fill="none"
+              className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}
+            >
               <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
             {collapsed && (
-              <ChevronRight size={11} className="absolute text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+              <ChevronRight
+                size={12}
+                className="absolute text-white opacity-0 group-hover:opacity-100 transition-opacity"
+              />
             )}
           </button>
         </div>
 
-        {/* text: takes remaining width, fades out without affecting brand position */}
         <span
-          className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-200"
+          className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-150"
           style={{ opacity: collapsed ? 0 : 1 }}
         >
           Typoon
         </span>
 
-        {/* chevron: fades + slides off-canvas when collapsed (overflow:hidden clips it) */}
         <button
           onClick={toggle}
           title="Thu gọn"
           aria-hidden={collapsed}
           tabIndex={collapsed ? -1 : 0}
-          className="size-6 mr-2.5 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200 cursor-pointer shrink-0 transition-opacity duration-200"
+          className="size-7 mr-2 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200 cursor-pointer shrink-0 transition-opacity duration-150"
           style={{ opacity: collapsed ? 0 : 1, pointerEvents: collapsed ? 'none' : 'auto' }}
         >
-          <ChevronLeft size={13} />
+          <ChevronLeft size={14} />
         </button>
       </div>
 
       {/* main nav */}
       <nav className="px-2 py-2 flex flex-col gap-0.5">
-        {NAV.map(({ to, label, icon: Icon }) => (
-          <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
-            <span
-              style={{ width: NAV_LANE }}
-              className="h-full flex items-center justify-center shrink-0"
-            >
-              <Icon size={18} />
-            </span>
-            <span
-              className="flex-1 min-w-0 truncate pr-2.5 transition-opacity duration-200"
-              style={{ opacity: collapsed ? 0 : 1 }}
-            >
-              {label}
-            </span>
-          </Link>
-        ))}
+        {NAV.map(({ to, label, icon }) => renderLink(to, label, icon))}
       </nav>
 
       <div className="flex-1" />
 
       {/* footer nav */}
-      <div className="px-2 pb-2 border-t border-zinc-200 pt-2 flex flex-col gap-0.5">
-        {NAV_FOOT.map(({ to, label, icon: Icon }) => (
-          <Link key={to} to={to} title={collapsed ? label : undefined} className={linkCls(active(to))}>
-            <span
-              style={{ width: NAV_LANE }}
-              className="h-full flex items-center justify-center shrink-0"
-            >
-              <Icon size={18} />
-            </span>
-            <span
-              className="flex-1 min-w-0 truncate pr-2.5 transition-opacity duration-200"
-              style={{ opacity: collapsed ? 0 : 1 }}
-            >
-              {label}
-            </span>
-          </Link>
-        ))}
+      <div className="px-2 pb-2 pt-2 border-t border-zinc-200 flex flex-col gap-0.5">
+        {NAV_FOOT.map(({ to, label, icon }) => renderLink(to, label, icon))}
       </div>
     </aside>
   )
