@@ -54,38 +54,6 @@ class ProjectOut(BaseModel):
         )
 
 
-# ── Discovery ─────────────────────────────────────────────────────────
-
-
-class SourceConnectorOut(BaseModel):
-    id:          str
-    name:        str
-    source_lang: str
-    example_url: str
-    description: str
-
-
-class ChapterVariantOut(BaseModel):
-    id:    str
-    url:   str
-    group: str | None = None
-    votes: int = 0
-
-
-class DiscoveredChapterOut(BaseModel):
-    number:   float
-    title:    str | None = None
-    variants: list[ChapterVariantOut] = []
-
-
-class SourceInfoOut(BaseModel):
-    suggested_title: str
-    cover_url:       str | None = None
-    description:     str | None = None
-    source_lang:     str  # supplied by the connector, not the discovery payload
-    chapters:        list[DiscoveredChapterOut] = []
-
-
 # ── Bubbles / translations ────────────────────────────────────────────
 
 

@@ -1,7 +1,10 @@
-"""Source connectors — remote and local chapter image sources."""
+"""Source connectors — local-only ingestion (folders, archives, PDFs).
 
-from .connectors import get_connectors
+Remote scraping has been removed; user-facing tools (Discord bot,
+browser extension) handle download and upload bnl/folder via the API.
+"""
+
 from .constants import IMAGE_EXTS
 from .local import LocalSource
 
-__all__ = ["get_connectors", "LocalSource", "IMAGE_EXTS"]
+__all__ = ["LocalSource", "IMAGE_EXTS"]

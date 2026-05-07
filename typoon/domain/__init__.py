@@ -6,9 +6,7 @@ Import pattern for stage types:
 """
 
 from typoon.domain import prepared, scan, translate, render
-from .project import ChapterVariant, DiscoveredChapter, SourceInfo
 
 __all__ = [
     "prepared", "scan", "translate", "render",
-    "ChapterVariant", "DiscoveredChapter", "SourceInfo",
 ]

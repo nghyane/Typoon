@@ -1,18 +1,19 @@
-"""Project management — CRUD and task enqueueing only.
+"""Project management — CRUD, redo, status, and local ingestion.
 
-No pipeline execution. No stage logic. Workers consume tasks from DB.
+This adapter no longer scrapes remote sites. Chapters arrive as local
+files (folder, zip/cbz, PDF, individual images) — see `sources.upload`
+for the extraction pipeline. Workers consume scan/translate/render
+tasks from the DB.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
-from typoon.domain.project import DiscoveredChapter, SourceInfo
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
@@ -79,98 +80,7 @@ class Projects:
             raise ValueError(f"Project '{slug}' not found. Run 'typoon status'.")
         return proj
 
-    # ── Discover ──────────────────────────────────────────────────────
-
-    async def discover(self, url: str) -> SourceInfo:
-        return await _connector(url).discover(url)
-
-    # ── Pull from remote URL ──────────────────────────────────────────
-
-    async def create_project(
-        self,
-        info: SourceInfo,
-        url: str,
-        target_lang: str,
-    ) -> str:
-        """Create the project row and apply metadata (title, cover, synopsis).
-
-        No chapter download. Returns the slug. Caller is expected to follow
-        up with `pull_more(slug, url, info, selected, hook)` either inline
-        (CLI) or as a background task (API).
-        """
-        connector  = _connector(url)
-        slug       = slugify(info.suggested_title, url)
-        project_id = await self._db.get_or_create_project(
-            slug=slug, title=info.suggested_title,
-            source_lang=connector.source_lang, target_lang=target_lang,
-            source_url=url,
-        )
-        proj_paths = ProjectPaths(self._paths.projects, slug)
-        proj_paths.ensure()
-        await self._apply_metadata(project_id, proj_paths, connector, info, url)
-        return slug
-
-    async def pull_new(
-        self,
-        info: SourceInfo,
-        url: str,
-        selected: list[DiscoveredChapter],
-        target_lang: str,
-        hook: Hook,
-    ) -> str:
-        """Convenience: create_project + pull chapters synchronously.
-
-        Used by the CLI. The API splits the two so the HTTP response can
-        return the project id while downloads run in the background.
-        """
-        slug = await self.create_project(info, url, target_lang)
-        proj = await self.require(slug)
-        await self._download_and_enqueue(proj, selected, _connector(url), hook)
-        return slug
-
-    async def pull_more(
-        self,
-        slug: str,
-        url: str,
-        info: SourceInfo,
-        selected: list[DiscoveredChapter],
-        hook: Hook,
-    ) -> None:
-        proj       = await self.require(slug)
-        proj_paths = ProjectPaths(self._paths.projects, proj["slug"])
-        connector  = _connector(url)
-        await self._apply_metadata(proj["id"], proj_paths, connector, info, url)
-        await self._download_and_enqueue(proj, selected, connector, hook)
-
-    async def _apply_metadata(
-        self,
-        project_id: int,
-        proj_paths: ProjectPaths,
-        connector,
-        info: SourceInfo,
-        url: str,
-    ) -> None:
-        """Backfill metadata from the source.
-
-        Title/description are only set if the user hasn't already populated
-        them — the new flow has the user create the project with their own
-        title before pulling, and we shouldn't overwrite that. source_url is
-        recorded on the first pull so DELETE / future pulls know the origin.
-        """
-        proj = await self._db.get_project(project_id) or {}
-        if not proj.get("description") and info.description:
-            await self._db.update_project_metadata(
-                project_id, description=info.description,
-            )
-        if not proj.get("source_url"):
-            await self._db.set_project_source_url(project_id, url)
-        if info.cover_url and not proj_paths.cover.exists():
-            await _download_cover(info.cover_url, proj_paths, connector)
-            await self._db.update_project_metadata(
-                project_id, cover_path=str(proj_paths.cover),
-            )
-
-    # ── Import local folder ───────────────────────────────────────────
+    # ── Local folder import (CLI: `typoon add`) ───────────────────────
 
     async def import_new(
         self,
@@ -193,6 +103,54 @@ class Projects:
     async def import_more(self, slug: str, folder: Path, hook: Hook) -> None:
         proj = await self.require(slug)
         await self._import_and_enqueue(proj, folder, hook)
+
+    # ── Single chapter ingest (API: upload endpoint) ──────────────────
+
+    async def ingest_chapter(
+        self,
+        project_id: int,
+        idx: float,
+        source_dir: Path,
+        *,
+        title: str | None = None,
+        hook: Hook | None = None,
+        strategy: str = "auto",
+    ) -> int:
+        """Pack pages from `source_dir` as a chapter and enqueue scan.
+
+        `source_dir` must contain a flat list of image files in reading
+        order — callers (HTTP upload, CLI add) are responsible for
+        unpacking archives or rendering PDFs into that shape first.
+
+        Returns the chapter_id. `strategy` is forwarded to
+        `prepare_chapter_to_archive` (auto / one_to_one / stitch).
+        """
+        chapter_id = await self._db.get_or_create_chapter(
+            project_id, idx, title=title,
+        )
+        try:
+            _key, n = await prepare_chapter_to_archive(
+                LocalSource(source_dir),
+                project_id=project_id, chapter_id=chapter_id,
+                store=self._store,
+                strategy=strategy,
+            )
+        except Exception as e:
+            if hook is not None:
+                hook.on(ChapterFailed(
+                    chapter_id=chapter_id, chapter_idx=idx,
+                    project_id=project_id, stage="prepare", error=e,
+                ))
+            raise
+
+        await self._db.set_prepared_done(chapter_id, n)
+        if hook is not None:
+            hook.on(ChapterDownloaded(
+                chapter_id=chapter_id, chapter_idx=idx,
+                project_id=project_id, page_count=n,
+            ))
+        await self._db.enqueue(chapter_id, "scan")
+        return chapter_id
 
     # ── Redo — full reset + re-enqueue ───────────────────────────────
 
@@ -221,7 +179,7 @@ class Projects:
 
         return len(chapters)
 
-    # ── Status ────────────────────────────────────────────────────────
+    # ── Status (CLI) ──────────────────────────────────────────────────
 
     async def get_status(self, slug: str | None = None) -> list[ProjectStatus]:
         projects = await self._db.list_projects()
@@ -251,50 +209,6 @@ class Projects:
         return result
 
     # ── Internal ──────────────────────────────────────────────────────
-
-    async def _download_and_enqueue(
-        self,
-        proj: dict,
-        selected: list[DiscoveredChapter],
-        connector,
-        hook: Hook,
-    ) -> None:
-        for ch in selected:
-            chapter_id = await self._db.get_or_create_chapter(
-                proj["id"], ch.number,
-                source_url=ch.best_variant.url,
-                title=ch.title,
-            )
-            existing = await self._db.get_chapter_render_state(chapter_id)
-            if existing and existing["page_count"] > 0:
-                hook.on(ChapterSkipped(
-                    chapter_id=chapter_id, chapter_idx=ch.number,
-                    project_id=proj["id"], reason="prepared_exists",
-                ))
-            else:
-                try:
-                    from typoon.downloader import download_images
-                    page_urls = await connector.get_page_urls(ch)
-                    with tempfile.TemporaryDirectory() as tmp:
-                        await download_images(page_urls, Path(tmp))
-                        _key, n = await prepare_chapter_to_archive(
-                            LocalSource(Path(tmp)),
-                            project_id=proj["id"], chapter_id=chapter_id,
-                            store=self._store,
-                        )
-                    await self._db.set_prepared_done(chapter_id, n)
-                    hook.on(ChapterDownloaded(
-                        chapter_id=chapter_id, chapter_idx=ch.number,
-                        project_id=proj["id"], page_count=n,
-                    ))
-                except Exception as e:
-                    hook.on(ChapterFailed(
-                        chapter_id=chapter_id, chapter_idx=ch.number,
-                        project_id=proj["id"], stage="download", error=e,
-                    ))
-                    continue
-
-            await self._db.enqueue(chapter_id, "scan")
 
     async def _import_and_enqueue(self, proj: dict, folder: Path, hook: Hook) -> None:
         for i, src_dir in enumerate(_chapter_dirs(folder), start=1):
@@ -332,14 +246,6 @@ class Projects:
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
-def _connector(url: str):
-    from typoon.sources.connectors import get_connectors
-    c = next((c for c in get_connectors() if c.accepts(url)), None)
-    if c is None:
-        raise ValueError(f"No connector for URL: {url}")
-    return c
-
-
 def _chapter_dirs(folder: Path) -> list[Path]:
     if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
         return [folder]
@@ -352,26 +258,3 @@ def _chapter_dirs(folder: Path) -> list[Path]:
 def _parse_idx(name: str) -> float | None:
     m = re.search(r"(\d+(?:\.\d+)?)", name)
     return float(m.group(1)) if m else None
-
-
-async def _download_cover(
-    cover_url: str,
-    proj_paths: ProjectPaths,
-    connector,
-) -> None:
-    """Download cover to projects/<slug>/cover.jpg. Logs and skips on failure."""
-    import io
-    import httpx
-    from PIL import Image
-
-    headers = connector.http_headers() if hasattr(connector, "http_headers") else {}
-    try:
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30) as client:
-            resp = await client.get(cover_url)
-            resp.raise_for_status()
-            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-    except (httpx.HTTPError, OSError) as e:
-        logger.warning("cover download failed (%s): %s", cover_url, e)
-        return
-    proj_paths.ensure()
-    img.save(proj_paths.cover, format="JPEG", quality=88)

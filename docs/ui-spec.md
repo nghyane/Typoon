@@ -116,7 +116,7 @@ Scans speech bubbles, translates via LLM, re-renders with target language text.
 - "Import" button
 
 **Tab 2 — Pull from URL:**
-- URL input (e.g. comix.to manga URL)
+- URL input (e.g. ezmanga.org series URL)
 - Discover button → loads chapter list below
 - Chapter range selector: "From ch__ to ch__" or multi-select list
 - Target language select

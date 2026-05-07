@@ -21,79 +21,6 @@ class ConsoleHook(Hook):
         render_event(event)
 
 
-# ── auth ──────────────────────────────────────────────────────────────
-
-
-@app.command()
-def auth(site: str = typer.Argument(..., help="Site to authenticate (e.g. comix.to)")):
-    """Authenticate with a manga source site."""
-    asyncio.run(_auth(site))
-
-
-async def _auth(site: str) -> None:
-    from ..sources.connectors import get_connectors
-    connector = next(
-        (c for c in get_connectors() if site in c.site_name or c.site_name in site), None
-    )
-    if connector is None:
-        console.print(f"[red]Unknown site:[/] {site}")
-        raise typer.Exit(1)
-    console.print(f"[yellow]Opening browser for {connector.site_name}…[/]")
-    await connector.authenticate()
-    console.print(f"[green]✓[/] {connector.site_name} — authenticated")
-
-
-# ── pull ──────────────────────────────────────────────────────────────
-
-
-@app.command()
-def pull(
-    target:      str   = typer.Argument(..., help="URL (new project) or slug (existing)"),
-    url:         str   = typer.Argument(None, help="Manga URL when slug given first"),
-    target_lang: str   = typer.Option("vi", "--target-lang", "-t"),
-    from_ch:     float = typer.Option(0, "--from", help="First chapter (0 = ask)"),
-    to_ch:       float = typer.Option(0, "--to",   help="Last chapter"),
-):
-    """Download chapters from URL and enqueue for translation.
-
-    \b
-    Examples:
-      typoon pull https://comix.to/manga/solo-leveling/ -t vi
-      typoon pull solo-leveling https://comix.to/manga/solo-leveling/ --from 10
-    """
-    asyncio.run(_pull(target, url, target_lang, from_ch, to_ch))
-
-
-async def _pull(
-    target: str,
-    url: str | None,
-    target_lang: str,
-    from_ch: float,
-    to_ch: float,
-) -> None:
-    from ..adapters.projects import Projects
-    projects = await Projects.open()
-    try:
-        if url is not None:
-            await projects.require(target)
-            info     = await projects.discover(url)
-            selected = _select_chapters(info.chapters, from_ch, to_ch)
-            if not selected:
-                return
-            console.print(f"\n[bold]{info.suggested_title}[/]  {len(selected)} chapter(s)\n")
-            await projects.pull_more(target, url, info, selected, ConsoleHook())
-        else:
-            info     = await projects.discover(target)
-            selected = _select_chapters(info.chapters, from_ch, to_ch)
-            if not selected:
-                return
-            console.print(f"\n[bold]{info.suggested_title}[/]  {len(selected)} chapter(s)\n")
-            slug = await projects.pull_new(info, target, selected, target_lang, ConsoleHook())
-            console.print(f"\n[dim]slug: [bold]{slug}[/][/]")
-    finally:
-        await projects.close()
-
-
 # ── add ───────────────────────────────────────────────────────────────
 
 
@@ -407,20 +334,3 @@ def _print_project(proj) -> None:
             detail = f"[red]{ch.stage}: {ch.error[:60]}[/]"
         t.add_row(icon, f"[dim]#{ch.chapter_id}[/]", f"ch{ch.idx:.4g}", detail)
     console.print(t)
-
-
-# ── helpers ───────────────────────────────────────────────────────────
-
-
-def _select_chapters(chapters, from_ch: float, to_ch: float) -> list:
-    if from_ch > 0 or to_ch > 0:
-        lo = from_ch or chapters[0].number
-        hi = to_ch   or chapters[-1].number
-        return [c for c in chapters if lo <= c.number <= hi]
-    console.print(f"  Available: ch{chapters[0].number:.0f}–ch{chapters[-1].number:.0f}")
-    raw = typer.prompt("  Select chapters (e.g. 1-5 or 3)").strip()
-    if "-" in raw:
-        lo, hi = (float(x.strip()) for x in raw.split("-", 1))
-    else:
-        lo = hi = float(raw)
-    return [c for c in chapters if lo <= c.number <= hi]
