@@ -1,8 +1,8 @@
 """Event bus — Postgres LISTEN/NOTIFY transport.
 
-Single backend (RFC-005). API and workers connect to the same Postgres
-DSN; the API holds a LISTEN connection per SSE client and replays
-missed events from the `events` table on reconnect.
+API and workers connect to the same Postgres DSN; the API holds a LISTEN
+connection per SSE client and replays missed events from the `events`
+table on reconnect.
 
 publish    INSERT events RETURNING id; NOTIFY chan, str(id)
 subscribe  SELECT events WHERE id > last_id (replay), then LISTEN.

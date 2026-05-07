@@ -150,10 +150,10 @@ async def _exchange_and_issue(
         # Capture guild icon for branding (widget doesn't expose it).
         _persist_guild_meta(cfg.discord_guild_id, icon=match.get("icon"))
 
-        # Pull role IDs the user holds in this guild. Requires
-        # `guilds.members.read` OAuth scope (added in RFC-006). When
-        # missing or 404, fall back to empty roles — user is still
-        # member, just no admin privileges.
+        # Pull role IDs the user holds in this guild. Requires the
+        # `guilds.members.read` OAuth scope. When missing or 404, fall
+        # back to empty roles — user is still a member, just no admin
+        # privileges.
         member = await fetch_guild_member(access_token, cfg.discord_guild_id)
         if member:
             role_ids = [str(r) for r in member.get("roles", []) if r]

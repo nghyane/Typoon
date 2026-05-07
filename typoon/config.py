@@ -97,7 +97,7 @@ class Config(BaseSettings):
     context_agent: ContextAgentConfig = ContextAgentConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
-    # Postgres DSN. Required — RFC-005 dropped the SQLite fallback.
+    # Postgres DSN. Required — engine refuses to start without it.
     database_url: str = ""
     server: ServerConfig = ServerConfig()
     auth:   AuthConfig   = AuthConfig()
@@ -174,18 +174,17 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         except ValueError:
             pass
 
-    # Database — env wins over toml. RFC-005 requires a postgresql:// DSN.
+    # Database — env wins over toml. Must be a postgresql:// DSN.
     config.database_url = os.environ.get("DATABASE_URL", config.database_url)
     if not config.database_url:
         raise RuntimeError(
-            "DATABASE_URL is required (RFC-005). "
+            "DATABASE_URL is required. "
             "Set it in .env or config.toml, e.g. "
             "postgresql://typoon:typoon@localhost:5432/typoon"
         )
     if not config.database_url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError(
-            f"DATABASE_URL must be postgresql://… — got {config.database_url!r}. "
-            f"SQLite is not supported (RFC-005)."
+            f"DATABASE_URL must be postgresql://… — got {config.database_url!r}."
         )
 
     # Auth: env vars take precedence over config.toml. Secrets should never

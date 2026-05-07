@@ -1,4 +1,6 @@
-// SQLite stores 'YYYY-MM-DD HH:MM:SS' in UTC without 'Z'. Parse as UTC.
+// API serves timestamps as RFC 3339 in UTC (e.g. '2026-05-07T22:43:03Z').
+// `Date(...)` parses that directly. Older SQLite-era values without a
+// timezone suffix get treated as UTC for backward compatibility.
 function parseUtc(s: string): Date {
   return new Date(s.includes('T') ? s : s.replace(' ', 'T') + 'Z')
 }

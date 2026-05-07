@@ -86,7 +86,7 @@ async def require_user(
     1. JWT (web SPA, Discord OAuth flow). Carries `roles` claim from
        Discord at login time → user["roles"] populated, used by
        `require_admin`.
-    2. API token (`typ_…`, RFC-008). Issued via /api/me/tokens for
+    2. API token (`typ_…`). Issued via /api/me/tokens for
        extension/CLI use. Token holders never get admin access:
        user["roles"] is set to []. Mutation routes (owner-only) still
        work via require_project_owner.

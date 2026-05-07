@@ -37,7 +37,7 @@ from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.config import Config
 from typoon.paths import Paths
 from typoon.runs.events import (
-    CompositeHook, Event, Hook, LoggingHook, PageDone, StageDone, StageFailed, StageStarted,
+    CompositeHook, Hook, LoggingHook, StageDone, StageFailed, StageStarted,
 )
 from typoon.stages.render_archive import render_chapter_to_archive
 from typoon.stages.scan import scan_chapter
@@ -232,7 +232,7 @@ async def run_workers(
 ) -> None:
     """Start worker loops for a given role.
 
-    All roles work against Postgres (RFC-005). `--role full` keeps
+    All roles work against the same Postgres. `--role full` keeps
     everything in one process for dev; vision/llm/api split across hosts
     in prod via Tailscale + a shared DATABASE_URL.
     """

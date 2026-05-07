@@ -12,7 +12,7 @@ from typoon.adapters.projects import Projects
 from typoon.api.deps import get_artifact_store, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut, ProjectOut
 from typoon.api.routes._shared import (
-    chapter_out, require_chapter, require_project,
+    chapter_out, require_chapter,
     require_project_owner, require_project_view,
 )
 from typoon.paths import Paths, ProjectPaths, slugify

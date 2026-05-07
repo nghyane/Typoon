@@ -66,7 +66,7 @@ async def upload_chapter(
     the filename; multi-image upload → idx must be supplied or we
     fall back to filename of the first image.
     """
-    proj = await require_project_owner(project_id, user, db)
+    await require_project_owner(project_id, user, db)
     files = [f for f in files if f.filename]
     if not files:
         raise HTTPException(400, "No files in upload")

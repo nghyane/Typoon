@@ -1,13 +1,12 @@
 """Postgres storage — identity, knowledge, worker coordination.
 
-Single backend. The `Store` protocol is unchanged from the SQLite era;
-only the implementation differs. Schema lives in `schema.sql` and is
-applied idempotently at `open()` — no migration tooling in Phase 1.
+Schema lives in `schema.sql` and is applied idempotently at `open()`;
+there is no migration tooling — bump SCHEMA_VERSION + drop/recreate the
+database during dev when the shape changes.
 
 Datetime handling: asyncpg returns `datetime` objects for TIMESTAMPTZ.
-The API serializes timestamps as ISO 8601 strings. We convert to ISO at
-the SQL layer (`to_char(...)`) so callers get strings everywhere, the
-same shape as the SQLite era.
+We convert each timestamp to RFC 3339 in UTC at the SQL layer
+(`to_char(... AT TIME ZONE 'UTC', ... )`) so callers see strings only.
 """
 
 from __future__ import annotations
@@ -44,23 +43,28 @@ def _clean_query(q: str) -> str:
 
 
 # ── ISO-string timestamp formatting ───────────────────────────────────
-# Matches the format SQLite emitted: `2026-05-07 09:43:03`.
-_ISO_FMT = "YYYY-MM-DD\"T\"HH24:MI:SSOF"
+# Convert all timestamps to UTC and format as RFC 3339 with a `Z`
+# suffix — directly parseable by JS `new Date(...)` and avoids local
+# time zone surprises across hosts.
+_ISO_FMT = "YYYY-MM-DD\"T\"HH24:MI:SS\"Z\""
+
+
+def _ts(col: str) -> str:
+    return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {col}"
+
+
 _TS_PROJECTS = (
     "id, slug, title, description, cover_path, source_url, "
     "source_lang, target_lang, owner_id, shared, settings, "
-    f"to_char(created_at, '{_ISO_FMT}') AS created_at, "
-    f"to_char(updated_at, '{_ISO_FMT}') AS updated_at"
+    f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_CHAPTERS = (
     "id, project_id, idx, title, source_url, rendered, page_count, "
-    f"to_char(created_at, '{_ISO_FMT}') AS created_at, "
-    f"to_char(updated_at, '{_ISO_FMT}') AS updated_at"
+    f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_USERS = (
     "id, display_name, avatar_url, email, "
-    f"to_char(created_at, '{_ISO_FMT}') AS created_at, "
-    f"to_char(last_login_at, '{_ISO_FMT}') AS last_login_at"
+    f"{_ts('created_at')}, {_ts('last_login_at')}"
 )
 
 
@@ -447,7 +451,7 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT chapter_id, stage, claimed_by, "
-                f"to_char(claimed_at, '{_ISO_FMT}') AS claimed_at, "
+                f"{_ts('claimed_at')}, "
                 "attempts, last_error "
                 "FROM tasks WHERE chapter_id=$1",
                 chapter_id,
@@ -915,8 +919,8 @@ class PostgresStore:
     ) -> dict:
         """Find-or-create user from a (provider, external_id) tuple.
 
-        Phase 1 (RFC-006) drops `users.tier` — admin status comes from
-        Discord role at OAuth time, not a DB column.
+        Admin status is derived from the user's Discord role at OAuth
+        time (carried in the JWT), not a DB column.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -1002,8 +1006,7 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, name, prefix, "
-                f"  to_char(last_used,  '{_ISO_FMT}') AS last_used, "
-                f"  to_char(created_at, '{_ISO_FMT}') AS created_at "
+                f"  {_ts('last_used')}, {_ts('created_at')} "
                 "FROM api_tokens "
                 "WHERE user_id=$1 AND revoked_at IS NULL "
                 "ORDER BY id DESC",

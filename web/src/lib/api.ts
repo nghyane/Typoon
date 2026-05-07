@@ -259,7 +259,7 @@ export const api = {
   pageUrl: (pid: number, cid: number, idx: number) =>
     `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
 
-  // ── Me / API tokens (RFC-008) ─────────────────────────────────────────────
+  // ── Me / API tokens ───────────────────────────────────────────────────────
   myProjects: () => request<ApiMeProject[]>('/me/projects'),
 
   listTokens:  () => request<ApiTokenInfo[]>('/me/tokens'),

@@ -1,4 +1,4 @@
-"""User self-service endpoints — RFC-008 API tokens."""
+"""User self-service endpoints — API tokens for tool clients."""
 
 from __future__ import annotations
 

@@ -8,7 +8,7 @@
 -- Conventions:
 --   - BIGSERIAL primary keys.
 --   - TIMESTAMPTZ NOT NULL DEFAULT NOW() for created_at / updated_at.
---   - JSONB for everything that was TEXT-with-JSON in SQLite.
+--   - JSONB for object/array payloads.
 --   - tsvector generated columns for FTS — replaces FTS5 virtual tables
 --     and their triggers. Tokenizer is `simple` (no stemming) because
 --     stemming is meaningless for Vietnamese and harms proper-noun

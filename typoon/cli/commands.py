@@ -122,9 +122,9 @@ def api(
 ):
     """Run the HTTP API (FastAPI on uvicorn).
 
-    DATABASE_URL must point at a Postgres instance (RFC-005). Workers
-    can run in the same process via `typoon work --role full` or on a
-    separate host (vision/llm) sharing the same DB.
+    DATABASE_URL must point at a Postgres instance. Workers can run in
+    the same process via `typoon work --role full` or on a separate
+    host (vision/llm) sharing the same DB.
     """
     import uvicorn
     from ..config import load_config
@@ -195,9 +195,6 @@ async def _export(
     force: bool,
     open_: bool,
 ) -> None:
-    import subprocess
-    import sys
-
     from ..adapters.artifact_store import LocalArtifactStore
     from ..adapters.projects import Projects
     from ..paths import Paths

@@ -1,8 +1,8 @@
 """App path resolution.
 
 Chapter pixel and mask data live in the artifact store under deterministic
-keys. The DB is Postgres (RFC-005), reached via `DATABASE_URL`, so no
-file lives in `~/.typoon/` for it. Filesystem layout under `~/.typoon/`:
+keys. The DB is Postgres, reached via `DATABASE_URL`, so no DB file lives
+in `~/.typoon/`. Filesystem layout:
 
   config.toml        — app config
   models/            — model weights

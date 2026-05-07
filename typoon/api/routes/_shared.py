@@ -31,9 +31,9 @@ async def require_project_view(project_id: int, user: dict, db: Store) -> dict:
 async def require_project_owner(project_id: int, user: dict, db: Store) -> dict:
     """Project must be owned by user. Returns project row.
 
-    NULL owner_id (legacy projects pre-RFC-006) treated as no-owner —
-    nobody can mutate them via the API. Admin can backfill owner_id via
-    direct SQL or future admin endpoint.
+    NULL owner_id is treated as no-owner — nobody can mutate via the
+    API. Admin can backfill owner_id via direct SQL or future admin
+    endpoint.
     """
     proj = await db.get_project(project_id)
     if proj is None:
