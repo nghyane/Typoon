@@ -1,9 +1,9 @@
 """Render stage — TranslatedChapter + masks → RenderedChapter on disk.
 
 Receives pre-loaded geometry and an in-memory MaskStore. Source pixels
-come from a PreparedReader. Render output is written as WebP q=95 files
-into `out_dir`; the orchestrator (render_archive) packs them into a Bunle
-archive and uploads it.
+come from a PreparedReader. Render output is written as WebP-lossless
+files into `out_dir`; the orchestrator (render_archive) packs them into
+a Bunle archive and uploads it.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import Hook, PageDone
-
-_RENDER_QUALITY = 95
 
 
 def render_chapter(
@@ -115,5 +113,5 @@ def _to_rgba(image: np.ndarray) -> np.ndarray:
 def _write_webp(path: Path, rgb: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(rgb, mode="RGB").save(
-        path, format="WEBP", quality=_RENDER_QUALITY, method=6
+        path, format="WEBP", lossless=True, quality=100, method=6,
     )
