@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from typoon.adapters.event_bus import is_postgres
-from typoon.api.routes import projects, pages, sse
+from typoon.api.routes import (
+    bubbles, glossary, pages, projects, search, sources, sse, workers,
+)
 from typoon.config import load_config
 
 app = FastAPI(title="Typoon API")
@@ -22,6 +24,11 @@ app.add_middleware(
 )
 
 app.include_router(projects.router)
+app.include_router(sources.router)
+app.include_router(bubbles.router)
+app.include_router(glossary.router)
+app.include_router(workers.router)
+app.include_router(search.router)
 app.include_router(pages.router)
 app.include_router(sse.router)
 

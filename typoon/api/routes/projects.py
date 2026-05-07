@@ -1,4 +1,4 @@
-"""Projects and chapters routes."""
+"""Project + chapter CRUD routes."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ from pydantic import BaseModel
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.projects import Projects
 from typoon.api.deps import get_artifact_store, get_paths, get_store
-from typoon.api.models import ChapterOut, ProjectOut, Progress
+from typoon.api.models import ChapterOut, ProjectOut
+from typoon.api.routes._shared import (
+    chapter_out, require_chapter, require_project,
+)
 from typoon.paths import Paths, ProjectPaths
 from typoon.runs.events import Hook
 from typoon.storage import Store
@@ -29,40 +32,11 @@ class ImportBody(BaseModel):
     target_lang: str = "vi"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────
-
-
-async def _require_project(project_id: int, db: Store) -> dict:
-    proj = await db.get_project(project_id)
-    if proj is None:
-        raise HTTPException(404, "Project not found")
-    return proj
-
-
-def _chapter_out(data: dict) -> ChapterOut:
-    page_count = int(data.get("page_count") or 0)
-    progress_data = data.get("progress")
-    progress = (
-        Progress(
-            stage=progress_data.get("stage") or data.get("stage") or "",
-            page_index=int(progress_data.get("page_index") or 0),
-            page_total=int(progress_data.get("page_total") or page_count),
-        )
-        if progress_data and data["state"] == "running"
-        else None
-    )
-    return ChapterOut(
-        chapter_id=data["chapter_id"],
-        project_id=data["project_id"],
-        idx=data["idx"],
-        title=data.get("title"),
-        state=data["state"],
-        stage=data.get("stage") or "",
-        page_count=page_count,
-        error=data.get("error") or "",
-        updated_at=data.get("updated_at"),
-        progress=progress,
-    )
+class SettingsBody(BaseModel):
+    target_lang: str | None = None
+    settings:    dict | None = None  # arbitrary JSON overrides
+    title:       str | None = None
+    description: str | None = None
 
 
 # ── Projects ──────────────────────────────────────────────────────────
@@ -84,7 +58,7 @@ async def import_project(
     if not folder.is_dir():
         raise HTTPException(400, f"Not a directory: {body.folder}")
     project_id = await Projects(db, paths, store).import_new(
-        folder, body.title, body.source_lang, body.target_lang, Hook()
+        folder, body.title, body.source_lang, body.target_lang, Hook(),
     )
     proj = await db.get_project(project_id)
     return ProjectOut.from_row(proj)
@@ -92,7 +66,7 @@ async def import_project(
 
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project(project_id: int, db: Store = Depends(get_store)):
-    proj = await db.get_project(project_id)
+    proj = await require_project(project_id, db)
     return ProjectOut.from_row(proj)
 
 
@@ -102,10 +76,49 @@ async def delete_project(
     db:    Store = Depends(get_store),
     paths: Paths = Depends(get_paths),
 ):
-    proj = await _require_project(project_id, db)
+    proj = await require_project(project_id, db)
     await db.delete_project(project_id)
     shutil.rmtree(ProjectPaths(paths.projects, proj["slug"]).root, ignore_errors=True)
     shutil.rmtree(paths.artifacts / "p" / str(project_id), ignore_errors=True)
+
+
+# ── Settings ──────────────────────────────────────────────────────────
+
+
+@router.get("/{project_id}/settings")
+async def get_settings(project_id: int, db: Store = Depends(get_store)):
+    proj = await require_project(project_id, db)
+    return {
+        "project_id":  project_id,
+        "target_lang": proj["target_lang"],
+        "title":       proj["title"],
+        "description": proj.get("description"),
+        "settings":    await db.get_project_settings(project_id),
+    }
+
+
+@router.patch("/{project_id}/settings")
+async def patch_settings(
+    project_id: int,
+    body:       SettingsBody,
+    db:         Store = Depends(get_store),
+):
+    await require_project(project_id, db)
+    await db.update_project_metadata(
+        project_id,
+        title=body.title,
+        description=body.description,
+        target_lang=body.target_lang,
+        settings=body.settings,
+    )
+    proj = await db.get_project(project_id)
+    return {
+        "project_id":  project_id,
+        "target_lang": proj["target_lang"],
+        "title":       proj["title"],
+        "description": proj.get("description"),
+        "settings":    await db.get_project_settings(project_id),
+    }
 
 
 # ── Chapters ──────────────────────────────────────────────────────────
@@ -114,24 +127,51 @@ async def delete_project(
 @router.get("/{project_id}/chapters", response_model=list[ChapterOut])
 async def list_chapters(
     project_id: int,
-    db:    Store = Depends(get_store),
+    db: Store = Depends(get_store),
 ):
-    await _require_project(project_id, db)
+    await require_project(project_id, db)
     rows = await db.get_chapters_with_status(project_id)
-    return [_chapter_out(r) for r in rows]
+    return [chapter_out(r) for r in rows]
 
 
 @router.get("/{project_id}/chapters/{chapter_id}", response_model=ChapterOut)
 async def get_chapter(
     project_id: int,
     chapter_id: int,
-    db:    Store = Depends(get_store),
+    db: Store = Depends(get_store),
 ):
-    await _require_project(project_id, db)
+    await require_project(project_id, db)
     data = await db.get_chapter_with_status(chapter_id, project_id)
     if data is None:
         raise HTTPException(404, "Chapter not found")
-    return _chapter_out(data)
+    return chapter_out(data)
+
+
+@router.delete("/{project_id}/chapters/{chapter_id}", status_code=204)
+async def delete_chapter(
+    project_id: int,
+    chapter_id: int,
+    db:    Store         = Depends(get_store),
+    paths: Paths         = Depends(get_paths),
+    store: ArtifactStore = Depends(get_artifact_store),
+):
+    await require_chapter(project_id, chapter_id, db)
+    # Drop chapter row (cascades) — caller wanted full removal, not just
+    # derived data.
+    deleted = await db.delete_chapter(chapter_id)
+    if not deleted:
+        raise HTTPException(404, "Chapter not found")
+    # Best-effort artifact cleanup. The chapter row is gone from DB so
+    # missing keys are fine.
+    from typoon.adapters.chapter_archive import (
+        prepared_key, render_key, masks_key,
+    )
+    for key in (
+        prepared_key(project_id, chapter_id),
+        render_key(project_id, chapter_id),
+        masks_key(project_id, chapter_id),
+    ):
+        await store.delete(key)
 
 
 @router.post("/{project_id}/chapters/{chapter_id}/redo", response_model=ChapterOut)
@@ -142,10 +182,24 @@ async def redo_chapter(
     paths: Paths         = Depends(get_paths),
     store: ArtifactStore = Depends(get_artifact_store),
 ):
-    proj = await _require_project(project_id, db)
-    ch   = await db.get_chapter(chapter_id)
-    if ch is None or ch["project_id"] != project_id:
-        raise HTTPException(404, "Chapter not found")
+    proj = await require_project(project_id, db)
+    ch   = await require_chapter(project_id, chapter_id, db)
     await Projects(db, paths, store).redo(proj["slug"], [ch["idx"]])
     data = await db.get_chapter_with_status(chapter_id, project_id)
-    return _chapter_out(data)
+    return chapter_out(data)
+
+
+# ── Chapter brief ─────────────────────────────────────────────────────
+
+
+@router.get("/{project_id}/chapters/{chapter_id}/brief")
+async def get_brief(
+    project_id: int,
+    chapter_id: int,
+    db: Store = Depends(get_store),
+):
+    await require_chapter(project_id, chapter_id, db)
+    brief = await db.get_chapter_brief(chapter_id)
+    if brief is None:
+        raise HTTPException(404, "Brief not generated yet")
+    return brief
