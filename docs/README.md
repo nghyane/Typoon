@@ -2,6 +2,7 @@
 
 Start here:
 
+- `PHASE_1_STATE.md` — handoff snapshot (read first if new)
 - `wiki/README.md` — current project memory and active handoff
 - `rfc/001-prepared-chapter-boundary.md` — accepted input boundary
 - `rfc/002-visual-e2e-workflow.md` — accepted debug/test workflow
