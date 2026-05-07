@@ -3,6 +3,8 @@
 // fetches go through the Vite proxy / nginx.
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
+// ── Types ────────────────────────────────────────────────────────────────────
+
 export interface ApiProject {
   project_id:   number
   slug:         string
@@ -35,8 +37,73 @@ export interface ApiChapter {
   } | null
 }
 
+export interface ApiChapterVariant {
+  id:    string
+  url:   string
+  group: string | null
+  votes: number
+}
+
+export interface ApiDiscoveredChapter {
+  number:   number
+  title:    string | null
+  variants: ApiChapterVariant[]
+}
+
+export interface ApiSourceInfo {
+  suggested_title: string
+  cover_url:       string | null
+  description:     string | null
+  source_lang:     string
+  chapters:        ApiDiscoveredChapter[]
+}
+
+export interface ApiBubble {
+  page_index:      number
+  bubble_idx:      number
+  source_text:     string
+  translated_text: string | null
+  kind:            'dialogue' | 'sfx' | 'skip' | null
+  confidence:      number
+}
+
+export interface ApiGlossaryTerm {
+  id:          number
+  source_term: string
+  target_term: string
+  notes:       string | null
+}
+
+export interface ApiQueueStats {
+  stages: Record<string, { pending: number; running: number; stale: number }>
+  active_workers: string[]
+}
+
+export interface ApiSearchHit {
+  kind: 'bubble' | 'translation' | 'brief' | 'glossary'
+  text: string
+  chapter_idx: number | null
+  page_index:  number | null
+}
+
+export interface ApiSettings {
+  project_id:  number
+  target_lang: string
+  title:       string
+  description: string | null
+  settings:    Record<string, unknown>
+}
+
+// ── Transport ────────────────────────────────────────────────────────────────
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api${path}`, init)
+  const res = await fetch(`${API_BASE}/api${path}`, {
+    ...init,
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init?.headers ?? {}),
+    },
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
@@ -44,23 +111,92 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : res.json()
 }
 
+const json = (body: unknown) => JSON.stringify(body)
+
+// ── API ──────────────────────────────────────────────────────────────────────
+
 export const api = {
   base: API_BASE,
 
-  // Queries ────────────────────────────────────────────────────────
-  listProjects: () => request<ApiProject[]>('/projects'),
-  getProject:   (id: number) => request<ApiProject>(`/projects/${id}`),
-  listChapters: (id: number) => request<ApiChapter[]>(`/projects/${id}/chapters`),
-  getChapter:   (pid: number, cid: number) =>
-    request<ApiChapter>(`/projects/${pid}/chapters/${cid}`),
+  // Projects
+  listProjects:  ()           => request<ApiProject[]>('/projects'),
+  getProject:    (id: number) => request<ApiProject>(`/projects/${id}`),
+  deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
 
-  // Mutations ──────────────────────────────────────────────────────
-  redoChapter: (pid: number, cid: number) =>
+  // Discovery + pull
+  discover: (url: string) =>
+    request<ApiSourceInfo>('/discover', { method: 'POST', body: json({ url }) }),
+
+  pullNew: (body: { url: string; target_lang: string; chapters?: number[]; from?: number; to?: number }) =>
+    request<ApiProject>('/projects/pull', { method: 'POST', body: json(remap(body)) }),
+
+  pullMore: (pid: number, body: { url: string; chapters?: number[]; from?: number; to?: number }) =>
+    request<{ project_id: number; queued: number }>(
+      `/projects/${pid}/pull`, { method: 'POST', body: json(remap(body)) },
+    ),
+
+  // Chapters
+  listChapters:  (pid: number)              => request<ApiChapter[]>(`/projects/${pid}/chapters`),
+  getChapter:    (pid: number, cid: number) => request<ApiChapter>(`/projects/${pid}/chapters/${cid}`),
+  redoChapter:   (pid: number, cid: number) =>
     request<ApiChapter>(`/projects/${pid}/chapters/${cid}/redo`, { method: 'POST' }),
-  deleteProject: (pid: number) =>
-    request<void>(`/projects/${pid}`, { method: 'DELETE' }),
+  deleteChapter: (pid: number, cid: number) =>
+    request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
 
-  // Asset URLs (no JSON wrapping) ──────────────────────────────────
+  // Bubbles
+  listBubbles: (pid: number, cid: number) =>
+    request<ApiBubble[]>(`/projects/${pid}/chapters/${cid}/bubbles`),
+  patchBubble: (
+    pid: number, cid: number, page: number, bubble: number,
+    body: { translated_text: string; kind?: ApiBubble['kind'] },
+  ) =>
+    request<ApiBubble>(
+      `/projects/${pid}/chapters/${cid}/bubbles/${page}/${bubble}`,
+      { method: 'PATCH', body: json(body) },
+    ),
+
+  // Brief
+  getBrief: (pid: number, cid: number) =>
+    request<Record<string, unknown>>(`/projects/${pid}/chapters/${cid}/brief`),
+
+  // Glossary
+  listGlossary:   (pid: number) =>
+    request<ApiGlossaryTerm[]>(`/projects/${pid}/glossary`),
+  createTerm:     (pid: number, body: { source_term: string; target_term: string; notes?: string | null }) =>
+    request<ApiGlossaryTerm>(`/projects/${pid}/glossary`, { method: 'POST', body: json(body) }),
+  updateTerm:     (pid: number, tid: number, body: { source_term: string; target_term: string; notes?: string | null }) =>
+    request<ApiGlossaryTerm>(`/projects/${pid}/glossary/${tid}`, { method: 'PATCH', body: json(body) }),
+  deleteTerm:     (pid: number, tid: number) =>
+    request<void>(`/projects/${pid}/glossary/${tid}`, { method: 'DELETE' }),
+
+  // Settings
+  getSettings: (pid: number) => request<ApiSettings>(`/projects/${pid}/settings`),
+  patchSettings: (pid: number, body: Partial<{
+    target_lang: string; title: string; description: string; settings: Record<string, unknown>
+  }>) =>
+    request<ApiSettings>(`/projects/${pid}/settings`, { method: 'PATCH', body: json(body) }),
+
+  // Workers
+  workers: () => request<ApiQueueStats>('/workers'),
+
+  // Search
+  search: (params: { q: string; project_id: number; scope?: string; limit?: number }) => {
+    const qs = new URLSearchParams({
+      q:          params.q,
+      project_id: String(params.project_id),
+      ...(params.scope ? { scope: params.scope } : {}),
+      ...(params.limit ? { limit: String(params.limit) } : {}),
+    })
+    return request<{ hits: ApiSearchHit[] }>(`/search?${qs.toString()}`)
+  },
+
+  // Asset URLs
   pageUrl: (pid: number, cid: number, idx: number) =>
     `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
+}
+
+// `from` is reserved in JS; the API expects `from_` per Pydantic alias.
+function remap<T extends { from?: number }>(body: T): Omit<T, 'from'> & { from_?: number } {
+  const { from, ...rest } = body
+  return { ...rest, ...(from !== undefined ? { from_: from } : {}) }
 }

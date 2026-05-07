@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { Toaster } from './Toaster'
 import { useServerEvents } from '../lib/events'
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -15,6 +16,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {children}
         </main>
       </div>
+      <Toaster />
     </div>
   )
 }

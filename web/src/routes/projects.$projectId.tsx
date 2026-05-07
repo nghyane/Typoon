@@ -3,17 +3,30 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState, useMemo, useEffect } from 'react'
 import {
   Plus, Search, Share2, MoreHorizontal, Download,
-  Check, Eye, RefreshCw, AlertCircle,
-  BookOpen, Clock, SlidersHorizontal,
+  Check, Eye, RefreshCw, AlertCircle, Trash2,
+  BookOpen, Clock, SlidersHorizontal, Settings, Sparkles,
 } from 'lucide-react'
 import { useHeaderStore } from '../store/header'
-import { api, type ApiChapter } from '../lib/api'
+import { api, type ApiChapter, type ApiProject } from '../lib/api'
 import { cn } from '../lib/cn'
 import { timeAgo } from '../lib/time'
 import { Cover } from '../components/Cover'
 import { STATE, stageLabel, chapterStats, chapterPct } from '../lib/chapter'
+import { btn } from '../components/ui'
+import { toast } from '../components/Toaster'
+import { PullMoreDialog } from '../components/PullMoreDialog'
+import { GlossaryPanel } from '../components/GlossaryPanel'
+import { SettingsPanel } from '../components/SettingsPanel'
 
-// ── filter ────────────────────────────────────────────────────────────────────
+// ── tabs / filters ────────────────────────────────────────────────────────────
+
+type Tab = 'chapters' | 'glossary' | 'settings'
+
+const TABS: { key: Tab; label: string; icon: typeof BookOpen }[] = [
+  { key: 'chapters', label: 'Chương',     icon: BookOpen },
+  { key: 'glossary', label: 'Thuật ngữ',  icon: Sparkles },
+  { key: 'settings', label: 'Cài đặt',    icon: Settings },
+]
 
 type Filter = 'all' | 'idle' | 'running' | 'done' | 'error'
 
@@ -31,15 +44,6 @@ function matchFilter(ch: ApiChapter, f: Filter): boolean {
   return ch.state === f
 }
 
-// ── button styles ─────────────────────────────────────────────────────────────
-
-const btn = {
-  primary:   'inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-[0.98] transition-all cursor-pointer',
-  secondary: 'inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg border border-zinc-200 text-sm text-zinc-600 hover:bg-zinc-100 hover:border-zinc-300 transition-colors cursor-pointer',
-  icon:      'size-9 rounded-lg flex items-center justify-center border border-zinc-200 text-zinc-500 hover:bg-zinc-100 hover:border-zinc-300 transition-colors cursor-pointer',
-  ghost:     'size-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
-} as const
-
 // ── chapter row ───────────────────────────────────────────────────────────────
 
 function ChapterRow({
@@ -55,9 +59,17 @@ function ChapterRow({
 
   const redo = useMutation({
     mutationFn: () => api.redoChapter(projectId, ch.chapter_id),
-    onSuccess:  () => {
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['projects', projectId, 'chapters'] }),
+    onError:   (e: Error) => toast.error(e.message),
+  })
+
+  const del = useMutation({
+    mutationFn: () => api.deleteChapter(projectId, ch.chapter_id),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'chapters'] })
+      toast.success(`Đã xoá chương ${ch.idx}`)
     },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   const pct        = chapterPct(ch)
@@ -79,16 +91,13 @@ function ChapterRow({
         </button>
       </td>
 
-      {/* chapter title + sub-title */}
       <td className="px-3 py-3 min-w-0">
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="font-medium text-zinc-900 tabular-nums shrink-0">
             Ch.{String(ch.idx).replace(/\.0$/, '')}
           </span>
           {ch.title && (
-            <span className="text-sm text-zinc-500 truncate">
-              {ch.title}
-            </span>
+            <span className="text-sm text-zinc-500 truncate">{ch.title}</span>
           )}
         </div>
         {ch.state === 'error' && ch.error && (
@@ -99,7 +108,6 @@ function ChapterRow({
         )}
       </td>
 
-      {/* progress / stage */}
       <td className="px-3 py-3 w-56">
         <div className="flex items-center gap-2">
           <span className={cn('size-2 rounded-full shrink-0', st.dot)} />
@@ -141,8 +149,15 @@ function ChapterRow({
           >
             <RefreshCw size={14} className={redo.isPending ? 'animate-spin' : ''} />
           </button>
-          <button className={btn.ghost} title="Khác">
-            <MoreHorizontal size={14} />
+          <button
+            className={cn(btn.ghost, 'hover:text-red-600')}
+            title="Xoá"
+            disabled={del.isPending || ch.state === 'running'}
+            onClick={() => {
+              if (confirm(`Xoá chương ${ch.idx}?`)) del.mutate()
+            }}
+          >
+            <Trash2 size={14} />
           </button>
         </div>
       </td>
@@ -156,9 +171,11 @@ function ProjectDetailPage() {
   const { projectId } = Route.useParams()
   const id = Number(projectId)
 
+  const [tab,    setTab]    = useState<Tab>('chapters')
   const [filter, setFilter] = useState<Filter>('all')
   const [q,      setQ]      = useState('')
   const [sel,    setSel]    = useState<Set<number>>(new Set())
+  const [pullOpen, setPullOpen] = useState(false)
   const setHeader   = useHeaderStore((s) => s.set)
   const clearHeader = useHeaderStore((s) => s.clear)
 
@@ -171,7 +188,7 @@ function ProjectDetailPage() {
   const { data: chapters = [], isLoading: cLoad } = useQuery({
     queryKey: ['projects', id, 'chapters'],
     queryFn:  () => api.listChapters(id),
-    enabled:  !isNaN(id),
+    enabled:  !isNaN(id) && tab === 'chapters',
   })
 
   const filtered = useMemo(() => {
@@ -186,6 +203,15 @@ function ProjectDetailPage() {
     })
   }, [chapters, filter, q])
 
+  const stats        = chapterStats(chapters)
+  const allChecked   = sel.size === filtered.length && filtered.length > 0
+  const existingNums = useMemo(() => new Set(chapters.map((c) => c.idx)), [chapters])
+
+  useEffect(() => {
+    if (project) setHeader(project.title, [{ label: 'Dự án', to: '/projects' }])
+    return () => clearHeader()
+  }, [project, setHeader, clearHeader])
+
   const toggleOne = (cid: number) =>
     setSel((prev) => {
       const next = new Set(prev)
@@ -199,14 +225,6 @@ function ProjectDetailPage() {
       ? setSel(new Set())
       : setSel(new Set(filtered.map((c) => c.chapter_id)))
 
-  const stats      = chapterStats(chapters)
-  const allChecked = sel.size === filtered.length && filtered.length > 0
-
-  useEffect(() => {
-    if (project) setHeader(project.title, [{ label: 'Dự án', to: '/projects' }])
-    return () => clearHeader()
-  }, [project, setHeader, clearHeader])
-
   if (pLoad) return (
     <div className="p-6 animate-pulse">
       <div className="flex gap-5">
@@ -215,7 +233,6 @@ function ProjectDetailPage() {
           <div className="h-7 w-72 rounded-lg bg-zinc-100" />
           <div className="h-4 w-96 rounded bg-zinc-100" />
           <div className="h-4 w-80 rounded bg-zinc-100" />
-          <div className="h-4 w-48 rounded bg-zinc-100" />
         </div>
       </div>
     </div>
@@ -224,77 +241,163 @@ function ProjectDetailPage() {
   if (pErr || !project) return (
     <div className="p-6">
       <p className="text-sm text-red-500 font-medium">Không tìm thấy dự án.</p>
-      <Link to="/projects" className="text-sm text-zinc-500 underline mt-1 inline-block">
-        ← Quay lại
-      </Link>
+      <Link to="/projects" className="text-sm text-zinc-500 underline mt-1 inline-block">← Quay lại</Link>
     </div>
   )
 
   return (
     <div>
-      {/* hero */}
-      <div className="px-6 pt-6 pb-5 flex items-start gap-5">
-        <Cover
-          src={project.cover_url}
-          title={project.title}
-          fontSize="text-2xl"
-          version={project.updated_at}
-          className="w-32 h-44 rounded-xl border border-zinc-200 shrink-0 shadow-sm"
-        />
+      <Hero
+        project={project}
+        stats={stats}
+        onAddChapters={() => setPullOpen(true)}
+      />
 
-        <div className="flex-1 min-w-0 pt-1">
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 line-clamp-2">
-            {project.title}
-          </h1>
-
-          <div className="flex items-center gap-2 mt-2">
-            <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-100 text-xs font-medium text-zinc-600 uppercase tracking-wide">
-              {project.source_lang}
-            </span>
-            <span className="text-xs text-zinc-300">→</span>
-            <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-900 text-xs font-medium text-white uppercase tracking-wide">
-              {project.target_lang}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-5 text-xs text-zinc-400 mt-3 flex-wrap">
-            <span className="inline-flex items-center gap-1.5">
-              <BookOpen size={12} />{stats.total} chương
-            </span>
-            {project.updated_at && (
-              <span className="inline-flex items-center gap-1.5">
-                <Clock size={12} />Cập nhật {timeAgo(project.updated_at)}
-              </span>
+      {/* tabs */}
+      <div className="flex items-center px-6 border-b border-zinc-200">
+        {TABS.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={cn(
+              'inline-flex items-center gap-2 h-11 px-4 text-sm cursor-pointer transition-colors',
+              tab === key
+                ? 'text-zinc-900 font-semibold border-b-2 border-zinc-900 -mb-px'
+                : 'text-zinc-400 hover:text-zinc-700',
             )}
-          </div>
-
-          {project.description && (
-            <p className="mt-3 text-sm text-zinc-500 leading-relaxed line-clamp-3 max-w-2xl">
-              {project.description}
-            </p>
-          )}
-
-          {stats.total > 0 && (
-            <div className="flex items-center gap-4 mt-4 text-xs">
-              {stats.done    > 0 && <Pill dot="bg-emerald-500" label={`${stats.done} hoàn thành`} />}
-              {stats.running > 0 && <Pill dot="bg-blue-500"    label={`${stats.running} đang xử lý`} />}
-              {stats.error   > 0 && <Pill dot="bg-red-500"     label={`${stats.error} lỗi`} />}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0 pt-1">
-          <button className={btn.secondary}><Share2 size={14} />Chia sẻ</button>
-          <button className={btn.secondary}><Download size={14} />Xuất</button>
-          <button className={btn.icon}><MoreHorizontal size={15} /></button>
-          <button className={btn.primary}><Plus size={14} />Thêm chương</button>
-        </div>
+          >
+            <Icon size={14} />
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* toolbar */}
-      <div className="px-6 mt-1 flex items-center justify-between gap-3">
-        <Segmented value={filter} onChange={setFilter} stats={stats} />
+      <div className="px-6 py-4">
+        {tab === 'chapters' && (
+          <ChaptersTab
+            cLoad={cLoad}
+            filtered={filtered}
+            stats={stats}
+            filter={filter} setFilter={setFilter}
+            q={q}           setQ={setQ}
+            sel={sel}       toggleOne={toggleOne} toggleAll={toggleAll}
+            allChecked={allChecked}
+            projectId={id}
+          />
+        )}
+        {tab === 'glossary' && <GlossaryPanel projectId={id} />}
+        {tab === 'settings' && <SettingsPanel project={project} />}
+      </div>
 
+      {sel.size > 0 && (
+        <SelectionBar count={sel.size} onClear={() => setSel(new Set())} />
+      )}
+
+      <PullMoreDialog
+        open={pullOpen}
+        onClose={() => setPullOpen(false)}
+        project={project}
+        existing={existingNums}
+      />
+    </div>
+  )
+}
+
+// ── hero ─────────────────────────────────────────────────────────────────────
+
+function Hero({
+  project, stats, onAddChapters,
+}: {
+  project: ApiProject
+  stats:   ReturnType<typeof chapterStats>
+  onAddChapters: () => void
+}) {
+  return (
+    <div className="px-6 pt-6 pb-5 flex items-start gap-5">
+      <Cover
+        src={project.cover_url}
+        title={project.title}
+        fontSize="text-2xl"
+        version={project.updated_at}
+        className="w-32 h-44 rounded-xl border border-zinc-200 shrink-0 shadow-sm"
+      />
+
+      <div className="flex-1 min-w-0 pt-1">
+        <h1 className="text-2xl font-bold tracking-tight text-zinc-900 line-clamp-2">
+          {project.title}
+        </h1>
+
+        <div className="flex items-center gap-2 mt-2">
+          <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-100 text-xs font-medium text-zinc-600 uppercase tracking-wide">
+            {project.source_lang}
+          </span>
+          <span className="text-xs text-zinc-300">→</span>
+          <span className="inline-flex items-center h-6 px-2.5 rounded-full bg-zinc-900 text-xs font-medium text-white uppercase tracking-wide">
+            {project.target_lang}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-5 text-xs text-zinc-400 mt-3 flex-wrap">
+          <span className="inline-flex items-center gap-1.5">
+            <BookOpen size={12} />{stats.total} chương
+          </span>
+          {project.updated_at && (
+            <span className="inline-flex items-center gap-1.5">
+              <Clock size={12} />Cập nhật {timeAgo(project.updated_at)}
+            </span>
+          )}
+        </div>
+
+        {project.description && (
+          <p className="mt-3 text-sm text-zinc-500 leading-relaxed line-clamp-3 max-w-2xl">
+            {project.description}
+          </p>
+        )}
+
+        {stats.total > 0 && (
+          <div className="flex items-center gap-4 mt-4 text-xs">
+            {stats.done    > 0 && <Pill dot="bg-emerald-500" label={`${stats.done} hoàn thành`} />}
+            {stats.running > 0 && <Pill dot="bg-blue-500"    label={`${stats.running} đang xử lý`} />}
+            {stats.error   > 0 && <Pill dot="bg-red-500"     label={`${stats.error} lỗi`} />}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0 pt-1">
+        <button className={btn.secondary}><Share2 size={14} />Chia sẻ</button>
+        <button className={btn.secondary}><Download size={14} />Xuất</button>
+        <button className={btn.iconBox}><MoreHorizontal size={15} /></button>
+        <button className={btn.primary} onClick={onAddChapters}>
+          <Plus size={14} />Thêm chương
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── chapters tab ─────────────────────────────────────────────────────────────
+
+interface ChaptersTabProps {
+  cLoad:      boolean
+  filtered:   ApiChapter[]
+  stats:      ReturnType<typeof chapterStats>
+  filter:     Filter; setFilter: (f: Filter) => void
+  q:          string; setQ: (s: string) => void
+  sel:        Set<number>
+  toggleOne:  (id: number) => void
+  toggleAll:  () => void
+  allChecked: boolean
+  projectId:  number
+}
+
+function ChaptersTab({
+  cLoad, filtered, stats, filter, setFilter, q, setQ,
+  sel, toggleOne, toggleAll, allChecked, projectId,
+}: ChaptersTabProps) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <Segmented value={filter} onChange={setFilter} stats={stats} />
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 h-8 px-3 w-52 rounded-lg border border-zinc-200 hover:border-zinc-300 focus-within:border-zinc-400 transition-colors cursor-text">
             <Search size={13} className="text-zinc-400 shrink-0" />
@@ -306,97 +409,73 @@ function ProjectDetailPage() {
               className="flex-1 bg-transparent outline-none text-sm placeholder:text-zinc-300"
             />
           </label>
-          <button className={cn(btn.icon, 'size-8')} title="Bộ lọc">
+          <button className={cn(btn.iconBox, 'size-8')} title="Bộ lọc">
             <SlidersHorizontal size={14} />
           </button>
         </div>
       </div>
 
-      {/* chapter table */}
-      <div className="px-6 py-4">
-        <div className="rounded-xl border border-zinc-200 overflow-hidden bg-white">
-          <table className="w-full text-sm table-fixed">
-            <thead>
-              <tr className="border-b border-zinc-100 bg-zinc-50/50">
-                <th className="w-10 px-4 py-2.5">
-                  <button
-                    onClick={toggleAll}
-                    disabled={filtered.length === 0}
-                    className={cn(
-                      'size-4 rounded border flex items-center justify-center cursor-pointer transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
-                      allChecked ? 'bg-zinc-900 border-zinc-900' : 'border-zinc-300 hover:border-zinc-500',
-                    )}
-                  >
-                    {allChecked && <Check size={9} className="text-white" />}
-                  </button>
-                </th>
-                <Th>Chương</Th>
-                <Th className="w-56">Tiến độ</Th>
-                <Th className="w-32">Cập nhật</Th>
-                <Th className="w-32">Thao tác</Th>
+      <div className="rounded-xl border border-zinc-200 overflow-hidden bg-white">
+        <table className="w-full text-sm table-fixed">
+          <thead>
+            <tr className="border-b border-zinc-100 bg-zinc-50/50">
+              <th className="w-10 px-4 py-2.5">
+                <button
+                  onClick={toggleAll}
+                  disabled={filtered.length === 0}
+                  className={cn(
+                    'size-4 rounded border flex items-center justify-center cursor-pointer transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
+                    allChecked ? 'bg-zinc-900 border-zinc-900' : 'border-zinc-300 hover:border-zinc-500',
+                  )}
+                >
+                  {allChecked && <Check size={9} className="text-white" />}
+                </button>
+              </th>
+              <Th>Chương</Th>
+              <Th className="w-56">Tiến độ</Th>
+              <Th className="w-32">Cập nhật</Th>
+              <Th className="w-32">Thao tác</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {cLoad && Array.from({ length: 6 }).map((_, i) => (
+              <tr key={i} className="border-b border-zinc-100 last:border-0">
+                <td colSpan={5} className="px-4 py-3.5">
+                  <div className="h-3 rounded bg-zinc-100 animate-pulse" />
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {cLoad && Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i} className="border-b border-zinc-100 last:border-0">
-                  <td colSpan={5} className="px-4 py-3.5">
-                    <div className="h-3 rounded bg-zinc-100 animate-pulse" />
-                  </td>
-                </tr>
-              ))}
+            ))}
 
-              {!cLoad && filtered.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="py-16 text-center">
-                    <p className="text-sm text-zinc-500 font-medium">Không có chương nào</p>
-                    <p className="text-xs text-zinc-400 mt-1">
-                      {q || filter !== 'all' ? 'Thử bỏ bộ lọc' : 'Thêm chương để bắt đầu'}
-                    </p>
-                  </td>
-                </tr>
-              )}
+            {!cLoad && filtered.length === 0 && (
+              <tr>
+                <td colSpan={5} className="py-16 text-center">
+                  <p className="text-sm text-zinc-500 font-medium">Không có chương nào</p>
+                  <p className="text-xs text-zinc-400 mt-1">
+                    {q || filter !== 'all' ? 'Thử bỏ bộ lọc' : 'Thêm chương để bắt đầu'}
+                  </p>
+                </td>
+              </tr>
+            )}
 
-              {!cLoad && filtered.map((ch) => (
-                <ChapterRow
-                  key={ch.chapter_id}
-                  ch={ch}
-                  projectId={id}
-                  checked={sel.has(ch.chapter_id)}
-                  onToggle={() => toggleOne(ch.chapter_id)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {!cLoad && filtered.length > 0 && (
-          <p className="text-xs text-zinc-400 mt-3">
-            Hiển thị {filtered.length} trong {stats.total} chương
-          </p>
-        )}
+            {!cLoad && filtered.map((ch) => (
+              <ChapterRow
+                key={ch.chapter_id}
+                ch={ch}
+                projectId={projectId}
+                checked={sel.has(ch.chapter_id)}
+                onToggle={() => toggleOne(ch.chapter_id)}
+              />
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      {/* selection bar */}
-      {sel.size > 0 && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white border border-zinc-200 rounded-2xl pl-5 pr-3 py-2.5 shadow-[0_8px_32px_rgb(0,0,0,0.12)]">
-          <span className="text-sm text-zinc-500 tabular-nums">
-            {sel.size} chương đã chọn
-          </span>
-          <button
-            onClick={() => { alert(`Dịch ${sel.size} chương`); setSel(new Set()) }}
-            className="inline-flex items-center gap-2 h-9 px-4 rounded-xl bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 transition-colors cursor-pointer"
-          >
-            Dịch lại
-          </button>
-          <button
-            onClick={() => setSel(new Set())}
-            className="size-8 rounded-lg flex items-center justify-center text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors cursor-pointer"
-          >
-            ✕
-          </button>
-        </div>
+      {!cLoad && filtered.length > 0 && (
+        <p className="text-xs text-zinc-400 mt-3">
+          Hiển thị {filtered.length} trong {stats.total} chương
+        </p>
       )}
-    </div>
+    </>
   )
 }
 
@@ -449,17 +528,32 @@ function Segmented({
             )}
           >
             {label}
-            {n > 0 && (
-              <span className={cn(
-                'ml-1.5 tabular-nums',
-                value === key ? 'text-zinc-400' : 'text-zinc-400',
-              )}>
-                {n}
-              </span>
-            )}
+            {n > 0 && <span className="ml-1.5 tabular-nums text-zinc-400">{n}</span>}
           </button>
         )
       })}
+    </div>
+  )
+}
+
+function SelectionBar({ count, onClear }: { count: number; onClear: () => void }) {
+  return (
+    <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white border border-zinc-200 rounded-2xl pl-5 pr-3 py-2.5 shadow-[0_8px_32px_rgb(0,0,0,0.12)]">
+      <span className="text-sm text-zinc-500 tabular-nums">
+        {count} chương đã chọn
+      </span>
+      <button
+        onClick={() => { alert(`Dịch ${count} chương`); onClear() }}
+        className="inline-flex items-center gap-2 h-9 px-4 rounded-xl bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 transition-colors cursor-pointer"
+      >
+        Dịch lại
+      </button>
+      <button
+        onClick={onClear}
+        className="size-8 rounded-lg flex items-center justify-center text-zinc-300 hover:text-zinc-600 hover:bg-zinc-100 transition-colors cursor-pointer"
+      >
+        ✕
+      </button>
     </div>
   )
 }

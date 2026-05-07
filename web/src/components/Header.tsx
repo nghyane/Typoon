@@ -1,10 +1,13 @@
+import { useState } from 'react'
 import { Bell, Search, ArrowLeft } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { useHeaderStore } from '../store/header'
+import { WorkersIndicator } from './WorkersIndicator'
 
 export function Header() {
   const { crumbs, title } = useHeaderStore()
   const back = crumbs[0]
+  const [_searchOpen, setSearchOpen] = useState(false)
 
   return (
     <header className="flex items-center gap-3 px-5 h-bar bg-white shrink-0 border-b border-zinc-100">
@@ -25,6 +28,7 @@ export function Header() {
       </div>
 
       <button
+        onClick={() => setSearchOpen(true)}
         title="Tìm nhanh (⌘K)"
         className="hidden sm:flex items-center gap-2 h-8 px-3 w-56 rounded-lg border border-zinc-200 text-zinc-400 hover:border-zinc-300 hover:text-zinc-600 transition-colors cursor-pointer"
       >
@@ -34,6 +38,8 @@ export function Header() {
           ⌘K
         </kbd>
       </button>
+
+      <WorkersIndicator />
 
       <button
         title="Thông báo"

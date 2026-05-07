@@ -4,10 +4,12 @@ import { useState, useMemo } from 'react'
 import { Plus, Search, FolderOpen } from 'lucide-react'
 import { api } from '../lib/api'
 import { Cover } from '../components/Cover'
+import { AddProjectDialog } from '../components/AddProjectDialog'
 import { timeAgo } from '../lib/time'
 
 function ProjectsPage() {
-  const [q, setQ] = useState('')
+  const [q,        setQ]        = useState('')
+  const [addOpen,  setAddOpen]  = useState(false)
 
   const { data: projects = [], isLoading, isError } = useQuery({
     queryKey: ['projects'],
@@ -32,7 +34,10 @@ function ProjectsPage() {
               : 'Quản lý và theo dõi tiến độ dịch thuật'}
           </p>
         </div>
-        <button className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-[0.98] transition-all cursor-pointer">
+        <button
+          onClick={() => setAddOpen(true)}
+          className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-zinc-900 text-white text-sm font-medium hover:bg-zinc-700 active:scale-[0.98] transition-all cursor-pointer"
+        >
           <Plus size={13} />
           Thêm dự án
         </button>
@@ -115,14 +120,16 @@ function ProjectsPage() {
         )}
 
         {!isLoading && !isError && filtered.length === 0 && (
-          <EmptyState query={q} />
+          <EmptyState query={q} onAdd={() => setAddOpen(true)} />
         )}
       </div>
+
+      <AddProjectDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </div>
   )
 }
 
-function EmptyState({ query }: { query: string }) {
+function EmptyState({ query, onAdd }: { query: string; onAdd: () => void }) {
   return (
     <div className="py-20 flex flex-col items-center text-center">
       <div className="size-12 rounded-2xl bg-zinc-100 flex items-center justify-center mb-3">
@@ -132,8 +139,17 @@ function EmptyState({ query }: { query: string }) {
         {query ? 'Không tìm thấy kết quả' : 'Chưa có dự án nào'}
       </p>
       <p className="text-xs text-zinc-400 mt-1">
-        {query ? 'Thử từ khoá khác' : 'Tạo dự án để bắt đầu dịch'}
+        {query ? 'Thử từ khoá khác' : 'Tạo dự án đầu tiên để bắt đầu dịch'}
       </p>
+      {!query && (
+        <button
+          onClick={onAdd}
+          className="mt-4 inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 cursor-pointer"
+        >
+          <Plus size={12} />
+          Thêm dự án
+        </button>
+      )}
     </div>
   )
 }
