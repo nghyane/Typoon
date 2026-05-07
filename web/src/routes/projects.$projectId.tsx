@@ -14,7 +14,7 @@ import { Cover } from '../components/Cover'
 import { STATE, stageLabel, chapterStats, chapterPct } from '../lib/chapter'
 import { btn } from '../components/ui'
 import { toast } from '../components/Toaster'
-import { PullFromUrlDialog } from '../components/PullFromUrlDialog'
+import { UploadChapterDialog } from '../components/UploadChapterDialog'
 import { GlossaryPanel } from '../components/GlossaryPanel'
 import { SettingsPanel } from '../components/SettingsPanel'
 
@@ -175,7 +175,7 @@ function ProjectDetailPage() {
   const [filter, setFilter] = useState<Filter>('all')
   const [q,      setQ]      = useState('')
   const [sel,    setSel]    = useState<Set<number>>(new Set())
-  const [pullOpen, setPullOpen] = useState(false)
+  const [uploadOpen, setUploadOpen] = useState(false)
   const setHeader   = useHeaderStore((s) => s.set)
   const clearHeader = useHeaderStore((s) => s.clear)
 
@@ -250,7 +250,7 @@ function ProjectDetailPage() {
       <Hero
         project={project}
         stats={stats}
-        onAddChapters={() => setPullOpen(true)}
+        onAddChapters={() => setUploadOpen(true)}
       />
 
       {/* tabs */}
@@ -283,7 +283,7 @@ function ProjectDetailPage() {
             sel={sel}       toggleOne={toggleOne} toggleAll={toggleAll}
             allChecked={allChecked}
             projectId={id}
-            onPull={() => setPullOpen(true)}
+            onPull={() => setUploadOpen(true)}
           />
         )}
         {tab === 'glossary' && <GlossaryPanel projectId={id} />}
@@ -294,9 +294,9 @@ function ProjectDetailPage() {
         <SelectionBar count={sel.size} onClear={() => setSel(new Set())} />
       )}
 
-      <PullFromUrlDialog
-        open={pullOpen}
-        onClose={() => setPullOpen(false)}
+      <UploadChapterDialog
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
         project={project}
         existing={existingNums}
       />
@@ -369,7 +369,7 @@ function Hero({
         <button className={btn.secondary}><Download size={14} />Xuất</button>
         <button className={btn.iconBox}><MoreHorizontal size={15} /></button>
         <button className={btn.primary} onClick={onAddChapters}>
-          <Plus size={14} />Pull từ URL
+          <Plus size={14} />Tải chương
         </button>
       </div>
     </div>
@@ -456,7 +456,7 @@ function ChaptersTab({
                   </p>
                   <p className="text-xs text-zinc-400 mt-1">
                     {stats.total === 0
-                      ? 'Pull từ URL để bắt đầu dịch'
+                      ? 'Tải chương lên để bắt đầu dịch'
                       : (q || filter !== 'all' ? 'Thử bỏ bộ lọc' : 'Thêm chương để bắt đầu')}
                   </p>
                   {stats.total === 0 && (
@@ -465,7 +465,7 @@ function ChaptersTab({
                       className="mt-4 inline-flex items-center gap-1.5 h-8 px-4 rounded-lg bg-zinc-900 text-white text-xs font-medium hover:bg-zinc-700 cursor-pointer"
                     >
                       <Plus size={12} />
-                      Pull từ URL
+                      Tải chương
                     </button>
                   )}
                 </td>

@@ -37,27 +37,6 @@ export interface ApiChapter {
   } | null
 }
 
-export interface ApiChapterVariant {
-  id:    string
-  url:   string
-  group: string | null
-  votes: number
-}
-
-export interface ApiDiscoveredChapter {
-  number:   number
-  title:    string | null
-  variants: ApiChapterVariant[]
-}
-
-export interface ApiSourceInfo {
-  suggested_title: string
-  cover_url:       string | null
-  description:     string | null
-  source_lang:     string
-  chapters:        ApiDiscoveredChapter[]
-}
-
 export interface ApiBubble {
   page_index:      number
   bubble_idx:      number
@@ -94,14 +73,6 @@ export interface ApiSettings {
   settings:    Record<string, unknown>
 }
 
-export interface ApiSourceConnector {
-  id:          string
-  name:        string
-  source_lang: string
-  example_url: string
-  description: string
-}
-
 // ── Transport ────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -112,6 +83,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
+  }
+  return res.status === 204 ? (undefined as T) : res.json()
+}
+
+async function postForm<T>(path: string, fd: FormData): Promise<T> {
+  // Browsers must set Content-Type with the multipart boundary themselves;
+  // request() injects application/json which would corrupt the body.
+  const res = await fetch(`${API_BASE}/api${path}`, { method: 'POST', body: fd })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
@@ -135,25 +117,8 @@ export const api = {
   uploadCover:    (id: number, file: File) => {
     const fd = new FormData()
     fd.append('file', file)
-    // FormData → don't set Content-Type; let the browser add the boundary.
-    return fetch(`${API_BASE}/api/projects/${id}/cover`, { method: 'POST', body: fd })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(`${r.status} ${r.statusText} — ${await r.text().catch(() => '')}`)
-        return r.json() as Promise<ApiProject>
-      })
+    return postForm<ApiProject>(`/projects/${id}/cover`, fd)
   },
-
-  // Sources
-  listSources: () => request<ApiSourceConnector[]>('/sources'),
-
-  // Discovery + pull
-  discover: (url: string) =>
-    request<ApiSourceInfo>('/discover', { method: 'POST', body: json({ url }) }),
-
-  pull: (pid: number, body: { url: string; chapters?: number[]; from?: number; to?: number }) =>
-    request<{ project_id: number; queued: number }>(
-      `/projects/${pid}/pull`, { method: 'POST', body: json(remap(body)) },
-    ),
 
   // Chapters
   listChapters:  (pid: number)              => request<ApiChapter[]>(`/projects/${pid}/chapters`),
@@ -162,6 +127,19 @@ export const api = {
     request<ApiChapter>(`/projects/${pid}/chapters/${cid}/redo`, { method: 'POST' }),
   deleteChapter: (pid: number, cid: number) =>
     request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
+
+  // Upload — single archive (PDF/CBZ/ZIP) or multiple image files
+  uploadChapter: (
+    pid: number,
+    files: File[],
+    opts: { idx?: number; title?: string } = {},
+  ) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    if (opts.idx   !== undefined) fd.append('idx',   String(opts.idx))
+    if (opts.title)               fd.append('title', opts.title)
+    return postForm<ApiChapter>(`/projects/${pid}/chapters/upload`, fd)
+  },
 
   // Bubbles
   listBubbles: (pid: number, cid: number) =>
@@ -213,10 +191,4 @@ export const api = {
   // Asset URLs
   pageUrl: (pid: number, cid: number, idx: number) =>
     `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
-}
-
-// `from` is reserved in JS; the API expects `from_` per Pydantic alias.
-function remap<T extends { from?: number }>(body: T): Omit<T, 'from'> & { from_?: number } {
-  const { from, ...rest } = body
-  return { ...rest, ...(from !== undefined ? { from_: from } : {}) }
 }
