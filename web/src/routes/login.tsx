@@ -91,7 +91,9 @@ function LoginPage() {
 
           {cfg?.guild_gated && (
             <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
-              Bạn cần là thành viên Discord guild để truy cập.
+              {cfg.guild_name
+                ? `Yêu cầu là thành viên Discord '${cfg.guild_name}'.`
+                : 'Yêu cầu là thành viên Discord guild.'}
               {standingInvite && (
                 <>
                   {' '}

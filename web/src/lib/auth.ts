@@ -20,6 +20,7 @@ export interface AuthUser {
 export interface AuthConfig {
   discord_client_id:  string
   guild_gated:        boolean
+  guild_name:         string | null
   discord_invite_url: string | null
 }
 

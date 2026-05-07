@@ -45,18 +45,16 @@ class ExchangeBody(BaseModel):
 
 @router.get("/config")
 async def auth_config(cfg: AuthConfig = Depends(get_auth_cfg)):
-    """Public auth config. The SPA builds the Discord authorize URL itself,
-    so it needs the client_id + the configured guild gating hint. Secrets
-    (client_secret, jwt_secret) are not exposed."""
+    """Public auth config the SPA needs at /login: client_id, gating
+    hint, and the guild's public invite (when widget is enabled)."""
     if not cfg.discord_client_id:
         raise HTTPException(503, "Discord OAuth not configured")
+    guild_name, invite_url = await _resolve_guild_invite(cfg.discord_guild_id)
     return {
         "discord_client_id":  cfg.discord_client_id,
         "guild_gated":        bool(cfg.discord_guild_id),
-        # Optional: operator-supplied invite URL the SPA can show on /login
-        # so users who are not yet in the guild get a one-click path to
-        # join. Empty when the operator hasn't configured it.
-        "discord_invite_url": cfg.discord_invite_url or None,
+        "guild_name":         guild_name,
+        "discord_invite_url": invite_url,
     }
 
 
@@ -109,7 +107,7 @@ async def _exchange_and_issue(
         guilds   = await fetch_user_guilds(access_token)
         in_guild = any(g.get("id") == cfg.discord_guild_id for g in guilds)
         if not in_guild:
-            raise HTTPException(403, await _gate_message(cfg))
+            raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
 
     promote = (
         cfg.bootstrap_discord_id
@@ -143,28 +141,34 @@ def _user_out(row: dict) -> dict:
     }
 
 
-async def _gate_message(cfg: AuthConfig) -> str:
-    """Build a user-friendly 403 message that names the guild and links
-    the invite when possible.
+async def _resolve_guild_invite(guild_id: str) -> tuple[str | None, str | None]:
+    """Read (name, invite) from the public widget endpoint.
 
-    Resolution order:
-      1. Operator-supplied invite URL (cfg.discord_invite_url) — stable,
-         no Discord API call.
-      2. Public widget endpoint — auto if 'Enable Server Widget' is on.
-      3. Generic fallback.
+    Returns (None, None) when gating is disabled OR the guild has not
+    enabled 'Server Widget'. Cached via lru_cache on the underlying
+    fetch by Discord (their CDN), so we don't add our own.
     """
-    invite = cfg.discord_invite_url
-    name:   str | None = None
+    if not guild_id:
+        return None, None
+    widget = await fetch_guild_widget(guild_id)
+    if not widget:
+        return None, None
+    return widget.get("name"), widget.get("instant_invite")
 
-    widget = await fetch_guild_widget(cfg.discord_guild_id)
-    if widget:
-        name   = widget.get("name") or name
-        invite = invite or widget.get("instant_invite")
 
+async def _gate_message(guild_id: str) -> str:
+    """Build a user-friendly 403 message. Pulls guild name + invite from
+    the public widget endpoint; the operator only needs to enable
+    'Server Widget' once in Discord Server Settings."""
+    name, invite = await _resolve_guild_invite(guild_id)
     if invite and name:
         return f"Bạn cần tham gia Discord '{name}': {invite}"
     if invite:
         return f"Bạn cần tham gia Discord guild: {invite}"
     if name:
         return f"Bạn cần tham gia Discord '{name}' để truy cập."
-    return "Bạn cần tham gia Discord guild để truy cập."
+    # Widget disabled or guild private — admin needs to enable widget.
+    return (
+        "Bạn cần tham gia Discord guild để truy cập. "
+        "(Quản trị viên: bật Server Widget trong Discord để hiển thị invite.)"
+    )
