@@ -6,6 +6,7 @@ Start here:
 - `rfc/001-prepared-chapter-boundary.md` — accepted input boundary
 - `rfc/002-visual-e2e-workflow.md` — accepted debug/test workflow
 - `rfc/003-scan-stage.md` — proposed: scan stage
+- `rfc/004-bunle-artifact-storage.md` — proposed: Bunle archives for prepared/render artifacts
 
 Old docs were moved to `archive/`. They are historical reference only.
 
