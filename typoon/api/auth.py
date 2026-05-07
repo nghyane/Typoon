@@ -123,25 +123,43 @@ async def fetch_user(access_token: str) -> DiscordUser:
     )
 
 
-async def is_guild_member(access_token: str, guild_id: str) -> bool:
-    """Check whether the user is a member of the gating guild.
+async def fetch_user_guilds(access_token: str) -> list[dict]:
+    """Return the user's guild list from /users/@me/guilds.
 
-    Uses /users/@me/guilds (cheap, returns the user's guild list). Caller
-    is responsible for caching the result; we don't want to hit Discord
-    on every request.
+    Each entry: { id, name, icon, owner, permissions, ... }. Empty list
+    on failure (logged). Caller decides what to do with stale data.
     """
-    if not guild_id:
-        return True  # gating disabled
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.get(
             f"{DISCORD_API}/users/@me/guilds",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         if r.status_code != 200:
-            logger.warning("guilds check failed: %s", r.status_code)
-            return False
-        guilds = r.json()
-    return any(g.get("id") == guild_id for g in guilds)
+            logger.warning("/users/@me/guilds: %s %s", r.status_code, r.text[:200])
+            return []
+        return r.json()
+
+
+async def fetch_guild_widget(guild_id: str) -> dict | None:
+    """Public guild metadata via the widget endpoint.
+
+    Returns { id, name, instant_invite, members, ... } if the guild has
+    "Enable Server Widget" turned on; None otherwise. No auth required.
+    Used to surface a friendly error ('join <name>: <invite>') when a
+    user fails the guild gate.
+    """
+    if not guild_id:
+        return None
+    async with httpx.AsyncClient(timeout=10) as c:
+        try:
+            r = await c.get(f"{DISCORD_API}/guilds/{guild_id}/widget.json")
+        except httpx.HTTPError as e:
+            logger.warning("widget fetch error: %s", e)
+            return None
+    if r.status_code != 200:
+        logger.info("widget disabled or guild private (%s) for %s", r.status_code, guild_id)
+        return None
+    return r.json()
 
 
 # OAuth URL builder lives in the SPA now — web/src/lib/auth.ts — because

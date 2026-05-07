@@ -27,7 +27,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from typoon.api.auth import exchange_code, fetch_user, is_guild_member, issue_jwt
+from typoon.api.auth import (
+    exchange_code, fetch_guild_widget, fetch_user, fetch_user_guilds, issue_jwt,
+)
 from typoon.api.deps import get_auth_cfg, get_store, require_user
 from typoon.config import AuthConfig
 from typoon.storage import Store
@@ -100,12 +102,10 @@ async def _exchange_and_issue(
 
     # Gate by guild membership. Empty guild_id → gating disabled.
     if cfg.discord_guild_id:
-        in_guild = await is_guild_member(access_token, cfg.discord_guild_id)
+        guilds   = await fetch_user_guilds(access_token)
+        in_guild = any(g.get("id") == cfg.discord_guild_id for g in guilds)
         if not in_guild:
-            raise HTTPException(
-                403,
-                "Bạn cần tham gia Discord guild của Typoon để truy cập.",
-            )
+            raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
 
     promote = (
         cfg.bootstrap_discord_id
@@ -137,3 +137,21 @@ def _user_out(row: dict) -> dict:
         "created_at":   row.get("created_at"),
         "last_login_at": row.get("last_login_at"),
     }
+
+
+async def _gate_message(guild_id: str) -> str:
+    """Build a user-friendly 403 message that names the guild and links
+    the invite when possible.
+
+    Tries the public widget endpoint first; falls back to a generic
+    message if the guild has the widget disabled (Server Settings →
+    Widget → Enable Server Widget).
+    """
+    widget = await fetch_guild_widget(guild_id)
+    if widget:
+        name   = widget.get("name") or "the Typoon guild"
+        invite = widget.get("instant_invite")
+        if invite:
+            return f"Bạn cần tham gia Discord '{name}': {invite}"
+        return f"Bạn cần tham gia Discord '{name}' để truy cập."
+    return "Bạn cần tham gia Discord guild để truy cập (server widget chưa bật)."
