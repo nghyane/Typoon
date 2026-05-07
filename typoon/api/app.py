@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from typoon.api.deps import get_store
 from typoon.api.routes import (
-    auth, bubbles, glossary, pages, projects, search, sse, upload, workers,
+    auth, bubbles, glossary, me, pages, projects, search, sse, upload, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -35,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(me.router)
 app.include_router(projects.router)
 app.include_router(upload.router)
 app.include_router(bubbles.router)

@@ -96,6 +96,31 @@ export interface ApiSettings {
   settings:    Record<string, unknown>
 }
 
+// ── Auth/me ──────────────────────────────────────────────────────────────────
+
+export interface ApiTokenInfo {
+  id:         number
+  name:       string
+  prefix:     string
+  last_used:  string | null
+  created_at: string | null
+}
+
+export interface ApiTokenCreated extends ApiTokenInfo {
+  /** Plaintext, returned only once at creation time. */
+  token: string
+}
+
+export interface ApiMeProject {
+  project_id:  number
+  slug:        string
+  title:       string
+  cover_url:   string | null
+  source_lang: string
+  target_lang: string
+  shared:      boolean
+}
+
 // ── Transport ────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -233,4 +258,13 @@ export const api = {
   // Asset URLs
   pageUrl: (pid: number, cid: number, idx: number) =>
     `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
+
+  // ── Me / API tokens (RFC-008) ─────────────────────────────────────────────
+  myProjects: () => request<ApiMeProject[]>('/me/projects'),
+
+  listTokens:  () => request<ApiTokenInfo[]>('/me/tokens'),
+  createToken: (name: string) =>
+    request<ApiTokenCreated>('/me/tokens', { method: 'POST', body: json({ name }) }),
+  revokeToken: (id: number) =>
+    request<void>(`/me/tokens/${id}`, { method: 'DELETE' }),
 }

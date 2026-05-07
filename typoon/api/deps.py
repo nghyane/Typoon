@@ -11,6 +11,7 @@ from fastapi import Depends, Header, HTTPException
 from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
 from typoon.adapters.event_bus import EventBus
 from typoon.api.auth import verify_jwt
+from typoon.api.auth_token import looks_like_api_token, verify_api_token
 from typoon.config import AuthConfig, Config, load_config
 from typoon.paths import Paths
 from typoon.storage import PostgresStore, Store
@@ -79,15 +80,30 @@ async def require_user(
 ) -> dict:
     """All authenticated routes depend on this. 401 if missing/invalid.
 
-    Attaches `roles` (list of Discord role IDs from the JWT) onto the
-    user dict so downstream `require_admin`/route checks can read them
-    without re-decoding the token.
+    Accepts two credential shapes in the `Authorization: Bearer …`
+    header:
+
+    1. JWT (web SPA, Discord OAuth flow). Carries `roles` claim from
+       Discord at login time → user["roles"] populated, used by
+       `require_admin`.
+    2. API token (`typ_…`, RFC-008). Issued via /api/me/tokens for
+       extension/CLI use. Token holders never get admin access:
+       user["roles"] is set to []. Mutation routes (owner-only) still
+       work via require_project_owner.
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
-    token = authorization[7:].strip()
+    raw = authorization[7:].strip()
+
+    if looks_like_api_token(raw):
+        user = await verify_api_token(db, raw)
+        if user is None:
+            raise HTTPException(401, "Invalid API token")
+        user["roles"] = []
+        return user
+
     try:
-        user_id, role_ids = verify_jwt(token, cfg=cfg)
+        user_id, role_ids = verify_jwt(raw, cfg=cfg)
     except jwt.InvalidTokenError as e:
         raise HTTPException(401, f"Invalid token: {e}") from e
 

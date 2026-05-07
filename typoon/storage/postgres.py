@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def _read_schema_sql() -> str:
@@ -983,6 +983,67 @@ class PostgresStore:
                 user_id, provider,
             )
         return row["external_id"] if row else None
+
+    # ── API tokens ────────────────────────────────────────────────
+
+    async def create_api_token(
+        self, user_id: int, name: str, prefix: str, token_hash: str,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO api_tokens (user_id, name, prefix, token_hash) "
+                "VALUES ($1, $2, $3, $4) RETURNING id",
+                user_id, name, prefix, token_hash,
+            )
+        return row["id"]
+
+    async def list_api_tokens(self, user_id: int) -> list[dict]:
+        """Active tokens for a user, newest first. No hash, no plaintext."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, name, prefix, "
+                f"  to_char(last_used,  '{_ISO_FMT}') AS last_used, "
+                f"  to_char(created_at, '{_ISO_FMT}') AS created_at "
+                "FROM api_tokens "
+                "WHERE user_id=$1 AND revoked_at IS NULL "
+                "ORDER BY id DESC",
+                user_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def candidates_by_prefix(self, prefix: str) -> list[dict]:
+        """Return active tokens whose prefix matches.
+
+        Lookup in two steps (prefix narrow + bcrypt verify) — see
+        `user_by_api_token` in api/auth_token.py. Prefix is 8 chars
+        from a 62-char alphabet → ~218 trillion possibilities, so the
+        list is almost always 0 or 1 row.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, user_id, token_hash "
+                "FROM api_tokens "
+                "WHERE prefix=$1 AND revoked_at IS NULL",
+                prefix,
+            )
+        return [dict(r) for r in rows]
+
+    async def touch_api_token(self, token_id: int) -> None:
+        """Bump last_used. Called from auth path; fire-and-forget."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_tokens SET last_used=NOW() WHERE id=$1",
+                token_id,
+            )
+
+    async def revoke_api_token(self, user_id: int, token_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE api_tokens SET revoked_at=NOW() "
+                "WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL",
+                token_id, user_id,
+            )
+        return result.startswith("UPDATE ") and not result.endswith("0")
 
     # ── Events ────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 # RFC-008: API tokens for tool clients
 
-Status: **proposed** — implement after RFC-006.
+Status: **implemented** (RFC-008 cutover complete on `main`).
 Scope: backend infrastructure để các tool client-side (extension, CLI sau, bot
 sau) authenticate vào engine không cần Discord OAuth flow.
 

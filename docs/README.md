@@ -10,7 +10,7 @@ Start here:
 - `rfc/004-bunle-artifact-storage.md` — proposed: Bunle archives for prepared/render artifacts
 - `rfc/005-postgres-only.md` — implemented: Postgres-only storage
 - `rfc/006-discord-native-shared.md` — proposed: Discord-native UI + shared projects + role auth
-- `rfc/008-api-tokens.md` — proposed: API tokens for tool clients
+- `rfc/008-api-tokens.md` — implemented: API tokens for tool clients
 - `rfc/009-browser-extension.md` — proposed: browser extension MangaDex import
 
 Old docs were moved to `archive/`. They are historical reference only.

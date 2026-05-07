@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS project_pins (
 );
 CREATE INDEX IF NOT EXISTS idx_project_pins_user ON project_pins(user_id);
 
+-- ── API tokens (long-lived auth for tools/extensions/CLI) ───────────
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,                  -- user-visible label
+    token_hash  TEXT NOT NULL UNIQUE,           -- bcrypt(plaintext)
+    prefix      TEXT NOT NULL,                  -- first 8 chars, shown in UI
+    last_used   TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_user_active
+    ON api_tokens(user_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_api_tokens_prefix_active
+    ON api_tokens(prefix) WHERE revoked_at IS NULL;
+
 -- ── Worker coordination ─────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS tasks (
