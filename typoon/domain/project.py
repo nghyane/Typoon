@@ -33,6 +33,6 @@ class SourceInfo:
     """Metadata discovered from a manga source URL."""
 
     suggested_title: str
-    suggested_lang: str = "ko"
-    cover_url: str | None = None
-    chapters: list[DiscoveredChapter] = field(default_factory=list)
+    cover_url:       str | None = None
+    description:     str | None = None
+    chapters:        list[DiscoveredChapter] = field(default_factory=list)

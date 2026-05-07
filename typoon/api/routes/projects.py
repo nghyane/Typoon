@@ -8,8 +8,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_paths, get_store
+from typoon.api.deps import get_artifact_store, get_paths, get_store
 from typoon.api.models import ChapterOut, ProjectOut, Progress
 from typoon.paths import Paths, ProjectPaths
 from typoon.runs.events import Hook
@@ -39,11 +40,15 @@ async def _require_project(project_id: int, db: Store) -> dict:
 
 
 def _chapter_out(data: dict) -> ChapterOut:
-    pages_done  = int(data.get("pages_done") or 0)
-    pages_total = int(data.get("pages_total") or 0)
+    page_count = int(data.get("page_count") or 0)
+    progress_data = data.get("progress")
     progress = (
-        Progress(stage=data.get("stage") or "", page_index=pages_done, page_total=pages_total)
-        if pages_total > 0 and data["state"] == "running"
+        Progress(
+            stage=progress_data.get("stage") or data.get("stage") or "",
+            page_index=int(progress_data.get("page_index") or 0),
+            page_total=int(progress_data.get("page_total") or page_count),
+        )
+        if progress_data and data["state"] == "running"
         else None
     )
     return ChapterOut(
@@ -53,7 +58,7 @@ def _chapter_out(data: dict) -> ChapterOut:
         title=data.get("title"),
         state=data["state"],
         stage=data.get("stage") or "",
-        page_count=pages_total,
+        page_count=page_count,
         error=data.get("error") or "",
         updated_at=data.get("updated_at"),
         progress=progress,
@@ -71,13 +76,14 @@ async def list_projects(db: Store = Depends(get_store)):
 @router.post("", response_model=ProjectOut, status_code=201)
 async def import_project(
     body:  ImportBody,
-    db:    Store = Depends(get_store),
-    paths: Paths = Depends(get_paths),
+    db:    Store         = Depends(get_store),
+    paths: Paths         = Depends(get_paths),
+    store: ArtifactStore = Depends(get_artifact_store),
 ):
     folder = Path(body.folder)
     if not folder.is_dir():
         raise HTTPException(400, f"Not a directory: {body.folder}")
-    project_id = await Projects(db, paths).import_new(
+    project_id = await Projects(db, paths, store).import_new(
         folder, body.title, body.source_lang, body.target_lang, Hook()
     )
     proj = await db.get_project(project_id)
@@ -132,13 +138,14 @@ async def get_chapter(
 async def redo_chapter(
     project_id: int,
     chapter_id: int,
-    db:    Store = Depends(get_store),
-    paths: Paths = Depends(get_paths),
+    db:    Store         = Depends(get_store),
+    paths: Paths         = Depends(get_paths),
+    store: ArtifactStore = Depends(get_artifact_store),
 ):
     proj = await _require_project(project_id, db)
     ch   = await db.get_chapter(chapter_id)
     if ch is None or ch["project_id"] != project_id:
         raise HTTPException(404, "Chapter not found")
-    await Projects(db, paths).redo(proj["slug"], [ch["idx"]])
+    await Projects(db, paths, store).redo(proj["slug"], [ch["idx"]])
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return _chapter_out(data)

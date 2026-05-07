@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://comix.to"
 _DOMAIN = "comix.to"
+_SOURCE_LANG = "en"  # comix.to serves English scanlations
 
 
 class ComixConnector:
@@ -37,6 +38,10 @@ class ComixConnector:
     @property
     def site_name(self) -> str:
         return _DOMAIN
+
+    @property
+    def source_lang(self) -> str:
+        return _SOURCE_LANG
 
     def accepts(self, url: str) -> bool:
         return _DOMAIN in url
@@ -106,30 +111,44 @@ class ComixConnector:
         return m.group(1) if m else url.strip("/").split("/")[-1]
 
     async def discover(self, url: str) -> SourceInfo:
-        slug = self._parse_slug(url)
-        title = slug.split("-", 1)[1].replace("-", " ").title() if "-" in slug else slug
+        slug   = self._parse_slug(url)
         prefix = slug.split("-")[0]
 
-        # Capture API token from browser's own network requests
-        token = await self._capture_token(url)
+        detail = await self._fetch_detail(prefix)
+        if detail is None:
+            raise RuntimeError(f"comix.to: cannot fetch manga detail for {prefix}")
 
+        token = await self._capture_token(url)
         if token:
             chapters = await self._discover_via_api(prefix, slug, token)
         else:
             logger.warning("Token capture failed, falling back to DOM scraping")
             chapters = await self._scrape_from_dom(url, slug)
 
-        # Detect language from title patterns
-        detected_lang = "en"
-        if "-raw" in slug or "-kr" in slug:
-            detected_lang = "ko"
-        elif "-cn" in slug or "-zh" in slug:
-            detected_lang = "zh"
-        elif "-jp" in slug:
-            detected_lang = "ja"
+        logger.info("comix.to: %s — %d chapters", slug, len(chapters))
+        return SourceInfo(
+            suggested_title=detail["title"],
+            cover_url=(detail.get("poster") or {}).get("large"),
+            description=detail.get("synopsis"),
+            chapters=chapters,
+        )
 
-        logger.info("comix.to: %s — %d chapters (%s)", slug, len(chapters), detected_lang)
-        return SourceInfo(suggested_title=title, suggested_lang=detected_lang, chapters=chapters)
+    async def _fetch_detail(self, prefix: str) -> dict | None:
+        """Fetch manga detail. Public endpoint — no CF, no token needed."""
+        import httpx
+        url = f"{_BASE}/api/v2/manga/{prefix}"
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("Manga detail fetch failed: %s", e)
+            return None
+        m = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(m, dict) or not m.get("title"):
+            return None
+        return m
 
     async def _capture_token(self, url: str) -> str | None:
         """Capture anti-CSRF token from browser's API request.
@@ -183,16 +202,21 @@ class ComixConnector:
 
         chapters = []
         for num in sorted(by_number):
+            items = by_number[num]
+            chapter_title = next(
+                (it["name"] for it in items if it.get("name")),
+                None,
+            )
             variants = [
                 ChapterVariant(
-                    id=str(item.get("chapter_id", f"ch{num}_{i}")),
-                    url=f"{_BASE}/title/{slug}/{item.get('chapter_id', '')}-chapter-{num}",
+                    id=str(item["chapter_id"]),
+                    url=f"{_BASE}/title/{slug}/{item['chapter_id']}-chapter-{num}",
                     group=(item.get("scanlation_group") or {}).get("name"),
                     votes=item.get("votes", 0),
                 )
-                for i, item in enumerate(by_number[num])
+                for item in items
             ]
-            chapters.append(DiscoveredChapter(number=num, variants=variants))
+            chapters.append(DiscoveredChapter(number=num, title=chapter_title, variants=variants))
 
         return chapters
 
