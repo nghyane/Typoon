@@ -238,7 +238,10 @@ class Projects:
             )
             existing = await self._db.get_chapter_render_state(chapter_id)
             if existing and existing["page_count"] > 0:
-                hook.on(ChapterSkipped(chapter_id=chapter_id, project_id=proj["id"], reason="prepared_exists"))
+                hook.on(ChapterSkipped(
+                    chapter_id=chapter_id, chapter_idx=ch.number,
+                    project_id=proj["id"], reason="prepared_exists",
+                ))
             else:
                 try:
                     from typoon.downloader import download_images
@@ -251,9 +254,15 @@ class Projects:
                             store=self._store,
                         )
                     await self._db.set_prepared_done(chapter_id, n)
-                    hook.on(ChapterDownloaded(chapter_id=chapter_id, project_id=proj["id"], page_count=n))
+                    hook.on(ChapterDownloaded(
+                        chapter_id=chapter_id, chapter_idx=ch.number,
+                        project_id=proj["id"], page_count=n,
+                    ))
                 except Exception as e:
-                    hook.on(ChapterFailed(chapter_id=chapter_id, project_id=proj["id"], stage="download", error=e))
+                    hook.on(ChapterFailed(
+                        chapter_id=chapter_id, chapter_idx=ch.number,
+                        project_id=proj["id"], stage="download", error=e,
+                    ))
                     continue
 
             await self._db.enqueue(chapter_id, "scan")
@@ -265,7 +274,10 @@ class Projects:
 
             existing = await self._db.get_chapter_render_state(chapter_id)
             if existing and existing["page_count"] > 0:
-                hook.on(ChapterSkipped(chapter_id=chapter_id, project_id=proj["id"], reason="prepared_exists"))
+                hook.on(ChapterSkipped(
+                    chapter_id=chapter_id, chapter_idx=ch_num,
+                    project_id=proj["id"], reason="prepared_exists",
+                ))
             else:
                 try:
                     _key, n = await prepare_chapter_to_archive(
@@ -275,10 +287,14 @@ class Projects:
                     )
                     await self._db.set_prepared_done(chapter_id, n)
                     hook.on(ChapterDownloaded(
-                        chapter_id=chapter_id, project_id=proj["id"], page_count=n,
+                        chapter_id=chapter_id, chapter_idx=ch_num,
+                        project_id=proj["id"], page_count=n,
                     ))
                 except Exception as e:
-                    hook.on(ChapterFailed(chapter_id=chapter_id, project_id=proj["id"], stage="prepare", error=e))
+                    hook.on(ChapterFailed(
+                        chapter_id=chapter_id, chapter_idx=ch_num,
+                        project_id=proj["id"], stage="prepare", error=e,
+                    ))
                     continue
 
             await self._db.enqueue(chapter_id, "scan")

@@ -71,31 +71,38 @@ class PipelineError(Event):
 
 @dataclass
 class ChapterSkipped(Event):
-    chapter_id: int = 0
-    reason:     str = ""
+    chapter_id:  int = 0
+    chapter_idx: float = 0.0
+    project_id:  int = 0
+    reason:      str = ""
 
 
 @dataclass
 class ChapterDownloaded(Event):
-    chapter_id: int = 0
-    page_count: int = 0
+    chapter_id:  int = 0
+    chapter_idx: float = 0.0
+    project_id:  int = 0
+    page_count:  int = 0
 
 
 @dataclass
 class StageStarted(Event):
     chapter_id: int = 0
+    project_id: int = 0
     stage:      str = ""
 
 
 @dataclass
 class StageDone(Event):
     chapter_id: int = 0
+    project_id: int = 0
     stage:      str = ""
 
 
 @dataclass
 class PageDone(Event):
     chapter_id: int = 0
+    project_id: int = 0
     stage:      str = ""
     page_index: int = 0
     page_total: int = 0
@@ -104,20 +111,25 @@ class PageDone(Event):
 @dataclass
 class ChapterDone(Event):
     chapter_id:   int = 0
+    chapter_idx:  float = 0.0
+    project_id:   int = 0
     bubble_count: int = 0
     render_dir:   str = ""
 
 
 @dataclass
 class ChapterFailed(Event):
-    chapter_id: int = 0
-    stage:      str = ""
-    error:      Exception | None = None
+    chapter_id:  int = 0
+    chapter_idx: float = 0.0
+    project_id:  int = 0
+    stage:       str = ""
+    error:       Exception | None = None
 
 
 @dataclass
 class StageFailed(Event):
     chapter_id: int = 0
+    project_id: int = 0
     stage:      str = ""
     error:      Exception | None = None
 
