@@ -51,7 +51,9 @@ function LoginPage() {
               <path d="M2 3h9M2 6.5h5.5M2 10h7" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-zinc-900">Typoon</h1>
+          <h1 className="text-xl font-bold tracking-tight text-zinc-900">
+            {cfg?.guild_name || 'Typoon'}
+          </h1>
           <p className="text-sm text-zinc-500 mt-1">Cộng đồng dịch manga</p>
         </div>
 
@@ -92,7 +94,7 @@ function LoginPage() {
           {cfg?.guild_gated && (
             <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
               {cfg.guild_name
-                ? `Yêu cầu là thành viên Discord '${cfg.guild_name}'.`
+                ? `Yêu cầu là thành viên Discord ${cfg.guild_name}.`
                 : 'Yêu cầu là thành viên Discord guild.'}
               {standingInvite && (
                 <>

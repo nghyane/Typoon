@@ -15,6 +15,10 @@ export interface AuthUser {
   tier:         'member' | 'admin'
   created_at:   string | null
   last_login_at: string | null
+  /** Discord guild name for the gated server, or null when gating is
+   *  disabled / widget is off. The SPA uses this for branding so we
+   *  don't hardcode 'Typoon' anywhere. */
+  guild_name:   string | null
 }
 
 export interface AuthConfig {

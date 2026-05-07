@@ -18,7 +18,9 @@ const W_EXPANDED  = 240
 const NAV_PAD_X   = 8                            // matches `px-2` on <nav>
 const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44 — icon lane inside a nav link
 
-export function Sidebar() {
+interface Props { brandName: string }
+
+export function Sidebar({ brandName }: Props) {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
@@ -84,8 +86,9 @@ export function Sidebar() {
         <span
           className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-zinc-900 truncate transition-opacity duration-150"
           style={{ opacity: collapsed ? 0 : 1 }}
+          title={brandName}
         >
-          Typoon
+          {brandName}
         </span>
 
         <button

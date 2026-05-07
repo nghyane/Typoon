@@ -73,9 +73,18 @@ async def discord_exchange(
 
 
 @router.get("/me")
-async def me(user: dict = Depends(require_user)):
-    """Returns the current authenticated user."""
-    return _user_out(user)
+async def me(
+    user: dict = Depends(require_user),
+    cfg:  AuthConfig = Depends(get_auth_cfg),
+):
+    """Returns the current authenticated user + branding (guild name)
+    so the SPA can render 'Hội Mê Truyện' in the sidebar / window title
+    without an extra round-trip to /api/auth/config."""
+    name, _ = await _resolve_guild_invite(cfg.discord_guild_id)
+    return {
+        **_user_out(user),
+        "guild_name": name,
+    }
 
 
 @router.post("/logout", status_code=204)
@@ -162,11 +171,11 @@ async def _gate_message(guild_id: str) -> str:
     'Server Widget' once in Discord Server Settings."""
     name, invite = await _resolve_guild_invite(guild_id)
     if invite and name:
-        return f"Bạn cần tham gia Discord '{name}': {invite}"
+        return f"Bạn cần tham gia Discord {name}: {invite}"
     if invite:
         return f"Bạn cần tham gia Discord guild: {invite}"
     if name:
-        return f"Bạn cần tham gia Discord '{name}' để truy cập."
+        return f"Bạn cần tham gia Discord {name} để truy cập."
     # Widget disabled or guild private — admin needs to enable widget.
     return (
         "Bạn cần tham gia Discord guild để truy cập. "

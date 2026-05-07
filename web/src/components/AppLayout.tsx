@@ -29,6 +29,15 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // useless mount cycle.
   useServerEvents()
 
+  // Update the document title to the gated guild name (or fall back to
+  // 'Typoon'). One source of truth so we don't hardcode the brand in
+  // index.html.
+  useEffect(() => {
+    if (user?.guild_name) {
+      document.title = user.guild_name
+    }
+  }, [user])
+
   if (loading) {
     return <FullScreenSpinner />
   }
@@ -39,7 +48,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-white text-zinc-950 text-sm">
-      <Sidebar />
+      <Sidebar brandName={user.guild_name ?? 'Typoon'} />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <Header user={user} />
         <main className="flex-1 overflow-auto">
