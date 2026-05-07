@@ -86,14 +86,18 @@ class Projects:
 
     # ── Pull from remote URL ──────────────────────────────────────────
 
-    async def pull_new(
+    async def create_project(
         self,
         info: SourceInfo,
         url: str,
-        selected: list[DiscoveredChapter],
         target_lang: str,
-        hook: Hook,
     ) -> str:
+        """Create the project row and apply metadata (title, cover, synopsis).
+
+        No chapter download. Returns the slug. Caller is expected to follow
+        up with `pull_more(slug, url, info, selected, hook)` either inline
+        (CLI) or as a background task (API).
+        """
         connector  = _connector(url)
         slug       = slugify(info.suggested_title, url)
         project_id = await self._db.get_or_create_project(
@@ -104,8 +108,24 @@ class Projects:
         proj_paths = ProjectPaths(self._paths.projects, slug)
         proj_paths.ensure()
         await self._apply_metadata(project_id, proj_paths, connector, info)
-        proj = await self._db.get_project(project_id)
-        await self._download_and_enqueue(proj, selected, connector, hook)
+        return slug
+
+    async def pull_new(
+        self,
+        info: SourceInfo,
+        url: str,
+        selected: list[DiscoveredChapter],
+        target_lang: str,
+        hook: Hook,
+    ) -> str:
+        """Convenience: create_project + pull chapters synchronously.
+
+        Used by the CLI. The API splits the two so the HTTP response can
+        return the project id while downloads run in the background.
+        """
+        slug = await self.create_project(info, url, target_lang)
+        proj = await self.require(slug)
+        await self._download_and_enqueue(proj, selected, _connector(url), hook)
         return slug
 
     async def pull_more(

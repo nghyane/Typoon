@@ -19,6 +19,7 @@ from typing import Protocol
 class ArtifactStore(Protocol):
     async def put_file(self, key: str, src: Path) -> None: ...
     async def get_file(self, key: str, dest: Path) -> None: ...
+    async def delete(self, key: str) -> bool: ...
 
 
 class LocalArtifactStore:
@@ -49,3 +50,11 @@ class LocalArtifactStore:
         src = self._path(key)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
+
+    async def delete(self, key: str) -> bool:
+        """Best-effort delete. Returns True if the key existed."""
+        path = self._path(key)
+        if not path.exists():
+            return False
+        path.unlink(missing_ok=True)
+        return True

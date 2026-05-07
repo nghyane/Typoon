@@ -41,6 +41,7 @@ async def _migrate_projects(db: aiosqlite.Connection) -> None:
         ("description", "TEXT"),
         ("cover_path",  "TEXT"),
         ("updated_at",  "TEXT"),  # see _migrate_chapters note
+        ("settings",    "TEXT"),  # JSON blob; per-project overrides
     ]
     for name, ddl in additions:
         if name not in cols:
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS projects (
     source_url   TEXT,
     source_lang  TEXT NOT NULL,
     target_lang  TEXT NOT NULL,
+    settings     TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -337,6 +339,11 @@ class SqliteStore:
         row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_project_by_slug(self, slug: str) -> dict | None:
+        cur = await self._db.execute("SELECT * FROM projects WHERE slug=?", (slug,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def list_projects(self) -> list[dict]:
         cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
         return [dict(r) for r in await cur.fetchall()]
@@ -348,6 +355,8 @@ class SqliteStore:
         title: str | None = None,
         description: str | None = None,
         cover_path: str | None = None,
+        target_lang: str | None = None,
+        settings: dict | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
@@ -357,6 +366,10 @@ class SqliteStore:
             sets.append("description=?"); args.append(description)
         if cover_path is not None:
             sets.append("cover_path=?"); args.append(cover_path)
+        if target_lang is not None:
+            sets.append("target_lang=?"); args.append(target_lang)
+        if settings is not None:
+            sets.append("settings=?"); args.append(json.dumps(settings, ensure_ascii=False))
         if not sets:
             return
         args.append(project_id)
@@ -365,6 +378,18 @@ class SqliteStore:
             tuple(args),
         )
         await self._db.commit()
+
+    async def get_project_settings(self, project_id: int) -> dict:
+        cur = await self._db.execute(
+            "SELECT settings FROM projects WHERE id=?", (project_id,)
+        )
+        row = await cur.fetchone()
+        if not row or not row["settings"]:
+            return {}
+        try:
+            return json.loads(row["settings"])
+        except (TypeError, ValueError):
+            return {}
 
     # ── Chapters ──────────────────────────────────────────────────
 
@@ -732,6 +757,32 @@ class SqliteStore:
         )
         return await cur.fetchone() is not None
 
+    async def update_translation(
+        self,
+        chapter_id: int,
+        page_index: int,
+        bubble_idx: int,
+        translated_text: str,
+        kind: str | None = None,
+    ) -> bool:
+        """Patch one translation row. Returns True if a row was updated.
+
+        Used by the manual-edit endpoint. Caller is responsible for
+        re-enqueueing render so the change appears on the rendered page.
+        """
+        sets = ["translated_text=?"]
+        args: list = [translated_text]
+        if kind is not None:
+            sets.append("kind=?"); args.append(kind)
+        args += [chapter_id, page_index, bubble_idx]
+        cur = await self._db.execute(
+            f"UPDATE translations SET {', '.join(sets)} "
+            "WHERE chapter_id=? AND page_index=? AND bubble_idx=?",
+            tuple(args),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
+
     # ── Glossary ──────────────────────────────────────────────────
 
     async def get_glossary(self, project_id: int) -> dict[str, str]:
@@ -739,6 +790,45 @@ class SqliteStore:
             "SELECT source_term, target_term FROM glossary WHERE project_id=?", (project_id,)
         )
         return {r["source_term"]: r["target_term"] for r in await cur.fetchall()}
+
+    async def list_glossary(self, project_id: int) -> list[dict]:
+        """Full rows ordered by source_term — used by the API/UI."""
+        cur = await self._db.execute(
+            "SELECT id, source_term, target_term, notes "
+            "FROM glossary WHERE project_id=? ORDER BY source_term",
+            (project_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_glossary_term(
+        self,
+        project_id: int,
+        source_term: str,
+        target_term: str,
+        notes: str | None = None,
+    ) -> int:
+        await self._db.execute(
+            "INSERT INTO glossary (project_id, source_term, target_term, notes) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(project_id, source_term) DO UPDATE SET "
+            "  target_term=excluded.target_term, notes=excluded.notes",
+            (project_id, source_term, target_term, notes),
+        )
+        await self._db.commit()
+        cur = await self._db.execute(
+            "SELECT id FROM glossary WHERE project_id=? AND source_term=?",
+            (project_id, source_term),
+        )
+        row = await cur.fetchone()
+        return row["id"] if row else 0
+
+    async def delete_glossary_term(self, project_id: int, term_id: int) -> bool:
+        cur = await self._db.execute(
+            "DELETE FROM glossary WHERE id=? AND project_id=?",
+            (term_id, project_id),
+        )
+        await self._db.commit()
+        return cur.rowcount > 0
 
     async def glossary_search(self, project_id: int, query: str) -> list[dict]:
         safe = _fts_escape(query)
@@ -904,6 +994,59 @@ class SqliteStore:
     async def delete_project(self, project_id: int) -> None:
         await self._db.execute("DELETE FROM projects WHERE id=?", (project_id,))
         await self._db.commit()
+
+    async def delete_chapter(self, chapter_id: int) -> bool:
+        """Drop the chapter row entirely (cascades to bubbles/translations/
+        tasks/geometry/briefs via FK ON DELETE CASCADE).
+
+        Caller is responsible for removing the chapter's artifacts
+        (prepared.bnl, render.bnl, masks.npz) from the artifact store.
+        """
+        cur = await self._db.execute("DELETE FROM chapters WHERE id=?", (chapter_id,))
+        await self._db.commit()
+        return cur.rowcount > 0
+
+    # ── Queue stats (Tier B — workers dashboard) ──────────────────
+
+    async def queue_stats(self) -> dict:
+        """Aggregated task counts and recent claim activity per stage.
+
+        Shape:
+            {
+              "stages": {
+                "scan":      {"pending": N, "running": M, "stale": K},
+                "translate": {...},
+                "render":    {...},
+              },
+              "active_workers": ["uuid-1", "uuid-2", ...],
+            }
+        A task is "running" if claimed_by IS NOT NULL and claimed within
+        the last 10 minutes; "stale" if claim is older than that (eligible
+        for re-claim by another worker).
+        """
+        cur = await self._db.execute(
+            "SELECT stage, "
+            "  SUM(CASE WHEN claimed_by IS NULL THEN 1 ELSE 0 END) AS pending, "
+            "  SUM(CASE WHEN claimed_by IS NOT NULL "
+            "       AND claimed_at >= datetime('now','-10 minutes') THEN 1 ELSE 0 END) AS running, "
+            "  SUM(CASE WHEN claimed_by IS NOT NULL "
+            "       AND claimed_at <  datetime('now','-10 minutes') THEN 1 ELSE 0 END) AS stale "
+            "FROM tasks GROUP BY stage"
+        )
+        stages: dict[str, dict[str, int]] = {}
+        for row in await cur.fetchall():
+            stages[row["stage"]] = {
+                "pending": int(row["pending"] or 0),
+                "running": int(row["running"] or 0),
+                "stale":   int(row["stale"] or 0),
+            }
+        cur = await self._db.execute(
+            "SELECT DISTINCT claimed_by FROM tasks "
+            "WHERE claimed_by IS NOT NULL "
+            "  AND claimed_at >= datetime('now','-10 minutes')"
+        )
+        active = [r["claimed_by"] for r in await cur.fetchall()]
+        return {"stages": stages, "active_workers": active}
 
     # ── Events ────────────────────────────────────────────────────
 
