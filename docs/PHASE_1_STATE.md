@@ -29,8 +29,13 @@ before opening the codebase.
 - Workers dashboard (queue depth per stage).
 - FTS search (LLM agent's `search_knowledge` tool — important for
   translation context).
-- Discord OAuth login: `GET /api/auth/config`, `POST /api/auth/discord/exchange`,
-  `GET /api/auth/me`, `POST /api/auth/logout`.
+- Discord OAuth login (SPA-driven flow):
+  - `GET /api/auth/config` — public client_id + guild branding (name, icon, invite). 503 if Discord Server Widget not enabled and gating is on.
+  - `POST /api/auth/discord/exchange { code, redirect_uri }` — used by both web standalone and Discord Activity.
+  - `GET /api/auth/me` — current user + guild branding.
+  - `POST /api/auth/logout` — no-op stub for stateful logout when added.
+  - SPA owns redirect_uri (`window.origin + /auth/callback`) and CSRF state (sessionStorage). No cookies, no engine HTML.
+- Guild branding: name from Discord widget endpoint, icon hash cached from `/users/@me/guilds` on first member login. Engine fails loud (503) instead of silently substituting a placeholder name.
 - Bootstrap admin via `TYPOON_BOOTSTRAP_DISCORD_ID` env.
 - Guild gating via `DISCORD_GUILD_ID` env.
 
@@ -118,9 +123,9 @@ web/src/
 
 ```
 Auth:
-  GET    /api/auth/config                       public client_id + gating hint
+  GET    /api/auth/config                       public client_id + guild branding (or 503)
   POST   /api/auth/discord/exchange             { code, redirect_uri } → { token }
-  GET    /api/auth/me                           current user
+  GET    /api/auth/me                           current user + guild branding
   POST   /api/auth/logout                       no-op stub
 
 Projects:
@@ -181,8 +186,17 @@ typoon work --role full     # another terminal
 cd web && npm install && npm run dev
 ```
 
-Discord application redirect URL must be set to
-`http://localhost:5173/auth/callback` (Phase 1 dev).
+Discord application setup (one-time per deployment):
+
+1. https://discord.com/developers/applications → New Application
+2. OAuth2 → Redirects → add `http://localhost:5173/auth/callback`
+3. Reset Secret → paste into `DISCORD_CLIENT_SECRET` env or `~/.typoon/config.toml [auth]`
+4. Copy Application ID → `DISCORD_CLIENT_ID`
+5. Server Settings → Widget → **Enable Server Widget** (engine 503s
+   without this when gating is on; the widget supplies guild name +
+   icon + invite for the SPA branding)
+6. Server Settings → Widget → **Invite Channel** → pick a public channel
+   so widget exposes an instant invite (gating-failure UX)
 
 ## Open issues for the next thread
 
