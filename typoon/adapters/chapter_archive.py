@@ -1,8 +1,8 @@
 """Chapter archive helpers — deterministic Bunle keys.
 
 One canonical key per chapter for prepared and render archives. Stage
-overwrites in place; readers gate on `chapters.render_state`, so no
-mid-write race exists in the queue worker model.
+overwrites in place; readers gate on `chapters.rendered`, so no mid-write
+race exists in the queue worker model.
 
 URL ↔ archive bijection (cache-bust, mid-stream consistency for the web
 viewer) is an app-layer concern handled separately when needed.

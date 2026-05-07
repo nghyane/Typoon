@@ -14,17 +14,27 @@ async def _migrate_chapters(db: aiosqlite.Connection) -> None:
     cur = await db.execute("PRAGMA table_info(chapters)")
     cols = {row["name"] for row in await cur.fetchall()}
     additions = [
-        ("render_state",   "TEXT NOT NULL DEFAULT 'none'"),
-        ("render_job_id",  "TEXT"),
+        ("title",          "TEXT"),
+        ("rendered",       "INTEGER NOT NULL DEFAULT 0"),
         ("page_count",     "INTEGER NOT NULL DEFAULT 0"),
     ]
     for name, ddl in additions:
         if name not in cols:
             await db.execute(f"ALTER TABLE chapters ADD COLUMN {name} {ddl}")
     # Drop legacy columns from earlier RFC-004 drafts. Idempotent.
-    for legacy in ("prepared_key", "render_key"):
+    for legacy in ("prepared_key", "render_key", "render_job_id", "render_state"):
         if legacy in cols:
             await db.execute(f"ALTER TABLE chapters DROP COLUMN {legacy}")
+    await db.commit()
+
+
+async def _migrate_projects(db: aiosqlite.Connection) -> None:
+    """Idempotent ALTER TABLE for projects metadata columns."""
+    cur = await db.execute("PRAGMA table_info(projects)")
+    cols = {row["name"] for row in await cur.fetchall()}
+    for name, ddl in [("description", "TEXT"), ("cover_path", "TEXT")]:
+        if name not in cols:
+            await db.execute(f"ALTER TABLE projects ADD COLUMN {name} {ddl}")
     await db.commit()
 
 _SCHEMA = """
@@ -32,6 +42,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id           INTEGER PRIMARY KEY,
     slug         TEXT NOT NULL UNIQUE,
     title        TEXT NOT NULL,
+    description  TEXT,
+    cover_path   TEXT,
     source_url   TEXT,
     source_lang  TEXT NOT NULL,
     target_lang  TEXT NOT NULL,
@@ -42,6 +54,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     id           INTEGER PRIMARY KEY,
     project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     idx          REAL NOT NULL,
+    title        TEXT,
     source_url   TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(project_id, idx)
@@ -203,6 +216,7 @@ class SqliteStore:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.executescript(_SCHEMA)
+        await _migrate_projects(db)
         await _migrate_chapters(db)
         return SqliteStore(db)
 
@@ -258,6 +272,31 @@ class SqliteStore:
         cur = await self._db.execute("SELECT * FROM projects ORDER BY id DESC")
         return [dict(r) for r in await cur.fetchall()]
 
+    async def update_project_metadata(
+        self,
+        project_id: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        cover_path: str | None = None,
+    ) -> None:
+        sets: list[str] = []
+        args: list = []
+        if title is not None:
+            sets.append("title=?"); args.append(title)
+        if description is not None:
+            sets.append("description=?"); args.append(description)
+        if cover_path is not None:
+            sets.append("cover_path=?"); args.append(cover_path)
+        if not sets:
+            return
+        args.append(project_id)
+        await self._db.execute(
+            f"UPDATE projects SET {', '.join(sets)} WHERE id=?",
+            tuple(args),
+        )
+        await self._db.commit()
+
     # ── Chapters ──────────────────────────────────────────────────
 
     async def get_or_create_chapter(
@@ -265,17 +304,24 @@ class SqliteStore:
         project_id: int,
         idx: float,
         source_url: str | None = None,
+        title: str | None = None,
     ) -> int:
-        """Return chapter_id (existing or new)."""
+        """Return chapter_id (existing or new). Updates title if provided."""
         cur = await self._db.execute(
             "SELECT id FROM chapters WHERE project_id=? AND idx=?", (project_id, idx)
         )
         row = await cur.fetchone()
         if row:
+            if title is not None:
+                await self._db.execute(
+                    "UPDATE chapters SET title=? WHERE id=? AND (title IS NULL OR title='')",
+                    (title, row["id"]),
+                )
+                await self._db.commit()
             return row["id"]
         cur = await self._db.execute(
-            "INSERT INTO chapters (project_id, idx, source_url) VALUES (?,?,?)",
-            (project_id, idx, source_url),
+            "INSERT INTO chapters (project_id, idx, source_url, title) VALUES (?,?,?,?)",
+            (project_id, idx, source_url, title),
         )
         await self._db.commit()
         return cur.lastrowid  # type: ignore
@@ -464,10 +510,29 @@ class SqliteStore:
         return [dict(r) for r in await cur.fetchall()]
 
     async def delete_chapter_data(self, chapter_id: int) -> None:
-        """Delete all derived data for a chapter — keeps identity row."""
-        for table in ("bubbles", "translations", "chapter_briefs", "tasks"):
-            await self._db.execute(f"DELETE FROM {table} WHERE chapter_id=?", (chapter_id,))
-        await self._db.commit()
+        """Delete all derived data for a chapter — keeps identity + page_count.
+
+        Resets `rendered=0` so a stale flag does not survive a reprepare.
+        The prepared archive on the artifact store is kept intact; scan
+        re-derives geometry/masks from prepared pixels.
+        """
+        try:
+            await self._db.execute("BEGIN")
+            for table in (
+                "bubbles", "translations", "chapter_briefs", "tasks",
+                "bubble_geometry", "page_geometry",
+            ):
+                await self._db.execute(
+                    f"DELETE FROM {table} WHERE chapter_id=?", (chapter_id,),
+                )
+            await self._db.execute(
+                "UPDATE chapters SET rendered=0 WHERE id=?",
+                (chapter_id,),
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
 
     async def has_bubbles(self, chapter_id: int) -> bool:
         cur = await self._db.execute(
@@ -480,24 +545,13 @@ class SqliteStore:
     async def save_geometry(
         self, chapter_id: int, pages: list[dict],
     ) -> None:
-        """Replace all geometry rows for a chapter.
+        """Replace all geometry rows for a chapter atomically.
 
         `pages`: list of {page_index, width, height,
                           bubbles: [{bubble_idx, polygon, fit_box, erase_box, text_box}]}
         Each polygon/box value is a list (serialized to JSON for storage).
         """
-        await self._db.execute(
-            "DELETE FROM page_geometry WHERE chapter_id=?", (chapter_id,),
-        )
-        await self._db.execute(
-            "DELETE FROM bubble_geometry WHERE chapter_id=?", (chapter_id,),
-        )
-        await self._db.executemany(
-            "INSERT INTO page_geometry (chapter_id, page_index, width, height) "
-            "VALUES (?,?,?,?)",
-            [(chapter_id, p["page_index"], p["width"], p["height"]) for p in pages],
-        )
-        rows = [
+        bubble_rows = [
             (
                 chapter_id, p["page_index"], b["bubble_idx"],
                 json.dumps(b["polygon"]),
@@ -507,13 +561,30 @@ class SqliteStore:
             )
             for p in pages for b in p["bubbles"]
         ]
-        await self._db.executemany(
-            "INSERT INTO bubble_geometry "
-            "(chapter_id, page_index, bubble_idx, polygon, fit_box, erase_box, text_box) "
-            "VALUES (?,?,?,?,?,?,?)",
-            rows,
-        )
-        await self._db.commit()
+        try:
+            await self._db.execute("BEGIN")
+            await self._db.execute(
+                "DELETE FROM page_geometry WHERE chapter_id=?", (chapter_id,),
+            )
+            await self._db.execute(
+                "DELETE FROM bubble_geometry WHERE chapter_id=?", (chapter_id,),
+            )
+            await self._db.executemany(
+                "INSERT INTO page_geometry (chapter_id, page_index, width, height) "
+                "VALUES (?,?,?,?)",
+                [(chapter_id, p["page_index"], p["width"], p["height"]) for p in pages],
+            )
+            if bubble_rows:
+                await self._db.executemany(
+                    "INSERT INTO bubble_geometry "
+                    "(chapter_id, page_index, bubble_idx, polygon, fit_box, erase_box, text_box) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    bubble_rows,
+                )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
 
     async def get_geometry(self, chapter_id: int) -> list[dict]:
         """Return chapter geometry as list of page dicts.
@@ -788,63 +859,33 @@ class SqliteStore:
     # ── Chapter archive state ─────────────────────────────────────
 
     async def set_prepared_done(self, chapter_id: int, page_count: int) -> None:
-        """Mark chapter as prepared. Resets render to 'none' so a stale
-        render does not survive a reprepare."""
+        """Mark chapter as prepared. Resets rendered=0 so a stale render does
+        not survive a reprepare."""
         await self._db.execute(
-            "UPDATE chapters SET "
-            "  page_count=?, render_state='none', render_job_id=NULL "
-            "WHERE id=?",
+            "UPDATE chapters SET page_count=?, rendered=0 WHERE id=?",
             (page_count, chapter_id),
         )
         await self._db.commit()
 
-    async def claim_render_job(self, chapter_id: int, job_id: str) -> bool:
-        """CAS render claim. Returns True iff this worker holds the slot."""
-        cur = await self._db.execute(
-            "UPDATE chapters SET "
-            "  render_state='rendering', render_job_id=? "
-            "WHERE id=? AND render_state <> 'rendering'",
-            (job_id, chapter_id),
-        )
-        await self._db.commit()
-        return (cur.rowcount or 0) > 0
-
-    async def finish_render_job(self, chapter_id: int, job_id: str) -> bool:
-        """Mark render done iff this worker still holds the job."""
-        cur = await self._db.execute(
-            "UPDATE chapters SET render_state='rendered' "
-            "WHERE id=? AND render_job_id=?",
-            (chapter_id, job_id),
-        )
-        await self._db.commit()
-        return (cur.rowcount or 0) > 0
-
-    async def fail_render_job(self, chapter_id: int, job_id: str) -> None:
-        """Mark render attempt as failed. tasks.last_error carries the message."""
+    async def set_rendered(self, chapter_id: int, rendered: bool) -> None:
+        """Flip the persistent `rendered` flag. The tasks table is the only
+        source of truth for render-in-flight; a single render worker is
+        enforced via `claim_task`."""
         await self._db.execute(
-            "UPDATE chapters SET render_state='failed' "
-            "WHERE id=? AND render_job_id=?",
-            (chapter_id, job_id),
-        )
-        await self._db.commit()
-
-    async def mark_render_stale(self, chapter_id: int) -> None:
-        """Move render_state to 'stale' if a render currently exists."""
-        await self._db.execute(
-            "UPDATE chapters SET render_state='stale' "
-            "WHERE id=? AND render_state IN ('rendered','failed')",
-            (chapter_id,),
+            "UPDATE chapters SET rendered=? WHERE id=?",
+            (1 if rendered else 0, chapter_id),
         )
         await self._db.commit()
 
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         cur = await self._db.execute(
-            "SELECT render_state, render_job_id, page_count "
-            "FROM chapters WHERE id=?",
+            "SELECT rendered, page_count FROM chapters WHERE id=?",
             (chapter_id,),
         )
         row = await cur.fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        return {"rendered": bool(row["rendered"]), "page_count": row["page_count"]}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -853,11 +894,15 @@ _FTS_SPECIAL = _re.compile(r"[\"'\(\)\*\:\^\-\+\{\}\[\]~]")
 
 
 def _derive_state(chapter_row: dict, tasks: list[dict]) -> tuple[str, str, str]:
-    """Derive (state, stage, error) from chapter row + tasks table."""
-    if chapter_row.get("render_state") == "rendered":
-        return "done", "", ""
-    if not tasks:
-        return "idle", "", ""
+    """Derive (state, stage, error) from chapter row + tasks table.
+
+    Priority:
+      running task         → running    (re-scan/re-render in progress)
+      task with attempts≥3 → error
+      pending task         → pending
+      chapters.rendered=1  → done
+      otherwise            → idle
+    """
     running = [t for t in tasks if t["claimed_by"]]
     if running:
         return "running", running[0]["stage"], ""
@@ -867,8 +912,9 @@ def _derive_state(chapter_row: dict, tasks: list[dict]) -> tuple[str, str, str]:
     pending = [t for t in tasks if not t["claimed_by"]]
     if pending:
         return "pending", pending[0]["stage"], ""
+    if chapter_row.get("rendered"):
+        return "done", "", ""
     return "idle", "", ""
-
 
 def _fts_escape(query: str) -> str:
     clean = _FTS_SPECIAL.sub(" ", query).strip()

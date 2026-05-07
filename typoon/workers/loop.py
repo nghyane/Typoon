@@ -13,7 +13,7 @@ Pipeline contract (RFC-001 + RFC-004):
   prepare → upload prepared.bnl + DB.set_prepared_done
   scan    → upload masks.npz + DB.save_geometry + DB.save_bubbles
   translate → DB.save_translations + DB.save_chapter_brief
-  render  → upload render.bnl + DB.finish_render_job
+  render  → upload render.bnl + DB.set_rendered(True)
 """
 
 from __future__ import annotations
@@ -167,7 +167,10 @@ async def _run_translate(
         await db.save_translations(chapter_id, translated.to_db_records())
         await db.complete_task(chapter_id, "translate")
         await db.enqueue(chapter_id, "render")
-        await db.mark_render_stale(chapter_id)
+        # Translation invalidates a previous render. New render task is
+        # already enqueued below; the persistent flag stays True until the
+        # next render finishes (so the UI keeps showing the old archive
+        # while a re-render is queued).
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="translate"))
     except Exception as e:
         logger.exception("translate failed chapter_id=%d", chapter_id)
@@ -184,11 +187,6 @@ async def _run_render(
     hook: Hook,
 ) -> None:
     hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage="render"))
-    job_id = uuid4().hex
-    if not await db.claim_render_job(chapter_id, job_id):
-        logger.info("render claim rejected chapter_id=%d", chapter_id)
-        await db.complete_task(chapter_id, "render")
-        return
     try:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
@@ -210,16 +208,15 @@ async def _run_render(
                     page_geoms=page_geoms,
                     masks=masks,
                     store=store,
-                    workdir=tmp,
+                    work=tmp,
                     hook=hook,
                 )
 
-        await db.finish_render_job(chapter_id, job_id)
+        await db.set_rendered(chapter_id, True)
         await db.complete_task(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="render"))
     except Exception as e:
         logger.exception("render failed chapter_id=%d", chapter_id)
-        await db.fail_render_job(chapter_id, job_id)
         await db.fail_task(chapter_id, "render", str(e))
         hook.on(StageFailed(chapter_id=chapter_id, project_id=project_id, stage="render", error=e))
 

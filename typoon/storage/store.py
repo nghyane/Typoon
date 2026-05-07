@@ -37,6 +37,12 @@ class Store(Protocol):
         self, slug: str, title: str, source_lang: str, target_lang: str,
         source_url: str | None = None,
     ) -> int: ...
+    async def update_project_metadata(
+        self, project_id: int, *,
+        title: str | None = None,
+        description: str | None = None,
+        cover_path: str | None = None,
+    ) -> None: ...
     async def get_all_chapters(self, project_id: int) -> list[dict]: ...
     async def get_chapters_with_status(self, project_id: int) -> list[dict]: ...
     async def get_chapter_with_status(self, chapter_id: int, project_id: int) -> dict | None: ...
@@ -45,32 +51,24 @@ class Store(Protocol):
     async def enqueue(self, chapter_id: int, stage: str) -> None: ...
     async def delete_chapter_data(self, chapter_id: int) -> None: ...
     async def get_or_create_chapter(
-        self, project_id: int, idx: float, source_url: str | None = None,
+        self, project_id: int, idx: float,
+        source_url: str | None = None,
+        title: str | None = None,
     ) -> int: ...
     async def delete_project(self, project_id: int) -> None: ...
     async def get_chapter_progress(self, chapter_id: int) -> dict | None: ...
 
     # ── Chapter archive state ─────────────────────────────────────
     async def set_prepared_done(self, chapter_id: int, page_count: int) -> None:
-        """Mark a chapter as prepared and reset render state to 'none'."""
+        """Mark a chapter as prepared and reset `rendered` to false."""
         ...
 
-    async def claim_render_job(self, chapter_id: int, job_id: str) -> bool:
-        """CAS: take the render slot. Returns True iff this worker won."""
-        ...
-
-    async def finish_render_job(self, chapter_id: int, job_id: str) -> bool:
-        """Mark render_state='rendered' iff the worker still holds the slot."""
-        ...
-
-    async def fail_render_job(self, chapter_id: int, job_id: str) -> None:
-        """Mark render attempt as failed. tasks.last_error carries the message."""
-        ...
-
-    async def mark_render_stale(self, chapter_id: int) -> None:
-        """Move render_state to 'stale' if a render currently exists."""
+    async def set_rendered(self, chapter_id: int, rendered: bool) -> None:
+        """Flip the persistent `rendered` flag. The tasks table is the only
+        source of truth for render-in-flight; render concurrency comes from
+        `claim_task('render', ...)`."""
         ...
 
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
-        """Return render_state/render_job_id/page_count, or None if missing."""
+        """Return {rendered: bool, page_count: int} or None if missing."""
         ...

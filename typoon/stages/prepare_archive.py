@@ -8,12 +8,12 @@ to the chapter's prepared key. The DB pointer flip
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import pack_and_upload, prepared_key
 from typoon.runs.artifacts import ArtifactSink
+from typoon.stages._workdir import workdir
 from typoon.stages.prepare import RawChapterSource, prepare_chapter
 
 
@@ -26,17 +26,12 @@ async def prepare_chapter_to_archive(
     strategy: str = "auto",
     source_label: str = "",
     artifacts: ArtifactSink | None = None,
-    workdir: Path | None = None,
+    work: Path | None = None,
 ) -> tuple[str, int]:
     """Run prepare → pack `prepared.bnl` → upload. Returns (key, page_count)."""
-    workdir_ctx = (
-        _NullCtx(workdir) if workdir else tempfile.TemporaryDirectory()
-    )
-    with workdir_ctx as tmp_str:
-        tmp = Path(tmp_str)
+    with workdir(work) as tmp:
         webp_dir = tmp / "prepared"
         archive_path = tmp / "prepared.bnl"
-        webp_dir.mkdir(parents=True, exist_ok=True)
 
         prepare_chapter(
             source,
@@ -54,17 +49,3 @@ async def prepare_chapter_to_archive(
             store=store,
         )
         return key, page_count
-
-
-class _NullCtx:
-    """Treat a caller-supplied workdir like a TemporaryDirectory ctx — no cleanup."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = str(path)
-
-    def __enter__(self) -> str:
-        Path(self._path).mkdir(parents=True, exist_ok=True)
-        return self._path
-
-    def __exit__(self, *_) -> None:
-        pass

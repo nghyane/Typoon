@@ -175,8 +175,9 @@ class Projects:
         """Reset chapters' derived state and enqueue scan. Returns count.
 
         Prepared archive is left intact: scan re-derives geometry/masks from
-        prepared pixels. Set page_count back via render_state='none' so the
-        UI shows the chapter as not-yet-rendered.
+        prepared pixels. delete_chapter_data also flips the `rendered` flag
+        back to false so the UI stops showing the old render until the new
+        one completes.
         """
         proj     = await self.require(slug)
         chapters = await self._db.get_all_chapters(proj["id"])

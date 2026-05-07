@@ -263,7 +263,7 @@ async def _pdf(slug: str, from_ch: float, to_ch: float, out: Path | None) -> Non
         store = LocalArtifactStore(paths.artifacts)
         for ch in chapters:
             state = await projects._db.get_chapter_render_state(ch["id"])
-            if state is None or state.get("render_state") != "rendered":
+            if state is None or not state["rendered"]:
                 console.print(f"[yellow]ch{ch['idx']:.4g}: not rendered, skipping[/]")
                 continue
             with tempfile.TemporaryDirectory() as tmp:

@@ -40,7 +40,7 @@ async def get_page(
         raise HTTPException(404, "Project not found")
 
     state = await db.get_chapter_render_state(chapter_id)
-    if state is None or state.get("render_state") != "rendered":
+    if state is None or not state["rendered"]:
         raise HTTPException(404, "Page not rendered yet")
 
     key = render_key(project_id, chapter_id)
