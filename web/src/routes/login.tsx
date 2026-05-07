@@ -1,21 +1,33 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
-import { getToken, loginUrl, takeLoginError } from '../lib/auth'
+import {
+  buildAuthorizeUrl, fetchAuthConfig, getToken, takeLoginError,
+} from '../lib/auth'
 
 function LoginPage() {
   const nav = useNavigate()
-  const [error, setError] = useState<string | null>(null)
+  const [error,    setError]    = useState<string | null>(null)
+  const [clientId, setClientId] = useState<string | null>(null)
+  const [busy,     setBusy]     = useState(false)
 
   useEffect(() => {
-    // OAuth bootstrap stores token in localStorage. If we have one,
-    // bounce straight to /projects.
     if (getToken()) {
       nav({ to: '/projects' })
       return
     }
     setError(takeLoginError())
+
+    fetchAuthConfig()
+      .then((cfg) => setClientId(cfg.discord_client_id))
+      .catch((e: Error) => setError(`Config error: ${e.message}`))
   }, [nav])
+
+  const onLogin = () => {
+    if (!clientId) return
+    setBusy(true)
+    window.location.href = buildAuthorizeUrl(clientId)
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
@@ -42,13 +54,14 @@ function LoginPage() {
             Đăng nhập bằng Discord để tiếp tục.
           </p>
 
-          <a
-            href={loginUrl()}
-            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] transition-all cursor-pointer"
+          <button
+            onClick={onLogin}
+            disabled={!clientId || busy}
+            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
           >
             <DiscordIcon />
-            Đăng nhập với Discord
-          </a>
+            {busy ? 'Đang chuyển hướng…' : 'Đăng nhập với Discord'}
+          </button>
 
           <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
             Bạn cần là thành viên Discord guild của Typoon để truy cập.

@@ -82,8 +82,11 @@ def verify_jwt(token: str, *, cfg: AuthConfig) -> int:
 # ── Discord OAuth ─────────────────────────────────────────────────────
 
 
-async def exchange_code(code: str, *, cfg: AuthConfig) -> str:
-    """OAuth code → access_token. Raises on failure."""
+async def exchange_code(code: str, *, redirect_uri: str, cfg: AuthConfig) -> str:
+    """OAuth code → access_token. The redirect_uri must match what the
+    SPA used at /oauth2/authorize — Discord rejects mismatches with 400.
+    Raises RuntimeError on failure.
+    """
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post(
             f"{DISCORD_API}/oauth2/token",
@@ -92,7 +95,7 @@ async def exchange_code(code: str, *, cfg: AuthConfig) -> str:
                 "client_secret": cfg.discord_client_secret,
                 "grant_type":    "authorization_code",
                 "code":          code,
-                "redirect_uri":  cfg.discord_redirect_uri,
+                "redirect_uri":  redirect_uri,
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
@@ -141,20 +144,6 @@ async def is_guild_member(access_token: str, guild_id: str) -> bool:
     return any(g.get("id") == guild_id for g in guilds)
 
 
-# ── OAuth URL builder (for web standalone) ────────────────────────────
-
-
-def build_authorize_url(
-    *, cfg: AuthConfig, state: str, scope: str = "identify email guilds",
-) -> str:
-    """Standalone-web entry. Discord Activity uses SDK.authorize() instead."""
-    from urllib.parse import urlencode
-    params = {
-        "client_id":     cfg.discord_client_id,
-        "redirect_uri":  cfg.discord_redirect_uri,
-        "response_type": "code",
-        "scope":         scope,
-        "state":         state,
-        "prompt":        "consent",
-    }
-    return f"{DISCORD_API}/oauth2/authorize?{urlencode(params)}"
+# OAuth URL builder lives in the SPA now — web/src/lib/auth.ts — because
+# the SPA owns the redirect_uri (web origin /auth/callback) and CSRF
+# state lifecycle. This module is a pure code→JWT exchanger.

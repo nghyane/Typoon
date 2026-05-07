@@ -50,18 +50,13 @@ class VisionAgentConfig(BaseModel):
 class AuthConfig(BaseModel):
     """Discord OAuth + JWT session config.
 
-    All values are read from environment variables in load_config() —
-    secrets do not belong in config.toml.
+    Secrets (client_secret, jwt_secret) come from environment variables
+    in load_config() — never the toml. The SPA owns the OAuth redirect
+    URI (it points at the web origin's /auth/callback), so the engine
+    does not store one.
     """
     discord_client_id:     str = ""
     discord_client_secret: str = ""
-    # Where Discord redirects after OAuth consent. Must match exactly the
-    # value registered in the Discord developer portal.
-    discord_redirect_uri:  str = "http://localhost:8000/api/auth/discord/callback"
-    # Where the auth callback redirects the browser after stashing the
-    # JWT in localStorage. Phase 1 dev: Vite dev server on a different
-    # port. Phase 2 prod: same-origin (engine serves the SPA at /).
-    web_url:               str = "http://localhost:5173/"
     # Optional gating: if set, user must be a member of this guild snowflake.
     discord_guild_id:      str = ""
     # Optional bootstrap admin: this discord_id is promoted to tier='admin'
@@ -129,8 +124,6 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     # missing so dev sessions don't get invalidated on restart.
     config.auth.discord_client_id     = os.environ.get("DISCORD_CLIENT_ID",     config.auth.discord_client_id)
     config.auth.discord_client_secret = os.environ.get("DISCORD_CLIENT_SECRET", config.auth.discord_client_secret)
-    config.auth.discord_redirect_uri  = os.environ.get("DISCORD_REDIRECT_URI",  config.auth.discord_redirect_uri)
-    config.auth.web_url               = os.environ.get("PUBLIC_WEB_URL",        config.auth.web_url)
     config.auth.discord_guild_id      = os.environ.get("DISCORD_GUILD_ID",      config.auth.discord_guild_id)
     config.auth.bootstrap_discord_id  = os.environ.get("TYPOON_BOOTSTRAP_DISCORD_ID", config.auth.bootstrap_discord_id)
     config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)

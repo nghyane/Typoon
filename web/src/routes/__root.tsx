@@ -3,10 +3,10 @@ import { AppLayout } from '../components/AppLayout'
 
 function RootShell() {
   const { location } = useRouterState()
-  // /login renders standalone — it must not be wrapped by AppLayout
-  // because AppLayout redirects to /login when not authenticated, which
-  // would create a loop.
-  if (location.pathname === '/login') {
+  // Auth-related pages render bare — they handle their own redirects and
+  // must not be wrapped by AppLayout (AppLayout redirects unauthenticated
+  // users to /login, which would create a loop on /login or /auth/callback).
+  if (location.pathname === '/login' || location.pathname.startsWith('/auth/')) {
     return <Outlet />
   }
   return (
