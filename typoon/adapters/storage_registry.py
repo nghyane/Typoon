@@ -58,11 +58,15 @@ class StorageRegistry:
 def build_storage(cfg: Config, paths: Paths) -> StorageRegistry:
     """Construct pipeline + public stores from config.
 
-    Raises if a backend's required credentials are missing.
+    Raises if a backend's required credentials are missing. The
+    `readers` map carries one entry per configured public backend;
+    chapters whose `archive_backend` no longer matches a configured
+    reader will fail loud at URL build time so the operator notices
+    and migrates / wipes them.
     """
     public = _build_public(cfg, paths)
     pipeline = _build_pipeline(cfg, paths)
-    readers = {public.backend_name: public}
+    readers: dict[str, ArtifactStore] = {public.backend_name: public}
     return StorageRegistry(pipeline=pipeline, public=public, readers=readers)
 
 

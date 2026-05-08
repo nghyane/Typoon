@@ -1,7 +1,7 @@
 """Run manifests, events, and materialized artifacts."""
 
 from .artifacts import ArtifactSink, FileArtifactSink, RunManifest
-from .events import CompositeSink, EventSink, Hook, HookAdapter, PageDone
+from .events import CompositeSink, EventSink, Hook, HookAdapter
 
 __all__ = [
     "ArtifactSink",

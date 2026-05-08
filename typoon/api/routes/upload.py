@@ -19,11 +19,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from typoon.adapters.blob_store import BlobStore
 from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_storage, get_bus, get_paths, get_store, require_user
 from typoon.adapters.storage_registry import StorageRegistry
+from typoon.api.deps import get_storage, get_bus, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut
 from typoon.api.routes._shared import chapter_out, require_project_owner
 from typoon.paths import Paths

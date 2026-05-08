@@ -268,11 +268,11 @@ the upstream URL, plus a matching prefix in the matching Python adapter's
 2. **Local copy**: created on the active wrangler account during the
    prototype. Project name `bunle-cdn`, deployment URL
    `bunle-cdn-16g.pages.dev`. The current default of
-   `cfg.storage.hf_cdn_prefix` points here so dev works without depending
+   `cfg.storage.public.cdn_prefix` points here so dev works without depending
    on the production CDN.
 
 Rollout to production: add the `/t/` route in the production
-`bunle-cdn` repo, deploy, then flip `TYPOON_HF_CDN_PREFIX` to
+`bunle-cdn` repo, deploy, then flip `TYPOON_CDN_PREFIX` to
 `https://cdn.bunle.cloud/t`. Old URLs still work — the change is
 backwards-compatible.
 
@@ -339,7 +339,7 @@ curl -sI https://bunle-cdn-16g.pages.dev/t/probe.txt | grep cf-cache-status
    `ArtifactStore`. Set `backend_name`. Write `put` to upload + return
    the platform-native id; `url(locator)` returns a stable public URL
    via the matching bunle CDN prefix.
-2. Register it in `typoon/api/deps.py:build_artifact_stores()` (one
+2. Register it in `typoon/adapters/storage_registry.py:_build_public()` (one
    `if cfg.storage.<creds>_set: stores[X.backend_name] = X(...)`).
 3. Add config fields in `StorageConfig`.
 4. Add a `case` in `bunle-cdn/[[path]].ts` if a new prefix is needed,

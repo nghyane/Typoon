@@ -1,18 +1,25 @@
 """App path resolution.
 
-Chapter pixel and mask data live in the artifact store under deterministic
-keys. The DB is Postgres, reached via `DATABASE_URL`, so no DB file lives
-in `~/.typoon/`. Filesystem layout:
+Chapter pixel and mask data live in BlobStore / ArtifactStore backends
+under deterministic keys. The DB is Postgres, reached via
+`DATABASE_URL`, so no DB file lives in `~/.typoon/`. Filesystem layout:
 
   config.toml        — app config
   models/            — model weights
-  artifacts/         — LocalArtifactStore root for prepared.bnl / render.bnl / masks.npz
-  exports/<slug>/    — user-facing output (PDF / zip / WebP) produced by `typoon export`
-  projects/<slug>/   — per-project metadata (cover image, etc.); no per-chapter dirs
+  artifacts/         — LocalBlobStore / LocalArtifactStore root.
+                       Single-host: holds prepared.bnl, masks.npz, and
+                       render.bnl (served via /files mount).
+                       Multi-host: only the storage role's API host
+                       fills this with pipeline blobs; render.bnl
+                       lives on the configured public store (HF/R2/...).
+  exports/<slug>/    — user-facing output (PDF / zip / WebP) produced
+                       by `typoon export`
+  projects/<slug>/   — per-project metadata (cover image, etc.);
+                       no per-chapter dirs
   cache/             — transient
 
 `ChapterPaths` is intentionally not exposed: chapter-level filesystem
-scoping is dead. Workers use `ArtifactStore` keys built by
+scoping is dead. Workers use BlobStore keys built by
 `adapters.chapter_archive` instead.
 """
 

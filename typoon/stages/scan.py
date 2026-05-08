@@ -15,7 +15,6 @@ from typoon.domain.scan import BubbleGeometry, PageGeometry
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import Hook, PageDone
 from typoon.vision.grouping import ScanState, export_groups
-from typoon.vision.types import DetectedGroup
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,6 @@ from __future__ import annotations
 import numpy as np
 
 from .ocr_backend import OcrBackend, create_ocr_backend
-from .types import DetectedGroup
 
 
 class Scanner:
