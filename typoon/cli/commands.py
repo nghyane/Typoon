@@ -285,6 +285,105 @@ def _open_in_viewer(path: Path) -> None:
         subprocess.Popen(["start", str(path)], shell=True)
 
 
+# ── debug-scan ────────────────────────────────────────────────────────
+
+
+@app.command("debug-scan")
+def debug_scan(
+    project_id: int = typer.Argument(..., help="Project id (DB row id)"),
+    chapter_id: int = typer.Argument(..., help="Chapter id (DB row id)"),
+    pages:      str = typer.Option("", "--pages", "-p",
+                                   help="Comma-separated page indices (default: all)"),
+    out:        Path = typer.Option(Path("debug-runs"), "--out", "-o",
+                                    help="Output root for run artifacts"),
+):
+    """Re-run scan on a prepared chapter and write grouping overlays.
+
+    Reads the existing prepared.bnl from the artifact store (no re-prepare),
+    runs the full vision pipeline (detect → group → OCR → filter), and writes:
+
+    \b
+      <out>/p<P>_c<C>/02_detect/page_*_detect.png      bounding boxes
+      <out>/p<P>_c<C>/03_group/page_*_groups.png       accepted groups
+      <out>/p<P>_c<C>/03_group/page_*_inspect.png      4-panel: units|groups|masks|erased
+      <out>/p<P>_c<C>/02_detect/page_*_state.json      raw ScanState dump
+    """
+    indices = [int(s) for s in pages.split(",") if s.strip()] if pages else None
+    asyncio.run(_debug_scan(project_id, chapter_id, indices, out))
+
+
+async def _debug_scan(
+    project_id: int,
+    chapter_id: int,
+    page_indices: list[int] | None,
+    out_root: Path,
+) -> None:
+    import tempfile
+
+    from ..adapters.artifact_store import LocalArtifactStore
+    from ..adapters.chapter_archive import prepared_key
+    from ..adapters.loader import open_prepared_reader
+    from ..adapters.vision_runtime import VisionRuntime
+    from ..config import load_config
+    from ..paths import Paths
+    from ..runs.artifacts import FileArtifactSink
+    from ..vision.inspect import state_to_dict, write_inspection
+
+    config, paths = load_config()
+    paths.ensure()
+
+    store    = LocalArtifactStore(paths.artifacts)
+    runtime, *_ = VisionRuntime.from_config(config, paths)
+    run_id   = f"p{project_id}_c{chapter_id}"
+    sink     = FileArtifactSink(out_root, run_id, clean=True)
+
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        try:
+            reader = await open_prepared_reader(
+                store, prepared_key(project_id, chapter_id), tmp,
+            )
+        except FileNotFoundError as e:
+            console.print(f"[red]prepared archive not found:[/] {e}")
+            raise typer.Exit(1)
+
+        with reader:
+            total = reader.page_count
+            targets = page_indices if page_indices is not None else list(range(total))
+            invalid = [i for i in targets if i < 0 or i >= total]
+            if invalid:
+                console.print(f"[red]invalid page indices:[/] {invalid} (chapter has {total} pages)")
+                raise typer.Exit(2)
+
+            for page_index in targets:
+                console.print(f"  scan page {page_index + 1}/{total}…")
+                image = reader.read_rgb(page_index)
+                state = runtime.scan_page_state(image)
+
+                # Per-stage overlays — same writers used by scan_chapter().
+                from ..stages.scan import _write_artifacts
+                _write_artifacts(sink, page_index, image, state)
+
+                # 4-panel inspect: text_boxes | groups | masks | erased.
+                # `write_inspection` writes one PNG per page; route it under 03_group.
+                write_inspection(
+                    sink.root / "03_group",
+                    page_index,
+                    image,
+                    state,
+                    runtime.eraser,
+                )
+
+                # Full state JSON for offline diagnosis (units, scopes, groups).
+                sink.write_json(
+                    "02_detect", f"page_{page_index:04d}_full_state.json",
+                    state_to_dict(page_index, "", state),
+                )
+
+    console.print(f"\n[green]✓[/] artifacts → {sink.root}")
+    console.print(f"  open: [dim]{sink.root}/03_group[/]")
+
+
 # ── status ────────────────────────────────────────────────────────────
 
 

@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS bubbles (
     bubble_idx   INTEGER NOT NULL,
     source_text  TEXT NOT NULL,
     confidence   REAL NOT NULL,
+    shape_kind   TEXT NOT NULL DEFAULT 'dialogue'
+        CHECK (shape_kind IN ('dialogue','burst')),
     source_text_tsv tsvector
         GENERATED ALWAYS AS (to_tsvector('simple', source_text)) STORED,
     PRIMARY KEY (chapter_id, page_index, bubble_idx)

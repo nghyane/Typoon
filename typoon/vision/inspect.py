@@ -10,7 +10,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .draw import CYAN, GREEN, PALETTE, RED, YELLOW, hstack, label, rect, write_rgb
+from .draw import CYAN, GREEN, MAGENTA, PALETTE, RED, YELLOW, hstack, label, rect, write_rgb
 from .types import ScanState
 
 
@@ -71,6 +71,7 @@ def state_to_dict(page_index: int, image_file: str, state: ScanState) -> dict[st
                 "reject_reason": g.reject_reason,
                 "scoped": g.scoped,
                 "scope_idx": g.scope_idx,
+                "shape_kind": g.shape_kind,
             }
             for g in state.groups
         ],
@@ -94,9 +95,12 @@ def _draw_groups(image: np.ndarray, state: ScanState) -> np.ndarray:
     for g in state.groups:
         if not g.accepted:
             continue
-        rect(out, g.fit_bbox, GREEN, 3)
+        color = MAGENTA if g.shape_kind == "burst" else GREEN
+        rect(out, g.fit_bbox, color, 3)
         text = g.text[:24].replace("\n", " ")
-        label(out, g.fit_bbox[0], g.fit_bbox[1], f"g{g.idx} {g.confidence:.2f} {text}", GREEN)
+        tag = "BURST " if g.shape_kind == "burst" else ""
+        label(out, g.fit_bbox[0], g.fit_bbox[1],
+              f"g{g.idx} {tag}{g.confidence:.2f} {text}", color)
     return out
 
 

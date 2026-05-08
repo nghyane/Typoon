@@ -71,7 +71,12 @@ def subgroup_blocks(
             and container[1] <= (boxes[i][1] + boxes[i][3]) / 2 <= container[3]
             for i in indices
         )
-        if all_inside:
+        # Don't short-circuit when there is a large vertical gap between
+        # subsequent units inside the same scope: a peanut/eared bubble may
+        # contain a small "ear" cluster (e.g. "OF COURSE!") plus the main
+        # body, both fully inside the YOLO box, but separated by white
+        # space that should split them into distinct groups.
+        if all_inside and large_gaps == 0:
             return [list(indices)]
         if n <= 6 and uh / ch < 0.85 and uw / cw < 0.98 and large_gaps == 0:
             return [list(indices)]
@@ -257,6 +262,7 @@ def export_groups(state: ScanState) -> list[DetectedGroup]:
             unit_indices=list(g.unit_indices),
             accepted=g.accepted,
             reject_reason=g.reject_reason,
+            shape_kind=g.shape_kind,
         ))
     return out
 

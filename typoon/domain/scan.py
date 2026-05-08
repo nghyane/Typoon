@@ -24,6 +24,7 @@ class Bubble:
     source_text: str
     confidence:  float
     box:         Box
+    shape_kind:  str = "dialogue"   # dialogue | burst
 
 
 @dataclass(frozen=True)

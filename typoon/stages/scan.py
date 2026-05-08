@@ -29,10 +29,11 @@ class ScanOutput:
         """Flat list for store.save_bubbles()."""
         return [
             {
-                "page_index": b.page_index,
-                "bubble_idx": b.idx,
+                "page_index":  b.page_index,
+                "bubble_idx":  b.idx,
                 "source_text": b.source_text,
-                "confidence": b.confidence,
+                "confidence":  b.confidence,
+                "shape_kind":  b.shape_kind,
             }
             for b in self.chapter.all_bubbles
         ]
@@ -141,6 +142,7 @@ def _extract_page(
                 erase=g.erase_box,
                 text=g.text_box,
             ),
+            shape_kind=g.shape_kind,
         )
         bubbles.append(b)
         geom_list.append(BubbleGeometry(
@@ -173,7 +175,7 @@ def _write_artifacts(
     image: np.ndarray,
     state: ScanState,
 ) -> None:
-    from typoon.vision.draw import PALETTE, RED, label, rect
+    from typoon.vision.draw import MAGENTA, PALETTE, RED, label, rect
     from typoon.vision.inspect import state_to_dict
 
     info = state_to_dict(index, "", state)
@@ -181,7 +183,10 @@ def _write_artifacts(
 
     vis = image.copy()
     for i, g in enumerate(state.groups):
-        color = PALETTE[i % len(PALETTE)] if g.accepted else RED
+        if g.shape_kind == "burst" and g.accepted:
+            color = MAGENTA
+        else:
+            color = PALETTE[i % len(PALETTE)] if g.accepted else RED
         if g.fit_bbox:
             rect(vis, g.fit_bbox, color, thickness=1)
         groups_info = info.get("groups") or []
@@ -194,5 +199,6 @@ def _write_artifacts(
     for i, g in enumerate(state.groups):
         if not g.accepted:
             continue
-        rect(vis2, g.fit_bbox, PALETTE[i % len(PALETTE)], thickness=1)
+        color = MAGENTA if g.shape_kind == "burst" else PALETTE[i % len(PALETTE)]
+        rect(vis2, g.fit_bbox, color, thickness=1)
     artifacts.write_image("03_group", f"page_{index:04d}_groups.png", vis2)

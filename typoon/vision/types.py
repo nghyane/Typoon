@@ -54,6 +54,7 @@ class DetectedGroup:
     unit_indices: list[int] = field(default_factory=list)
     accepted: bool = True
     reject_reason: str | None = None
+    shape_kind: str = "dialogue"   # dialogue | burst
 
 
 
@@ -101,6 +102,7 @@ class GroupState:
     reject_reason: str | None = None
     scope_bbox: list[int] | None = None
     median_angle: float = 0.0
+    shape_kind: str = "dialogue"   # dialogue | burst
 
 
 @dataclass

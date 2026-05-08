@@ -126,6 +126,7 @@ def _build_scanned(
                 erase=bg.erase_box,
                 text=bg.text_box,
             ),
+            shape_kind=bd.get("shape_kind", "dialogue"),
         ))
 
     pages = tuple(
