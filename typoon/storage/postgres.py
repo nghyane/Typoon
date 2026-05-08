@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -1041,12 +1041,13 @@ class PostgresStore:
 
     async def create_api_token(
         self, user_id: int, name: str, prefix: str, token_hash: str,
+        *, scopes: list[str] | None = None,
     ) -> int:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO api_tokens (user_id, name, prefix, token_hash) "
-                "VALUES ($1, $2, $3, $4) RETURNING id",
-                user_id, name, prefix, token_hash,
+                "INSERT INTO api_tokens (user_id, name, prefix, token_hash, scopes) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                user_id, name, prefix, token_hash, list(scopes or []),
             )
         return row["id"]
 
@@ -1054,7 +1055,7 @@ class PostgresStore:
         """Active tokens for a user, newest first. No hash, no plaintext."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, name, prefix, "
+                "SELECT id, name, prefix, scopes, "
                 f"  {_ts('last_used')}, {_ts('created_at')} "
                 "FROM api_tokens "
                 "WHERE user_id=$1 AND revoked_at IS NULL "
@@ -1073,7 +1074,7 @@ class PostgresStore:
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, user_id, token_hash "
+                "SELECT id, user_id, token_hash, scopes "
                 "FROM api_tokens "
                 "WHERE prefix=$1 AND revoked_at IS NULL",
                 prefix,

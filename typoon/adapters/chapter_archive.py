@@ -25,7 +25,7 @@ from pathlib import Path
 
 import bunle
 
-from typoon.adapters.artifact_store import ArtifactStore
+from typoon.adapters.blob_store import BlobStore
 
 
 def archive_token(project_id: int, chapter_id: int, salt: bytes) -> str:
@@ -64,7 +64,7 @@ async def pack_and_upload(
     src_dir: Path,
     archive_path: Path,
     key: str,
-    store: ArtifactStore,
+    store: BlobStore,
 ) -> tuple[int, str]:
     """Pack `src_dir` into a Bunle archive at `archive_path`, validate, upload.
 

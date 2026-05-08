@@ -106,6 +106,11 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     name        TEXT NOT NULL,                  -- user-visible label
     token_hash  TEXT NOT NULL UNIQUE,           -- bcrypt(plaintext)
     prefix      TEXT NOT NULL,                  -- first 8 chars, shown in UI
+    -- Coarse capability marker; default empty array = ordinary client
+    -- token (read-only access to the user's projects). Tokens with
+    -- 'worker' grant access to /api/blobs/* for inter-worker pipeline
+    -- traffic; mint these only for trusted infrastructure.
+    scopes      TEXT[] NOT NULL DEFAULT '{}',
     last_used   TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     revoked_at  TIMESTAMPTZ

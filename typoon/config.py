@@ -87,26 +87,38 @@ class AuthConfig(BaseModel):
     session_days:          int = 30
 
 
-class StorageConfig(BaseModel):
-    """Where rendered archives live + how their public URL is built.
+class PublicStoreConfig(BaseModel):
+    """Where rendered archives live (browser-facing)."""
+    type:       str = "local"          # local | huggingface
+    # huggingface
+    hf_repo:    str = "nghyane/mcz-cdn"
+    hf_token:   str = ""               # env: HF_TOKEN
+    cdn_prefix: str = "https://bunle-cdn-16g.pages.dev/t"
 
-    Multiple backends can coexist: every chapter row carries which
-    backend its archive lives in, so a primary switch never strands old
-    chapters. The `primary` field selects which store the worker writes
-    new renders to.
 
-    `archive_path_salt` is the HMAC salt used to derive unguessable
-    render archive paths (see `adapters.chapter_archive.archive_token`).
-    Empty = derive deterministically from `auth.jwt_secret` so the dev
-    setup does not require yet another env var.
+class PipelineStoreConfig(BaseModel):
+    """Where pipeline blobs (prepared, masks) live for cross-worker sharing.
+
+    Single-host: type=local, all workers share the same disk via the
+    same LocalBlobStore. Multi-host: type=http pointing at the storage
+    role's /api/blobs endpoint, typically reached via tailnet so the
+    transport stays on the encrypted mesh.
     """
-    primary:           str = "local"   # local | huggingface | …
-    archive_path_salt: str = ""
+    type:           str = "local"      # local | http
+    # http
+    http_base_url:  str = ""           # e.g. http://100.72.203.52:8000
+    http_api_token: str = ""           # env: TYPOON_PIPELINE_TOKEN
 
-    # huggingface backend (config block; only active when hf_token set)
-    hf_repo:           str = "nghyane/mcz-cdn"
-    hf_token:          str = ""        # env: HF_TOKEN
-    hf_cdn_prefix:     str = "https://bunle-cdn-16g.pages.dev/t"
+
+class StorageConfig(BaseModel):
+    """Two-tier storage: public (browser) + pipeline (workers).
+
+    `archive_path_salt` is the HMAC salt for unguessable render archive
+    keys. Empty → derived from auth.jwt_secret in load_config().
+    """
+    public:            PublicStoreConfig   = Field(default_factory=PublicStoreConfig)
+    pipeline:          PipelineStoreConfig = Field(default_factory=PipelineStoreConfig)
+    archive_path_salt: str = ""
 
 
 class Config(BaseSettings):
@@ -224,11 +236,14 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     # Storage: env wins over toml. Salt defaults to a derivation of
     # `jwt_secret` so dev doesn't need a separate env var; prod can
     # rotate it independently via TYPOON_ARCHIVE_PATH_SALT.
-    config.storage.primary           = os.environ.get("TYPOON_STORAGE_PRIMARY", config.storage.primary)
-    config.storage.hf_repo           = os.environ.get("TYPOON_HF_REPO",         config.storage.hf_repo)
-    config.storage.hf_token          = os.environ.get("HF_TOKEN",               config.storage.hf_token)
-    config.storage.hf_cdn_prefix     = os.environ.get("TYPOON_HF_CDN_PREFIX",   config.storage.hf_cdn_prefix)
-    config.storage.archive_path_salt = os.environ.get(
+    config.storage.public.type           = os.environ.get("TYPOON_PUBLIC_TYPE",       config.storage.public.type)
+    config.storage.public.hf_repo        = os.environ.get("TYPOON_HF_REPO",           config.storage.public.hf_repo)
+    config.storage.public.hf_token       = os.environ.get("HF_TOKEN",                 config.storage.public.hf_token)
+    config.storage.public.cdn_prefix     = os.environ.get("TYPOON_CDN_PREFIX",        config.storage.public.cdn_prefix)
+    config.storage.pipeline.type         = os.environ.get("TYPOON_PIPELINE_TYPE",     config.storage.pipeline.type)
+    config.storage.pipeline.http_base_url  = os.environ.get("TYPOON_PIPELINE_BASE_URL", config.storage.pipeline.http_base_url)
+    config.storage.pipeline.http_api_token = os.environ.get("TYPOON_PIPELINE_TOKEN",    config.storage.pipeline.http_api_token)
+    config.storage.archive_path_salt     = os.environ.get(
         "TYPOON_ARCHIVE_PATH_SALT", config.storage.archive_path_salt,
     )
     if not config.storage.archive_path_salt:

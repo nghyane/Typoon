@@ -140,16 +140,18 @@ def api(
 @app.command()
 def work(
     role:        str = typer.Option("full", "--role", "-r",
-                                    help="vision | llm | api | full"),
+                                    help="vision | llm | api | storage | full"),
     concurrency: int = typer.Option(3, "--concurrency", "-c",
                                     help="Translate workers (only used when role=llm/full)"),
 ):
     """Start pipeline workers for a deployment role.
 
-    full    everything in-process (default; dev on Mac)
-    vision  scan + render only (GPU node)
-    llm     translate only (LLM I/O node)
-    api     no worker loops (API server only)
+    full     everything in-process (default; dev on Mac)
+    vision   scan + render only (GPU node)
+    llm      translate only (LLM I/O node)
+    api      no worker loops (API server only)
+    storage  no worker loops; storage role lives in the API process
+             (run `typoon api` with TYPOON_API_ROLE=storage)
     """
     asyncio.run(_work(role, concurrency))
 
@@ -165,7 +167,9 @@ async def _work(role: str, concurrency: int) -> None:
     try:
         role_enum = Role(role)
     except ValueError:
-        console.print(f"[red]invalid role: {role}[/] — use vision|llm|api|full")
+        console.print(
+            f"[red]invalid role: {role}[/] — use vision|llm|api|storage|full",
+        )
         raise typer.Exit(1)
     console.print(f"[dim]workers started role={role_enum} translate×{concurrency} — Ctrl+C to stop[/]")
     await run_workers(role_enum, translate_concurrency=concurrency)
@@ -196,7 +200,7 @@ async def _export(
     open_: bool,
 ) -> None:
     from ..adapters.projects import Projects
-    from ..api.deps import build_artifact_stores
+    from ..adapters.storage_registry import build_storage
     from ..config import load_config
     from ..paths import Paths
     from ..stages.export import ChapterRef, export_chapters
@@ -240,7 +244,7 @@ async def _export(
             return
 
         config, paths = load_config()
-        stores = build_artifact_stores(config, paths)
+        stores = build_storage(config, paths)
         dest = (to / slug) if to else (paths.exports / slug)
 
         results = await export_chapters(
@@ -321,7 +325,7 @@ async def _debug_scan(
 ) -> None:
     import tempfile
 
-    from ..api.deps import build_artifact_stores
+    from ..adapters.storage_registry import build_storage
     from ..adapters.chapter_archive import prepared_key
     from ..adapters.loader import open_prepared_reader
     from ..adapters.vision_runtime import VisionRuntime
@@ -334,7 +338,7 @@ async def _debug_scan(
     paths.ensure()
 
     # debug-scan reads prepared.bnl which is always on the local store.
-    store    = build_artifact_stores(config, paths).reader("local")
+    store    = build_storage(config, paths).pipeline
     runtime, *_ = VisionRuntime.from_config(config, paths)
     run_id   = f"p{project_id}_c{chapter_id}"
     sink     = FileArtifactSink(out_root, run_id, clean=True)
@@ -407,7 +411,7 @@ def prune(
 
 async def _prune(days: int, dry_run: bool) -> None:
     from ..adapters.chapter_archive import masks_key, prepared_key
-    from ..api.deps import build_artifact_stores
+    from ..adapters.storage_registry import build_storage
     from ..config import load_config
     from ..storage import PostgresStore
 
@@ -420,7 +424,7 @@ async def _prune(days: int, dry_run: bool) -> None:
             console.print(f"[dim]No chapters older than {days}d to prune.[/]")
             return
 
-        local = build_artifact_stores(config, paths).reader("local")
+        local = build_storage(config, paths).pipeline
         prepared_freed = 0
         masks_freed = 0
         prepared_count = 0

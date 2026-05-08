@@ -1,93 +1,59 @@
-"""ArtifactStore — opaque blob storage for chapter archives.
+"""ArtifactStore — public-facing variant of BlobStore.
 
-Multi-backend by design. Every backend implements four operations:
+Adds `url(locator, version)` for browser fetch. Used for the rendered
+chapter archive (`render.bnl`) which is the only artifact a user
+consumes. Pipeline blobs (prepared, masks) use BlobStore directly —
+they never get a public URL.
 
-  put(key, src) -> locator    persist file, return locator string
-  get(locator, dest)          fetch file by locator
-  delete(locator) -> bool     idempotent delete
-  url(locator, *, version)    pure-function URL for browser fetch
+Implementations:
 
-`key` is the desired storage path/name. Path-based backends (Local, HF,
-R2, S3) use it directly and return it as the locator. Opaque-id backends
-(Google Drive, future) use it as a hint and return a file_id.
+  LocalArtifactStore        wraps LocalBlobStore + serves via FastAPI
+                            /files static mount (dev only)
+  HuggingFaceArtifactStore  uploads to a public HF dataset; URLs go
+                            through the bunle CDN /t/ route
 
-Stages and API never inspect locators — they just persist them on the
-chapter row and pass them back to the matching reader on URL build.
-This keeps URL build a pure-function string concat (no IO on hot path).
-
-Browser reads are served exclusively via the bunle CDN
-(https://bunle-cdn-16g.pages.dev/<prefix>/<locator>) so all backends
-share one CORS+edge-cache configuration. The CDN routes by prefix:
-  /t/   →  HuggingFaceArtifactStore  (HF dataset)
-  /r/   →  R2 public bucket          (future)
-  /d/   →  Google Drive file_id      (future)
-LocalArtifactStore returns app-relative `/files/<key>` for dev only.
+Multi-backend coexistence: each chapter row stores `archive_backend` +
+`archive_locator`, so chapters rendered against an old backend keep
+serving after the operator switches the primary writer.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 from pathlib import Path
 from typing import Protocol
 
+from typoon.adapters.blob_store import BlobStore, LocalBlobStore
 
-class ArtifactStore(Protocol):
-    backend_name: str   # short identifier persisted on chapter row
 
-    async def put(self, key: str, src: Path) -> str: ...
-    async def get(self, locator: str, dest: Path) -> None: ...
-    async def delete(self, locator: str) -> bool: ...
-    def url(self, locator: str, *, version: str = "") -> str: ...
+class ArtifactStore(BlobStore, Protocol):
+    """BlobStore that also exposes a public URL for browser fetch."""
+
+    def url(self, locator: str, *, version: str = "") -> str:
+        """Return a public URL for the locator. Version is appended as
+        a query string (`?v=…`) to bust CDN cache on re-renders without
+        changing the cache-key path."""
+        ...
 
 
 # ── Local — disk + FastAPI StaticFiles ────────────────────────────────
 
 
-class LocalArtifactStore:
-    """File-based store served by the FastAPI `/files` mount.
+class LocalArtifactStore(LocalBlobStore):
+    """LocalBlobStore + URL via FastAPI `/files` static mount.
 
-    Locator == key (path). Use for dev or for server-only artifacts
-    (prepared, masks) whose bytes never leave the API host.
+    Public URLs resolve through the same FastAPI app (`/files/<key>`).
+    Use only for dev or single-host deploys; in multi-host the local
+    artifact store on each worker is private to that host and will not
+    be reachable by a browser.
     """
 
     backend_name = "local"
 
     def __init__(self, root: Path, *, public_base: str = "/files") -> None:
-        self._root = Path(root)
+        super().__init__(root)
         self._public_base = public_base.rstrip("/")
-
-    def _path(self, key: str) -> Path:
-        if key.startswith("/") or ".." in Path(key).parts:
-            raise ValueError(f"invalid artifact key: {key!r}")
-        return self._root / key
-
-    async def put(self, key: str, src: Path) -> str:
-        dest = self._path(key)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(f"{dest.name}.tmp.{os.getpid()}")
-        try:
-            shutil.copyfile(src, tmp)
-            with tmp.open("rb") as f:
-                os.fsync(f.fileno())
-            os.replace(tmp, dest)
-        finally:
-            if tmp.exists():
-                tmp.unlink(missing_ok=True)
-        return key
-
-    async def get(self, locator: str, dest: Path) -> None:
-        src = self._path(locator)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dest)
-
-    async def delete(self, locator: str) -> bool:
-        path = self._path(locator)
-        if not path.exists():
-            return False
-        path.unlink(missing_ok=True)
-        return True
 
     def url(self, locator: str, *, version: str = "") -> str:
         qs = f"?v={version}" if version else ""
@@ -103,10 +69,6 @@ class HuggingFaceArtifactStore:
     Files land at `<path_prefix>/<key>` inside the configured HF dataset
     repo. The bunle CDN's `/t/` route proxies that path with edge cache,
     Range support, and CORS — this class never serves bytes itself.
-
-    Locator == key (path inside the typoon namespace, without
-    `path_prefix`). The class joins the prefix on every call so the
-    locator stored in DB stays portable if `path_prefix` ever changes.
     """
 
     backend_name = "huggingface"
@@ -167,44 +129,20 @@ class HuggingFaceArtifactStore:
         except Exception:
             return False
 
+    async def exists(self, locator: str) -> bool:
+        from huggingface_hub import HfFileSystem
+        try:
+            fs = HfFileSystem(token=self._token)
+            return await asyncio.to_thread(
+                fs.exists,
+                f"datasets/{self._repo}/{self._hf_path(locator)}",
+            )
+        except Exception:
+            return False
+
+    async def aclose(self) -> None:
+        return None
+
     def url(self, locator: str, *, version: str = "") -> str:
         qs = f"?v={version}" if version else ""
         return f"{self._cdn_prefix}/{locator}{qs}"
-
-
-# ── Registry ──────────────────────────────────────────────────────────
-
-
-class ArtifactStoreRegistry:
-    """Holds one writer (primary) + one reader per known backend.
-
-    The primary store handles all writes from worker pipelines. Reads
-    dispatch by backend name persisted on the chapter row, so chapters
-    rendered against one backend keep working after the operator
-    switches the primary — no migration required.
-    """
-
-    __slots__ = ("_primary", "_by_name")
-
-    def __init__(self, primary: ArtifactStore, all_stores: dict[str, ArtifactStore]) -> None:
-        if primary.backend_name not in all_stores:
-            all_stores = {**all_stores, primary.backend_name: primary}
-        self._primary = primary
-        self._by_name = all_stores
-
-    @property
-    def writer(self) -> ArtifactStore:
-        return self._primary
-
-    @property
-    def primary_name(self) -> str:
-        return self._primary.backend_name
-
-    def reader(self, backend: str) -> ArtifactStore:
-        try:
-            return self._by_name[backend]
-        except KeyError as e:
-            raise RuntimeError(
-                f"No artifact store configured for backend {backend!r}. "
-                f"Available: {sorted(self._by_name)}",
-            ) from e

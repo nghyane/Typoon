@@ -1,9 +1,36 @@
 # Render archive storage & CDN
 
-How the rendered chapter archive (`render.bnl`) reaches a browser. Every
-other artifact (prepared.bnl, masks.npz, geometry, briefs) stays
-server-side. Read this if you change archive storage, add a backend, or
-debug a CDN issue.
+How the rendered chapter archive (`render.bnl`) reaches a browser, and
+how pipeline artifacts (`prepared.bnl`, `masks.npz`) move between
+workers across hosts. Read this if you change archive storage, add a
+backend, debug a CDN issue, or set up a multi-host deployment.
+
+## Two storage tiers
+
+Typoon separates storage by audience:
+
+| Tier | Type | Visible to | Holds |
+|---|---|---|---|
+| `pipeline` | `BlobStore` (no URL) | Workers only | prepared.bnl, masks.npz |
+| `public`   | `ArtifactStore` (has URL) | Browser via CDN | render.bnl |
+
+`ArtifactStore` extends `BlobStore` with `url(locator, *, version)` for
+browser fetch. Pipeline blobs never get a public URL — they ship
+between workers over the trusted plane.
+
+The two tiers are configured independently:
+
+```toml
+[storage.public]
+type = "huggingface"     # or "local" for dev
+hf_repo = "nghyane/mcz-cdn"
+cdn_prefix = "https://cdn.bunle.cloud/t"
+
+[storage.pipeline]
+type = "http"            # or "local" for dev
+http_base_url = "http://100.72.203.52:8000"   # tailnet
+# http_api_token via env: TYPOON_PIPELINE_TOKEN
+```
 
 ## Goals
 
@@ -64,17 +91,31 @@ Opaque-id backends store whatever the platform returned at upload time.
 ## Code surface
 
 ```
-typoon/adapters/artifact_store.py
-  ArtifactStore Protocol
+typoon/adapters/blob_store.py
+  BlobStore Protocol
     backend_name: str (class const)
     put(key, src) -> locator        # async, returns persisted locator
     get(locator, dest)              # async
     delete(locator) -> bool         # async
-    url(locator, *, version: str)   # SYNC + zero IO
+    exists(locator) -> bool         # async, cheap presence check
+    aclose()                        # async, releases pooled clients
+  LocalBlobStore                    # filesystem-backed
 
-  LocalArtifactStore        backend_name="local"        URL=/files/<key>
-  HuggingFaceArtifactStore  backend_name="huggingface"  URL=cdn/t/<key>
-  ArtifactStoreRegistry     writer + reader(name) dispatch
+typoon/adapters/artifact_store.py
+  ArtifactStore(BlobStore) Protocol
+    url(locator, *, version: str)   # SYNC + zero IO; browser-facing
+  LocalArtifactStore                # extends LocalBlobStore + url()
+  HuggingFaceArtifactStore          # HF Hub upload, bunle CDN url
+
+typoon/adapters/http_blob_store.py
+  HttpBlobStore                     # /api/blobs over HTTP, tailnet-friendly
+
+typoon/adapters/storage_registry.py
+  StorageRegistry(pipeline, public, readers)
+  build_storage(cfg, paths) -> StorageRegistry
+
+typoon/api/routes/blobs.py
+  PUT/GET/HEAD/DELETE /api/blobs/<key>  # require_worker scope
 
 typoon/adapters/chapter_archive.py
   archive_token(p, c, salt) -> 16-char base64url HMAC
@@ -82,11 +123,12 @@ typoon/adapters/chapter_archive.py
   pack_and_upload(...) -> (page_count, locator)
 
 typoon/api/deps.py
-  build_artifact_stores(cfg, paths) -> ArtifactStoreRegistry
-  get_artifact_stores() FastAPI dep
+  get_storage() -> StorageRegistry   # FastAPI dep
+  require_worker                     # API token with scope='worker'
 
 typoon/storage/postgres.py
   chapters table: archive_backend TEXT, archive_locator TEXT
+  api_tokens table: scopes TEXT[]
   set_archive(chapter_id, backend, locator)
 
 typoon/api/routes/projects.py
@@ -96,14 +138,81 @@ typoon/api/routes/projects.py
 
 ## Coexistence model
 
-Each chapter row carries `(archive_backend, archive_locator)`. Workers
-write through `stores.writer` (the configured `storage.primary`). API
-URL build dispatches via `stores.reader(row.archive_backend)`, so old
-chapters keep working when the operator switches the primary — no
-migration required.
+Each chapter row carries `(archive_backend, archive_locator)`. The
+render worker writes through `stores.public`. The API URL builder
+dispatches via `stores.reader(row.archive_backend)`, so chapters
+rendered against an old public store keep working after the operator
+switches the primary — no migration required.
 
-Server-only artifacts (prepared.bnl, masks.npz) always live on the
-local store regardless of primary, since they never leave the API host.
+Pipeline blobs (prepared.bnl, masks.npz) live on `stores.pipeline`
+exclusively — they never leak to a browser and the public CDN never
+sees them.
+
+## Multi-host topology (production)
+
+Workers, API, storage can all run on different hosts joined into a
+single Tailscale tailnet. Pipeline traffic never leaves the mesh; only
+the rendered archive crosses to the public CDN.
+
+```
+[ Browser ] → [ Cloudflare/bunle CDN ] → [ HuggingFace dataset ]   render.bnl
+                                                  ↑
+                                                  │ render worker upload
+[ User ] → HTTPS → [ API host(s) ] ────────── (tailnet) ──────────┐
+                          ↓ Postgres                                │
+                     [ DB host ]                                    │
+                                                                    │
+[ Vision worker(s) ]  [ LLM worker(s) ]  [ Storage host (typoon api │
+        │                    │              with TYPOON_API_ROLE=   │
+        └─────────tailnet────┴────────── storage) ]    ←──── /api/blobs/...
+                                          serves prepared/masks
+```
+
+Concrete role wiring:
+
+```bash
+# Storage host — serves /api/blobs and stores pipeline blobs on disk
+TYPOON_API_ROLE=storage typoon api
+
+# API host — user-facing routes, no blob endpoint
+TYPOON_API_ROLE=api typoon api
+
+# Vision worker — scan + render; reads pipeline via tailnet, writes
+# render.bnl to the public store
+TYPOON_PIPELINE_TYPE=http \
+TYPOON_PIPELINE_BASE_URL=http://100.72.203.52:8000 \
+TYPOON_PIPELINE_TOKEN=typ_… \
+TYPOON_PUBLIC_TYPE=huggingface \
+HF_TOKEN=hf_… \
+typoon work --role vision
+
+# LLM worker — translate; reads pipeline via tailnet for image context
+TYPOON_PIPELINE_TYPE=http \
+TYPOON_PIPELINE_BASE_URL=http://100.72.203.52:8000 \
+TYPOON_PIPELINE_TOKEN=typ_… \
+typoon work --role llm
+```
+
+The single-host dev case stays the same (everything `local`), so
+nothing in the day-to-day workflow changes for solo development.
+
+## Worker API tokens
+
+`/api/blobs/*` rejects ordinary user JWTs — workers carry an API token
+(`typ_…`) issued with `scopes = ['worker']`. Mint one via the existing
+token issuance flow with the new `scopes` argument:
+
+```python
+from typoon.api.auth_token import issue_api_token
+tok_id, plaintext, prefix = await issue_api_token(
+    db, user_id=admin_id, name="vision-worker-1", scopes=["worker"],
+)
+```
+
+The token only authorizes pipeline blob access; it cannot reach
+projects/upload/admin endpoints because the scope is checked
+explicitly by `require_worker`. Standard user-facing API tokens have
+empty scopes and remain unable to hit `/api/blobs/*`.
 
 ## Lifecycle of intermediate caches
 

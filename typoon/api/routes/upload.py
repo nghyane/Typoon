@@ -19,10 +19,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from typoon.adapters.artifact_store import ArtifactStore
+from typoon.adapters.blob_store import BlobStore
 from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_artifact_writer, get_bus, get_paths, get_store, require_user
+from typoon.api.deps import get_storage, get_bus, get_paths, get_store, require_user
+from typoon.adapters.storage_registry import StorageRegistry
 from typoon.api.models import ChapterOut
 from typoon.api.routes._shared import chapter_out, require_project_owner
 from typoon.paths import Paths
@@ -54,11 +55,11 @@ async def upload_chapter(
     files:      list[UploadFile] = File(..., description="ZIP/CBZ/PDF or multiple images"),
     idx:        float | None     = Form(None, description="Chapter number; auto from filename if omitted"),
     title:      str | None       = Form(None),
-    user:  dict          = Depends(require_user),
-    db:    Store         = Depends(get_store),
-    paths: Paths         = Depends(get_paths),
-    store: ArtifactStore = Depends(get_artifact_writer),
-    bus:   EventBus      = Depends(get_bus),
+    user:  dict            = Depends(require_user),
+    db:    Store           = Depends(get_store),
+    paths: Paths           = Depends(get_paths),
+    stores: StorageRegistry = Depends(get_storage),
+    bus:   EventBus         = Depends(get_bus),
 ):
     """Ingest one chapter from an uploaded archive, PDF, or image set.
 
@@ -90,7 +91,7 @@ async def upload_chapter(
     loop = asyncio.get_running_loop()
     hook: Hook = EventHook(bus, loop)
 
-    pj = Projects(db, paths, store)
+    pj = Projects(db, paths, stores.pipeline)
 
     # Unpack to temp, ingest, return chapter status.
     with tempfile.TemporaryDirectory(prefix="typoon-upload-") as tmp:

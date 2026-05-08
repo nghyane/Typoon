@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from typoon.adapters.artifact_store import ArtifactStore
+from typoon.adapters.blob_store import BlobStore
 from typoon.adapters.chapter_archive import pack_and_upload, prepared_key
 from typoon.runs.artifacts import ArtifactSink
 from typoon.stages._workdir import workdir
@@ -22,7 +22,7 @@ async def prepare_chapter_to_archive(
     *,
     project_id: int,
     chapter_id: int,
-    store: ArtifactStore,
+    store: BlobStore,
     strategy: str = "auto",
     source_label: str = "",
     artifacts: ArtifactSink | None = None,

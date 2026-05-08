@@ -54,17 +54,20 @@ def looks_like_api_token(raw: str) -> bool:
 
 
 async def issue_api_token(
-    db: Store, *, user_id: int, name: str,
+    db: Store, *, user_id: int, name: str, scopes: list[str] | None = None,
 ) -> tuple[int, str, str]:
     """Create a token row and return (id, plaintext, prefix).
 
     The plaintext is the only time the caller can see it. Caller is
     responsible for showing it to the user once and then discarding.
+    `scopes` defaults to no extra capability (a regular client token);
+    pass `["worker"]` to mint a token usable on /api/blobs/*.
     """
     plaintext, prefix = _generate_token()
     token_hash = _hash(plaintext)
     token_id = await db.create_api_token(
         user_id=user_id, name=name, prefix=prefix, token_hash=token_hash,
+        scopes=scopes,
     )
     return token_id, plaintext, prefix
 
@@ -97,6 +100,10 @@ async def verify_api_token(db: Store, raw: str) -> dict | None:
             user = await db.get_user(cand["user_id"])
             if user is None:
                 return None
+            # Propagate token scopes onto the user dict so downstream
+            # gates (require_worker) can authorize without another
+            # round-trip.
+            user["scopes"] = list(cand.get("scopes") or [])
             # Fire-and-forget last_used bump. Don't await — keeps
             # request latency at the bcrypt verify cost only.
             try:

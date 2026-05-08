@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from typoon.adapters.artifact_store import ArtifactStore
+from typoon.adapters.blob_store import BlobStore
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
@@ -47,21 +47,24 @@ class ProjectStatus:
 
 
 class Projects:
-    def __init__(self, db: Store, paths: Paths, store: ArtifactStore) -> None:
-        self._db    = db
-        self._paths = paths
-        self._store = store
+    def __init__(self, db: Store, paths: Paths, pipeline: BlobStore) -> None:
+        self._db       = db
+        self._paths    = paths
+        # The pipeline blob store is where prepared.bnl lives. Public
+        # render archives are written by the render worker, not here.
+        self._pipeline = pipeline
 
     @classmethod
     async def open(cls) -> "Projects":
-        from typoon.api.deps import build_artifact_stores
+        from typoon.adapters.storage_registry import build_storage
         from typoon.config import load_config
         config, paths = load_config()
         paths.ensure()
+        stores = build_storage(config, paths)
         return cls(
             await PostgresStore.open(config.database_url),
             paths,
-            build_artifact_stores(config, paths).writer,
+            stores.pipeline,
         )
 
     async def close(self) -> None:
@@ -133,7 +136,7 @@ class Projects:
             _key, n = await prepare_chapter_to_archive(
                 LocalSource(source_dir),
                 project_id=project_id, chapter_id=chapter_id,
-                store=self._store,
+                store=self._pipeline,
                 strategy=strategy,
             )
         except Exception as e:
@@ -227,7 +230,7 @@ class Projects:
                     _key, n = await prepare_chapter_to_archive(
                         LocalSource(src_dir),
                         project_id=proj["id"], chapter_id=chapter_id,
-                        store=self._store,
+                        store=self._pipeline,
                     )
                     await self._db.set_prepared_done(chapter_id, n)
                     hook.on(ChapterDownloaded(

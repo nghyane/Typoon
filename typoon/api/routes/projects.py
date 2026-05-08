@@ -7,10 +7,10 @@ import shutil
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from typoon.adapters.artifact_store import ArtifactStoreRegistry
+from typoon.adapters.storage_registry import StorageRegistry
 from typoon.adapters.projects import Projects
 from typoon.api.deps import (
-    get_artifact_stores, get_paths, get_store, require_user,
+    get_storage, get_paths, get_store, require_user,
 )
 from typoon.api.models import ChapterOut, ProjectOut
 from typoon.api.routes._shared import (
@@ -229,7 +229,7 @@ async def patch_settings(
 
 
 def _archive_url(
-    stores: ArtifactStoreRegistry, row: dict,
+    stores: StorageRegistry, row: dict,
 ) -> str | None:
     """Build the public archive URL for a chapter row.
 
@@ -258,7 +258,7 @@ async def list_chapters(
     project_id: int,
     user:   dict                  = Depends(require_user),
     db:     Store                 = Depends(get_store),
-    stores: ArtifactStoreRegistry = Depends(get_artifact_stores),
+    stores: StorageRegistry = Depends(get_storage),
 ):
     await require_project_view(project_id, user, db)
     rows = await db.get_chapters_with_status(project_id)
@@ -271,7 +271,7 @@ async def get_chapter(
     chapter_id: int,
     user:   dict                  = Depends(require_user),
     db:     Store                 = Depends(get_store),
-    stores: ArtifactStoreRegistry = Depends(get_artifact_stores),
+    stores: StorageRegistry = Depends(get_storage),
 ):
     await require_project_view(project_id, user, db)
     data = await db.get_chapter_with_status(chapter_id, project_id)
@@ -284,10 +284,10 @@ async def get_chapter(
 async def delete_chapter(
     project_id: int,
     chapter_id: int,
-    user:   dict                  = Depends(require_user),
-    db:     Store                 = Depends(get_store),
-    paths:  Paths                 = Depends(get_paths),
-    stores: ArtifactStoreRegistry = Depends(get_artifact_stores),
+    user:   dict            = Depends(require_user),
+    db:     Store           = Depends(get_store),
+    paths:  Paths           = Depends(get_paths),
+    stores: StorageRegistry = Depends(get_storage),
 ):
     await require_project_owner(project_id, user, db)
     ch = await require_chapter(project_id, chapter_id, db)
@@ -299,10 +299,9 @@ async def delete_chapter(
         raise HTTPException(404, "Chapter not found")
 
     from typoon.adapters.chapter_archive import prepared_key, masks_key
-    # Server-only artifacts always live on the local store.
-    local = stores.reader("local")
-    await local.delete(prepared_key(project_id, chapter_id))
-    await local.delete(masks_key(project_id, chapter_id))
+    # Pipeline blobs (prepared, masks) live on the worker pipeline store.
+    await stores.pipeline.delete(prepared_key(project_id, chapter_id))
+    await stores.pipeline.delete(masks_key(project_id, chapter_id))
     # Public render archive: dispatch to whichever backend wrote it.
     if archive_backend and archive_locator:
         try:
@@ -318,11 +317,11 @@ async def redo_chapter(
     user:   dict                  = Depends(require_user),
     db:     Store                 = Depends(get_store),
     paths:  Paths                 = Depends(get_paths),
-    stores: ArtifactStoreRegistry = Depends(get_artifact_stores),
+    stores: StorageRegistry = Depends(get_storage),
 ):
     proj = await require_project_owner(project_id, user, db)
     ch   = await require_chapter(project_id, chapter_id, db)
-    await Projects(db, paths, stores.writer).redo(proj["slug"], [ch["idx"]])
+    await Projects(db, paths, stores.pipeline).redo(proj["slug"], [ch["idx"]])
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return chapter_out(data, archive_url=_archive_url(stores, data))
 

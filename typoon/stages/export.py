@@ -24,7 +24,7 @@ import bunle
 import img2pdf
 from PIL import Image
 
-from typoon.adapters.artifact_store import ArtifactStoreRegistry
+from typoon.adapters.storage_registry import StorageRegistry
 
 ExportFormat = Literal["pdf", "zip", "webp"]
 _MANIFEST_NAME = "manifest.json"
@@ -50,7 +50,7 @@ async def export_chapters(
     slug: str,
     chapters: list[ChapterRef],
     formats: list[ExportFormat],
-    stores: ArtifactStoreRegistry,
+    stores: StorageRegistry,
     dest_dir: Path,
     force: bool = False,
 ) -> list[ExportedChapter]:

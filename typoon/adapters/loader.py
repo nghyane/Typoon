@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from typoon.adapters.artifact_store import ArtifactStore
+from typoon.adapters.blob_store import BlobStore
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain import scan, translate
 from typoon.domain.prepared import Chapter as PreparedChapter
@@ -20,7 +20,7 @@ from typoon.storage import Store
 
 
 async def open_prepared_reader(
-    store: ArtifactStore,
+    store: BlobStore,
     prepared_key: str,
     workdir: Path,
 ) -> PreparedReader:
