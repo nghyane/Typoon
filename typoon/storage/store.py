@@ -139,6 +139,13 @@ class Store(Protocol):
         `claim_task('render', ...)`."""
         ...
 
+    async def set_archive(
+        self, chapter_id: int, backend: str, locator: str,
+    ) -> None:
+        """Record where this chapter's render archive lives. Read by the
+        API to dispatch URL build through the matching ArtifactStore."""
+        ...
+
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         """Return {rendered: bool, page_count: int} or None if missing."""
         ...

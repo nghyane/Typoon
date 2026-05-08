@@ -69,15 +69,22 @@ CREATE INDEX IF NOT EXISTS idx_projects_owner_shared
     ON projects (owner_id) WHERE shared = TRUE;
 
 CREATE TABLE IF NOT EXISTS chapters (
-    id           BIGSERIAL PRIMARY KEY,
-    project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    idx          DOUBLE PRECISION NOT NULL,
-    title        TEXT,
-    source_url   TEXT,
-    rendered     BOOLEAN NOT NULL DEFAULT FALSE,
-    page_count   INTEGER NOT NULL DEFAULT 0,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id              BIGSERIAL PRIMARY KEY,
+    project_id      BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    idx             DOUBLE PRECISION NOT NULL,
+    title           TEXT,
+    source_url      TEXT,
+    rendered        BOOLEAN NOT NULL DEFAULT FALSE,
+    page_count      INTEGER NOT NULL DEFAULT 0,
+    -- Where the rendered archive lives (NULL until first render done).
+    -- archive_backend is the artifact_store.backend_name; archive_locator
+    -- is the opaque locator that store returned at upload time. URL build
+    -- in the API dispatches by backend so multi-backend coexists without
+    -- migration.
+    archive_backend TEXT,
+    archive_locator TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(project_id, idx)
 );
 

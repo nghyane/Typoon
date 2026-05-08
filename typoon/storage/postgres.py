@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -75,6 +75,7 @@ _TS_PROJECTS = (
 )
 _TS_CHAPTERS = (
     "id, project_id, idx, title, source_url, rendered, page_count, "
+    "archive_backend, archive_locator, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_USERS = (
@@ -357,15 +358,17 @@ class PostgresStore:
             tasks = await self.get_tasks(ch["id"])
             state, stage, error = _derive_state(ch, tasks)
             result.append({
-                "chapter_id": ch["id"],
-                "project_id": ch["project_id"],
-                "idx":        ch["idx"],
-                "title":      ch.get("title"),
-                "state":      state,
-                "stage":      stage,
-                "page_count": int(ch.get("page_count") or 0),
-                "error":      error,
-                "updated_at": ch.get("updated_at") or ch.get("created_at"),
+                "chapter_id":      ch["id"],
+                "project_id":      ch["project_id"],
+                "idx":             ch["idx"],
+                "title":           ch.get("title"),
+                "state":           state,
+                "stage":           stage,
+                "page_count":      int(ch.get("page_count") or 0),
+                "error":           error,
+                "updated_at":      ch.get("updated_at") or ch.get("created_at"),
+                "archive_backend": ch.get("archive_backend"),
+                "archive_locator": ch.get("archive_locator"),
             })
         return result
 
@@ -379,16 +382,18 @@ class PostgresStore:
         state, stage, error = _derive_state(ch, tasks)
         progress = await self.get_chapter_progress(chapter_id)
         return {
-            "chapter_id": chapter_id,
-            "project_id": project_id,
-            "idx":        ch["idx"],
-            "title":      ch.get("title"),
-            "state":      state,
-            "stage":      stage,
-            "page_count": int(ch.get("page_count") or 0),
-            "error":      error,
-            "updated_at": ch.get("updated_at") or ch.get("created_at"),
-            "progress":   progress and {
+            "chapter_id":      chapter_id,
+            "project_id":      project_id,
+            "idx":             ch["idx"],
+            "title":           ch.get("title"),
+            "state":           state,
+            "stage":           stage,
+            "page_count":      int(ch.get("page_count") or 0),
+            "error":           error,
+            "updated_at":      ch.get("updated_at") or ch.get("created_at"),
+            "archive_backend": ch.get("archive_backend"),
+            "archive_locator": ch.get("archive_locator"),
+            "progress":        progress and {
                 "stage":      progress["stage"],
                 "page_index": progress["page_index"],
                 "page_total": progress["page_total"],
@@ -553,7 +558,9 @@ class PostgresStore:
                     f"DELETE FROM {table} WHERE chapter_id=$1", chapter_id,
                 )
             await conn.execute(
-                "UPDATE chapters SET rendered=FALSE WHERE id=$1", chapter_id,
+                "UPDATE chapters SET rendered=FALSE, "
+                "archive_backend=NULL, archive_locator=NULL "
+                "WHERE id=$1", chapter_id,
             )
 
     # ── Geometry ──────────────────────────────────────────────────
@@ -1133,6 +1140,21 @@ class PostgresStore:
             await conn.execute(
                 "UPDATE chapters SET rendered=$1 WHERE id=$2",
                 rendered, chapter_id,
+            )
+
+    async def set_archive(
+        self, chapter_id: int, backend: str, locator: str,
+    ) -> None:
+        """Persist where this chapter's render archive lives.
+
+        Called by the render worker right before set_rendered(True). The
+        API uses these to dispatch URL build through the right backend.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chapters SET archive_backend=$1, archive_locator=$2 "
+                "WHERE id=$3",
+                backend, locator, chapter_id,
             )
 
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
