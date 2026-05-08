@@ -146,6 +146,12 @@ class Store(Protocol):
         API to dispatch URL build through the matching ArtifactStore."""
         ...
 
+    async def list_prunable_chapters(self, older_than_days: int) -> list[dict]:
+        """Return rendered chapters whose intermediate cache (prepared
+        + masks) can be deleted; used by `typoon prune`. Each row has
+        chapter_id and project_id keys."""
+        ...
+
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         """Return {rendered: bool, page_count: int} or None if missing."""
         ...

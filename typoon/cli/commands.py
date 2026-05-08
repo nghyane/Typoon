@@ -386,6 +386,85 @@ async def _debug_scan(
     console.print(f"  open: [dim]{sink.root}/03_group[/]")
 
 
+# ── prune ─────────────────────────────────────────────────────────────
+
+
+@app.command()
+def prune(
+    days:    int  = typer.Option(30, "--days", "-d",
+                                 help="Prune cache for chapters not updated in N days"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted, don't delete"),
+):
+    """Delete intermediate caches (prepared.bnl + masks.npz) for old chapters.
+
+    Render archives are NOT touched — readers keep working. The cache
+    files only matter for redo: a redo within the TTL is fast (uses
+    cache); after prune, redo takes longer but still works because the
+    pipeline re-derives everything from the (re-)provided source.
+    """
+    asyncio.run(_prune(days, dry_run))
+
+
+async def _prune(days: int, dry_run: bool) -> None:
+    from ..adapters.chapter_archive import masks_key, prepared_key
+    from ..api.deps import build_artifact_stores
+    from ..config import load_config
+    from ..storage import PostgresStore
+
+    config, paths = load_config()
+    paths.ensure()
+    db = await PostgresStore.open(config.database_url)
+    try:
+        rows = await db.list_prunable_chapters(days)
+        if not rows:
+            console.print(f"[dim]No chapters older than {days}d to prune.[/]")
+            return
+
+        local = build_artifact_stores(config, paths).reader("local")
+        prepared_freed = 0
+        masks_freed = 0
+        prepared_count = 0
+        masks_count = 0
+        for r in rows:
+            pid, cid = r["project_id"], r["chapter_id"]
+            for key, label in (
+                (prepared_key(pid, cid), "prepared"),
+                (masks_key(pid, cid), "masks"),
+            ):
+                path = paths.artifacts / key
+                if not path.exists():
+                    continue
+                size = path.stat().st_size
+                if dry_run:
+                    console.print(f"[dim]would delete[/] {key} ({_human(size)})")
+                else:
+                    await local.delete(key)
+                if label == "prepared":
+                    prepared_count += 1
+                    prepared_freed += size
+                else:
+                    masks_count += 1
+                    masks_freed += size
+
+        verb = "would free" if dry_run else "freed"
+        console.print(
+            f"\n[green]✓[/] {verb} "
+            f"[bold]{_human(prepared_freed + masks_freed)}[/] "
+            f"({prepared_count} prepared, {masks_count} masks "
+            f"across {len(rows)} chapter{'s' if len(rows) != 1 else ''})",
+        )
+    finally:
+        await db.close()
+
+
+def _human(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024:
+            return f"{n:.1f}{unit}" if unit != "B" else f"{n}{unit}"
+        n /= 1024
+    return f"{n:.1f}TiB"
+
+
 # ── status ────────────────────────────────────────────────────────────
 
 

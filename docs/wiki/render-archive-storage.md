@@ -105,6 +105,33 @@ migration required.
 Server-only artifacts (prepared.bnl, masks.npz) always live on the
 local store regardless of primary, since they never leave the API host.
 
+## Lifecycle of intermediate caches
+
+Three artifacts per chapter, distinct lifetimes:
+
+| File | Visibility | When written | When deleted |
+|---|---|---|---|
+| `prepared.bnl` | server-only | prepare stage | `typoon prune` (TTL, opt-in) |
+| `masks.npz` | server-only | scan stage | `typoon prune` (TTL, opt-in) |
+| `render.bnl` | public (browser) | render stage | only on chapter delete or redo |
+
+prepared/masks are **caches**, not state — the pipeline can rebuild
+them from the source upload + DB. Keeping them is purely a redo
+optimization. After a chapter has been rendered and not touched for a
+while, they can be safely freed.
+
+```bash
+typoon prune --days 30                # delete cache older than 30d
+typoon prune --days 30 --dry-run      # show what would be deleted, don't
+```
+
+The render archive is never touched by prune; readers keep working.
+Redo after prune still works — it just re-runs the prepare/scan steps
+from the source, so it's slower than a cached redo.
+
+Schedule: run weekly or monthly via cron / launchd / systemd timer
+depending on host. Or do it manually when disk pressure shows up.
+
 ## Bunle CDN
 
 The CDN is a single Cloudflare Pages Function. Source:

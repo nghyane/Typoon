@@ -1157,6 +1157,25 @@ class PostgresStore:
                 backend, locator, chapter_id,
             )
 
+    async def list_prunable_chapters(self, older_than_days: int) -> list[dict]:
+        """Chapters whose intermediate cache (prepared.bnl + masks.npz) can
+        be deleted to free disk.
+
+        Criteria: rendered=TRUE and not touched in `older_than_days`.
+        The render archive itself is not touched — only the cache files
+        used to skip re-prepare/re-mask on a redo.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id AS chapter_id, project_id "
+                "FROM chapters "
+                "WHERE rendered = TRUE "
+                "  AND updated_at < NOW() - make_interval(days => $1) "
+                "ORDER BY updated_at",
+                older_than_days,
+            )
+        return [dict(r) for r in rows]
+
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
