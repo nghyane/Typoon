@@ -138,8 +138,7 @@ async def _run_scan(
             result.masks.pack(masks_path)
             await store.put_file(masks_key(project_id, chapter_id), masks_path)
 
-        await db.complete_task(chapter_id, "scan")
-        await db.enqueue(chapter_id, "translate")
+        await db.advance_task(chapter_id, "scan", "translate")
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="scan"))
     except Exception as e:
         logger.exception("scan failed chapter_id=%d", chapter_id)
@@ -165,8 +164,7 @@ async def _run_translate(
 
         await db.save_chapter_brief(chapter_id, brief.to_dict())
         await db.save_translations(chapter_id, translated.to_db_records())
-        await db.complete_task(chapter_id, "translate")
-        await db.enqueue(chapter_id, "render")
+        await db.advance_task(chapter_id, "translate", "render")
         # Translation invalidates a previous render. New render task is
         # already enqueued below; the persistent flag stays True until the
         # next render finishes (so the UI keeps showing the old archive

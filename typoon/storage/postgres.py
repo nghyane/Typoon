@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re as _re
+from datetime import datetime, timezone
 
 import asyncpg
 
@@ -21,7 +22,21 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "5"
+
+# Hard cap on retry attempts per task. Deterministic crashes (NameError,
+# malformed input, persistent OOM) must not loop forever — the worker
+# would otherwise burn CPU on a dead chapter and starve the queue. After
+# this many failures the task is dead-lettered: visible to status views
+# (last_error populated) but never re-claimed until an operator redoes it.
+MAX_TASK_ATTEMPTS = 3
+
+# How long a claim is considered "live". After this, the task is
+# re-claimable by another worker (see claim_task) AND status views
+# treat it as pending again rather than running. Without this, a worker
+# that crashes hard (OOM, killed) would leave its chapter forever
+# stuck on "running" in the UI even though no one is working on it.
+STALE_CLAIM_SECONDS = 10 * 60
 
 
 def _read_schema_sql() -> str:
@@ -405,24 +420,29 @@ class PostgresStore:
 
         FOR UPDATE SKIP LOCKED gives us a single-statement claim with no
         race recheck needed — the row we get back is definitively ours.
+        Tasks that exceeded MAX_TASK_ATTEMPTS are dead-lettered and never
+        re-claimed; an operator must redo or delete them.
+        Stale claims (worker crashed without releasing) older than
+        STALE_CLAIM_SECONDS become re-claimable.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 UPDATE tasks
                 SET    claimed_by = $1, claimed_at = NOW()
                 WHERE  ctid = (
                     SELECT ctid FROM tasks
                     WHERE  stage = $2
+                      AND  attempts < $3
                       AND  (claimed_by IS NULL
-                            OR claimed_at < NOW() - INTERVAL '10 minutes')
+                            OR claimed_at < NOW() - INTERVAL '{STALE_CLAIM_SECONDS} seconds')
                     ORDER  BY chapter_id
                     FOR UPDATE SKIP LOCKED
                     LIMIT  1
                 )
                 RETURNING chapter_id
                 """,
-                worker_id, stage,
+                worker_id, stage, MAX_TASK_ATTEMPTS,
             )
         return row["chapter_id"] if row else None
 
@@ -431,6 +451,26 @@ class PostgresStore:
             await conn.execute(
                 "DELETE FROM tasks WHERE chapter_id=$1 AND stage=$2",
                 chapter_id, stage,
+            )
+
+    async def advance_task(
+        self, chapter_id: int, completed_stage: str, next_stage: str,
+    ) -> None:
+        """Atomically complete a stage and enqueue the next one.
+
+        Without this, a chapter briefly has zero tasks between
+        complete_task and enqueue, which surfaces as an "idle" flicker
+        in the UI on every stage handoff. One transaction → no gap.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM tasks WHERE chapter_id=$1 AND stage=$2",
+                chapter_id, completed_stage,
+            )
+            await conn.execute(
+                "INSERT INTO tasks (chapter_id, stage) VALUES ($1,$2) "
+                "ON CONFLICT (chapter_id, stage) DO NOTHING",
+                chapter_id, next_stage,
             )
 
     async def fail_task(self, chapter_id: int, stage: str, error: str) -> None:
@@ -475,11 +515,13 @@ class PostgresStore:
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute("DELETE FROM bubbles WHERE chapter_id=$1", chapter_id)
             await conn.executemany(
-                "INSERT INTO bubbles (chapter_id, page_index, bubble_idx, source_text, confidence) "
-                "VALUES ($1,$2,$3,$4,$5)",
+                "INSERT INTO bubbles (chapter_id, page_index, bubble_idx, "
+                "source_text, confidence, shape_kind) "
+                "VALUES ($1,$2,$3,$4,$5,$6)",
                 [
                     (chapter_id, b["page_index"], b["bubble_idx"],
-                     b["source_text"], b["confidence"])
+                     b["source_text"], b["confidence"],
+                     b.get("shape_kind", "dialogue"))
                     for b in bubbles
                 ],
             )
@@ -487,7 +529,7 @@ class PostgresStore:
     async def get_bubbles(self, chapter_id: int) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT page_index, bubble_idx, source_text, confidence "
+                "SELECT page_index, bubble_idx, source_text, confidence, shape_kind "
                 "FROM bubbles WHERE chapter_id=$1 "
                 "ORDER BY page_index, bubble_idx",
                 chapter_id,
@@ -1156,21 +1198,51 @@ def _derive_state(chapter_row: dict, tasks: list[dict]) -> tuple[str, str, str]:
     """Derive (state, stage, error) from chapter row + tasks list.
 
     Priority:
-      running task         → running
-      task with attempts≥3 → error
-      pending task         → pending
-      chapters.rendered    → done
-      otherwise            → idle
+      live claim                            → running
+      task with attempts ≥ MAX_TASK_ATTEMPTS → error
+      stale claim or unclaimed               → pending
+      chapters.rendered                      → done
+      otherwise                              → idle
+
+    A claim older than STALE_CLAIM_SECONDS is treated as the worker
+    having died — the task will be re-claimed by claim_task on the next
+    poll, so the UI should show "pending" rather than a misleading
+    "running" with no progress.
     """
-    running = [t for t in tasks if t["claimed_by"]]
+    now = datetime.now(timezone.utc)
+
+    def is_live_claim(t: dict) -> bool:
+        if not t["claimed_by"]:
+            return False
+        claimed_at = _parse_iso(t.get("claimed_at"))
+        if claimed_at is None:
+            return True  # unparseable → treat as live, fail safe
+        return (now - claimed_at).total_seconds() < STALE_CLAIM_SECONDS
+
+    running = [t for t in tasks if is_live_claim(t)]
     if running:
         return "running", running[0]["stage"], ""
-    failed = [t for t in tasks if t["last_error"] and t["attempts"] >= 3]
+    failed = [t for t in tasks if t["last_error"] and t["attempts"] >= MAX_TASK_ATTEMPTS]
     if failed:
         return "error", failed[0]["stage"], failed[0]["last_error"] or ""
-    pending = [t for t in tasks if not t["claimed_by"]]
+    pending = [t for t in tasks]  # everything left = unclaimed or stale-claim
     if pending:
         return "pending", pending[0]["stage"], ""
     if chapter_row.get("rendered"):
         return "done", "", ""
     return "idle", "", ""
+
+
+def _parse_iso(value) -> datetime | None:
+    """Parse the API's RFC 3339 string back to an aware datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    text = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
