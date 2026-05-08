@@ -2,11 +2,13 @@ import { useState, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Image as ImageIcon, X } from 'lucide-react'
-import { api } from '../lib/api'
-import { cn } from '../lib/cn'
-import { Modal } from './Modal'
-import { btn, input, label, Spinner } from './ui'
-import { toast } from './Toaster'
+import { api } from '@shared/api/api'
+import { cn } from '@shared/lib/cn'
+import { Modal } from '@shared/ui/Modal'
+import { Button } from '@shared/ui/Button'
+import { LangPicker } from '@shared/ui/LangPicker'
+import { input, label, Spinner } from '@shared/ui/primitives'
+import { toast } from '@shared/ui/Toaster'
 
 interface Props { open: boolean; onClose: () => void }
 
@@ -75,27 +77,26 @@ export function CreateProjectDialog({ open, onClose }: Props) {
       size="md"
       footer={
         <>
-          <button
+          <Button
             onClick={() => { reset(); onClose() }}
             disabled={create.isPending}
-            className={btn.secondary}
           >
             Huỷ
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => create.mutate()}
             disabled={create.isPending || !title.trim()}
-            className={btn.primary}
           >
             {create.isPending && <Spinner />}
             Tạo dự án
-          </button>
+          </Button>
         </>
       }
     >
       <div className="px-5 py-4 space-y-4">
         <div>
-          <label className={label}>Tên dự án <span className="text-red-500">*</span></label>
+          <label className={label}>Tên dự án <span className="text-error-text">*</span></label>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -135,23 +136,23 @@ export function CreateProjectDialog({ open, onClose }: Props) {
             <div
               onClick={() => !create.isPending && fileRef.current?.click()}
               className={cn(
-                'w-20 h-28 rounded-lg border-2 border-dashed flex items-center justify-center shrink-0 overflow-hidden bg-zinc-50 cursor-pointer transition-colors',
-                previewUrl ? 'border-zinc-200' : 'border-zinc-200 hover:border-zinc-300',
+                'w-20 h-28 rounded-md border-2 border-dashed flex items-center justify-center shrink-0 overflow-hidden bg-surface-2 cursor-pointer transition-colors',
+                previewUrl ? 'border-transparent' : 'border-border-soft hover:border-text-subtle',
               )}
             >
               {previewUrl ? (
                 <img src={previewUrl} alt="cover preview" className="w-full h-full object-cover" />
               ) : (
-                <ImageIcon size={20} className="text-zinc-300" />
+                <ImageIcon size={20} className="text-text-subtle" />
               )}
             </div>
-            <div className="flex-1 text-xs text-zinc-500 pt-1">
+            <div className="flex-1 text-xs text-text-subtle pt-1">
               {coverFile ? (
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{coverFile.name}</span>
+                  <span className="truncate text-text-muted">{coverFile.name}</span>
                   <button
                     onClick={() => { setCoverFile(null); if (fileRef.current) fileRef.current.value = '' }}
-                    className="size-5 rounded hover:bg-zinc-100 flex items-center justify-center cursor-pointer text-zinc-400 hover:text-zinc-700"
+                    className="size-5 rounded-xs hover:bg-hover flex items-center justify-center cursor-pointer text-text-subtle hover:text-text"
                   >
                     <X size={12} />
                   </button>
@@ -160,7 +161,7 @@ export function CreateProjectDialog({ open, onClose }: Props) {
                 <>
                   Kéo thả hoặc <button
                     onClick={() => fileRef.current?.click()}
-                    className="underline cursor-pointer text-zinc-700"
+                    className="underline cursor-pointer text-text-muted hover:text-text"
                   >chọn ảnh</button>.
                   <br />
                   Sẽ được tự động cắt theo tỷ lệ 2:3.
@@ -178,32 +179,5 @@ export function CreateProjectDialog({ open, onClose }: Props) {
         </div>
       </div>
     </Modal>
-  )
-}
-
-function LangPicker({
-  value, onChange, options,
-}: {
-  value:    string
-  onChange: (v: string) => void
-  options:  { code: string; label: string }[]
-}) {
-  return (
-    <div className="flex gap-1">
-      {options.map((l) => (
-        <button
-          key={l.code}
-          onClick={() => onChange(l.code)}
-          className={cn(
-            'h-9 flex-1 rounded-lg text-xs font-medium cursor-pointer transition-colors border',
-            value === l.code
-              ? 'bg-zinc-900 text-white border-zinc-900'
-              : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-300',
-          )}
-        >
-          {l.label}
-        </button>
-      ))}
-    </div>
   )
 }

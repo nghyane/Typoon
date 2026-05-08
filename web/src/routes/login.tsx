@@ -4,13 +4,13 @@ import { AlertCircle, ExternalLink } from 'lucide-react'
 import {
   buildAuthorizeUrl, fetchAuthConfig, getToken, takeLoginError,
   type AuthConfig,
-} from '../lib/auth'
+} from '@features/auth/auth'
 
 function LoginPage() {
   const nav = useNavigate()
-  const [error,  setError]  = useState<string | null>(null)
-  const [cfg,    setCfg]    = useState<AuthConfig | null>(null)
-  const [busy,   setBusy]   = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [cfg,   setCfg]   = useState<AuthConfig | null>(null)
+  const [busy,  setBusy]  = useState(false)
 
   useEffect(() => {
     if (getToken()) {
@@ -33,30 +33,30 @@ function LoginPage() {
     window.location.href = buildAuthorizeUrl(cfg.discord_client_id)
   }
 
-  // The error message from the engine looks like
-  // "Bạn cần tham gia Discord 'Name': https://discord.gg/xxx".
-  // Pull the URL out so we can render a button instead of inline link.
+  // Engine error like "Bạn cần tham gia Discord 'Name': https://discord.gg/xxx"
+  // Pull URL out so it renders as a button instead of inline link.
   const inviteFromError = error ? extractFirstUrl(error) : null
-  const errorText       = inviteFromError && error
+  const errorText = inviteFromError && error
     ? error.replace(inviteFromError, '').replace(/[:\s]+$/, '').trim()
     : error
 
-  // Always-visible invite (config-supplied) for users who never logged in
-  // before but aren't in the guild yet.
   const standingInvite = cfg?.discord_invite_url ?? null
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-bg p-4">
       <div className="w-full max-w-sm">
-        {/* Brand block — only renders when the engine has guild metadata.
-            Until then we show nothing instead of a placeholder name; that
-            way an unconfigured deployment is visibly broken (operator
-            knows to fix Discord setup) rather than silently labelled. */}
+        {/* Brand block — only when engine has guild metadata. Until then
+            we show nothing so an unconfigured deployment looks visibly
+            broken (operator knows to fix Discord setup). */}
         {cfg?.guild_name && (
           <div className="text-center mb-6">
-            <div className={`size-14 mx-auto rounded-2xl flex items-center justify-center mb-3 overflow-hidden ${
-              cfg.guild_icon_url ? 'border border-zinc-200 bg-white' : 'bg-zinc-900 text-white text-lg font-bold'
-            }`}>
+            <div
+              className={`size-14 mx-auto rounded-md flex items-center justify-center mb-3 overflow-hidden ${
+                cfg.guild_icon_url
+                  ? 'bg-surface-2'
+                  : 'bg-accent text-accent-fg text-lg font-bold'
+              }`}
+            >
               {cfg.guild_icon_url ? (
                 <img
                   src={cfg.guild_icon_url}
@@ -67,16 +67,16 @@ function LoginPage() {
                 cfg.guild_name.charAt(0).toUpperCase()
               )}
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-zinc-900">
+            <h1 className="text-xl font-semibold tracking-tight text-text">
               {cfg.guild_name}
             </h1>
-            <p className="text-sm text-zinc-500 mt-1">Cộng đồng dịch manga</p>
+            <p className="text-sm text-text-subtle mt-1">Cộng đồng dịch manga</p>
           </div>
         )}
 
-        <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-6">
+        <div className="bg-surface rounded-md p-6 shadow-[0_8px_24px_rgb(0,0,0,0.3)]">
           {error && (
-            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-100 text-sm text-red-700 space-y-2.5">
+            <div className="mb-4 p-3 rounded-sm bg-error-bg text-sm text-error-text space-y-2.5">
               <div className="flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-0.5" />
                 <span className="break-words">{errorText}</span>
@@ -86,7 +86,7 @@ function LoginPage() {
                   href={inviteFromError}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer"
                 >
                   Tham gia Discord
                   <ExternalLink size={11} />
@@ -95,21 +95,21 @@ function LoginPage() {
             </div>
           )}
 
-          <p className="text-sm text-zinc-500 mb-4">
+          <p className="text-sm text-text-muted mb-4">
             Đăng nhập bằng Discord để tiếp tục.
           </p>
 
           <button
             onClick={onLogin}
             disabled={!cfg?.discord_client_id || busy}
-            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-lg bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
+            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
           >
             <DiscordIcon />
             {busy ? 'Đang chuyển hướng…' : 'Đăng nhập với Discord'}
           </button>
 
           {cfg?.guild_gated && (
-            <p className="text-xs text-zinc-400 mt-4 text-center leading-relaxed">
+            <p className="text-xs text-text-subtle mt-4 text-center leading-relaxed">
               {cfg.guild_name
                 ? `Yêu cầu là thành viên Discord ${cfg.guild_name}.`
                 : 'Yêu cầu là thành viên Discord guild.'}
@@ -120,7 +120,7 @@ function LoginPage() {
                     href={standingInvite}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-zinc-600 underline hover:text-zinc-900"
+                    className="text-text-muted underline hover:text-text"
                   >
                     Tham gia tại đây
                   </a>.

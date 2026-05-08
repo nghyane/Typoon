@@ -1,5 +1,5 @@
 import { createRootRoute, Outlet, useRouterState } from '@tanstack/react-router'
-import { AppLayout } from '../components/AppLayout'
+import { AppLayout } from '@app/AppLayout'
 
 function RootShell() {
   const { location } = useRouterState()

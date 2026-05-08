@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import { exchangeCode, setLoginError, setToken, verifyState } from '../lib/auth'
+import { exchangeCode, setLoginError, setToken, verifyState } from '@features/auth/auth'
+import { Spinner } from '@shared/ui/primitives'
 
 function CallbackPage() {
   const nav = useNavigate()
@@ -53,13 +54,12 @@ function CallbackPage() {
   }, [nav])
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-50">
+    <div className="min-h-screen flex items-center justify-center bg-bg">
       <div className="text-center">
-        <svg width="20" height="20" viewBox="0 0 24 24" className="mx-auto animate-spin text-zinc-400 mb-3">
-          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" fill="none" opacity="0.2" />
-          <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" fill="none" />
-        </svg>
-        <p className={`text-sm ${status === 'error' ? 'text-red-600' : 'text-zinc-500'}`}>
+        <div className="flex justify-center mb-3 text-text-subtle">
+          <Spinner size={20} />
+        </div>
+        <p className={`text-sm ${status === 'error' ? 'text-error-text' : 'text-text-muted'}`}>
           {message}
         </p>
       </div>

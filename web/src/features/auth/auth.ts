@@ -52,7 +52,14 @@ interface AuthState {
 }
 
 export function useCurrentUser(): AuthState {
-  const [state, setState] = useState<AuthState>({ user: null, loading: true, error: null })
+  // initial state: assume loading=true if token exists, false otherwise.
+  // This avoids a needless spinner when the user is logged out — the
+  // login redirect happens in the same tick.
+  const [state, setState] = useState<AuthState>(() => ({
+    user:    null,
+    loading: !!getToken(),
+    error:   null,
+  }))
 
   useEffect(() => {
     const token = getToken()

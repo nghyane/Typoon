@@ -2,39 +2,123 @@
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
 
-@theme inline {
+/* =========================================================
+   Typoon design tokens — Discord-native dark, Coral accent
+   Tailwind v4: tokens go through @theme so they emit utilities
+   (bg-bg, bg-surface, text-accent-text, border-border-soft, …).
+   Light theme is intentionally absent — app is dark-only,
+   matching the audience (Discord communities).
+   ========================================================= */
+
+@theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* layout only — không có native equivalent */
-  --spacing-sidebar: 252px;
-  --spacing-nav:     60px;
-  --spacing-bar:     52px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* layout — used as `w-sidebar`, `h-bar`, etc. */
+  --spacing-sidebar:  240px;
+  --spacing-sidebar-collapsed: 60px;
+  --spacing-bar:      48px;
+
+  /* surfaces (elevation: bg → surface → surface-2 → hover) */
+  --color-bg:         #1E1F22;
+  --color-surface:    #2B2D31;
+  --color-surface-2:  #313338;
+  --color-hover:      #383A40;
+  --color-interactive-hover: #404249;
+
+  /* borders — never darker than bg (no black grooves) */
+  --color-border:      #1A1B1E;
+  --color-border-soft: rgba(255, 255, 255, 0.04);
+
+  /* text ladder */
+  --color-text:         #F2F3F5;
+  --color-text-muted:   #B5BAC1;
+  --color-text-subtle:  #80848E;
+
+  /* accent — Coral. Used for primary CTA + selection only. */
+  --color-accent:       #FFA08C;
+  --color-accent-fg:    #1A1410;
+  --color-accent-bg:    rgba(244, 123, 103, 0.14);
+  --color-accent-text:  #FFB4A4;
+  --color-accent-strong: #F47B67;
+
+  /* info — running state. Discord-blue family. */
+  --color-info:        #4F88E6;
+  --color-info-bg:     rgba(79, 136, 230, 0.16);
+  --color-info-text:   #8AB4F2;
+
+  --color-success:     #23A55A;
+  --color-success-bg:  rgba(35, 165, 90, 0.16);
+  --color-success-text: #4FD17F;
+
+  --color-warning:     #F0B232;
+  --color-warning-bg:  rgba(240, 178, 50, 0.16);
+  --color-warning-text: #F5C76C;
+
+  --color-error:       #F23F43;
+  --color-error-bg:    rgba(242, 63, 67, 0.16);
+  --color-error-text:  #FF8A8D;
+
+  /* row state — neutral elevation + accent bar (avoids accent-on-accent) */
+  --color-row-active:  #34363C;
 }
 
+/* base reset */
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-font-smoothing: antialiased; }
+
+html, body, #root { height: 100%; }
 
 body {
   margin: 0;
   font-family: var(--font-sans);
-  font-size: 0.875rem;
+  font-size: 14px;
   line-height: 1.5;
-  background: white;
-  color: theme(colors.zinc.950);
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
-/* focus ring chỉ cho button, không cho input */
-button:focus-visible {
-  outline: 2px solid theme(colors.zinc.950);
+/* focus ring — coral, used by buttons via .ring-accent helper */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 input:focus-visible,
+textarea:focus-visible,
 label:focus-visible { outline: none; }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
+/* mono numbers */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* scrollbars — overlay style, match dark theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-2) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: theme(colors.zinc.300); border-radius: 9px; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-hover); }
+
+/* spinner — used in Spinner component */
+@keyframes ts-spin { to { transform: rotate(360deg); } }
+.ts-spinner-circle {
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 9999px;
+  animation: ts-spin 0.8s linear infinite;
+}

@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@nghyane/bunle": "^0.1.0",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-query": "^5.100.8",
     "@tanstack/react-router": "^1.169.1",

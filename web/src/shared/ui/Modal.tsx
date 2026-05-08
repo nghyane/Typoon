@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
-import { cn } from '../lib/cn'
+import { cn } from '@shared/lib/cn'
 
 interface Props {
   open:     boolean
@@ -29,21 +29,22 @@ export function Modal({ open, onClose, title, size = 'md', children, footer }: P
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/30 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         className={cn(
-          'w-full bg-white rounded-2xl shadow-[0_24px_64px_rgb(0,0,0,0.18)] border border-zinc-200',
+          'w-full bg-surface text-text rounded-md shadow-[0_24px_64px_rgb(0,0,0,0.5)]',
           'flex flex-col max-h-[88vh] overflow-hidden',
           SIZE[size],
         )}
       >
-        <header className="flex items-center justify-between px-5 h-[52px] border-b border-zinc-100 shrink-0">
-          <h2 className="text-base font-semibold text-zinc-900 tracking-tight truncate">{title}</h2>
+        <header className="flex items-center justify-between px-5 h-[52px] border-b border-border-soft shrink-0">
+          <h2 className="text-base font-semibold text-text tracking-tight truncate">{title}</h2>
           <button
             onClick={onClose}
-            className="size-8 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors cursor-pointer"
+            className="size-8 rounded-sm flex items-center justify-center text-text-subtle hover:text-text hover:bg-hover transition-colors cursor-pointer"
+            aria-label="Đóng"
           >
             <X size={15} />
           </button>
@@ -54,7 +55,7 @@ export function Modal({ open, onClose, title, size = 'md', children, footer }: P
         </div>
 
         {footer && (
-          <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-zinc-100 bg-zinc-50/40 shrink-0">
+          <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border-soft bg-bg/40 shrink-0">
             {footer}
           </footer>
         )}

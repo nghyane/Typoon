@@ -7,6 +7,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <style>
+      /* Pre-paint background — prevents the white flash before React mounts
+         and CSS variables resolve. Must match `--color-bg` in index.css. */
+      html, body { background: #1E1F22; color: #F2F3F5; margin: 0; }
+      html { color-scheme: dark; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

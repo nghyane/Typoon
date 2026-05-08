@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { api } from './api'
-import { getToken } from './auth'
+import { api } from '@shared/api/api'
+import { getToken } from '@features/auth/auth'
 
 interface ServerEvent {
   type:        string

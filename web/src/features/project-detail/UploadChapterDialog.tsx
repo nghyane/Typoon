@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, type DragEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Upload, FileText, Image as ImageIcon, Archive, X } from 'lucide-react'
-import { api, type ApiProject } from '../lib/api'
-import { cn } from '../lib/cn'
-import { Modal } from './Modal'
-import { btn, input, label, Spinner } from './ui'
-import { toast } from './Toaster'
+import { api, type ApiProject } from '@shared/api/api'
+import { cn } from '@shared/lib/cn'
+import { Modal } from '@shared/ui/Modal'
+import { Button } from '@shared/ui/Button'
+import { input, label, Spinner } from '@shared/ui/primitives'
+import { toast } from '@shared/ui/Toaster'
 
 interface Props {
   open:    boolean
@@ -85,22 +86,18 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
       size="md"
       footer={
         <>
-          <button
-            onClick={onClose}
-            disabled={upload.isPending}
-            className={btn.secondary}
-          >
+          <Button onClick={onClose} disabled={upload.isPending}>
             Huỷ
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => upload.mutate()}
             disabled={!valid || upload.isPending}
-            className={btn.primary}
           >
             {upload.isPending && <Spinner />}
             <Upload size={14} />
             Tải lên
-          </button>
+          </Button>
         </>
       }
     >
@@ -112,21 +109,21 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
           onDrop={onDrop}
           onClick={() => !upload.isPending && fileRef.current?.click()}
           className={cn(
-            'rounded-xl border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors',
+            'rounded-md border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors',
             'min-h-32 p-6 text-center',
             dragOver
-              ? 'border-zinc-900 bg-zinc-50'
-              : 'border-zinc-200 bg-zinc-50/40 hover:border-zinc-300',
+              ? 'border-accent bg-accent-bg'
+              : 'border-border-soft bg-surface-2/40 hover:border-text-subtle',
             upload.isPending && 'opacity-60 cursor-not-allowed',
           )}
         >
           {files.length === 0 ? (
             <>
-              <Upload size={20} className="text-zinc-400 mb-2" />
-              <p className="text-sm font-medium text-zinc-700">
+              <Upload size={20} className="text-text-subtle mb-2" />
+              <p className="text-sm font-medium text-text">
                 Kéo thả tệp vào đây hoặc <span className="underline">chọn tệp</span>
               </p>
-              <p className="text-xs text-zinc-400 mt-1">
+              <p className="text-xs text-text-subtle mt-1">
                 Hỗ trợ: PDF, CBZ, ZIP, hoặc nhiều ảnh
               </p>
             </>
@@ -178,13 +175,13 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
         </div>
 
         {files.length > 0 && (
-          <p className="text-xs text-zinc-400">
+          <p className="text-xs text-text-subtle">
             {files.length === 1 ? '1 tệp' : `${files.length} ảnh`} · {fmtSize(totalSize)}
           </p>
         )}
 
         {existing.has(Number(idx)) && (
-          <p className="text-xs text-amber-600">
+          <p className="text-xs text-warning-text">
             Chương {idx} đã tồn tại — sẽ được ghi đè dữ liệu chuẩn bị.
           </p>
         )}
@@ -207,17 +204,17 @@ function FileList({
     const f = files[0]
     return (
       <div
-        className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-white border border-zinc-200"
+        className="w-full flex items-center gap-3 px-3 py-2 rounded-sm bg-surface-2"
         onClick={(e) => e.stopPropagation()}
       >
         <FileIcon name={f.name} />
         <div className="flex-1 min-w-0 text-left">
-          <p className="text-sm text-zinc-900 truncate">{f.name}</p>
-          <p className="text-xs text-zinc-400">{fmtSize(f.size)}</p>
+          <p className="text-sm text-text truncate">{f.name}</p>
+          <p className="text-xs text-text-subtle">{fmtSize(f.size)}</p>
         </div>
         <button
           onClick={onClear}
-          className="size-7 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 cursor-pointer"
+          className="size-7 rounded-sm flex items-center justify-center text-text-subtle hover:text-text hover:bg-hover cursor-pointer"
         >
           <X size={13} />
         </button>
@@ -227,12 +224,12 @@ function FileList({
   return (
     <div className="w-full" onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-zinc-500">
+        <span className="text-xs text-text-muted">
           {files.length} ảnh — sẽ sắp xếp theo tên tệp
         </span>
         <button
           onClick={onClear}
-          className="text-xs text-zinc-500 hover:text-zinc-900 cursor-pointer"
+          className="text-xs text-text-muted hover:text-text cursor-pointer"
         >
           Xoá tất cả
         </button>
@@ -241,14 +238,14 @@ function FileList({
         {files.map((f, i) => (
           <div
             key={`${f.name}-${i}`}
-            className="relative group aspect-square rounded-md bg-white border border-zinc-200 flex items-center justify-center text-xs text-zinc-500 truncate p-1.5"
+            className="relative group aspect-square rounded-xs bg-surface-2 flex items-center justify-center text-xs text-text-muted truncate p-1.5"
             title={f.name}
           >
-            <ImageIcon size={14} className="text-zinc-300 absolute top-1 left-1" />
+            <ImageIcon size={14} className="text-text-subtle absolute top-1 left-1" />
             <span className="truncate">{f.name.slice(0, 14)}</span>
             <button
               onClick={() => onRemove(i)}
-              className="absolute top-0.5 right-0.5 size-5 rounded-full bg-zinc-900 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
+              className="absolute top-0.5 right-0.5 size-5 rounded-full bg-error text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
             >
               <X size={10} />
             </button>
@@ -263,8 +260,8 @@ function FileIcon({ name }: { name: string }) {
   const lower = name.toLowerCase()
   const Icon = lower.endsWith('.pdf') ? FileText : Archive
   return (
-    <div className="size-9 rounded-lg bg-zinc-100 flex items-center justify-center shrink-0">
-      <Icon size={15} className="text-zinc-500" />
+    <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
+      <Icon size={15} className="text-text-muted" />
     </div>
   )
 }

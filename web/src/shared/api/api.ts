@@ -194,6 +194,14 @@ export const api = {
   deleteChapter: (pid: number, cid: number) =>
     request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
 
+  // Render archive URL — auth-gated. Returns a short-lived signed URL
+  // pointing at the archive; pass that URL to `Bunle.open()` directly.
+  // The signed URL is cacheable by CDN edges (signature is the cache key).
+  getRenderArchive: (pid: number, cid: number) =>
+    request<{ url: string; expires_at: number; page_count: number }>(
+      `/projects/${pid}/chapters/${cid}/render`,
+    ),
+
   // Upload — single archive (PDF/CBZ/ZIP) or multiple image files
   uploadChapter: (
     pid: number,
