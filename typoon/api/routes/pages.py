@@ -2,14 +2,15 @@
 
 Two-step access pattern — required to keep R2/CDN edge caching viable:
 
-  1. `GET /chapters/:cid/render` — auth-required. Returns a short-lived
-     archive URL signed for *that chapter only*. Body: { url, expires_at,
-     page_count }. The URL embeds a scoped token in the query string.
+  1. `GET /api/projects/:pid/chapters/:cid/render` — auth-required.
+     Returns a short-lived archive URL signed for *that chapter only*.
+     Body: { url, expires_at, page_count }. The URL embeds a scoped
+     token in the query string.
 
-  2. `GET <signed_url>` — public, no Authorization header. The path is
-     `/files/p/<pid>/c/<cid>/render.bnl?t=<scoped_token>`. The signed
-     token is verified server-side; on success FileResponse streams the
-     archive with Range support (or, for R2, redirects to a presigned URL).
+  2. `GET /api/projects/:pid/chapters/:cid/render.bnl?t=<token>` —
+     public, no Authorization header. The token is verified server-side;
+     on success FileResponse streams the archive with Range support
+     (or, for R2, redirects to a presigned URL).
 
 Why not "auth on the .bnl request": each Range request would need to
 carry the JWT, defeating CDN cache. The signed URL is itself the cache
