@@ -25,7 +25,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
+from typoon.adapters.artifact_store import ArtifactStore, ArtifactStoreRegistry
 from typoon.adapters.chapter_archive import masks_key, prepared_key
 from typoon.adapters.ctx import TranslateCtx, make_ctx
 from typoon.adapters.event_bus import EventBus, EventHook
@@ -60,7 +60,7 @@ class Role(StrEnum):
 
 
 async def scan_loop(
-    db: Store, store: ArtifactStore, runtime: VisionRuntime, hook: Hook,
+    db: Store, stores: ArtifactStoreRegistry, runtime: VisionRuntime, hook: Hook,
 ) -> None:
     worker_id = str(uuid4())
     while True:
@@ -69,11 +69,11 @@ async def scan_loop(
             await asyncio.sleep(_POLL_INTERVAL)
             continue
         proj = await _project_for(db, chapter_id)
-        await _run_scan(chapter_id, proj["id"], db, store, runtime, hook)
+        await _run_scan(chapter_id, proj["id"], db, stores, runtime, hook)
 
 
 async def translate_loop(
-    db: Store, store: ArtifactStore, config: Config, hook: Hook,
+    db: Store, stores: ArtifactStoreRegistry, config: Config, hook: Hook,
 ) -> None:
     worker_id = str(uuid4())
     while True:
@@ -93,11 +93,12 @@ async def translate_loop(
             config=config,
             hook=hook,
         )
-        await _run_translate(chapter_id, proj["id"], ctx, db, store, hook)
+        await _run_translate(chapter_id, proj["id"], ctx, db, stores, hook)
 
 
 async def render_loop(
-    db: Store, store: ArtifactStore, runtime: VisionRuntime, hook: Hook,
+    db: Store, stores: ArtifactStoreRegistry, runtime: VisionRuntime, hook: Hook,
+    *, archive_salt: bytes,
 ) -> None:
     worker_id = str(uuid4())
     while True:
@@ -106,7 +107,8 @@ async def render_loop(
             await asyncio.sleep(_POLL_INTERVAL)
             continue
         proj = await _project_for(db, chapter_id)
-        await _run_render(chapter_id, proj["id"], db, store, runtime, hook)
+        await _run_render(chapter_id, proj["id"], db, stores, runtime, hook,
+                          archive_salt=archive_salt)
 
 
 # ── Stage runners ─────────────────────────────────────────────────────
@@ -116,15 +118,18 @@ async def _run_scan(
     chapter_id: int,
     project_id: int,
     db: Store,
-    store: ArtifactStore,
+    stores: ArtifactStoreRegistry,
     runtime: VisionRuntime,
     hook: Hook,
 ) -> None:
+    # Server-only artifacts (prepared.bnl, masks.npz) always live local.
+    # Public render archive uses stores.writer (the configured primary).
+    local = stores.reader("local")
     hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage="scan"))
     try:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            with await open_prepared_reader(store, prepared_key(project_id, chapter_id), tmp) as reader:
+            with await open_prepared_reader(local, prepared_key(project_id, chapter_id), tmp) as reader:
                 prepared = reader.chapter()
                 result = await asyncio.to_thread(
                     scan_chapter, prepared, reader, runtime,
@@ -136,7 +141,7 @@ async def _run_scan(
 
             masks_path = tmp / "masks.npz"
             result.masks.pack(masks_path)
-            await store.put_file(masks_key(project_id, chapter_id), masks_path)
+            await local.put(masks_key(project_id, chapter_id), masks_path)
 
         await db.advance_task(chapter_id, "scan", "translate")
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="scan"))
@@ -151,14 +156,15 @@ async def _run_translate(
     project_id: int,
     ctx: TranslateCtx,
     db: Store,
-    store: ArtifactStore,
+    stores: ArtifactStoreRegistry,
     hook: Hook,
 ) -> None:
+    local = stores.reader("local")
     hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage="translate"))
     try:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            with await open_prepared_reader(store, prepared_key(project_id, chapter_id), tmp) as reader:
+            with await open_prepared_reader(local, prepared_key(project_id, chapter_id), tmp) as reader:
                 scanned = await load_scanned(reader, db, chapter_id)
                 translated, brief = await translate_chapter(scanned, reader, ctx)
 
@@ -180,24 +186,28 @@ async def _run_render(
     chapter_id: int,
     project_id: int,
     db: Store,
-    store: ArtifactStore,
+    stores: ArtifactStoreRegistry,
     runtime: VisionRuntime,
     hook: Hook,
+    *,
+    archive_salt: bytes,
 ) -> None:
+    local = stores.reader("local")
+    public = stores.writer
     hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage="render"))
     try:
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)
-            with await open_prepared_reader(store, prepared_key(project_id, chapter_id), tmp) as reader:
+            with await open_prepared_reader(local, prepared_key(project_id, chapter_id), tmp) as reader:
                 translated, page_geoms = await load_translated_with_geometry(
                     reader, db, chapter_id,
                 )
 
                 masks_local = tmp / "masks.npz"
-                await store.get_file(masks_key(project_id, chapter_id), masks_local)
+                await local.get(masks_key(project_id, chapter_id), masks_local)
                 masks = MaskStore.unpack(masks_local)
 
-                await render_chapter_to_archive(
+                locator = await render_chapter_to_archive(
                     translated,
                     project_id=project_id,
                     chapter_id=chapter_id,
@@ -205,11 +215,13 @@ async def _run_render(
                     runtime=runtime,
                     page_geoms=page_geoms,
                     masks=masks,
-                    store=store,
+                    store=public,
+                    archive_salt=archive_salt,
                     work=tmp,
                     hook=hook,
                 )
 
+        await db.set_archive(chapter_id, public.backend_name, locator)
         await db.set_rendered(chapter_id, True)
         await db.complete_task(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="render"))
@@ -234,13 +246,15 @@ async def run_workers(
     everything in one process for dev; vision/llm/api split across hosts
     in prod via Tailscale + a shared DATABASE_URL.
     """
+    from typoon.api.deps import build_artifact_stores
     from typoon.config import load_config
 
     config, paths = load_config() if config is None else (config, Paths())
     paths.ensure()
 
     db    = await PostgresStore.open(config.database_url)
-    store = LocalArtifactStore(paths.artifacts)
+    stores = build_artifact_stores(config, paths)
+    archive_salt = config.storage.archive_path_salt.encode()
     loop  = asyncio.get_running_loop()
     bus   = EventBus(config.database_url)
     hook  = CompositeHook(LoggingHook(), EventHook(bus, loop))
@@ -252,11 +266,11 @@ async def run_workers(
     loops: list = []
     if role in (Role.vision, Role.full):
         assert runtime is not None
-        loops.append(scan_loop(db, store, runtime, hook))
-        loops.append(render_loop(db, store, runtime, hook))
+        loops.append(scan_loop(db, stores, runtime, hook))
+        loops.append(render_loop(db, stores, runtime, hook, archive_salt=archive_salt))
     if role in (Role.llm, Role.full):
         loops.extend(
-            translate_loop(db, store, config, hook)
+            translate_loop(db, stores, config, hook)
             for _ in range(translate_concurrency)
         )
 

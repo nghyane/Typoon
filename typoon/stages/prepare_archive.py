@@ -42,7 +42,7 @@ async def prepare_chapter_to_archive(
         )
 
         key = prepared_key(project_id, chapter_id)
-        page_count = await pack_and_upload(
+        page_count, _locator = await pack_and_upload(
             src_dir=webp_dir,
             archive_path=archive_path,
             key=key,

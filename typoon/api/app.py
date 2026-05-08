@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from typoon.api.deps import get_store
 from typoon.api.routes import (
-    auth, bubbles, glossary, me, pages, projects, search, sse, upload, workers,
+    auth, bubbles, glossary, me, projects, search, sse, upload, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -42,7 +42,6 @@ app.include_router(bubbles.router)
 app.include_router(glossary.router)
 app.include_router(workers.router)
 app.include_router(search.router)
-app.include_router(pages.router)
 app.include_router(sse.router)
 
 
@@ -57,6 +56,16 @@ async def healthz(db: Store = Depends(get_store)):
         raise HTTPException(503, f"db: {e}") from e
     return {"ok": True}
 
+
+# Public render archives, dev/local serving only. Production uses an
+# external CDN (bunle CDN proxying HF) and skips this mount.
+# StaticFiles supports HTTP Range so the in-browser bunle reader can
+# request slices without pulling the whole archive.
+# Must mount BEFORE the broader /files mount so requests to
+# /files/render/<token>.bnl route here, not to the project files mount.
+_archive_dir = _paths.artifacts / "render"
+_archive_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/files/render", StaticFiles(directory=str(_archive_dir)), name="render")
 
 # Static project files (covers, future thumbnails) served via sendfile.
 app.mount("/files", StaticFiles(directory=str(_paths.projects)), name="files")

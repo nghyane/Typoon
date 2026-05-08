@@ -48,9 +48,9 @@ function ChapterReaderPage() {
   const prev: ApiChapter | null = idxInList > 0 ? sorted[idxInList - 1]! : null
   const next: ApiChapter | null = idxInList >= 0 && idxInList < sorted.length - 1 ? sorted[idxInList + 1]! : null
 
-  // Archive — opens once per chapter (versioned by updated_at to bust cache
-  // when the worker re-renders).
-  const { bunle, loading: aLoading, error: aError } = useChapterArchive(pid, cid)
+  // Archive — opens once per chapter. The URL embeds an updated_at
+  // version so a re-render busts the CDN cache automatically.
+  const { bunle, loading: aLoading, error: aError } = useChapterArchive(current?.archive_url)
 
   if (!current) {
     return (

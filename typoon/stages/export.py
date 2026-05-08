@@ -24,8 +24,7 @@ import bunle
 import img2pdf
 from PIL import Image
 
-from typoon.adapters.artifact_store import ArtifactStore
-from typoon.adapters.chapter_archive import render_key
+from typoon.adapters.artifact_store import ArtifactStoreRegistry
 
 ExportFormat = Literal["pdf", "zip", "webp"]
 _MANIFEST_NAME = "manifest.json"
@@ -41,16 +40,17 @@ class ExportedChapter:
 class ChapterRef:
     chapter_id: int
     chapter_idx: float
+    archive_backend: str           # which store the archive is in
+    archive_locator: str           # opaque locator within that backend
     rendered_at: str | None = None  # opaque marker (DB updated_at, mtime, …)
 
 
 async def export_chapters(
     *,
-    project_id: int,
     slug: str,
     chapters: list[ChapterRef],
     formats: list[ExportFormat],
-    store: ArtifactStore,
+    stores: ArtifactStoreRegistry,
     dest_dir: Path,
     force: bool = False,
 ) -> list[ExportedChapter]:
@@ -76,7 +76,8 @@ async def export_chapters(
 
         with tempfile.TemporaryDirectory() as tmp:
             local_archive = Path(tmp) / "render.bnl"
-            await store.get_file(render_key(project_id, ref.chapter_id), local_archive)
+            reader = stores.reader(ref.archive_backend)
+            await reader.get(ref.archive_locator, local_archive)
             produced = _render_outputs(local_archive, dest_dir, slug, ref.chapter_idx, formats)
 
         manifest[_chapter_key(ref)] = {

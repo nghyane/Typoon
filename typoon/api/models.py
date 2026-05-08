@@ -22,6 +22,9 @@ class ChapterOut(BaseModel):
     error:      str
     updated_at: str | None = None
     progress:   Progress | None = None
+    # Public URL for the rendered archive (.bnl). Null until render done.
+    # Browser fetches this directly with Range requests; CDN caches it.
+    archive_url: str | None = None
 
 
 class ProjectOut(BaseModel):

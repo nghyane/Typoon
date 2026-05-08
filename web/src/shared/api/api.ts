@@ -56,6 +56,9 @@ export interface ApiChapter {
     page_index: number
     page_total: number
   } | null
+  // Public URL for the rendered .bnl archive. Null until render done.
+  // Browser fetches with Range requests; CDN edge handles caching.
+  archive_url: string | null
 }
 
 export interface ApiBubble {
@@ -193,14 +196,6 @@ export const api = {
     request<ApiChapter>(`/projects/${pid}/chapters/${cid}/redo`, { method: 'POST' }),
   deleteChapter: (pid: number, cid: number) =>
     request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
-
-  // Render archive URL — auth-gated. Returns a short-lived signed URL
-  // pointing at the archive; pass that URL to `Bunle.open()` directly.
-  // The signed URL is cacheable by CDN edges (signature is the cache key).
-  getRenderArchive: (pid: number, cid: number) =>
-    request<{ url: string; expires_at: number; page_count: number }>(
-      `/projects/${pid}/chapters/${cid}/render`,
-    ),
 
   // Upload — single archive (PDF/CBZ/ZIP) or multiple image files
   uploadChapter: (

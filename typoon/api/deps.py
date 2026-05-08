@@ -8,7 +8,10 @@ from functools import lru_cache
 import jwt
 from fastapi import Depends, Header, HTTPException
 
-from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
+from typoon.adapters.artifact_store import (
+    ArtifactStore, ArtifactStoreRegistry, HuggingFaceArtifactStore,
+    LocalArtifactStore,
+)
 from typoon.adapters.event_bus import EventBus
 from typoon.api.auth import verify_jwt
 from typoon.api.auth_token import looks_like_api_token, verify_api_token
@@ -18,7 +21,7 @@ from typoon.storage import PostgresStore, Store
 
 _store: Store | None = None
 _bus:   EventBus | None = None
-_artifact_store: ArtifactStore | None = None
+_registry: ArtifactStoreRegistry | None = None
 _lock = asyncio.Lock()
 
 
@@ -57,12 +60,51 @@ def get_config() -> Config:
     return cfg
 
 
-def get_artifact_store() -> ArtifactStore:
-    global _artifact_store
-    if _artifact_store is None:
-        _, paths = _config_and_paths()
-        _artifact_store = LocalArtifactStore(paths.artifacts)
-    return _artifact_store
+def get_artifact_stores() -> ArtifactStoreRegistry:
+    """Registry of every configured backend.
+
+    Worker writes go to the primary; reads dispatch by the chapter row's
+    `archive_backend` so chapters rendered against an old backend keep
+    working after the operator switches the primary.
+    """
+    global _registry
+    if _registry is None:
+        cfg, paths = _config_and_paths()
+        _registry = build_artifact_stores(cfg, paths)
+    return _registry
+
+
+def build_artifact_stores(cfg: Config, paths: Paths) -> ArtifactStoreRegistry:
+    """Construct one store per declared backend + pick the primary.
+
+    Local is always available (server-only artifacts like prepared.bnl
+    and masks.npz must never depend on a remote backend). HF is added
+    when `HF_TOKEN` is configured. The `primary` is the writer used by
+    render_loop; defaults to "local" unless storage.primary overrides.
+    """
+    local = LocalArtifactStore(paths.artifacts)
+    stores: dict[str, ArtifactStore] = {local.backend_name: local}
+
+    if cfg.storage.hf_token:
+        stores[HuggingFaceArtifactStore.backend_name] = HuggingFaceArtifactStore(
+            repo=cfg.storage.hf_repo,
+            token=cfg.storage.hf_token,
+            cdn_prefix=cfg.storage.hf_cdn_prefix,
+        )
+
+    primary_name = cfg.storage.primary or "local"
+    if primary_name not in stores:
+        raise RuntimeError(
+            f"storage.primary={primary_name!r} not configured. "
+            f"Available backends: {sorted(stores)}",
+        )
+    return ArtifactStoreRegistry(stores[primary_name], stores)
+
+
+def get_artifact_writer() -> ArtifactStore:
+    """Convenience: the primary store, used for routes that just need
+    to write/delete (e.g. delete_chapter cleans up server-only keys)."""
+    return get_artifact_stores().writer
 
 
 def get_auth_cfg() -> AuthConfig:

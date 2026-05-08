@@ -87,6 +87,28 @@ class AuthConfig(BaseModel):
     session_days:          int = 30
 
 
+class StorageConfig(BaseModel):
+    """Where rendered archives live + how their public URL is built.
+
+    Multiple backends can coexist: every chapter row carries which
+    backend its archive lives in, so a primary switch never strands old
+    chapters. The `primary` field selects which store the worker writes
+    new renders to.
+
+    `archive_path_salt` is the HMAC salt used to derive unguessable
+    render archive paths (see `adapters.chapter_archive.archive_token`).
+    Empty = derive deterministically from `auth.jwt_secret` so the dev
+    setup does not require yet another env var.
+    """
+    primary:           str = "local"   # local | huggingface | …
+    archive_path_salt: str = ""
+
+    # huggingface backend (config block; only active when hf_token set)
+    hf_repo:           str = "nghyane/mcz-cdn"
+    hf_token:          str = ""        # env: HF_TOKEN
+    hf_cdn_prefix:     str = "https://bunle-cdn-16g.pages.dev/t"
+
+
 class Config(BaseSettings):
     model_config = {"extra": "ignore"}
 
@@ -101,6 +123,7 @@ class Config(BaseSettings):
     database_url: str = ""
     server: ServerConfig = ServerConfig()
     auth:   AuthConfig   = AuthConfig()
+    storage: StorageConfig = StorageConfig()
 
 
 # ── Loading ──────────────────────────────────────────────────────
@@ -197,6 +220,22 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)
     if not config.auth.jwt_secret:
         config.auth.jwt_secret = _ensure_jwt_secret(paths.root)
+
+    # Storage: env wins over toml. Salt defaults to a derivation of
+    # `jwt_secret` so dev doesn't need a separate env var; prod can
+    # rotate it independently via TYPOON_ARCHIVE_PATH_SALT.
+    config.storage.primary           = os.environ.get("TYPOON_STORAGE_PRIMARY", config.storage.primary)
+    config.storage.hf_repo           = os.environ.get("TYPOON_HF_REPO",         config.storage.hf_repo)
+    config.storage.hf_token          = os.environ.get("HF_TOKEN",               config.storage.hf_token)
+    config.storage.hf_cdn_prefix     = os.environ.get("TYPOON_HF_CDN_PREFIX",   config.storage.hf_cdn_prefix)
+    config.storage.archive_path_salt = os.environ.get(
+        "TYPOON_ARCHIVE_PATH_SALT", config.storage.archive_path_salt,
+    )
+    if not config.storage.archive_path_salt:
+        import hashlib
+        config.storage.archive_path_salt = hashlib.sha256(
+            (config.auth.jwt_secret + ":archive").encode()
+        ).hexdigest()
 
     return config, paths
 

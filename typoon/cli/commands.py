@@ -195,8 +195,9 @@ async def _export(
     force: bool,
     open_: bool,
 ) -> None:
-    from ..adapters.artifact_store import LocalArtifactStore
     from ..adapters.projects import Projects
+    from ..api.deps import build_artifact_stores
+    from ..config import load_config
     from ..paths import Paths
     from ..stages.export import ChapterRef, export_chapters
 
@@ -224,12 +225,13 @@ async def _export(
                 continue
             if hi is not None and ch["idx"] > hi:
                 continue
-            state = await projects._db.get_chapter_render_state(ch["id"])
-            if state is None or not state["rendered"]:
+            if not ch.get("rendered") or not ch.get("archive_backend") or not ch.get("archive_locator"):
                 continue
             refs.append(ChapterRef(
                 chapter_id=ch["id"],
                 chapter_idx=ch["idx"],
+                archive_backend=ch["archive_backend"],
+                archive_locator=ch["archive_locator"],
                 rendered_at=str(ch.get("updated_at") or ""),
             ))
 
@@ -237,16 +239,15 @@ async def _export(
             console.print("[yellow]No rendered chapters match the range.[/]")
             return
 
-        paths = Paths()
-        store = LocalArtifactStore(paths.artifacts)
+        config, paths = load_config()
+        stores = build_artifact_stores(config, paths)
         dest = (to / slug) if to else (paths.exports / slug)
 
         results = await export_chapters(
-            project_id=proj["id"],
             slug=slug,
             chapters=refs,
             formats=fmt_list,
-            store=store,
+            stores=stores,
             dest_dir=dest,
             force=force,
         )
@@ -320,7 +321,7 @@ async def _debug_scan(
 ) -> None:
     import tempfile
 
-    from ..adapters.artifact_store import LocalArtifactStore
+    from ..api.deps import build_artifact_stores
     from ..adapters.chapter_archive import prepared_key
     from ..adapters.loader import open_prepared_reader
     from ..adapters.vision_runtime import VisionRuntime
@@ -332,7 +333,8 @@ async def _debug_scan(
     config, paths = load_config()
     paths.ensure()
 
-    store    = LocalArtifactStore(paths.artifacts)
+    # debug-scan reads prepared.bnl which is always on the local store.
+    store    = build_artifact_stores(config, paths).reader("local")
     runtime, *_ = VisionRuntime.from_config(config, paths)
     run_id   = f"p{project_id}_c{chapter_id}"
     sink     = FileArtifactSink(out_root, run_id, clean=True)

@@ -30,7 +30,7 @@ async def open_prepared_reader(
     """
     workdir.mkdir(parents=True, exist_ok=True)
     local = workdir / "prepared.bnl"
-    await store.get_file(prepared_key, local)
+    await store.get(prepared_key, local)
     return PreparedReader.open(local)
 
 

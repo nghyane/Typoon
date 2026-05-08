@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.event_bus import EventBus, EventHook
 from typoon.adapters.projects import Projects
-from typoon.api.deps import get_artifact_store, get_bus, get_paths, get_store, require_user
+from typoon.api.deps import get_artifact_writer, get_bus, get_paths, get_store, require_user
 from typoon.api.models import ChapterOut
 from typoon.api.routes._shared import chapter_out, require_project_owner
 from typoon.paths import Paths
@@ -57,7 +57,7 @@ async def upload_chapter(
     user:  dict          = Depends(require_user),
     db:    Store         = Depends(get_store),
     paths: Paths         = Depends(get_paths),
-    store: ArtifactStore = Depends(get_artifact_store),
+    store: ArtifactStore = Depends(get_artifact_writer),
     bus:   EventBus      = Depends(get_bus),
 ):
     """Ingest one chapter from an uploaded archive, PDF, or image set.

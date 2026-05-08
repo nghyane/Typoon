@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from typoon.adapters.artifact_store import ArtifactStore, LocalArtifactStore
+from typoon.adapters.artifact_store import ArtifactStore
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
@@ -54,13 +54,14 @@ class Projects:
 
     @classmethod
     async def open(cls) -> "Projects":
+        from typoon.api.deps import build_artifact_stores
         from typoon.config import load_config
         config, paths = load_config()
         paths.ensure()
         return cls(
             await PostgresStore.open(config.database_url),
             paths,
-            LocalArtifactStore(paths.artifacts),
+            build_artifact_stores(config, paths).writer,
         )
 
     async def close(self) -> None:

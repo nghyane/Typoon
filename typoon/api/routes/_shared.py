@@ -50,7 +50,7 @@ async def require_chapter(project_id: int, chapter_id: int, db: Store) -> dict:
     return ch
 
 
-def chapter_out(data: dict) -> ChapterOut:
+def chapter_out(data: dict, *, archive_url: str | None = None) -> ChapterOut:
     page_count = int(data.get("page_count") or 0)
     progress_data = data.get("progress")
     progress = (
@@ -73,4 +73,5 @@ def chapter_out(data: dict) -> ChapterOut:
         error=data.get("error") or "",
         updated_at=data.get("updated_at"),
         progress=progress,
+        archive_url=archive_url if data["state"] == "done" else None,
     )

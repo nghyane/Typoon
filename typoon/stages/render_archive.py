@@ -38,11 +38,13 @@ async def render_chapter_to_archive(
     page_geoms: dict[int, PageGeometry],
     masks: MaskStore,
     store: ArtifactStore,
+    archive_salt: bytes,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
     work: Path | None = None,
-) -> None:
-    """Render translation, pack `render.bnl`, upload."""
+) -> str:
+    """Render translation, pack `render.bnl`, upload. Returns the
+    backend locator so the caller can persist it on the chapter row."""
     with workdir(work) as tmp:
         out_dir = tmp / "render_webp"
         archive_path = tmp / "render.bnl"
@@ -54,9 +56,10 @@ async def render_chapter_to_archive(
             hook=hook, artifacts=artifacts,
         )
 
-        await pack_and_upload(
+        _, locator = await pack_and_upload(
             src_dir=out_dir,
             archive_path=archive_path,
-            key=render_key(project_id, chapter_id),
+            key=render_key(project_id, chapter_id, archive_salt),
             store=store,
         )
+        return locator
