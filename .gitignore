@@ -23,10 +23,12 @@ cache/
 *.db-wal
 debug/
 .pipeline/
+debug-runs/
 
 # Web UI
 web/node_modules/
 web/dist/
+web/preview/
 
 # Secrets
 .env
