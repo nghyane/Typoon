@@ -17,7 +17,7 @@ from . import prompt
 
 _RETRIES = 1
 _CONTEXT_SIZE = 20
-_VALID_KINDS = {"dialogue", "sfx", "skip"}
+_VALID_KINDS = {"dialogue", "sfx"}
 _OCR_NOISE_RE = re.compile(r"^[\W_\d]+$")
 
 
@@ -161,6 +161,10 @@ def _parse_xml(
             continue
         if kind not in _VALID_KINDS:
             kind = "dialogue"
+        # Auto-skip rubble (single digits/symbols) regardless of what the LLM
+        # decided. The LLM cannot output kind="skip" itself — that decision is
+        # owned by the context agent (brief.noise_keys) and the deterministic
+        # _is_auto_skip filter.
         if _is_auto_skip(key_map[key].source_text):
             kind, translated = "skip", ""
         if kind != "skip" and not translated:

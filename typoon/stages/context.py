@@ -11,6 +11,7 @@ from typoon.stages.brief import ChapterBrief, AddressRule, chapter_text
 from typoon.stages.skills import LOAD_SKILL_TOOL, SkillLibrary
 from typoon.stages.tools.brief import ChapterBriefArgs, make_submit_chapter_brief
 from typoon.stages.tools.look_at import make_look_at
+from typoon.stages.tools.mark_noise import MarkNoiseArgs, make_mark_noise
 from typoon.stages.tools.search_knowledge import make_search_knowledge
 from typoon.stages.image import encode_page_jpeg
 from typoon.domain.prepared import Chapter as PreparedChapter
@@ -56,6 +57,25 @@ async def build_chapter_brief(
     messages = [Message.system(system), _context_user_message(user, prepared, reader, sensitive, keyed)]
 
     brief: ChapterBrief | None = None
+    valid_keys: set[str] = {bk.key for bk in keyed}
+    noise_keys: set[str] = set()
+
+    async def on_mark_noise(args: MarkNoiseArgs) -> ToolResponse:
+        unknown = [k for k in args.keys if k not in valid_keys]
+        if unknown:
+            return ToolResponse(
+                f"Unknown bubble keys (not in chapter): {unknown[:8]}. "
+                "Copy keys exactly from after '#' in the chapter text."
+            )
+        # Cap at 60% of chapter so a misfire can't wipe an entire chapter.
+        if len(noise_keys | set(args.keys)) > max(1, int(len(valid_keys) * 0.6)):
+            return ToolResponse(
+                "Refusing to mark this many bubbles as noise (>60% of chapter). "
+                "Only flag platform chrome / watermarks / counters; everything "
+                "else must be translated."
+            )
+        noise_keys.update(args.keys)
+        return ToolResponse(f"Marked {len(args.keys)} as noise. Total noise so far: {len(noise_keys)}.")
 
     async def on_submit(args: ChapterBriefArgs) -> ToolResponse:
         nonlocal brief
@@ -70,6 +90,7 @@ async def build_chapter_brief(
             style_notes=args.style_notes,
             page_notes={pn.page: pn.note for pn in args.page_notes},
             key_notes={bn.key: bn.note for bn in args.bubble_notes},
+            noise_keys=noise_keys,
         )
         return ToolResponse("ok")
 
@@ -77,6 +98,7 @@ async def build_chapter_brief(
         make_search_knowledge(ctx),
         Tool(LOAD_SKILL_TOOL, _LoadSkillArgs, lambda args: _handle_load_skill(args, skills)),
         make_look_at(ctx, prepared, reader, keyed),
+        make_mark_noise(on_mark_noise),
         make_submit_chapter_brief(on_submit),
     ]
 

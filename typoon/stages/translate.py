@@ -40,15 +40,30 @@ async def translate_chapter(
     keyed  = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
     brief  = await build_chapter_brief(ctx, scanned.prepared, reader, keyed)
 
-    windows = _make_windows(keyed)
+    # Bubbles flagged as noise by the context agent (site chrome, watermarks,
+    # buttons, page counters) bypass the translator entirely — they get a
+    # kind="skip" op without an LLM round trip.
+    translatable = [bk for bk in keyed if bk.key not in brief.noise_keys]
+    noise_ops: dict[str, TranslationOp] = {
+        bk.key: TranslationOp(key=bk.key, kind="skip")
+        for bk in keyed if bk.key in brief.noise_keys
+    }
+
+    if not translatable:
+        return _build(scanned, keyed, noise_ops), brief
+
+    windows = _make_windows(translatable)
     total   = len(windows)
 
     results = await asyncio.gather(*[
-        translate_window(ctx, brief, wk, keyed, window_num=i, total_windows=total)
+        translate_window(ctx, brief, wk, translatable, window_num=i, total_windows=total)
         for i, wk in enumerate(windows)
     ])
 
-    ops: dict[str, TranslationOp] = {op.key: op for batch in results for op in batch}
+    ops: dict[str, TranslationOp] = {**noise_ops}
+    for batch in results:
+        for op in batch:
+            ops[op.key] = op
     return _build(scanned, keyed, ops), brief
 
 

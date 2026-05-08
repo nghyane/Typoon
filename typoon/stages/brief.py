@@ -42,6 +42,7 @@ class ChapterBrief:
     style_notes: list[str]          = field(default_factory=list)
     page_notes:  dict[int, str]     = field(default_factory=dict)
     key_notes:   dict[str, str]     = field(default_factory=dict)
+    noise_keys:  set[str]           = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +53,7 @@ class ChapterBrief:
             "style_notes": self.style_notes,
             "page_notes": {str(k): v for k, v in self.page_notes.items()},
             "key_notes": self.key_notes,
+            "noise_keys": sorted(self.noise_keys),
         }
 
     @classmethod
@@ -64,6 +66,7 @@ class ChapterBrief:
             style_notes=d.get("style_notes", d.get("rules", [])),
             page_notes={int(k): v for k, v in d.get("page_notes", {}).items()},
             key_notes=d.get("key_notes", {}),
+            noise_keys=set(d.get("noise_keys", [])),
         )
 
 

@@ -18,20 +18,29 @@ from typoon.stages.keys import assign_keys
 from .conftest import MockProvider, make_session
 
 
-def _brief_response() -> CallResponse:
-    return CallResponse(tool_calls=[ToolCallMsg(
+def _brief_response(noise_keys: list[str] | None = None) -> CallResponse:
+    args = {
+        "summary": "test chapter",
+        "facts": [],
+        "glossary": [],
+        "address": [],
+        "style_notes": [],
+        "page_notes": [],
+        "bubble_notes": [],
+    }
+    calls = []
+    if noise_keys:
+        calls.append(ToolCallMsg(
+            id="n1",
+            name="mark_noise",
+            arguments=json.dumps({"keys": noise_keys, "reason": "test"}),
+        ))
+    calls.append(ToolCallMsg(
         id="b1",
         name="submit_chapter_brief",
-        arguments=json.dumps({
-            "summary": "test chapter",
-            "facts": [],
-            "glossary": [],
-            "address": [],
-            "style_notes": [],
-            "page_notes": [],
-            "bubble_notes": [],
-        }),
-    )])
+        arguments=json.dumps(args),
+    ))
+    return CallResponse(tool_calls=calls)
 
 
 def _xml_response(items: list[tuple[str, str, str]]) -> CallResponse:
@@ -76,25 +85,29 @@ class TestTranslate:
     @pytest.mark.asyncio
     async def test_keyed_xml_translation(self):
         scanned, reader, ctx = make_session(3)
-        ctx = dataclasses.replace(ctx, context_provider=MockProvider([_brief_response()]))
         key_list = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
         keys = [bk.key for bk in key_list]
+        ctx = dataclasses.replace(
+            ctx, context_provider=MockProvider([_brief_response(noise_keys=[keys[1]])]),
+        )
 
         async def call(messages, tools):
             return _xml_response([
                 (keys[0], "dialogue", "A"),
-                (keys[1], "skip", ""),
                 (keys[2], "dialogue", "C"),
             ])
 
         provider = MockProvider([])
         provider.call = call
         ctx = dataclasses.replace(ctx, translation_provider=provider)
-        result, _brief = await translate_chapter(scanned, reader, ctx)
+        result, brief = await translate_chapter(scanned, reader, ctx)
         bubbles = result.all_bubbles
         assert bubbles[0].translated_text == "A"
+        # Bubble 1 was flagged by the context agent as noise — translator never
+        # saw it, but it must still appear in the output as kind="skip".
         assert bubbles[1].translated_text == ""
         assert bubbles[1].kind == "skip"
+        assert keys[1] in brief.noise_keys
         assert bubbles[2].translated_text == "C"
 
     @pytest.mark.asyncio

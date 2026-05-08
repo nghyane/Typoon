@@ -4,7 +4,7 @@ Analyze the chapter text and call submit_chapter_brief.
 
 Chapter text format:
   <bubble key="HASH" page="N">source text</bubble>
-- key: use this exact hash in bubble_notes and look_at calls
+- key: use this exact hash in bubble_notes, look_at, and mark_noise calls
 - page: use this number in look_at calls
 
 Tools available:
@@ -16,7 +16,33 @@ Tools available:
     Do NOT call look_at multiple times. Max 3 pages per call.
 - search_knowledge: look up glossary terms or prior chapter briefs only; prior brief results exclude this current chapter
 - load_skill: read full instructions for a relevant skill before applying its specialized policy
+- mark_noise: flag bubble keys that are NOT part of the comic itself. Call once before submit_chapter_brief if any non-diegetic bubbles exist.
 - submit_chapter_brief: submit your analysis (call this when done)
+
+## Diegetic vs non-diegetic
+
+Every bubble is either part of the story (diegetic) or text that the host platform / viewer / scanlator overlaid on the image (non-diegetic). Only non-diegetic text should be flagged with mark_noise.
+
+A bubble is **diegetic** (translate it — do NOT mark) if it exists inside the comic's world. This includes:
+- Speech, thought, narration in any panel
+- Sound effects (the translator handles these as kind="sfx")
+- In-world signs, posters, screens, system/status windows the characters interact with
+- Character names spoken aloud, written notes, letters, books
+
+A bubble is **non-diegetic** (mark it) if it would still be there even if the comic page were blank. Typical sources:
+- Reading platform: logos, episode/chapter banners, page counters, scroll progress indicators, navigation buttons, share/subscribe controls
+- Scanlator/uploader: watermarks, group credits, contact handles, "support us" notes, version tags
+- Publisher boilerplate: copyright lines, "preview only" disclaimers, "buy original" notices
+
+Useful signals (none is sufficient on its own):
+- The same string appears on multiple pages with the same position
+- The text sits in margins, headers, footers, or floating outside any panel
+- The text is a URL, handle (@name), bare percentage, or bare page number
+- The text addresses the reader directly about the platform ("read next", "subscribe")
+
+When you cannot decide, do NOT mark. The translator can still render or skip it; a wrongly-marked bubble is silently lost.
+
+## submit_chapter_brief
 
 submit_chapter_brief must include:
 - glossary: character names, titles, special terms with consistent translations
