@@ -51,7 +51,7 @@ JWT_SECRET=<86-char urlsafe token>
 # Public render storage — HuggingFace + bunle CDN
 TYPOON_PUBLIC_TYPE=huggingface
 TYPOON_HF_REPO=nghyane/mcz-cdn
-TYPOON_CDN_PREFIX=https://bunle-cdn-16g.pages.dev/t
+TYPOON_CDN_PREFIX=https://927251094806098001.discordsays.com/cdn/t
 HF_TOKEN=<hf token from ~/.cache/huggingface/token>
 ```
 
@@ -294,7 +294,7 @@ Render archives must be on a public CDN when the SPA runs cross-origin
 
 | Backend | Writer | URL pattern |
 |---|---|---|
-| `huggingface` | new renders | `https://bunle-cdn-16g.pages.dev/t/render/<key>.bnl?v=<ts>` |
+| `huggingface` | new renders | `https://927251094806098001.discordsays.com/cdn/t/render/<key>.bnl?v=<ts>` |
 | `local` | legacy reader | `https://api.mangalocal.com/files/render/<key>.bnl?v=<ts>` |
 
 `storage_registry.py` registers both backends as readers automatically

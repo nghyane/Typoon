@@ -107,7 +107,7 @@ class PublicStoreConfig(BaseModel):
     # huggingface
     hf_repo:    str = "nghyane/mcz-cdn"
     hf_token:   str = ""               # env: HF_TOKEN
-    cdn_prefix: str = "https://bunle-cdn-16g.pages.dev/t"
+    cdn_prefix: str = "https://927251094806098001.discordsays.com/cdn/t"
 
 
 class PipelineStoreConfig(BaseModel):

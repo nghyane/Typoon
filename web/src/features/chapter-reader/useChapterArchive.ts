@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { Bunle } from '@nghyane/bunle'
-import { isDiscordActivity } from '@shared/discord/sdk'
 
 interface Result {
   bunle:   Bunle | null
@@ -16,6 +15,13 @@ interface Result {
  * No auth header is needed — the path itself is the capability. The
  * version query string (`?v=updated_at`) busts the CDN cache when a
  * chapter re-renders; the path stays stable for cache key purposes.
+ *
+ * The CDN URL is the same in every environment: it points at the
+ * Discord Activity proxy (`<app>.discordsays.com/cdn/t/...`), which
+ * forwards to the underlying bunle CDN. Inside DA the proxy is
+ * mandatory (CSP blocks absolute external origins); outside DA it
+ * still works — `Access-Control-Allow-Origin: *` propagates from the
+ * upstream bunle worker. One URL form, no client-side rewriting.
  *
  * The Bunle instance owns object-URL caches; we close it on unmount
  * or before swapping to a new chapter.
@@ -36,7 +42,7 @@ export function useChapterArchive(url: string | null | undefined): Result {
     setError(null)
     setBunle(null)
 
-    Bunle.open(toProxyUrl(url))
+    Bunle.open(url)
       .then((b) => {
         if (cancelled) { b.close(); return }
         opened = b
@@ -57,21 +63,5 @@ export function useChapterArchive(url: string | null | undefined): Result {
     bunle,
     loading: !!url && bunle === null && error === null,
     error,
-  }
-}
-
-/**
- * In Discord Activity, absolute CDN URLs are blocked by CSP.
- * Rewrite to /cdn<pathname> — Discord URL Mapping forwards
- * /cdn → bunle-cdn-16g.pages.dev, preserving the full path
- * (including /t/... from cdn_prefix).
- */
-function toProxyUrl(url: string): string {
-  if (!isDiscordActivity) return url
-  try {
-    const u = new URL(url)  // throws if relative — leave as-is
-    return `/cdn${u.pathname}${u.search}`
-  } catch {
-    return url
   }
 }

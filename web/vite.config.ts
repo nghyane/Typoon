@@ -31,8 +31,10 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api':   { target, changeOrigin: true },
         '/files': { target, changeOrigin: true },
-        '/cdn':   { target: 'https://bunle-cdn-16g.pages.dev', changeOrigin: true,
-                    rewrite: (path) => path.replace(/^\/cdn/, '') },
+        // No /cdn proxy: archive URLs now point directly at the
+        // Discord Activity proxy (`<app>.discordsays.com/cdn/t/...`),
+        // which is reachable from any origin (CORS = *) and serves
+        // the same response in dev and prod.
       },
     },
   }
