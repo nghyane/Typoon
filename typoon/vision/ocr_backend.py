@@ -2,6 +2,11 @@
 
 Each backend recognizes a batch of RGB crop images and returns
 (text, confidence) pairs. Failures return ("", 0.0) rather than raising.
+
+Language is passed per call (not per construction): one VisionRuntime
+serves projects in different `source_lang`s, so binding the recognizer
+to a single language at startup would silently force every project
+through the wrong recognizer.
 """
 
 from __future__ import annotations
@@ -14,7 +19,60 @@ import numpy as np
 
 @runtime_checkable
 class OcrBackend(Protocol):
-    def recognize(self, crops: list[np.ndarray]) -> list[tuple[str, float]]: ...
+    def recognize(
+        self,
+        crops: list[np.ndarray],
+        *,
+        lang: str | None = None,
+    ) -> list[tuple[str, float]]: ...
+
+
+# Backends set `wants_raw = True` (class attribute) to opt out of the
+# adaptive-threshold preprocessing the pipeline applies to group crops.
+# manga-ocr was trained on natural grayscale manga and is degraded by
+# binarization; Apple/Win/Tesseract benefit from it.
+
+
+# ── Language code mapping ────────────────────────────────────────
+#
+# Project source_lang uses ISO 639-1 ("ja", "ko", "zh", "en"). Each
+# backend wants its own format. One project = one source language;
+# off-script SFX (e.g. Korean SFX in an English chapter) get low conf
+# and fall out of the noise filter naturally — that's expected.
+
+_APPLE_VISION_LANGS: dict[str, list[str]] = {
+    "ja":    ["ja-JP"],
+    "ko":    ["ko-KR"],
+    "zh":    ["zh-Hans"],
+    "zh-cn": ["zh-Hans"],
+    "zh-tw": ["zh-Hant"],
+    "en":    ["en-US"],
+    "vi":    ["vi-VN"],
+}
+
+_WINDOWS_OCR_LANGS: dict[str, str] = {
+    "ja":    "ja",
+    "ko":    "ko",
+    "zh":    "zh-Hans",
+    "zh-cn": "zh-Hans",
+    "zh-tw": "zh-Hant",
+    "en":    "en",
+    "vi":    "vi",
+}
+
+_TESSERACT_LANGS: dict[str, str] = {
+    "ja":    "jpn",
+    "ko":    "kor",
+    "zh":    "chi_sim",
+    "zh-cn": "chi_sim",
+    "zh-tw": "chi_tra",
+    "en":    "eng",
+    "vi":    "vie",
+}
+
+
+def _normalize(lang: str | None) -> str:
+    return (lang or "en").lower()
 
 
 # ── Apple Vision (macOS) ─────────────────────────────────────────
@@ -34,19 +92,25 @@ def _vision_available() -> bool:
 class AppleVisionBackend:
     """PP-OCR crops → Apple Vision OCR. Thread-safe; batches run in parallel."""
 
-    def __init__(self, languages: list[str] | None = None) -> None:
-        self._languages = languages or ["en-US"]
-
-    def recognize(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
+    def recognize(
+        self,
+        crops: list[np.ndarray],
+        *,
+        lang: str | None = None,
+    ) -> list[tuple[str, float]]:
         if not crops:
             return []
+        languages = _APPLE_VISION_LANGS.get(_normalize(lang), ["en-US"])
         if len(crops) == 1:
-            return [self._ocr_one(crops[0])]
+            return [self._ocr_one(crops[0], languages)]
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         results: list[tuple[str, float]] = [("", 0.0)] * len(crops)
         with ThreadPoolExecutor(max_workers=min(4, len(crops))) as pool:
-            futures = {pool.submit(self._ocr_one, crop): i for i, crop in enumerate(crops)}
+            futures = {
+                pool.submit(self._ocr_one, crop, languages): i
+                for i, crop in enumerate(crops)
+            }
             for f in as_completed(futures):
                 try:
                     results[futures[f]] = f.result()
@@ -54,7 +118,7 @@ class AppleVisionBackend:
                     pass
         return results
 
-    def _ocr_one(self, crop: np.ndarray) -> tuple[str, float]:
+    def _ocr_one(self, crop: np.ndarray, languages: list[str]) -> tuple[str, float]:
         import Vision
         import Quartz
         import objc
@@ -80,8 +144,8 @@ class AppleVisionBackend:
             )
             ciimage = Quartz.CIImage.alloc().initWithBitmapImageRep_(rep)
             req = Vision.VNRecognizeTextRequest.alloc().init()
-            req.setRecognitionLanguages_(self._languages)
-            req.setRecognitionLevel_(0)
+            req.setRecognitionLanguages_(languages)
+            req.setRecognitionLevel_(0)  # accurate
             req.setUsesLanguageCorrection_(True)
             handler = Vision.VNImageRequestHandler.alloc().initWithCIImage_options_(ciimage, None)
             ok, err = handler.performRequests_error_([req], None)
@@ -109,10 +173,12 @@ def _winocr_available() -> bool:
 
 
 class WindowsOcrBackend:
-    def __init__(self, lang: str = "en") -> None:
-        self._lang = lang
-
-    def recognize(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
+    def recognize(
+        self,
+        crops: list[np.ndarray],
+        *,
+        lang: str | None = None,
+    ) -> list[tuple[str, float]]:
         import asyncio
         import cv2
         from winrt.windows.media.ocr import OcrEngine
@@ -120,7 +186,8 @@ class WindowsOcrBackend:
         from winrt.windows.security.cryptography import CryptographicBuffer
         from winrt.windows.globalization import Language
 
-        engine = OcrEngine.try_create_from_language(Language(self._lang))
+        win_lang = _WINDOWS_OCR_LANGS.get(_normalize(lang), "en")
+        engine = OcrEngine.try_create_from_language(Language(win_lang))
         if engine is None:
             engine = OcrEngine.try_create_from_user_profile_languages()
 
@@ -154,11 +221,14 @@ def _tesseract_available() -> bool:
 
 
 class TesseractBackend:
-    def __init__(self, lang: str = "eng") -> None:
-        self._lang = lang
-
-    def recognize(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
+    def recognize(
+        self,
+        crops: list[np.ndarray],
+        *,
+        lang: str | None = None,
+    ) -> list[tuple[str, float]]:
         import pytesseract
+        tess_lang = _TESSERACT_LANGS.get(_normalize(lang), "eng")
         results: list[tuple[str, float]] = []
         for crop in crops:
             ch, cw = crop.shape[:2]
@@ -166,7 +236,7 @@ class TesseractBackend:
                 results.append(("", 0.0))
                 continue
             text = " ".join(pytesseract.image_to_string(
-                crop, lang=self._lang, config="--psm 6",
+                crop, lang=tess_lang, config="--psm 6",
             ).strip().split())
             results.append((text, 0.9 if text else 0.0))
         return results
@@ -175,16 +245,61 @@ class TesseractBackend:
 # ── Factory ──────────────────────────────────────────────────────
 
 
-def create_ocr_backend(languages: list[str] | None = None) -> OcrBackend:
-    """Return the best available OCR backend for this platform."""
+class _RoutingBackend:
+    """Routes per-call to a language-specific backend, falling back otherwise.
+
+    manga-ocr-base wins decisively on Japanese manga (vertical text, furigana,
+    SFX). All other languages stay on the platform default backend, which is
+    fine for Latin / CJK printed text that platform OCR handles well.
+    """
+
+    def __init__(self, fallback: OcrBackend, ja: OcrBackend | None) -> None:
+        self._fallback = fallback
+        self._ja = ja
+
+    def _route(self, lang: str | None) -> OcrBackend:
+        if self._ja is not None and _normalize(lang) == "ja":
+            return self._ja
+        return self._fallback
+
+    def recognize(
+        self,
+        crops: list[np.ndarray],
+        *,
+        lang: str | None = None,
+    ) -> list[tuple[str, float]]:
+        return self._route(lang).recognize(crops, lang=lang)
+
+    def wants_raw(self, lang: str | None) -> bool:
+        return bool(getattr(self._route(lang), "wants_raw", False))
+
+
+def create_ocr_backend() -> OcrBackend:
+    """Return the best available OCR backend for this platform.
+
+    Japanese is routed to manga-ocr-base when available; other languages
+    use the platform default. Language is selected per call, not per
+    backend instance.
+    """
     if _vision_available():
-        return AppleVisionBackend(languages)
-    if _winocr_available():
-        return WindowsOcrBackend()
-    if _tesseract_available():
-        return TesseractBackend()
-    raise RuntimeError(
-        "No OCR backend available. "
-        "Install Tesseract: apt install tesseract-ocr (Linux) "
-        "or choco install tesseract (Windows)"
-    )
+        fallback: OcrBackend = AppleVisionBackend()
+    elif _winocr_available():
+        fallback = WindowsOcrBackend()
+    elif _tesseract_available():
+        fallback = TesseractBackend()
+    else:
+        raise RuntimeError(
+            "No OCR backend available. "
+            "Install Tesseract: apt install tesseract-ocr (Linux) "
+            "or choco install tesseract (Windows)"
+        )
+
+    ja: OcrBackend | None = None
+    try:
+        from .ocr_manga import MangaOcrBackend, _manga_ocr_available
+        if _manga_ocr_available():
+            ja = MangaOcrBackend()
+    except ImportError:
+        pass
+
+    return _RoutingBackend(fallback, ja)

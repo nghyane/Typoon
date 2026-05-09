@@ -29,9 +29,6 @@ from .geometry import (
     y_gap, y_overlap,
 )
 
-_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]")
-
-
 class _Scanner(Protocol):
     _det: object
     def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]: ...
@@ -170,12 +167,13 @@ def build_groups(state: ScanState) -> None:
 
 def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
     """Run full OCR on each group crop, with rotation retry for angled text."""
+    raw = bool(getattr(scanner, "wants_raw", False))
     # Pass 1: OCR all crops at detected angle
     crops, groups = [], []
     for g in state.groups:
         x1, y1, x2, y2 = g.ocr_bbox
         if x2 - x1 >= 5 and y2 - y1 >= 5:
-            crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle))
+            crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle, raw=raw))
             groups.append(g)
     for g, (text, conf) in zip(groups, scanner._ocr_crops(crops) if crops else []):
         g.text = (text or "").strip()
@@ -190,7 +188,7 @@ def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
         base = state.image[y1:y2, x1:x2]
         for offset in (-12, -8, -4, 4, 8, 12):
             retry_groups.append(g)
-            retry_crops.append(_rotate_crop(base, g.median_angle + offset))
+            retry_crops.append(_rotate_crop(base, g.median_angle + offset, raw=raw))
 
     if retry_crops:
         for g, (text, conf) in zip(retry_groups, scanner._ocr_crops(retry_crops)):
@@ -200,12 +198,19 @@ def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
                 g.confidence = float(conf)
 
 
-def _rotate_crop(crop: np.ndarray, angle: float) -> np.ndarray:
-    """Rotate crop to straighten text, then binarize for cleaner OCR."""
+def _rotate_crop(crop: np.ndarray, angle: float, *, raw: bool = False) -> np.ndarray:
+    """Rotate crop to straighten text, then binarize for cleaner OCR.
+
+    `raw=True` skips binarization for backends (e.g. manga-ocr) trained
+    on natural grayscale manga, where adaptive-threshold preprocessing
+    degrades accuracy.
+    """
     if abs(angle) >= 3:
         ch, cw = crop.shape[:2]
         M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
         crop = cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
+    if raw:
+        return crop
     # Adaptive binarization removes bubble-edge noise and improves manga font OCR.
     # Detect polarity: dark-on-light (manga/manhwa white bubble) vs light-on-dark
     # (dark/colored bubble background). THRESH_BINARY_INV for the latter so text

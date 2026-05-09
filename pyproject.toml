@@ -13,6 +13,7 @@ include = ["typoon*"]
 [project.optional-dependencies]
 onnx = ["onnxruntime>=1.17"]
 cuda = ["onnxruntime-gpu>=1.17"]
+ja   = ["transformers>=4.45", "fugashi", "unidic-lite"]
 
 [project.scripts]
 typoon = "typoon.cli:app"
