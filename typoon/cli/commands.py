@@ -134,6 +134,11 @@ def api(
         host=host or cfg.server.host,
         port=port or cfg.server.port,
         reload=reload,
+        # Long-lived SSE streams (/api/events) keep connections open
+        # forever from uvicorn's perspective; without a graceful timeout
+        # `Ctrl+C` hangs at "Waiting for connections to close" until the
+        # last browser tab closes its EventSource.
+        timeout_graceful_shutdown=5,
     )
 
 

@@ -12,7 +12,9 @@ storage node via `HttpBlobStore`.
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,7 +31,25 @@ _role = os.environ.get("TYPOON_API_ROLE", "full").lower()
 _serve_api     = _role in ("api", "full")
 _serve_storage = _role in ("storage", "full")
 
-app = FastAPI(title="Typoon API")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Per-process shutdown signal.
+
+    Long-lived endpoints (notably the SSE event stream) check
+    `app.state.shutdown` so they can return immediately when uvicorn
+    starts a graceful shutdown — otherwise every still-open browser
+    tab keeps the process alive at "Waiting for connections to close"
+    until the graceful timeout fires.
+    """
+    app.state.shutdown = asyncio.Event()
+    try:
+        yield
+    finally:
+        app.state.shutdown.set()
+
+
+app = FastAPI(title="Typoon API", lifespan=_lifespan)
 
 _config, _paths = load_config()
 _paths.ensure()

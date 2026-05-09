@@ -53,21 +53,33 @@ async def event_stream(
         raise HTTPException(401, "User not found")
 
     last_id = request.headers.get("last-event-id", "0")
+    # App-level shutdown signal: lets the loop break immediately when
+    # uvicorn starts a graceful shutdown rather than blocking until the
+    # browser tab closes.
+    shutdown: asyncio.Event = request.app.state.shutdown
 
     async def _generate():
         events = bus.subscribe(last_id).__aiter__()
         next_task: asyncio.Task | None = None
+        shutdown_task: asyncio.Task | None = None
         try:
             while True:
-                if await request.is_disconnected():
+                if shutdown.is_set() or await request.is_disconnected():
                     return
 
                 if next_task is None:
                     next_task = asyncio.create_task(events.__anext__())
+                if shutdown_task is None or shutdown_task.done():
+                    shutdown_task = asyncio.create_task(shutdown.wait())
 
                 done, _pending = await asyncio.wait(
-                    {next_task}, timeout=_HEARTBEAT_SEC,
+                    {next_task, shutdown_task},
+                    timeout=_HEARTBEAT_SEC,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+
+                if shutdown_task in done:
+                    return
 
                 if next_task in done:
                     try:
@@ -82,12 +94,13 @@ async def event_stream(
                     # disconnect on the next loop.
                     yield ": ping\n\n"
         finally:
-            if next_task is not None and not next_task.done():
-                next_task.cancel()
-                try:
-                    await next_task
-                except (asyncio.CancelledError, StopAsyncIteration, Exception):
-                    pass
+            for task in (next_task, shutdown_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                        pass
             await events.aclose()
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
