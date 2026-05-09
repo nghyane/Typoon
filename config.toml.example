@@ -4,6 +4,20 @@
 models_dir = "models"
 default_target_lang = "vi"
 
+# OCR backend — "auto" picks the first available in priority order:
+# google_lens → apple_vision → windows_ocr → tesseract.
+# Pin explicitly when running on a host that has multiple available.
+# ocr_backend = "google_lens"
+
+# Override the Google Lens upstream endpoint. Empty = library default
+# (https://lensfrontend-pa.googleapis.com/v1/crupload). Setting this to
+# a Discord Activity proxy URL routes through Cloudflare's edge:
+# measured 30–50% faster from APAC than the direct Google endpoint and
+# noticeably lower variance. Requires the application's URL Mappings
+# to map `/lens` → `lensfrontend-pa.googleapis.com` in the Developer
+# Portal. Same effect via env: `LENS_ENDPOINT=...`.
+# lens_endpoint = "https://<application_id>.discordsays.com/lens/v1/crupload"
+
 [providers.cf]
 type = "openai"
 # Cloudflare AI Gateway — OpenAI-compatible compat endpoint

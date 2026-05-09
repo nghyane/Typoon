@@ -31,18 +31,24 @@ _AUTO_PRIORITY: tuple[str, ...] = (
 def create_ocr(
     source_lang: str | None,
     backend: str = "auto",
+    *,
+    lens_endpoint: str | None = None,
 ) -> PageOcr | CropOcr:
     """Return the OCR backend to use for a project.
 
     `backend` accepts: "auto", "google_lens", "apple_vision",
     "windows_ocr", "tesseract", "manga_ocr".
+
+    `lens_endpoint` overrides the Google Lens upstream URL — used to
+    point through a Discord Activity proxy or any other reverse proxy
+    that fronts `lensfrontend-pa.googleapis.com`.
     """
     if (source_lang or "").lower() == "ja":
         return _build_manga_ocr_or_raise()
 
     if backend == "auto":
         for name in _AUTO_PRIORITY:
-            built = _try_build(name)
+            built = _try_build(name, lens_endpoint=lens_endpoint)
             if built is not None:
                 return built
         raise RuntimeError(
@@ -52,7 +58,7 @@ def create_ocr(
             "or run on macOS / Windows for native OCR."
         )
 
-    built = _try_build(backend)
+    built = _try_build(backend, lens_endpoint=lens_endpoint)
     if built is None:
         raise RuntimeError(
             f"OCR backend {backend!r} not available on this host. "
@@ -61,11 +67,11 @@ def create_ocr(
     return built
 
 
-def _try_build(name: str) -> PageOcr | CropOcr | None:
+def _try_build(name: str, *, lens_endpoint: str | None = None) -> PageOcr | CropOcr | None:
     if name == "google_lens":
         from . import google_lens
         if google_lens.is_available():
-            return google_lens.GoogleLensPageOcr()
+            return google_lens.GoogleLensPageOcr(endpoint=lens_endpoint or None)
     elif name == "apple_vision":
         from . import apple_vision
         if apple_vision.is_available():

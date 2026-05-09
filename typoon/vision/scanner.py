@@ -44,7 +44,13 @@ class Scanner:
         ))
 
 
-def create_scanner(hub=None, *, ocr_backend: str = "auto", source_lang: str | None = None) -> Scanner:
+def create_scanner(
+    hub=None,
+    *,
+    ocr_backend: str = "auto",
+    source_lang: str | None = None,
+    lens_endpoint: str | None = None,
+) -> Scanner:
     """Build a Scanner with PP-OCR det + the configured OCR backend."""
     if hub is None:
         raise RuntimeError("PP-OCR models required")
@@ -53,7 +59,7 @@ def create_scanner(hub=None, *, ocr_backend: str = "auto", source_lang: str | No
         hub.resolve("ppocr-det.safetensors"),
         hub.resolve("ppocr-det-config.json"),
     )
-    ocr = create_ocr(source_lang, backend=ocr_backend)
+    ocr = create_ocr(source_lang, backend=ocr_backend, lens_endpoint=lens_endpoint)
     scanner = Scanner(detector, ocr)
     if source_lang is not None:
         scanner.set_language(source_lang)

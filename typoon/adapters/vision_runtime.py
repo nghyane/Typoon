@@ -41,6 +41,7 @@ class VisionRuntime:
                 hub=hub,
                 ocr_backend=config.ocr_backend,
                 source_lang=source_lang,
+                lens_endpoint=config.lens_endpoint or None,
             ),
             eraser=Eraser(str(hub.dir)),
             hub=hub,
