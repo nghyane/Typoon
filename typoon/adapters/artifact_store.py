@@ -43,21 +43,25 @@ class ArtifactStore(BlobStore, Protocol):
 class LocalArtifactStore(LocalBlobStore):
     """LocalBlobStore + URL via FastAPI `/files` static mount.
 
-    Public URLs resolve through the same FastAPI app (`/files/<key>`).
+    Browser fetches resolve through the same FastAPI app at
+    `/files/<locator>` (relative path). In production the SPA and API
+    share the same origin via Cloudflare Tunnel URL Mappings, so a
+    relative path works. In dev the Vite proxy forwards `/files` to
+    the API.
+
     Use only for dev or single-host deploys; in multi-host the local
-    artifact store on each worker is private to that host and will not
-    be reachable by a browser.
+    artifact store on each worker is private to that host.
     """
 
     backend_name = "local"
+    _MOUNT = "/files"
 
-    def __init__(self, root: Path, *, public_base: str = "/files") -> None:
+    def __init__(self, root: Path) -> None:
         super().__init__(root)
-        self._public_base = public_base.rstrip("/")
 
     def url(self, locator: str, *, version: str = "") -> str:
         qs = f"?v={version}" if version else ""
-        return f"{self._public_base}/{locator}{qs}"
+        return f"{self._MOUNT}/{locator}{qs}"
 
 
 # ── HuggingFace — public dataset + bunle CDN ──────────────────────────

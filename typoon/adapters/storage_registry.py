@@ -59,14 +59,38 @@ def build_storage(cfg: Config, paths: Paths) -> StorageRegistry:
     """Construct pipeline + public stores from config.
 
     Raises if a backend's required credentials are missing. The
-    `readers` map carries one entry per configured public backend;
-    chapters whose `archive_backend` no longer matches a configured
-    reader will fail loud at URL build time so the operator notices
-    and migrates / wipes them.
+    `readers` map carries one entry per public backend that can still
+    serve historical chapters: the configured primary plus any other
+    backend with credentials available. This lets the operator switch
+    `storage.public.type` from `local` → `huggingface` without
+    breaking already-rendered chapters whose `archive_backend="local"`
+    rows still point at the on-disk path.
+
+    Chapters whose `archive_backend` no longer matches any configured
+    reader fail loud at URL build time so the operator notices and
+    migrates / wipes them.
     """
     public = _build_public(cfg, paths)
     pipeline = _build_pipeline(cfg, paths)
     readers: dict[str, ArtifactStore] = {public.backend_name: public}
+
+    # Always register the local reader as a fallback when a different
+    # primary is configured — historical chapters from before the
+    # switch keep working as long as the on-disk artifact is still
+    # there. Cheap to construct (no I/O until first read).
+    if "local" not in readers:
+        readers["local"] = LocalArtifactStore(paths.artifacts)
+
+    # Register the HF reader too when credentials exist, even if the
+    # primary is local — useful during a staged migration where some
+    # chapters got pushed to HF before flipping the primary back.
+    if "huggingface" not in readers and cfg.storage.public.hf_token:
+        readers["huggingface"] = HuggingFaceArtifactStore(
+            repo=cfg.storage.public.hf_repo,
+            token=cfg.storage.public.hf_token,
+            cdn_prefix=cfg.storage.public.cdn_prefix,
+        )
+
     return StorageRegistry(pipeline=pipeline, public=public, readers=readers)
 
 
