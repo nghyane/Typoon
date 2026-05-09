@@ -67,6 +67,12 @@ class ServerConfig(BaseModel):
     public_web_url: str = "http://localhost:5173"
     host:           str = "0.0.0.0"
     port:           int = 8000
+    # Hosts allowed in the Host header. In production behind Cloudflare
+    # Tunnel (or any proxy), the app is reachable only via the
+    # configured tunnel hostname; rejecting other Host values stops
+    # cache-poisoning / host-header injection. Empty = derived from
+    # public_api_url + public_web_url at load time. Use ["*"] in dev.
+    trusted_hosts: list[str] = Field(default_factory=list)
 
 
 class AuthConfig(BaseModel):
@@ -239,6 +245,27 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         except ValueError:
             pass
 
+    # Trusted hosts for the Host header. Comma-separated env or
+    # auto-derive from public_api_url + public_web_url. "*" disables
+    # the check (dev only). Hosts are matched by exact equality (no
+    # port stripping) by Starlette's TrustedHostMiddleware.
+    env_hosts = os.environ.get("TRUSTED_HOSTS", "").strip()
+    if env_hosts:
+        config.server.trusted_hosts = [h.strip() for h in env_hosts.split(",") if h.strip()]
+    elif not config.server.trusted_hosts:
+        from urllib.parse import urlparse
+        derived: list[str] = []
+        for url in (config.server.public_api_url, config.server.public_web_url):
+            host = urlparse(url).hostname
+            if host:
+                derived.append(host)
+        # Always allow localhost so health probes / SSH tunnels still
+        # work without explicit config.
+        derived.extend(["localhost", "127.0.0.1"])
+        # De-dup preserving order.
+        seen: set[str] = set()
+        config.server.trusted_hosts = [h for h in derived if not (h in seen or seen.add(h))]
+
     # Database — env wins over toml. Must be a postgresql:// DSN.
     config.database_url = os.environ.get("DATABASE_URL", config.database_url)
     if not config.database_url:
@@ -261,6 +288,16 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     config.auth.admin_role_id         = os.environ.get("DISCORD_ADMIN_ROLE_ID", config.auth.admin_role_id)
     config.auth.jwt_secret            = os.environ.get("JWT_SECRET",            config.auth.jwt_secret)
     if not config.auth.jwt_secret:
+        # Auto-generate for dev. In production, JWT_SECRET MUST be set
+        # explicitly — otherwise every restart invalidates every active
+        # session. Marker env: TYPOON_ENV=production.
+        if os.environ.get("TYPOON_ENV", "").lower() == "production":
+            raise RuntimeError(
+                "JWT_SECRET environment variable is required when "
+                "TYPOON_ENV=production. Generate one with "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(64))\"` "
+                "and persist it (e.g. systemd EnvironmentFile)."
+            )
         config.auth.jwt_secret = _ensure_jwt_secret(paths.root)
 
     # Storage: env wins over toml. Salt defaults to a derivation of
