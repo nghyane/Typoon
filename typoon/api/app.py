@@ -18,7 +18,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
@@ -83,6 +85,25 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
 )
 
+# Host header validation. Behind Cloudflare Tunnel (or any proxy) the
+# app is reachable only via `_config.server.trusted_hosts` — rejecting
+# other Host values blocks cache-poisoning / host-header injection.
+# `["*"]` disables the check (dev only).
+if _config.server.trusted_hosts and _config.server.trusted_hosts != ["*"]:
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=_config.server.trusted_hosts,
+    )
+
+# Proxy header trust. Cloudflare Tunnel (and other reverse proxies)
+# forward the real client IP and scheme via X-Forwarded-{For,Proto}.
+# Without this middleware the app sees the tunnel daemon's loopback
+# address as the client, breaking IP-based logging and any per-IP
+# policy. trusted_hosts="*" is acceptable here because the tunnel is
+# the only ingress — uvicorn already binds to 0.0.0.0 and we trust
+# whatever proxy handed off the connection.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
 if _serve_api:
     app.include_router(auth.router)
     app.include_router(me.router)
@@ -111,7 +132,40 @@ async def healthz(db: Store = Depends(get_store)):
 
 
 if _serve_api:
-    # Public render archives, dev/local serving only. Production uses an
+    # CDN proxy — forwards /cdn/<path> to the configured cdn_prefix.
+    # Keeps all archive URLs relative so they work in Discord Activity
+    # (CSP blocks absolute external origins) and in dev via Vite proxy.
+    # Range requests are forwarded so the bunle reader can slice archives.
+    #
+    # Discord URL Mapping: /cdn → bunle-cdn-16g.pages.dev (host only, no /t).
+    # FastAPI adds the /t prefix via cdn_prefix config before forwarding.
+    import httpx
+    from fastapi import Request
+    _cdn_client = httpx.AsyncClient(
+        base_url=_config.storage.public.cdn_prefix.rstrip("/") + "/",
+        follow_redirects=True,
+        timeout=30,
+    )
+
+    @app.get("/cdn/{path:path}")
+    async def cdn_proxy(path: str, request: Request, v: str = ""):
+        qs = f"?v={v}" if v else ""
+        headers = {}
+        if rng := request.headers.get("range"):
+            headers["range"] = rng
+        r = await _cdn_client.get(path + qs, headers=headers)
+        from fastapi.responses import Response
+        return Response(
+            content=r.content,
+            status_code=r.status_code,
+            headers={
+                k: r.headers[k]
+                for k in ("content-type", "content-range", "accept-ranges", "cache-control")
+                if k in r.headers
+            },
+        )
+
+
     # external CDN (bunle CDN proxying HF) and skips this mount.
     # StaticFiles supports HTTP Range so the in-browser bunle reader can
     # request slices without pulling the whole archive.

@@ -149,4 +149,4 @@ class HuggingFaceArtifactStore:
 
     def url(self, locator: str, *, version: str = "") -> str:
         qs = f"?v={version}" if version else ""
-        return f"{self._cdn_prefix}/{locator}{qs}"
+        return f"/cdn/{locator}{qs}"
