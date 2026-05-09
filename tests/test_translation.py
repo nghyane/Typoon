@@ -21,7 +21,6 @@ from .conftest import MockProvider, make_session
 def _brief_response(noise_keys: list[str] | None = None) -> CallResponse:
     args = {
         "summary": "test chapter",
-        "facts": [],
         "glossary": [],
         "address": [],
         "style_notes": [],
