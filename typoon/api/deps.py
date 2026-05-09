@@ -8,7 +8,7 @@ from functools import lru_cache
 import jwt
 from fastapi import Depends, Header, HTTPException
 
-from typoon.adapters.event_bus import EventBus
+from typoon.adapters.channel_bus import ChannelBus
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
 from typoon.api.auth import verify_jwt
 from typoon.api.auth_token import looks_like_api_token, verify_api_token
@@ -17,7 +17,7 @@ from typoon.paths import Paths
 from typoon.storage import PostgresStore, Store
 
 _store: Store | None = None
-_bus:   EventBus | None = None
+_bus:   ChannelBus | None = None
 _storage: StorageRegistry | None = None
 _lock = asyncio.Lock()
 
@@ -37,13 +37,13 @@ async def get_store() -> Store:
     return _store
 
 
-async def get_bus() -> EventBus:
+async def get_bus() -> ChannelBus:
     global _bus
     if _bus is None:
         async with _lock:
             if _bus is None:
                 config, _ = _config_and_paths()
-                _bus = EventBus(config.database_url)
+                _bus = ChannelBus(config.database_url)
     return _bus
 
 

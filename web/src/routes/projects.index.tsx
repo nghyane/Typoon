@@ -36,6 +36,12 @@ function ProjectsPage() {
   const { data: projects = [], isPending: isLoading, isError } = useQuery({
     queryKey: ['projects', filter],
     queryFn:  () => api.listProjects(filter),
+    // SSE is project-scoped and only opens for the project the user
+    // is actually viewing. The list page falls back to polling so
+    // chapter counts and state badges stay current without a
+    // shotgun subscription. RQ pauses polling when the tab is in the
+    // background (refetchOnWindowFocus default).
+    refetchInterval: 10_000,
   })
 
   const filtered = useMemo(() => {

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from typoon.adapters.event_bus import EventBus, EventHook
+from typoon.adapters.channel_bus import ChannelBus, ChannelHook
 from typoon.adapters.projects import Projects
 from typoon.adapters.storage_registry import StorageRegistry
 from typoon.api.deps import get_storage, get_bus, get_paths, get_store, require_user
@@ -58,7 +58,7 @@ async def upload_chapter(
     db:    Store           = Depends(get_store),
     paths: Paths           = Depends(get_paths),
     stores: StorageRegistry = Depends(get_storage),
-    bus:   EventBus         = Depends(get_bus),
+    bus:   ChannelBus       = Depends(get_bus),
 ):
     """Ingest one chapter from an uploaded archive, PDF, or image set.
 
@@ -88,7 +88,7 @@ async def upload_chapter(
         )
 
     loop = asyncio.get_running_loop()
-    hook: Hook = EventHook(bus, loop)
+    hook: Hook = ChannelHook(bus, loop)
 
     pj = Projects(db, paths, stores.pipeline)
 

@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS chapters (
     -- migration.
     archive_backend TEXT,
     archive_locator TEXT,
+    -- Per-chapter pipeline progress, updated by the worker after each
+    -- page completes a stage. UI reads this directly to draw the
+    -- progress bar; we don't keep a separate event log just to compute
+    -- "where's the running render at right now".
+    progress_stage  TEXT,
+    progress_index  INTEGER,
+    progress_total  INTEGER,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(project_id, idx)
@@ -222,16 +229,10 @@ CREATE TABLE IF NOT EXISTS glossary (
 CREATE INDEX IF NOT EXISTS idx_glossary_source_term_tsv
     ON glossary USING GIN (source_term_tsv);
 
--- ── Events (event bus persistence + replay) ─────────────────────────
-
-CREATE TABLE IF NOT EXISTS events (
-    id          BIGSERIAL PRIMARY KEY,
-    data        JSONB NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_events_chapter_pagedone
-    ON events ((data->>'chapter_id'))
-    WHERE data->>'type' = 'PageDone';
+-- Real-time updates use Postgres LISTEN/NOTIFY directly (no buffer
+-- table). See typoon/adapters/channel_bus.py — events are transient,
+-- not persisted. Per-chapter progress that survives restart lives on
+-- the chapters row (progress_stage / progress_index / progress_total).
 
 -- ── updated_at maintenance ──────────────────────────────────────────
 -- Postgres has no "ON UPDATE" trigger sugar — keep the explicit triggers.

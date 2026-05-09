@@ -125,9 +125,10 @@ class Store(Protocol):
     async def touch_api_token(self, token_id: int) -> None: ...
     async def revoke_api_token(self, user_id: int, token_id: int) -> bool: ...
 
-    # ── Events ────────────────────────────────────────────────────
-    async def append_event(self, data: dict) -> int: ...
-    async def get_events_after(self, seq: int) -> list[dict]: ...
+    # ── Chapter progress ─────────────────────────────────────────
+    async def set_chapter_progress(
+        self, chapter_id: int, *, stage: str, index: int, total: int,
+    ) -> None: ...
 
     # ── Chapter archive state ─────────────────────────────────────
     async def set_prepared_done(self, chapter_id: int, page_count: int) -> None:
@@ -151,11 +152,6 @@ class Store(Protocol):
         """Return rendered chapters whose intermediate cache (prepared
         + masks) can be deleted; used by `typoon prune`. Each row has
         chapter_id and project_id keys."""
-        ...
-
-    async def prune_events(self, older_than_days: int) -> int:
-        """Drop events older than the cutoff. Returns row count.
-        Used by `typoon prune` to keep the SSE replay table bounded."""
         ...
 
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -1098,34 +1098,38 @@ class PostgresStore:
             )
         return result.startswith("UPDATE ") and not result.endswith("0")
 
-    # ── Events ────────────────────────────────────────────────────
+    # ── Chapter progress ─────────────────────────────────────────
 
-    async def append_event(self, data: dict) -> int:
-        """Insert event, return id. Used by EventBus.publish."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO events (data) VALUES ($1::jsonb) RETURNING id",
-                json.dumps(data),
-            )
-        return row["id"]
+    async def set_chapter_progress(
+        self, chapter_id: int, *, stage: str, index: int, total: int,
+    ) -> None:
+        """Persist the latest pipeline progress for a chapter.
 
-    async def get_events_after(self, seq: int) -> list[dict]:
+        Called by the worker after each PageDone. UI reads via
+        get_chapter_progress to draw the running progress bar; the
+        value survives an API restart because it lives on the row,
+        not in a transient event buffer.
+        """
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, data FROM events WHERE id > $1 ORDER BY id LIMIT 100", seq,
+            await conn.execute(
+                "UPDATE chapters SET "
+                "  progress_stage=$1, progress_index=$2, progress_total=$3 "
+                "WHERE id=$4",
+                stage, index, total, chapter_id,
             )
-        return [{"id": r["id"], **_to_jsonable_dict(r["data"])} for r in rows]
 
     async def get_chapter_progress(self, chapter_id: int) -> dict | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT data FROM events "
-                "WHERE data->>'type'='PageDone' "
-                "  AND data->>'chapter_id'=$1 "
-                "ORDER BY id DESC LIMIT 1",
-                str(chapter_id),
+                "SELECT progress_stage AS stage, "
+                "       progress_index AS page_index, "
+                "       progress_total AS page_total "
+                "FROM chapters WHERE id=$1",
+                chapter_id,
             )
-        return _to_jsonable_dict(row["data"]) if row else None
+        if row is None or row["stage"] is None:
+            return None
+        return dict(row)
 
     # ── Chapter archive state ─────────────────────────────────────
 
@@ -1176,27 +1180,6 @@ class PostgresStore:
                 older_than_days,
             )
         return [dict(r) for r in rows]
-
-    async def prune_events(self, older_than_days: int) -> int:
-        """Drop events older than the cutoff. Returns rows deleted.
-
-        Events stay in the table to support SSE Last-Event-ID replay and
-        provide a short audit trail; clients that fall further behind
-        than this just lose their replay buffer (the live stream
-        continues to work). 7 days is comfortable for a community-scale
-        deploy and keeps the table well below a million rows.
-        """
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM events "
-                "WHERE created_at < NOW() - make_interval(days => $1)",
-                older_than_days,
-            )
-        # asyncpg returns "DELETE <count>"; parse the trailing number.
-        try:
-            return int(result.rsplit(" ", 1)[1])
-        except (ValueError, IndexError):
-            return 0
 
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         async with self._pool.acquire() as conn:

@@ -7,7 +7,7 @@ import { Button } from '@shared/ui/Button'
 import { ReaderToolbar, type ViewMode } from '@features/chapter-reader/ReaderToolbar'
 import { PageImage } from '@features/chapter-reader/PageImage'
 import { useChapterArchive } from '@features/chapter-reader/useChapterArchive'
-import { useProjectInterest } from '../store/interest'
+import { useProjectEvents } from '@shared/lib/events'
 
 interface SearchParams {
   page?: number
@@ -18,12 +18,15 @@ function ChapterReaderPage() {
   const { projectId, chapterId } = Route.useParams()
   const { page = 0, mode = 'continuous' } = Route.useSearch()
   const nav = Route.useNavigate()
+  // Route params are strings; coerce once.
   const pid = Number(projectId)
   const cid = Number(chapterId)
+  const validIds = Number.isInteger(pid) && pid > 0
+                && Number.isInteger(cid) && cid > 0
 
   // Subscribe SSE to events for this project so render progress on the
   // chapter page reflects in real time.
-  useProjectInterest(isNaN(pid) ? null : pid)
+  useProjectEvents(pid)
 
   const setPage = (p: number) =>
     nav({ search: (s) => ({ ...s, page: p > 0 ? p : undefined }) })
@@ -34,14 +37,14 @@ function ChapterReaderPage() {
   const { data: project } = useQuery({
     queryKey: ['projects', pid],
     queryFn:  () => api.getProject(pid),
-    enabled:  !isNaN(pid),
+    enabled:  validIds,
   })
 
   // Chapter list — used to derive prev/next ids and current chapter meta.
   const { data: chapters = [] } = useQuery({
     queryKey: ['projects', pid, 'chapters'],
     queryFn:  () => api.listChapters(pid),
-    enabled:  !isNaN(pid),
+    enabled:  validIds,
   })
 
   const sorted = useMemo(

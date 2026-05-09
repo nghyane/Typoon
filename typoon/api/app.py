@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
-    auth, blobs, bubbles, glossary, me, projects, search, sse, upload, workers,
+    auth, blobs, bubbles, glossary, me, project_events,
+    projects, search, upload, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -91,7 +92,7 @@ if _serve_api:
     app.include_router(glossary.router)
     app.include_router(workers.router)
     app.include_router(search.router)
-    app.include_router(sse.router)
+    app.include_router(project_events.router)
 
 if _serve_storage:
     app.include_router(blobs.router)

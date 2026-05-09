@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@shared/api/api'
 import { getToken } from '@features/auth/auth'
 
-interface ServerEvent {
+interface ProjectEvent {
   type:        string
   chapter_id?: number
   project_id?: number
@@ -26,52 +26,51 @@ const PROJECT_LIST_TRIGGERS = new Set([
 ])
 
 /**
- * Open one EventSource for the lifetime of a tab.
+ * Subscribe to live events for one project.
  *
- * `projectIds` narrows the server-side fan-out so a tab viewing a
- * single project doesn't receive PageDone events from every other
- * project that happens to be rendering. Pass undefined for firehose
- * (admin / queue dashboard).
+ * The server-side stream is Postgres LISTEN scoped to a per-project
+ * channel — a tab open on /projects/9 receives events about project 9
+ * only, with no app-side filtering. Closing the tab drops the LISTEN.
  *
- * The hook reopens the stream when the project filter changes so the
- * server-side subscription matches what the user is actually viewing.
+ * Pass the project id of the page the user is currently viewing. Any
+ * non-positive integer (NaN, 0, undefined) disables the subscription
+ * so callers can pass `Number(routeParam)` without re-validating.
  */
-export function useServerEvents(projectIds?: readonly number[]) {
+export function useProjectEvents(projectId: number | null | undefined) {
   const qc = useQueryClient()
-  const filterKey = projectIds?.length ? projectIds.slice().sort((a, b) => a - b).join(',') : ''
+  const id = Number.isInteger(projectId) && (projectId as number) > 0
+    ? (projectId as number)
+    : null
 
   useEffect(() => {
+    if (id === null) return
     const token = getToken()
     if (!token) return
 
     // EventSource has no header API; engine accepts the token via ?token=.
-    const params = new URLSearchParams({ token })
-    if (filterKey) params.set('projects', filterKey)
-    const url = `${api.base}/api/events?${params}`
+    const url = `${api.base}/api/projects/${id}/events?token=${encodeURIComponent(token)}`
     const es  = new EventSource(url)
 
     es.onmessage = (msg) => {
-      let ev: ServerEvent
+      let ev: ProjectEvent
       try { ev = JSON.parse(msg.data) }
       catch { return }
 
-      if (ev.project_id) {
-        qc.invalidateQueries({
-          queryKey: ['projects', ev.project_id, 'chapters'],
-        })
-      }
+      qc.invalidateQueries({
+        queryKey: ['projects', id, 'chapters'],
+      })
 
       if (PROJECT_LIST_TRIGGERS.has(ev.type)) {
+        // Bubble up coarse changes so the global project list reflects
+        // chapter completions / errors without each tab polling.
         qc.invalidateQueries({ queryKey: ['projects'], exact: true })
-        if (ev.project_id) {
-          qc.invalidateQueries({
-            queryKey: ['projects', ev.project_id],
-            exact: true,
-          })
-        }
+        qc.invalidateQueries({
+          queryKey: ['projects', id],
+          exact: true,
+        })
       }
     }
 
     return () => es.close()
-  }, [qc, filterKey])
+  }, [id, qc])
 }

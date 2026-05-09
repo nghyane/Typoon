@@ -2,7 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useState, useMemo, useEffect } from 'react'
 import { useHeaderStore } from '../store/header'
-import { useProjectInterest } from '../store/interest'
+import { useProjectEvents } from '@shared/lib/events'
 import { api, type ApiChapter } from '@shared/api/api'
 import { useDelayedFlag } from '@shared/lib/useDelayedFlag'
 import { ProjectHero } from '@features/project-detail/ProjectHero'
@@ -25,10 +25,15 @@ function ProjectDetailPage() {
   const { projectId } = Route.useParams()
   const { tab = 'chapters', filter = 'all', q = '' } = Route.useSearch()
   const nav = Route.useNavigate()
+  // Route params are strings; coerce once. The comparisons below treat
+  // anything non-positive (NaN, 0) as "not yet ready" so route-level
+  // checks don't pile up.
   const id = Number(projectId)
+  const validId = Number.isInteger(id) && id > 0
 
-  // Tell the SSE hook this tab cares about events for this project.
-  useProjectInterest(isNaN(id) ? null : id)
+  // Live updates for this project — opens an SSE subscription scoped
+  // to project <id>. Closes when the user navigates away.
+  useProjectEvents(id)
 
   // URL is the state of truth. setX = navigate with new search params.
   const setTab    = (next: Tab)    => nav({ search: (s) => ({ ...s, tab:    next }) })
@@ -44,13 +49,13 @@ function ProjectDetailPage() {
   const { data: project, isError: pErr, isPending: pLoad } = useQuery({
     queryKey: ['projects', id],
     queryFn:  () => api.getProject(id),
-    enabled:  !isNaN(id),
+    enabled:  validId,
   })
 
   const { data: chapters = [], isPending: cLoad } = useQuery({
     queryKey: ['projects', id, 'chapters'],
     queryFn:  () => api.listChapters(id),
-    enabled:  !isNaN(id),
+    enabled:  validId,
     // SSE drives most updates, but the stream can drop (network blip,
     // backgrounded tab) and a worker crash leaves no event to listen
     // for. Poll while anything is in flight so the list eventually

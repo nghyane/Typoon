@@ -3,14 +3,11 @@ import { useNavigate } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { Toaster } from '@shared/ui/Toaster'
-import { useServerEvents } from '@shared/lib/events'
 import { useCurrentUser } from '@features/auth/auth'
-import { useProjectInterestList } from '../store/interest'
 
 export function AppLayout({ children }: { children: ReactNode }) {
   const nav = useNavigate()
   const { user, loading } = useCurrentUser()
-  const projectIds = useProjectInterestList()
 
   useEffect(() => {
     if (!loading && !user) nav({ to: '/login' })
@@ -21,8 +18,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
     window.addEventListener('typoon:unauthorized', onUnauth)
     return () => window.removeEventListener('typoon:unauthorized', onUnauth)
   }, [nav])
-
-  useServerEvents(projectIds)
 
   // Document title follows the brand. Only set when we have a real name —
   // never fall back to a hardcoded string. The HTML <title> in index.html

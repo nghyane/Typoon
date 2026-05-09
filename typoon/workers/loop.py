@@ -30,7 +30,7 @@ from uuid import uuid4
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
 from typoon.adapters.chapter_archive import masks_key, prepared_key
 from typoon.adapters.ctx import TranslateCtx, make_ctx
-from typoon.adapters.event_bus import EventBus, EventHook
+from typoon.adapters.channel_bus import ChannelBus, ChannelHook
 from typoon.adapters.loader import (
     load_scanned, load_translated_with_geometry, open_prepared_reader,
 )
@@ -39,7 +39,8 @@ from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.config import Config
 from typoon.paths import Paths
 from typoon.runs.events import (
-    CompositeHook, Hook, LoggingHook, StageDone, StageFailed, StageStarted,
+    CompositeHook, Event, Hook, LoggingHook, PageDone, StageDone,
+    StageFailed, StageStarted,
 )
 from typoon.stages.render_archive import render_chapter_to_archive
 from typoon.stages.scan import scan_chapter
@@ -61,6 +62,43 @@ def _worker_id(role: str) -> str:
     """
     host = socket.gethostname() or "unknown"
     return f"{host}-{os.getpid()}-{role}-{uuid4().hex[:6]}"
+
+
+class ProgressPersistingHook(Hook):
+    """Persist PageDone progress onto chapters row for UI replay.
+
+    The channel bus only delivers live events; clients that connect
+    mid-render need somewhere durable to read the current
+    (stage, index, total) tuple from. We write through to the DB row so
+    `GET /api/projects/.../chapters/...` carries the progress without
+    needing a transient event buffer.
+
+    Thread-safe: stages may emit from worker threads; we schedule the
+    DB call on the event loop captured at construction.
+    """
+
+    def __init__(self, db, loop: asyncio.AbstractEventLoop) -> None:
+        self._db = db
+        self._loop = loop
+
+    def on(self, event: Event) -> None:
+        if not isinstance(event, PageDone):
+            return
+        if event.chapter_id <= 0:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._db.set_chapter_progress(
+                    event.chapter_id,
+                    stage=event.stage,
+                    index=event.page_index,
+                    total=event.page_total,
+                ),
+                self._loop,
+            )
+        except RuntimeError:
+            # Loop closed during shutdown.
+            pass
 
 
 class Role(StrEnum):
@@ -271,8 +309,12 @@ async def run_workers(
     stores = build_storage(config, paths)
     archive_salt = config.storage.archive_path_salt.encode()
     loop  = asyncio.get_running_loop()
-    bus   = EventBus(config.database_url)
-    hook  = CompositeHook(LoggingHook(), EventHook(bus, loop))
+    bus   = ChannelBus(config.database_url)
+    hook  = CompositeHook(
+        LoggingHook(),
+        ChannelHook(bus, loop),
+        ProgressPersistingHook(db, loop),
+    )
 
     runtime: VisionRuntime | None = None
     if role in (Role.vision, Role.full):
