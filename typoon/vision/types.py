@@ -64,13 +64,17 @@ class DetectedGroup:
 
 @dataclass
 class UnitState:
-    """Mutable state for one detected text unit during grouping."""
+    """Mutable state for one detected text unit during grouping.
+
+    Units carry no OCR text/confidence: a unit is a fragment of a bubble
+    and is never recognized in isolation. OCR runs at the group level on
+    the full bubble crop. Filter signals come from detector confidence
+    (`region.confidence`) and mask coverage.
+    """
 
     idx: int
     region: TextRegion
     bbox: list[int]
-    text: str = ""
-    confidence: float = 0.0
     is_noise: bool = False
     noise_reason: str | None = None
     scope_idx: int | None = None

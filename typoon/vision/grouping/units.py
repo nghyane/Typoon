@@ -1,8 +1,13 @@
-"""Unit detection, OCR filtering, and scope-based splitting."""
+"""Unit detection and scope-based splitting.
+
+Unit OCR was removed: a unit is a per-tile text fragment from PP-OCR det,
+typically a single column of vertical Japanese or a partial horizontal
+line. Recognizing fragments in isolation produces noise. The single OCR
+pass runs at the group level (full bubble crop) in groups.py.
+"""
 
 from __future__ import annotations
 
-import re
 from typing import Protocol
 
 import numpy as np
@@ -12,13 +17,11 @@ from typoon.vision.types import ScanState, ScopeState, TextMask, TextRegion, Uni
 
 from .geometry import poly_bbox
 
-CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]")
 _SPLIT_MIN_COVERAGE = 0.25
 
 
 class _Scanner(Protocol):
     _det: object
-    def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]: ...
 
 
 def detect_units(state: ScanState, scanner: _Scanner) -> None:
@@ -35,18 +38,17 @@ def detect_units(state: ScanState, scanner: _Scanner) -> None:
     state.units = [UnitState(idx=i, region=r, bbox=poly_bbox(r.polygon)) for i, r in enumerate(regions)]
 
 
-def ocr_units(state: ScanState, scanner: _Scanner) -> None:
-    """Run quick OCR pass on unit crops for noise filtering."""
-    crops = [u.region.crop for u in state.units]
-    for u, (text, conf) in zip(state.units, scanner._ocr_crops(crops) if crops else []):
-        u.text = (text or "").strip()
-        u.confidence = float(conf)
-
-
 def filter_units(state: ScanState) -> None:
-    """Mark noisy units — too small, low confidence, non-text chars."""
+    """Mark noisy units — too small or low detector confidence.
+
+    Unit-level OCR is intentionally not performed: a unit is a fragment of
+    a bubble (single column of vertical text, partial line of horizontal
+    text). Recognizing it in isolation produces nonsense, especially for
+    manga-style fonts. The full OCR pass runs once per group on the union
+    bubble crop — that's where the only meaningful text lives.
+    """
     for u in state.units:
-        ok, reason = _unit_quality(u.region, u.bbox, u.text, u.confidence)
+        ok, reason = _unit_quality(u.region, u.bbox)
         u.is_noise = not ok
         u.noise_reason = reason
 
@@ -154,7 +156,6 @@ def split_units(state: ScanState) -> None:
                 region=TextRegion(polygon=sub_poly, crop=sub_crop,
                                   confidence=u.region.confidence, mask=sub_mask),
                 bbox=[sub_x1, uy1, sub_x2, uy2],
-                text=u.text, confidence=u.confidence,
                 is_noise=u.is_noise, noise_reason=u.noise_reason,
             ))
             idx += 1
@@ -163,23 +164,12 @@ def split_units(state: ScanState) -> None:
     state.units = new_units
 
 
-def _unit_quality(
-    unit: TextRegion, box: list[int], text: str, conf: float,
-    *, filter_cjk: bool = False,
-) -> tuple[bool, str | None]:
+def _unit_quality(unit: TextRegion, box: list[int]) -> tuple[bool, str | None]:
     w, h = max(1, box[2] - box[0]), max(1, box[3] - box[1])
     if w < 4 or h < 4 or w * h < 24:
         return False, "tiny"
     if unit.confidence < 0.20 and (unit.mask is None or not np.count_nonzero(unit.mask.image)):
         return False, "low_det_low_mask"
-    t = (text or "").strip()
-    alnum = sum(ch.isalnum() for ch in t)
-    if filter_cjk and CJK_RE.search(t):
-        return False, "cjk_filtered"
-    if not t and conf < 0.15 and unit.confidence < 0.45:
-        return False, "ocr_empty_low_conf"
-    if t and alnum == 0 and conf < 0.35:
-        return False, "ocr_non_text_chars"
     return True, None
 
 

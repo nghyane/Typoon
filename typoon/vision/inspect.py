@@ -46,8 +46,7 @@ def state_to_dict(page_index: int, image_file: str, state: ScanState) -> dict[st
             {
                 "idx": u.idx,
                 "bbox": u.bbox,
-                "text": u.text,
-                "confidence": u.confidence,
+                "det_conf": u.region.confidence,
                 "noise": u.is_noise,
                 "noise_reason": u.noise_reason,
                 "scope_idx": u.scope_idx,
@@ -83,7 +82,7 @@ def _draw_text_boxes(image: np.ndarray, state: ScanState) -> np.ndarray:
     for u in state.units:
         color = RED if u.is_noise else CYAN
         rect(out, u.bbox, color, 2)
-        label(out, u.bbox[0], u.bbox[1], f"u{u.idx} {u.confidence:.2f}", color)
+        label(out, u.bbox[0], u.bbox[1], f"u{u.idx} {u.region.confidence:.2f}", color)
     return out
 
 

@@ -18,7 +18,6 @@ from .units import (
     detect_scopes,
     detect_units,
     filter_units,
-    ocr_units,
     split_units,
 )
 
@@ -43,7 +42,6 @@ def scan_page(
     detect_units(state, scanner)
     if not state.units:
         return state
-    ocr_units(state, scanner)
     filter_units(state)
     detect_scopes(state, yolo_model, yolo_imgsz, yolo_conf)
     split_units(state)
