@@ -31,6 +31,8 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api':   { target, changeOrigin: true },
         '/files': { target, changeOrigin: true },
+        '/cdn':   { target: 'https://bunle-cdn-16g.pages.dev', changeOrigin: true,
+                    rewrite: (path) => path.replace(/^\/cdn/, '') },
       },
     },
   }

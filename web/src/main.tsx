@@ -5,6 +5,11 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query'
 import { routeTree } from './routeTree.gen'
 
+// Persist DA flag before router strips query params from the URL.
+if (new URLSearchParams(window.location.search).get('frame_id') != null) {
+  sessionStorage.setItem('discord_activity', '1')
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

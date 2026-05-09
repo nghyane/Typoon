@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import { discordSdk } from '@shared/discord/sdk'
 
-const TOKEN_KEY      = 'typoon_token'
-const ERROR_KEY      = 'typoon_login_error'
-const STATE_KEY      = 'typoon_oauth_state'
+const TOKEN_KEY  = 'typoon_token'
+const ERROR_KEY  = 'typoon_login_error'
+const STATE_KEY  = 'typoon_oauth_state'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
+// In DA, Discord proxy handles relative /api/* paths via URL Mappings on the portal.
+// Outside DA, VITE_API_URL is set for cross-origin (CF Pages → API).
+const isDA = window.location.hostname.endsWith('.discordsays.com')
+const API_BASE = isDA ? '' : (import.meta.env.VITE_API_URL ?? '')
 
 export interface AuthUser {
-  id:           number
-  display_name: string
-  avatar_url:   string | null
-  email:        string | null
-  is_admin:     boolean
-  created_at:   string | null
+  id:            number
+  display_name:  string
+  avatar_url:    string | null
+  email:         string | null
+  is_admin:      boolean
+  created_at:    string | null
   last_login_at: string | null
   guild_name:    string | null
   guild_icon_url: string | null
@@ -29,9 +33,9 @@ export interface AuthConfig {
 
 // ── Token storage ────────────────────────────────────────────────────────────
 
-export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY)
-export const setToken = (token: string)   => localStorage.setItem(TOKEN_KEY, token)
-export const clearToken = ()              => localStorage.removeItem(TOKEN_KEY)
+export const getToken   = (): string | null => localStorage.getItem(TOKEN_KEY)
+export const setToken   = (token: string)   => localStorage.setItem(TOKEN_KEY, token)
+export const clearToken = ()                => localStorage.removeItem(TOKEN_KEY)
 
 export function takeLoginError(): string | null {
   const e = sessionStorage.getItem(ERROR_KEY)
@@ -52,9 +56,6 @@ interface AuthState {
 }
 
 export function useCurrentUser(): AuthState {
-  // initial state: assume loading=true if token exists, false otherwise.
-  // This avoids a needless spinner when the user is logged out — the
-  // login redirect happens in the same tick.
   const [state, setState] = useState<AuthState>(() => ({
     user:    null,
     loading: !!getToken(),
@@ -95,18 +96,14 @@ export function useLogout() {
   }
 }
 
-// ── OAuth flow ───────────────────────────────────────────────────────────────
+// ── OAuth flow ────────────────────────────────────────────────────────────────
 
 const REDIRECT_PATH = '/auth/callback'
 
-/** Where Discord redirects after consent. The SPA owns this URL — must
- *  exactly match what the backend uses when exchanging the code. */
 export function redirectUri(): string {
   return `${window.location.origin}${REDIRECT_PATH}`
 }
 
-/** Fetch public auth config. Throws with the engine's detail message on
- *  503 so the /login page can surface operator setup errors verbatim. */
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   const r = await fetch(`${API_BASE}/api/auth/config`)
   if (!r.ok) {
@@ -117,12 +114,9 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
   return r.json()
 }
 
-/** Build the Discord authorize URL. CSRF state is generated here and
- *  stashed in sessionStorage so the callback page can verify it. */
 export function buildAuthorizeUrl(clientId: string): string {
   const state = crypto.randomUUID()
   sessionStorage.setItem(STATE_KEY, state)
-
   const params = new URLSearchParams({
     client_id:     clientId,
     redirect_uri:  redirectUri(),
@@ -134,8 +128,20 @@ export function buildAuthorizeUrl(clientId: string): string {
   return `https://discord.com/api/oauth2/authorize?${params}`
 }
 
-/** Verify the state parameter matches what we stored at /login.
- *  Returns true on match, false on mismatch (or no stored state). */
+/** Discord Activity login — SDK authorize → exchange code → Typoon JWT. */
+export async function discordActivityLogin(clientId: string): Promise<string> {
+  await discordSdk.ready()
+  const { code } = await discordSdk.commands.authorize({
+    client_id:     clientId,
+    response_type: 'code',
+    state:         '',
+    prompt:        'none',
+    scope:         ['identify', 'email', 'guilds', 'guilds.members.read'],
+  })
+  // DA redirect_uri placeholder — must be registered in Discord Developer Portal → OAuth2 → Redirects
+  return exchangeCode(code, 'https://127.0.0.1')
+}
+
 export function verifyState(received: string | null): boolean {
   if (!received) return false
   const expected = sessionStorage.getItem(STATE_KEY)
@@ -143,15 +149,11 @@ export function verifyState(received: string | null): boolean {
   return !!expected && expected === received
 }
 
-/** POST the code to the engine, get JWT back. The engine returns an
- *  HTTPException-shaped JSON ({ detail }) on errors; surface that text
- *  directly so the gate message ("Bạn cần tham gia Discord …") reaches
- *  the user instead of a stack-traceish 'exchange: 403 …'. */
-export async function exchangeCode(code: string): Promise<string> {
+export async function exchangeCode(code: string, overrideRedirectUri?: string): Promise<string> {
   const r = await fetch(`${API_BASE}/api/auth/discord/exchange`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ code, redirect_uri: redirectUri() }),
+    body:    JSON.stringify({ code, redirect_uri: overrideRedirectUri ?? redirectUri() }),
   })
   if (!r.ok) {
     let detail = `${r.status} ${r.statusText}`

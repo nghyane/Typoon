@@ -2,9 +2,11 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AlertCircle, ExternalLink } from 'lucide-react'
 import {
-  buildAuthorizeUrl, fetchAuthConfig, getToken, takeLoginError,
-  type AuthConfig,
+  buildAuthorizeUrl, discordActivityLogin, fetchAuthConfig, getToken,
+  setToken, takeLoginError, type AuthConfig,
 } from '@features/auth/auth'
+import { isDiscordActivity } from '@shared/discord/sdk'
+import { Spinner } from '@shared/ui/primitives'
 
 function LoginPage() {
   const nav = useNavigate()
@@ -12,64 +14,71 @@ function LoginPage() {
   const [cfg,   setCfg]   = useState<AuthConfig | null>(null)
   const [busy,  setBusy]  = useState(false)
 
-  useEffect(() => {
-    if (getToken()) {
-      nav({ to: '/projects' })
-      return
-    }
-    setError(takeLoginError())
+  const doDALogin = (clientId: string) => {
+    setBusy(true)
+    discordActivityLogin(clientId)
+      .then((token) => { setToken(token); nav({ to: '/projects' }) })
+      .catch((e: Error) => { setError(e.message); setBusy(false) })
+  }
 
+  useEffect(() => {
+    if (getToken()) { nav({ to: '/projects' }); return }
+    setError(takeLoginError())
     fetchAuthConfig()
       .then((c) => {
         setCfg(c)
         if (c.guild_name) document.title = c.guild_name
+        if (isDiscordActivity) doDALogin(c.discord_client_id)
       })
       .catch((e: Error) => setError(e.message))
-  }, [nav])
+  }, [nav]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const onLogin = () => {
-    if (!cfg?.discord_client_id) return
-    setBusy(true)
-    window.location.href = buildAuthorizeUrl(cfg.discord_client_id)
+  // DA: show spinner while authorizing, error + retry on failure
+  if (isDiscordActivity) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg">
+        {busy || !error ? (
+          <Spinner size={24} />
+        ) : (
+          <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
+            <div className="flex items-center gap-2 text-error-text text-sm justify-center">
+              <AlertCircle size={14} />
+              <span>{error}</span>
+            </div>
+            {cfg && (
+              <button
+                onClick={() => doDALogin(cfg.discord_client_id)}
+                className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] cursor-pointer"
+              >
+                Thử lại
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    )
   }
 
-  // Engine error like "Bạn cần tham gia Discord 'Name': https://discord.gg/xxx"
-  // Pull URL out so it renders as a button instead of inline link.
+  // Web: full login UI
   const inviteFromError = error ? extractFirstUrl(error) : null
   const errorText = inviteFromError && error
     ? error.replace(inviteFromError, '').replace(/[:\s]+$/, '').trim()
     : error
-
   const standingInvite = cfg?.discord_invite_url ?? null
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg p-4">
       <div className="w-full max-w-sm">
-        {/* Brand block — only when engine has guild metadata. Until then
-            we show nothing so an unconfigured deployment looks visibly
-            broken (operator knows to fix Discord setup). */}
         {cfg?.guild_name && (
           <div className="text-center mb-6">
-            <div
-              className={`size-14 mx-auto rounded-md flex items-center justify-center mb-3 overflow-hidden ${
-                cfg.guild_icon_url
-                  ? 'bg-surface-2'
-                  : 'bg-accent text-accent-fg text-lg font-bold'
-              }`}
-            >
-              {cfg.guild_icon_url ? (
-                <img
-                  src={cfg.guild_icon_url}
-                  alt={cfg.guild_name}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                cfg.guild_name.charAt(0).toUpperCase()
-              )}
+            <div className={`size-14 mx-auto rounded-md flex items-center justify-center mb-3 overflow-hidden ${
+              cfg.guild_icon_url ? 'bg-surface-2' : 'bg-accent text-accent-fg text-lg font-bold'
+            }`}>
+              {cfg.guild_icon_url
+                ? <img src={cfg.guild_icon_url} alt={cfg.guild_name} className="w-full h-full object-cover" />
+                : cfg.guild_name.charAt(0).toUpperCase()}
             </div>
-            <h1 className="text-xl font-semibold tracking-tight text-text">
-              {cfg.guild_name}
-            </h1>
+            <h1 className="text-xl font-semibold tracking-tight text-text">{cfg.guild_name}</h1>
             <p className="text-sm text-text-subtle mt-1">Cộng đồng dịch manga</p>
           </div>
         )}
@@ -82,25 +91,18 @@ function LoginPage() {
                 <span className="break-words">{errorText}</span>
               </div>
               {inviteFromError && (
-                <a
-                  href={inviteFromError}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer"
-                >
-                  Tham gia Discord
-                  <ExternalLink size={11} />
+                <a href={inviteFromError} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer">
+                  Tham gia Discord <ExternalLink size={11} />
                 </a>
               )}
             </div>
           )}
 
-          <p className="text-sm text-text-muted mb-4">
-            Đăng nhập bằng Discord để tiếp tục.
-          </p>
+          <p className="text-sm text-text-muted mb-4">Đăng nhập bằng Discord để tiếp tục.</p>
 
           <button
-            onClick={onLogin}
+            onClick={() => { if (!cfg?.discord_client_id || busy) return; setBusy(true); window.location.href = buildAuthorizeUrl(cfg.discord_client_id) }}
             disabled={!cfg?.discord_client_id || busy}
             className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
           >
@@ -110,22 +112,8 @@ function LoginPage() {
 
           {cfg?.guild_gated && (
             <p className="text-xs text-text-subtle mt-4 text-center leading-relaxed">
-              {cfg.guild_name
-                ? `Yêu cầu là thành viên Discord ${cfg.guild_name}.`
-                : 'Yêu cầu là thành viên Discord guild.'}
-              {standingInvite && (
-                <>
-                  {' '}
-                  <a
-                    href={standingInvite}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-text-muted underline hover:text-text"
-                  >
-                    Tham gia tại đây
-                  </a>.
-                </>
-              )}
+              {cfg.guild_name ? `Yêu cầu là thành viên Discord ${cfg.guild_name}.` : 'Yêu cầu là thành viên Discord guild.'}
+              {standingInvite && <> <a href={standingInvite} target="_blank" rel="noreferrer" className="text-text-muted underline hover:text-text">Tham gia tại đây</a>.</>}
             </p>
           )}
         </div>

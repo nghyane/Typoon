@@ -69,7 +69,7 @@ export function useChapterArchive(url: string | null | undefined): Result {
 function toProxyUrl(url: string): string {
   if (!isDiscordActivity) return url
   try {
-    const u = new URL(url)
+    const u = new URL(url)  // throws if relative — leave as-is
     return `/cdn${u.pathname}${u.search}`
   } catch {
     return url

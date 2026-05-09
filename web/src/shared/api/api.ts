@@ -1,7 +1,8 @@
-// VITE_API_URL is set when the web build runs cross-origin from the API
-// (e.g. preview deploys). In dev/prod-same-origin it stays empty so all
-// fetches go through the Vite proxy / nginx.
-const API_BASE = import.meta.env.VITE_API_URL ?? ''
+// In Discord Activity, Discord proxy handles relative /api/* paths via URL Mappings.
+// Outside DA, VITE_API_URL is set for cross-origin deploys (CF Pages → API).
+const API_BASE = window.location.hostname.endsWith('.discordsays.com')
+  ? ''
+  : (import.meta.env.VITE_API_URL ?? '')
 
 const TOKEN_KEY = 'typoon_token'
 

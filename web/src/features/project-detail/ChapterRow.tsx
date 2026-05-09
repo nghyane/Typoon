@@ -141,7 +141,7 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
       </td>
 
       <td className="px-3 py-3 w-20">
-        <div className="flex items-center gap-1 justify-end opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 justify-end">
           {ch.state === 'done' ? (
             <Link
               to="/projects/$projectId/chapters/$chapterId"
