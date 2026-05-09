@@ -12,6 +12,20 @@ type = "openai"
 endpoint = "https://gateway.ai.cloudflare.com/v1/<account-id>/<gateway-name>/compat"
 api_key = ""
 extra_headers = { cf-aig-authorization = "Bearer <your-cf-aig-token>" }
+# Maximum in-flight requests against this provider, shared across
+# every agent that resolves to it (context, translate, vision).
+# Default 24 sized for paid Tier 1 (OpenAI 500 RPM / Anthropic Tier 1)
+# at ~3s/call latency (Little's law: 8 RPS × 3s ≈ 24).
+#   2     — free tier (Gemini free, OpenRouter free)
+#   24    — paid Tier 1 (default)
+#   64    — paid Tier 2+ (2000+ RPM)
+#   0     — disable gate; rely solely on provider rate limit + retry/backoff.
+#
+# Note: Cloudflare AI Gateway does NOT throttle by default; the
+# upstream provider's tier is the real ceiling. If you configure a
+# gateway-level rate_limiting_limit on the CF dashboard, lower this
+# value so 24 × ~3s ≈ 8 RPS stays under your CF window.
+# concurrency = 24
 
 [translation]
 provider = "cf"
