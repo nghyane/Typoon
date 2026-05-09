@@ -42,11 +42,15 @@ export function ChapterList({
   return (
     <>
       <DataToolbar>
-        <Segmented value={filter} onChange={setFilter} stats={stats} />
-        <SearchInput value={q} onChange={setQ} placeholder="Tìm chương…" className="w-52 ml-auto" />
+        <div className="flex flex-wrap items-center gap-2 w-full">
+          <div className="overflow-x-auto">
+            <Segmented value={filter} onChange={setFilter} stats={stats} />
+          </div>
+          <SearchInput value={q} onChange={setQ} placeholder="Tìm chương…" className="flex-1 min-w-32" />
+        </div>
       </DataToolbar>
 
-      <DataTable>
+      <DataTable className="overflow-x-auto">
         <thead>
           <tr className="bg-surface-2">
             <Th className="w-10">
@@ -65,9 +69,9 @@ export function ChapterList({
               </button>
             </Th>
             <Th>Chương</Th>
-            <Th className="w-64">Trạng thái</Th>
-            <Th className="w-24">Cập nhật</Th>
-            <Th className="w-32 text-right pr-3">Thao tác</Th>
+            <Th className="w-64 hidden sm:table-cell">Trạng thái</Th>
+            <Th className="w-24 hidden sm:table-cell">Cập nhật</Th>
+            <Th className="w-20 text-right pr-3">Thao tác</Th>
           </tr>
         </thead>
         <tbody>

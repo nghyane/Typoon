@@ -135,7 +135,7 @@ function ProjectDetailPage() {
 
       <TabBar value={tab} onChange={setTab} />
 
-      <div className="px-6 py-5">
+      <div className="px-4 sm:px-6 py-4 sm:py-5">
         {tab === 'chapters' && (
           <ChapterList
             projectId={id}

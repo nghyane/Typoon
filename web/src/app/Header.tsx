@@ -15,7 +15,7 @@ export function Header({ user }: Props) {
   const [, setSearchOpen] = useState(false)
 
   return (
-    <header className="flex items-center gap-3 px-5 h-bar bg-bg shrink-0">
+    <header className="flex items-center gap-3 px-3 sm:px-5 h-bar bg-bg shrink-0">
       <div className="flex-1 min-w-0">
         {back ? (
           <Link

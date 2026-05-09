@@ -16,8 +16,8 @@ export function DataToolbar({
   right?:   ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 mb-4">
-      <div className="flex items-center gap-2 min-w-0 flex-1">{children}</div>
+    <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="flex items-center gap-1 min-w-0 flex-wrap flex-1">{children}</div>
       {right && <div className="flex items-center gap-2 shrink-0">{right}</div>}
     </div>
   )

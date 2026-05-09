@@ -15,7 +15,7 @@ interface Props {
 
 export function TabBar({ value, onChange }: Props) {
   return (
-    <div className="flex items-center px-6 border-b border-border-soft">
+    <div className="flex items-center px-4 sm:px-6 border-b border-border-soft">
       {TABS.map(({ key, label, icon: Icon }) => (
         <button
           key={key}

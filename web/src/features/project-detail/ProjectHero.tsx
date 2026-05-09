@@ -40,7 +40,7 @@ export function ProjectHero({ project, stats, isOwner, onAddChapters }: Props) {
   const pct = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0
 
   return (
-    <div className="px-6 pt-6 pb-5 flex items-start gap-4">
+    <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 sm:pb-5 flex items-start gap-3 sm:gap-4">
       <Cover
         src={project.cover_url}
         title={project.title}
@@ -50,9 +50,9 @@ export function ProjectHero({ project, stats, isOwner, onAddChapters }: Props) {
       />
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight text-text line-clamp-2">
+            <h1 className="text-lg sm:text-2xl font-semibold tracking-tight text-text line-clamp-2">
               {project.title}
             </h1>
 
@@ -102,7 +102,7 @@ export function ProjectHero({ project, stats, isOwner, onAddChapters }: Props) {
             )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 self-start">
             {!isOwner && (
               <Button
                 onClick={() => togglePin.mutate()}

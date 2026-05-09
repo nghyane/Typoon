@@ -95,9 +95,20 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
             <span className="truncate" title={ch.error}>{ch.error}</span>
           </div>
         )}
+        {/* status inline on mobile */}
+        <div className="sm:hidden mt-1 flex items-center gap-1.5 text-xs">
+          {running ? (
+            <Spinner size={10} className="text-info-text" />
+          ) : (
+            <span className={cn('size-1.5 rounded-full shrink-0', DOT_BY_TONE[tone])} />
+          )}
+          <span className={cn(
+            running ? 'text-info-text' : ch.state === 'error' ? 'text-error-text' : 'text-text-muted',
+          )}>{sub}</span>
+        </div>
       </td>
 
-      <td className="px-3 py-3 w-64">
+      <td className="px-3 py-3 w-64 hidden sm:table-cell">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 text-xs">
             {running ? (
@@ -125,12 +136,12 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
         </div>
       </td>
 
-      <td className="px-3 py-3 text-xs text-text-subtle whitespace-nowrap w-24 tabular" title={ch.updated_at ?? ''}>
+      <td className="px-3 py-3 text-xs text-text-subtle whitespace-nowrap w-24 tabular hidden sm:table-cell" title={ch.updated_at ?? ''}>
         {timeAgo(ch.updated_at)}
       </td>
 
-      <td className="px-3 py-3 w-32">
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
+      <td className="px-3 py-3 w-20">
+        <div className="flex items-center gap-1 justify-end opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
           {ch.state === 'done' ? (
             <Link
               to="/projects/$projectId/chapters/$chapterId"

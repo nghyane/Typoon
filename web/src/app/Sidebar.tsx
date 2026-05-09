@@ -80,7 +80,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
   return (
     <aside
       style={{ width: collapsed ? W_COLLAPSED : W_EXPANDED, transition: 'width 180ms ease-in-out' }}
-      className="flex flex-col h-full shrink-0 overflow-hidden bg-surface"
+      className="hidden sm:flex flex-col h-full shrink-0 overflow-hidden bg-surface"
     >
       {/* brand */}
       <div className="flex items-center h-bar shrink-0">

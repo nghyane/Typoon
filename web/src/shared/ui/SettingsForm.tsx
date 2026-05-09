@@ -54,8 +54,8 @@ export function SettingsRow({
   children: ReactNode
 }) {
   return (
-    <div className="flex items-start gap-8">
-      <div className="w-60 shrink-0 pt-1.5">
+    <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-8">
+      <div className="sm:w-60 sm:shrink-0 sm:pt-1.5">
         <p className="text-[13px] font-medium text-text">{label}</p>
         {hint && <p className="text-xs text-text-subtle mt-1 leading-relaxed">{hint}</p>}
       </div>

@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
+import { BottomNav } from './BottomNav'
 import { Toaster } from '@shared/ui/Toaster'
 import { useCurrentUser } from '@features/auth/auth'
 
@@ -44,6 +45,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
             <Header user={user} />
             <main className="flex-1 overflow-auto">{children}</main>
+            <BottomNav />
           </div>
           <Toaster />
         </>

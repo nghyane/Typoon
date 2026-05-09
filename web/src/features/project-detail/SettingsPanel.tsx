@@ -219,7 +219,7 @@ export function SettingsPanel({ project }: Props) {
 
       {/* Sticky save bar — only when form is dirty */}
       {dirty && isOwner && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface rounded-md pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]">
+        <div className="fixed bottom-[calc(3.5rem+0.75rem)] sm:bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface rounded-md pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]">
           <span className="text-sm text-text-muted">Có thay đổi chưa lưu</span>
           <Button onClick={reset} disabled={save.isPending}>
             Huỷ
