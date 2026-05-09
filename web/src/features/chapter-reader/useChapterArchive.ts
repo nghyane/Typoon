@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Bunle } from '@nghyane/bunle'
+import { isDiscordActivity } from '@shared/discord/sdk'
 
 interface Result {
   bunle:   Bunle | null
@@ -35,7 +36,7 @@ export function useChapterArchive(url: string | null | undefined): Result {
     setError(null)
     setBunle(null)
 
-    Bunle.open(url)
+    Bunle.open(toProxyUrl(url))
       .then((b) => {
         if (cancelled) { b.close(); return }
         opened = b
@@ -56,5 +57,20 @@ export function useChapterArchive(url: string | null | undefined): Result {
     bunle,
     loading: !!url && bunle === null && error === null,
     error,
+  }
+}
+
+/**
+ * In Discord Activity, absolute CDN URLs are blocked by CSP.
+ * Rewrite them to /cdn/<path> which goes through the API proxy
+ * and Discord's URL Mapping (/cdn → bunle-cdn-16g.pages.dev).
+ */
+function toProxyUrl(url: string): string {
+  if (!isDiscordActivity) return url
+  try {
+    const u = new URL(url)
+    return `/cdn${u.pathname}${u.search}`
+  } catch {
+    return url
   }
 }
