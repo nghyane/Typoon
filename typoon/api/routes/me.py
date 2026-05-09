@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from typoon.api.auth_token import issue_api_token
-from typoon.api.deps import get_store, require_user
+from typoon.api.deps import get_auth_cfg, get_config, get_store, require_user
+from typoon.api.quota import get_quota_snapshot
+from typoon.config import AuthConfig, Config
 from typoon.storage import Store
 
 router = APIRouter(
@@ -108,3 +110,21 @@ async def revoke_token(
 ):
     if not await db.revoke_api_token(user["id"], token_id):
         raise HTTPException(404, "Token not found")
+
+
+# ── Quota ────────────────────────────────────────────────────────────
+
+
+@router.get("/quota")
+async def get_quota(
+    user: dict       = Depends(require_user),
+    db:   Store      = Depends(get_store),
+    cfg:  Config     = Depends(get_config),
+    auth: AuthConfig = Depends(get_auth_cfg),
+):
+    """Per-user chapter quota snapshot for the sidebar widget.
+
+    `is_admin` lets the SPA hide the quota chip entirely for admins
+    (they bypass enforcement; showing N/N would be misleading).
+    """
+    return await get_quota_snapshot(user, db, cfg.rate_limit, auth)

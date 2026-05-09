@@ -53,10 +53,13 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
     onSuccess: (ch) => {
       qc.invalidateQueries({ queryKey: ['projects', project.project_id, 'chapters'] })
       qc.invalidateQueries({ queryKey: ['projects'] })
-      // Workers indicator refreshes only when something actually went
-      // into the queue (start=true). A pure upload doesn't move the
-      // queue counter so we skip that invalidation.
-      if (start) qc.invalidateQueries({ queryKey: ['workers'] })
+      // Workers indicator + quota meter refresh only when something
+      // actually went into the queue (start=true). A pure upload
+      // doesn't move either counter so we skip those invalidations.
+      if (start) {
+        qc.invalidateQueries({ queryKey: ['workers'] })
+        qc.invalidateQueries({ queryKey: ['quota'] })
+      }
       toast.success(
         start
           ? `Đã thêm và bắt đầu Ch.${ch.number} (${ch.page_count} trang)`

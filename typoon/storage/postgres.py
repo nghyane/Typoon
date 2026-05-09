@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -619,6 +619,55 @@ class PostgresStore:
                 "DELETE FROM tasks WHERE chapter_id=$1 AND stage = ANY($2::text[])",
                 chapter_id, stages_to_delete,
             )
+
+    # ── Quota (per-user chapter consumption) ──────────────────────
+    #
+    # One `chapter_consumes` row per user-initiated render trigger
+    # (upload+start, /start, /redo). Counters sliding-window over the
+    # row timestamps; concurrent count joins through projects.owner_id
+    # so it correctly attributes ongoing tasks to the project owner.
+
+    async def record_chapter_consume(
+        self, user_id: int, chapter_id: int, project_id: int,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO chapter_consumes (user_id, chapter_id, project_id) "
+                "VALUES ($1, $2, $3)",
+                user_id, chapter_id, project_id,
+            )
+
+    async def count_user_consumes_since(
+        self, user_id: int, seconds: int,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM chapter_consumes "
+                "WHERE user_id = $1 "
+                "  AND created_at >= NOW() - make_interval(secs => $2)",
+                user_id, seconds,
+            )
+        return int(row["n"]) if row else 0
+
+    async def count_user_in_flight_chapters(self, user_id: int) -> int:
+        """Distinct chapters owned by `user_id` that still have a live
+        task row (any stage). A chapter with multiple stage rows counts
+        once. STALE_CLAIM_SECONDS-aged claims still count — they'll be
+        re-claimed and finished by the next worker, so they're real
+        in-flight work from the user's perspective.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(DISTINCT t.chapter_id) AS n
+                FROM   tasks t
+                JOIN   chapters c ON c.id = t.chapter_id
+                JOIN   projects p ON p.id = c.project_id
+                WHERE  p.owner_id = $1
+                """,
+                user_id,
+            )
+        return int(row["n"]) if row else 0
 
     # ── Bubbles ───────────────────────────────────────────────────
 

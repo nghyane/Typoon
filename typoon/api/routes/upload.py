@@ -23,9 +23,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from typoon.adapters.channel_bus import ChannelBus, ChannelHook
 from typoon.adapters.projects import Projects
 from typoon.adapters.storage_registry import StorageRegistry
-from typoon.api.deps import get_storage, get_bus, get_paths, get_store, require_user
+from typoon.api.deps import (
+    get_auth_cfg, get_config, get_storage, get_bus, get_paths, get_store,
+    require_user,
+)
 from typoon.api.models import ChapterOut
+from typoon.api.quota import enforce_chapter_quota, record_chapter_consume
 from typoon.api.routes._shared import chapter_out, require_project_owner
+from typoon.config import AuthConfig, Config
 from typoon.paths import Paths
 from typoon.runs.events import Hook
 from typoon.sources.upload import (
@@ -73,6 +78,8 @@ async def upload_chapter(
     paths: Paths           = Depends(get_paths),
     stores: StorageRegistry = Depends(get_storage),
     bus:   ChannelBus       = Depends(get_bus),
+    cfg:   Config           = Depends(get_config),
+    auth:  AuthConfig       = Depends(get_auth_cfg),
 ):
     """Ingest one chapter from an uploaded archive, PDF, or image set.
 
@@ -90,6 +97,12 @@ async def upload_chapter(
     files = [f for f in files if f.filename]
     if not files:
         raise HTTPException(400, "No files in upload")
+
+    # Quota: only enforce when the upload also commits to running the
+    # pipeline. Idle uploads (start=false) are free — user can review
+    # and trigger /start later, and that path runs its own check.
+    if start:
+        await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
 
     # Decide a single ingestion shape.
     if len(files) == 1:
@@ -144,6 +157,9 @@ async def upload_chapter(
                 project_id, raw_number,
             )
             raise HTTPException(500, f"ingest failed: {e}") from e
+
+    if start:
+        await record_chapter_consume(user, db, auth, chapter_id, project_id)
 
     data = await db.get_chapter_with_status(chapter_id, project_id)
     if data is None:

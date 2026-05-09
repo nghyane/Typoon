@@ -240,6 +240,26 @@ CREATE TABLE IF NOT EXISTS glossary (
 CREATE INDEX IF NOT EXISTS idx_glossary_source_term_tsv
     ON glossary USING GIN (source_term_tsv);
 
+-- ── Quota usage log (per-user chapter consumption) ─────────────────
+-- One row inserted whenever a user spends a "chapter slot" — i.e. starts
+-- a render that will consume LLM cost: upload+start, manual /start,
+-- /redo. Never inserted for free actions (idle upload, listing, reads).
+--
+-- The row stays after the chapter finishes/fails: counters are time-
+-- windowed (last hour, last day). chapter_id/project_id are FK SET NULL
+-- so deletes don't lose history; user_id is the only key counters need.
+-- A single index on (user_id, created_at DESC) covers all queries.
+
+CREATE TABLE IF NOT EXISTS chapter_consumes (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    chapter_id  BIGINT REFERENCES chapters(id) ON DELETE SET NULL,
+    project_id  BIGINT REFERENCES projects(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chapter_consumes_user_time
+    ON chapter_consumes(user_id, created_at DESC);
+
 -- Real-time updates use Postgres LISTEN/NOTIFY directly (no buffer
 -- table). See typoon/adapters/channel_bus.py — events are transient,
 -- not persisted. Per-chapter progress that survives restart lives on

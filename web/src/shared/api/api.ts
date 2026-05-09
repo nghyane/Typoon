@@ -143,6 +143,19 @@ export interface ApiMeProject {
   shared:      boolean
 }
 
+export interface ApiQuota {
+  is_admin:             boolean
+  limit_hour:           number
+  used_hour:            number
+  remaining_hour:       number
+  limit_day:            number
+  used_day:             number
+  remaining_day:        number
+  limit_concurrent:     number
+  in_flight:            number
+  remaining_concurrent: number
+}
+
 // ── Transport ────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -316,4 +329,6 @@ export const api = {
     request<ApiTokenCreated>('/me/tokens', { method: 'POST', body: json({ name }) }),
   revokeToken: (id: number) =>
     request<void>(`/me/tokens/${id}`, { method: 'DELETE' }),
+
+  getQuota: () => request<ApiQuota>('/me/quota'),
 }

@@ -10,13 +10,15 @@ from pydantic import BaseModel
 from typoon.adapters.storage_registry import StorageRegistry
 from typoon.adapters.projects import Projects
 from typoon.api.deps import (
-    get_storage, get_paths, get_store, require_user,
+    get_auth_cfg, get_config, get_storage, get_paths, get_store, require_user,
 )
 from typoon.api.models import ChapterOut, ProjectOut
+from typoon.api.quota import enforce_chapter_quota, record_chapter_consume
 from typoon.api.routes._shared import (
     chapter_out, require_chapter,
     require_project_owner, require_project_view,
 )
+from typoon.config import AuthConfig, Config
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.storage import Store
 
@@ -318,10 +320,14 @@ async def redo_chapter(
     db:     Store                 = Depends(get_store),
     paths:  Paths                 = Depends(get_paths),
     stores: StorageRegistry = Depends(get_storage),
+    cfg:    Config                = Depends(get_config),
+    auth:   AuthConfig            = Depends(get_auth_cfg),
 ):
     proj = await require_project_owner(project_id, user, db)
     ch   = await require_chapter(project_id, chapter_id, db)
+    await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
     await Projects(db, paths, stores.pipeline).redo(proj["slug"], [ch["id"]])
+    await record_chapter_consume(user, db, auth, chapter_id, project_id)
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return chapter_out(data, archive_url=_archive_url(stores, data))
 
@@ -346,15 +352,22 @@ async def start_chapter(
     db:     Store           = Depends(get_store),
     paths:  Paths           = Depends(get_paths),
     stores: StorageRegistry = Depends(get_storage),
+    cfg:    Config          = Depends(get_config),
+    auth:   AuthConfig      = Depends(get_auth_cfg),
 ):
     """Enqueue scan for a single idle chapter. No-op if it's already
     running, queued, or finished — caller should use `/redo` to rerun
     a non-idle chapter."""
     await require_project_owner(project_id, user, db)
     await require_chapter(project_id, chapter_id, db)
-    await Projects(db, paths, stores.pipeline).start_chapters(
+    await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
+    started = await Projects(db, paths, stores.pipeline).start_chapters(
         project_id, [chapter_id],
     )
+    # Only record if the chapter was actually idle and got enqueued —
+    # otherwise (already running/done) the slot wasn't spent.
+    if started:
+        await record_chapter_consume(user, db, auth, chapter_id, project_id)
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return chapter_out(data, archive_url=_archive_url(stores, data))
 
@@ -367,15 +380,38 @@ async def start_chapters(
     db:     Store           = Depends(get_store),
     paths:  Paths           = Depends(get_paths),
     stores: StorageRegistry = Depends(get_storage),
+    cfg:    Config          = Depends(get_config),
+    auth:   AuthConfig      = Depends(get_auth_cfg),
 ):
     """Batch trigger for the selection-bar action. Returns the count
     actually started (idle chapters only); ids that were already in
     flight or done are silently skipped so a partial selection still
-    succeeds."""
+    succeeds.
+
+    Quota is enforced against the *count of idle chapters in the
+    selection*, not `len(chapter_ids)` — selecting 10 rows with 7 idle
+    consumes 7 slots. The check uses an upper bound (idle count) before
+    the actual enqueue, so the user sees 429 with the exact requirement.
+    """
     await require_project_owner(project_id, user, db)
+
+    # Pre-count idle chapters to size the quota check accurately.
+    idle_ids: list[int] = []
+    for cid in body.chapter_ids:
+        ch = await db.get_chapter_with_status(cid, project_id)
+        if ch is not None and ch.get("state") == "idle":
+            idle_ids.append(cid)
+
+    if idle_ids:
+        await enforce_chapter_quota(
+            user, db, cfg.rate_limit, auth, count=len(idle_ids),
+        )
+
     started = await Projects(db, paths, stores.pipeline).start_chapters(
         project_id, body.chapter_ids,
     )
+    for cid in idle_ids[:started]:
+        await record_chapter_consume(user, db, auth, cid, project_id)
     return {"started": started, "total": len(body.chapter_ids)}
 
 

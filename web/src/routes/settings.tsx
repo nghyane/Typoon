@@ -1,16 +1,17 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Copy, Check, Trash2, Key, ShieldAlert } from 'lucide-react'
+import { Plus, Copy, Check, Trash2, Key, ShieldAlert, Zap } from 'lucide-react'
 import { api, type ApiTokenInfo } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
 import { input as inputCls, label as labelCls, Spinner } from '@shared/ui/primitives'
-import { SettingsSection } from '@shared/ui/SettingsForm'
+import { SettingsSection, SettingsDivider } from '@shared/ui/SettingsForm'
 import { DataTable, Th } from '@shared/ui/DataTable'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { toast } from '@shared/ui/Toaster'
 import { Modal } from '@shared/ui/Modal'
 import { timeAgo } from '@shared/lib/time'
+import { cn } from '@shared/lib/cn'
 
 const TOKEN_NAME_MIN = 2
 const TOKEN_NAME_MAX = 40
@@ -37,7 +38,96 @@ function SettingsPage() {
         <p className="text-sm text-text-subtle mt-1">Quản lý tài khoản và quyền truy cập của bạn.</p>
       </header>
 
+      <QuotaSection />
+      <SettingsDivider />
       <TokensSection />
+    </div>
+  )
+}
+
+// ── Quota ───────────────────────────────────────────────────────────────────
+//
+// Read-only summary of the per-user chapter quota that the API enforces on
+// upload+start, /start, /redo. Three meters: today / this hour / concurrent.
+// Hidden for admins (their quota is uncapped — showing 0/0 would mislead).
+
+function QuotaSection() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['quota'],
+    queryFn:  api.getQuota,
+    refetchInterval: 30_000,
+  })
+
+  if (isLoading) {
+    return (
+      <SettingsSection title="Quota" description="Đang tải…">
+        <div className="h-12 flex items-center"><Spinner /></div>
+      </SettingsSection>
+    )
+  }
+  if (!data) return null
+
+  if (data.is_admin) {
+    return (
+      <SettingsSection
+        title="Quota"
+        description="Tài khoản admin không bị giới hạn chương dịch."
+      >
+        <div className="flex items-center gap-2 text-[13px] text-text-muted">
+          <Zap size={14} className="text-emerald-400" />
+          <span>Không giới hạn</span>
+        </div>
+      </SettingsSection>
+    )
+  }
+
+  return (
+    <SettingsSection
+      title="Quota"
+      description="Mỗi lần dịch một chương (upload + start, start, redo) sẽ tốn 1 lượt. Quota reset theo cửa sổ trượt."
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <QuotaMeter
+          label="Hôm nay"
+          used={data.used_day}
+          limit={data.limit_day}
+        />
+        <QuotaMeter
+          label="Trong giờ"
+          used={data.used_hour}
+          limit={data.limit_hour}
+        />
+        <QuotaMeter
+          label="Đang xử lý"
+          used={data.in_flight}
+          limit={data.limit_concurrent}
+        />
+      </div>
+    </SettingsSection>
+  )
+}
+
+function QuotaMeter({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const pct  = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
+  const tone =
+    pct >= 90 ? 'bg-rose-500'
+    : pct >= 50 ? 'bg-amber-500'
+    : 'bg-emerald-500'
+  return (
+    <div className="rounded-md border border-border-soft bg-surface px-3 py-3">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[12px] text-text-subtle">{label}</span>
+        <span className="text-[13px] tabular-nums">
+          <span className="text-text font-medium">{used}</span>
+          <span className="text-text-subtle">/{limit}</span>
+        </span>
+      </div>
+      <div className="mt-2 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+        <div
+          className={cn('h-full rounded-full transition-all', tone)}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
     </div>
   )
 }

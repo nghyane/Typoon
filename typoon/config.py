@@ -121,6 +121,21 @@ class StorageConfig(BaseModel):
     archive_path_salt: str = ""
 
 
+class RateLimitConfig(BaseModel):
+    """Per-user chapter quota for actions that consume LLM cost.
+
+    A "chapter slot" is consumed by upload-with-start, manual /start,
+    and /redo — never by idle upload or reads. Admins bypass entirely.
+
+    Counters are time-windowed (last hour, last day) over rows in
+    `chapter_consumes`; concurrent count is over chapters with a
+    live task in flight, owned by the user.
+    """
+    chapters_per_hour:   int = 10
+    chapters_per_day:    int = 50
+    concurrent_chapters: int = 3
+
+
 class Config(BaseSettings):
     model_config = {"extra": "ignore"}
 
@@ -136,6 +151,7 @@ class Config(BaseSettings):
     server: ServerConfig = ServerConfig()
     auth:   AuthConfig   = AuthConfig()
     storage: StorageConfig = StorageConfig()
+    rate_limit: RateLimitConfig = RateLimitConfig()
 
 
 # ── Loading ──────────────────────────────────────────────────────

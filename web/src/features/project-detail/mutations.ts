@@ -16,12 +16,13 @@ export function useChapterMutations(projectId: number) {
   const chaptersKey = ['projects', projectId, 'chapters'] as const
 
   // After every mutation we refresh both the chapter list (so the row
-  // updates immediately) and the global workers indicator in the
-  // header (so the user sees their action reflected in the queue
-  // count without waiting for the next poll tick).
+  // updates immediately), the global workers indicator in the header,
+  // and the quota meter in the sidebar / settings — start/redo consume
+  // a slot, delete frees one (in-flight count drops as tasks finish).
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: chaptersKey })
     qc.invalidateQueries({ queryKey: ['workers'] })
+    qc.invalidateQueries({ queryKey: ['quota'] })
   }
 
   // Resolve the chapter row from cache — the pre-mutation snapshot, so

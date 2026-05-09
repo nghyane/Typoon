@@ -2,6 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../shared/lib/cn'
 import { FolderOpen, Star, Globe, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
+import { SidebarQuota } from './SidebarQuota'
 
 const NAV = [
   { to: '/projects', label: 'Của tôi',   icon: FolderOpen, search: { filter: 'mine'      } },
@@ -153,6 +154,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
 
       {/* footer nav */}
       <div className="px-2 pb-2 pt-2 flex flex-col gap-0.5">
+        <SidebarQuota collapsed={collapsed} />
         {NAV_FOOT.map(({ to, label, icon, search }) => renderLink(to, label, icon, search))}
       </div>
     </aside>

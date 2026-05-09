@@ -47,3 +47,13 @@ model = "dynamic/auto"
 # [context_agent]
 # provider = "minimax"
 # model = "MiniMax-M2.5"    # cheaper model for context phase
+
+# ── Per-user chapter quota (beta rate limit) ─────────────────────────
+# Counters are sliding-window over chapter_consumes; admins bypass.
+# A "chapter" is consumed by upload+start, /start, /redo. Idle uploads
+# and reads are free. Tune for your community size.
+#
+# [rate_limit]
+# chapters_per_hour   = 10
+# chapters_per_day    = 50
+# concurrent_chapters = 3
