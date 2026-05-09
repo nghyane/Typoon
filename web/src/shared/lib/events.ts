@@ -25,15 +25,29 @@ const PROJECT_LIST_TRIGGERS = new Set([
   'StageFailed',
 ])
 
-export function useServerEvents() {
+/**
+ * Open one EventSource for the lifetime of a tab.
+ *
+ * `projectIds` narrows the server-side fan-out so a tab viewing a
+ * single project doesn't receive PageDone events from every other
+ * project that happens to be rendering. Pass undefined for firehose
+ * (admin / queue dashboard).
+ *
+ * The hook reopens the stream when the project filter changes so the
+ * server-side subscription matches what the user is actually viewing.
+ */
+export function useServerEvents(projectIds?: readonly number[]) {
   const qc = useQueryClient()
+  const filterKey = projectIds?.length ? projectIds.slice().sort((a, b) => a - b).join(',') : ''
 
   useEffect(() => {
     const token = getToken()
     if (!token) return
 
     // EventSource has no header API; engine accepts the token via ?token=.
-    const url = `${api.base}/api/events?token=${encodeURIComponent(token)}`
+    const params = new URLSearchParams({ token })
+    if (filterKey) params.set('projects', filterKey)
+    const url = `${api.base}/api/events?${params}`
     const es  = new EventSource(url)
 
     es.onmessage = (msg) => {
@@ -59,5 +73,5 @@ export function useServerEvents() {
     }
 
     return () => es.close()
-  }, [qc])
+  }, [qc, filterKey])
 }

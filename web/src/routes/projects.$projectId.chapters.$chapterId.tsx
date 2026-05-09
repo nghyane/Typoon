@@ -7,6 +7,7 @@ import { Button } from '@shared/ui/Button'
 import { ReaderToolbar, type ViewMode } from '@features/chapter-reader/ReaderToolbar'
 import { PageImage } from '@features/chapter-reader/PageImage'
 import { useChapterArchive } from '@features/chapter-reader/useChapterArchive'
+import { useProjectInterest } from '../store/interest'
 
 interface SearchParams {
   page?: number
@@ -19,6 +20,10 @@ function ChapterReaderPage() {
   const nav = Route.useNavigate()
   const pid = Number(projectId)
   const cid = Number(chapterId)
+
+  // Subscribe SSE to events for this project so render progress on the
+  // chapter page reflects in real time.
+  useProjectInterest(isNaN(pid) ? null : pid)
 
   const setPage = (p: number) =>
     nav({ search: (s) => ({ ...s, page: p > 0 ? p : undefined }) })

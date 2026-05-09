@@ -35,13 +35,38 @@ router = APIRouter(tags=["events"])
 _HEARTBEAT_SEC = 15
 
 
+def _parse_projects(value: str | None) -> list[int] | None:
+    """Parse `?projects=1,2,3` into a list of ints, or None for firehose.
+
+    Empty string and malformed entries fall back to None so a stale
+    SPA query string can never collapse the stream to zero events
+    silently — the user will at least see the firehose.
+    """
+    if not value:
+        return None
+    out: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            return None
+    return out or None
+
+
 @router.get("/api/events")
 async def event_stream(
     request: Request,
-    token:   str        = Query(..., description="JWT — same as Authorization header"),
-    bus:     EventBus   = Depends(get_bus),
-    db:      Store      = Depends(get_store),
-    cfg:     AuthConfig = Depends(get_auth_cfg),
+    token:    str        = Query(..., description="JWT — same as Authorization header"),
+    projects: str | None = Query(
+        None,
+        description="Comma-separated project IDs to filter on. Omit for firehose.",
+    ),
+    bus:      EventBus   = Depends(get_bus),
+    db:       Store      = Depends(get_store),
+    cfg:      AuthConfig = Depends(get_auth_cfg),
 ):
     # Verify token before opening the stream. Failures must be 401, not
     # mid-stream errors.
@@ -53,13 +78,14 @@ async def event_stream(
         raise HTTPException(401, "User not found")
 
     last_id = request.headers.get("last-event-id", "0")
+    project_ids = _parse_projects(projects)
     # App-level shutdown signal: lets the loop break immediately when
     # uvicorn starts a graceful shutdown rather than blocking until the
     # browser tab closes.
     shutdown: asyncio.Event = request.app.state.shutdown
 
     async def _generate():
-        events = bus.subscribe(last_id).__aiter__()
+        events = bus.subscribe(last_id, project_ids=project_ids).__aiter__()
         next_task: asyncio.Task | None = None
         shutdown_task: asyncio.Task | None = None
         try:

@@ -18,6 +18,12 @@ We ship the data inline so subscribers never re-query the events table
 on the hot path. Postgres NOTIFY caps payload size at 8000 bytes; on
 the rare event that exceeds the budget we send only the id and the
 listener fetches the row (degraded but rare).
+
+Subscribers can opt into a project filter at `subscribe()` time. The
+filter is applied at fan-out (a few hundred subscribers all watching
+distinct projects each see only their slice), keeping outbound work
+proportional to the number of *interested* clients per event rather
+than the total connected count.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import AsyncIterator, Iterable, Protocol, runtime_checkable
 
 from typoon.runs.events import Event, Hook
 
@@ -81,6 +87,27 @@ class EventBusProtocol(Protocol):
     async def close(self) -> None: ...
 
 
+# ── Subscriber record ─────────────────────────────────────────────────
+
+
+@dataclasses.dataclass(eq=False)
+class _Subscriber:
+    """One in-process consumer of the bus.
+
+    eq=False so each instance is hashable by identity — we store
+    subscribers in a set and never compare them by content.
+    """
+    queue: asyncio.Queue[tuple[int, dict]]
+    # None = firehose (every event); set = filter by project_id.
+    project_ids: frozenset[int] | None
+
+    def matches(self, data: dict) -> bool:
+        if self.project_ids is None:
+            return True
+        pid = data.get("project_id")
+        return pid in self.project_ids
+
+
 # ── Implementation ────────────────────────────────────────────────────
 
 
@@ -95,7 +122,7 @@ class EventBus:
         self._dsn = dsn
         self._pool = None  # asyncpg.Pool — publish + replay
         self._pool_lock = asyncio.Lock()
-        self._subscribers: set[asyncio.Queue[tuple[int, dict]]] = set()
+        self._subscribers: set[_Subscriber] = set()
         self._listener_task: asyncio.Task | None = None
         self._closed = asyncio.Event()
 
@@ -106,8 +133,11 @@ class EventBus:
             async with self._pool_lock:
                 if self._pool is None:
                     import asyncpg
+                    # max_size=16 absorbs reconnect storms (e.g. an API
+                    # restart with hundreds of SSE clients all replaying
+                    # in parallel) without queuing on the pool.
                     self._pool = await asyncpg.create_pool(
-                        self._dsn, min_size=1, max_size=4,
+                        self._dsn, min_size=2, max_size=16,
                     )
         return self._pool
 
@@ -249,10 +279,13 @@ class EventBus:
     def _fanout(self, event_id: int, data: dict) -> None:
         item = (event_id, data)
         # Snapshot the set so a subscriber unregistering mid-iteration
-        # doesn't blow up (set mutation during iteration).
-        for queue in tuple(self._subscribers):
+        # doesn't blow up. Filter by project so users tailing one set
+        # of projects don't see traffic from others.
+        for sub in tuple(self._subscribers):
+            if not sub.matches(data):
+                continue
             try:
-                queue.put_nowait(item)
+                sub.queue.put_nowait(item)
             except asyncio.QueueFull:
                 # Slow consumer — drop. They'll catch up via replay on
                 # their next reconnect (Last-Event-ID).
@@ -261,28 +294,51 @@ class EventBus:
     # ── subscribe ────────────────────────────────────────────────────
 
     async def subscribe(
-        self, last_id: str = "0",
+        self,
+        last_id: str = "0",
+        *,
+        project_ids: Iterable[int] | None = None,
     ) -> AsyncIterator[tuple[str, dict]]:
+        """Live tail + optional one-shot replay from `last_id`.
+
+        `project_ids=None` means firehose (every event); pass a set of
+        ids to filter by `data["project_id"]` on the hot path. Replay
+        is filtered the same way using a SQL WHERE clause so it stays
+        cheap regardless of total event volume.
+        """
         pool = await self._ensure_pool()
         seq = int(last_id) if last_id.isdigit() else 0
+        filt = frozenset(project_ids) if project_ids is not None else None
 
         # Register the live queue BEFORE replay so events that arrive
         # during replay are not dropped. The seq filter below dedups
         # any overlap between replay and live.
-        queue: asyncio.Queue[tuple[int, dict]] = asyncio.Queue(
-            maxsize=_SUBSCRIBER_QUEUE_SIZE,
+        sub = _Subscriber(
+            queue=asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE),
+            project_ids=filt,
         )
-        self._subscribers.add(queue)
+        self._subscribers.add(sub)
         try:
-            # Cold path: replay.
+            # Cold path: replay. SQL-side project filter so the API
+            # process never sees the full table on a narrow tail.
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT id, data FROM events "
-                    "WHERE id > $1 "
-                    "ORDER BY id "
-                    "LIMIT $2",
-                    seq, _REPLAY_LIMIT,
-                )
+                if filt is None:
+                    rows = await conn.fetch(
+                        "SELECT id, data FROM events "
+                        "WHERE id > $1 "
+                        "ORDER BY id "
+                        "LIMIT $2",
+                        seq, _REPLAY_LIMIT,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT id, data FROM events "
+                        "WHERE id > $1 "
+                        "  AND (data->>'project_id')::int = ANY($2::int[]) "
+                        "ORDER BY id "
+                        "LIMIT $3",
+                        seq, list(filt), _REPLAY_LIMIT,
+                    )
             for row in rows:
                 seq = row["id"]
                 yield str(seq), _parse_json(row["data"])
@@ -290,13 +346,13 @@ class EventBus:
             # Hot path: live tail. The listener fans out (id, data)
             # tuples — no per-event SELECT.
             while True:
-                event_id, data = await queue.get()
+                event_id, data = await sub.queue.get()
                 if event_id <= seq:
                     continue
                 seq = event_id
                 yield str(seq), data
         finally:
-            self._subscribers.discard(queue)
+            self._subscribers.discard(sub)
 
     # ── lifecycle ────────────────────────────────────────────────────
 
