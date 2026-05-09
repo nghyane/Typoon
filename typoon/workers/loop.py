@@ -263,7 +263,19 @@ async def _run_render(
                 await pipeline.get(masks_key(project_id, chapter_id), masks_local)
                 masks = MaskStore.unpack(masks_local)
 
-                locator = await render_chapter_to_archive(
+                # Pages flagged as full-page noise by the context agent
+                # are dropped from the public render archive. Brief is
+                # always present at render time — translate is a hard
+                # prerequisite. Missing brief means a legacy chapter; in
+                # that case skip_pages is empty (preserve old behavior).
+                brief_dict = await db.get_chapter_brief(chapter_id)
+                skip_pages: frozenset[int] = frozenset()
+                if brief_dict:
+                    skip_pages = frozenset(
+                        int(p) for p in brief_dict.get("noise_pages", [])
+                    )
+
+                locator, public_page_count = await render_chapter_to_archive(
                     translated,
                     project_id=project_id,
                     chapter_id=chapter_id,
@@ -275,10 +287,11 @@ async def _run_render(
                     archive_salt=archive_salt,
                     work=tmp,
                     hook=hook,
+                    skip_pages=skip_pages,
                 )
 
         await db.set_archive(chapter_id, public.backend_name, locator)
-        await db.set_rendered(chapter_id, True)
+        await db.set_rendered(chapter_id, True, page_count=public_page_count)
         await db.complete_task(chapter_id, "render")
         hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="render"))
     except Exception as e:

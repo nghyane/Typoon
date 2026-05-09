@@ -144,10 +144,21 @@ class Store(Protocol):
         """Mark a chapter as prepared and reset `rendered` to false."""
         ...
 
-    async def set_rendered(self, chapter_id: int, rendered: bool) -> None:
+    async def set_rendered(
+        self,
+        chapter_id: int,
+        rendered: bool,
+        *,
+        page_count: int | None = None,
+    ) -> None:
         """Flip the persistent `rendered` flag. The tasks table is the only
         source of truth for render-in-flight; render concurrency comes from
-        `claim_task('render', ...)`."""
+        `claim_task('render', ...)`.
+
+        When `page_count` is provided, also overwrite the chapter's
+        `page_count` column — used by the render worker to publish the
+        true number of pages the reader will see (after dropping
+        full-page noise)."""
         ...
 
     async def set_archive(

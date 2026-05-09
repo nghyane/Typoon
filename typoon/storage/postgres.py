@@ -1295,12 +1295,24 @@ class PostgresStore:
                 page_count, chapter_id,
             )
 
-    async def set_rendered(self, chapter_id: int, rendered: bool) -> None:
+    async def set_rendered(
+        self,
+        chapter_id: int,
+        rendered: bool,
+        *,
+        page_count: int | None = None,
+    ) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE chapters SET rendered=$1 WHERE id=$2",
-                rendered, chapter_id,
-            )
+            if page_count is None:
+                await conn.execute(
+                    "UPDATE chapters SET rendered=$1 WHERE id=$2",
+                    rendered, chapter_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE chapters SET rendered=$1, page_count=$2 WHERE id=$3",
+                    rendered, page_count, chapter_id,
+                )
 
     async def set_archive(
         self, chapter_id: int, backend: str, locator: str,
