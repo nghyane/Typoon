@@ -259,12 +259,27 @@ from typoon.runs.events import Event, Hook
 
 
 def event_to_dict(event: Event) -> dict:
-    d = dataclasses.asdict(event) if dataclasses.is_dataclass(event) else {}
+    """Serialize an Event dataclass to a dict for the channel bus.
+
+    We avoid `dataclasses.asdict`: it recursively deepcopies every
+    field, and several Event types carry an `error: Exception` whose
+    third-party subclasses (e.g. `openai.APIStatusError`) cannot be
+    deepcopied because their `__init__` requires kwargs that aren't
+    captured by the default reduce protocol. A shallow walk over the
+    declared fields is sufficient here — events are flat scalar
+    records by design.
+    """
+    if not dataclasses.is_dataclass(event):
+        return {"type": type(event).__name__}
+    d: dict = {}
+    for f in dataclasses.fields(event):
+        if f.name == "ts":
+            continue
+        v = getattr(event, f.name)
+        if isinstance(v, BaseException):
+            v = str(v) or type(v).__name__
+        d[f.name] = v
     d["type"] = type(event).__name__
-    d.pop("ts", None)
-    for k, v in list(d.items()):
-        if isinstance(v, Exception):
-            d[k] = str(v)
     return d
 
 
