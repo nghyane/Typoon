@@ -34,19 +34,37 @@ def render_chapter(
     project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
+    skip_pages: frozenset[int] = frozenset(),
 ) -> render.Chapter:
     """Erase source text, render translations, write WebP pages into out_dir.
 
     page_geoms: pre-loaded from load_translated_with_geometry.
     masks:      in-memory mask store (typically loaded from masks.npz).
+    skip_pages: page indices that are entirely non-diegetic — drop from
+                the output archive so they never reach the reader.
+                Output WebPs are renumbered contiguously from 0 to
+                preserve a gapless reading experience.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     import typoon_render
 
     rendered_pages = []
+    out_index = 0
 
     for tp in translated.pages:
+        if tp.index in skip_pages:
+            if artifacts is not None:
+                # Record the drop so visual verification can confirm
+                # which pages were excluded by the brief.
+                artifacts.write_image(
+                    "06_render", f"{tp.index:04d}_dropped.png", reader.read_rgb(tp.index)
+                )
+            if hook is not None:
+                hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",
+                                 page_index=tp.index, page_total=len(translated.pages)))
+            continue
+
         original   = reader.read_rgb(tp.index)
         canvas     = _to_rgba(original)
         page_masks = masks.page_masks(tp.index)
@@ -91,7 +109,8 @@ def render_chapter(
             for tb in tp.bubbles
         )
 
-        _write_webp(out_dir / f"{tp.index:04d}.webp", result.image)
+        _write_webp(out_dir / f"{out_index:04d}.webp", result.image)
+        out_index += 1
 
         if hook is not None:
             hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",

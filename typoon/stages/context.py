@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pydantic import BaseModel, Field
 
 from typoon.adapters.ctx import TranslateCtx
@@ -12,21 +11,24 @@ from typoon.stages.skills import LOAD_SKILL_TOOL, SkillLibrary
 from typoon.stages.tools.brief import ChapterBriefArgs, make_submit_chapter_brief
 from typoon.stages.tools.look_at import make_look_at
 from typoon.stages.tools.mark_noise import MarkNoiseArgs, make_mark_noise
+from typoon.stages.tools.mark_noise_page import MarkNoisePageArgs, make_mark_noise_page
 from typoon.stages.tools.search_knowledge import make_search_knowledge
-from typoon.stages.image import encode_page_jpeg
+from typoon.stages.page import _is_auto_skip
 from typoon.domain.prepared import Chapter as PreparedChapter
 from typoon.domain.scan import BubbleKey
-from typoon.llm.ir import ContentPart, Message, ToolResponse
+from typoon.llm.ir import Message, ToolResponse
 from typoon.llm.loop import tool_loop
 from typoon.llm.tool import Tool
 from . import prompt
 
 _PLACEHOLDER_NAMES  = {"", "?", "unknown", "unclear", "someone", "speaker", "listener"}
 _UNCERTAIN_WORDS    = ("likely", "maybe", "unclear", "unknown", "uncertain", "probably", "possibly")
-_ADDRESS_SENSITIVE_RE = re.compile(
-    r"\b(my girl|my boy|my son|my daughter|that's my girl|that's my boy)\b",
-    re.IGNORECASE,
-)
+# Targets whose grammar requires explicit speaker/listener decisions for
+# almost every line — pronouns, honorifics, kinship terms, register
+# levels. For these, mounting look_at by default is correct: the agent
+# can opt out (one tool def in the system prompt is cheap), but losing
+# the option silently degrades every chapter.
+_HIGH_CONTEXT_TARGETS = {"vi", "ja", "ko", "zh", "th"}
 
 
 class _LoadSkillArgs(BaseModel):
@@ -39,8 +41,22 @@ async def build_chapter_brief(
     reader: PreparedReader,
     keyed: list[BubbleKey],
 ) -> ChapterBrief:
-    sensitive        = _address_sensitive(keyed)
-    context_snapshot = await _context_snapshot(ctx, sensitive)
+    # Pre-fold deterministic noise: bubbles that match _is_auto_skip
+    # (whitelist regex, single digits, OCR rubble) never reach the agent.
+    # The translator already drops them; surfacing them here only burns
+    # tokens and tempts the agent to "explain" each watermark string.
+    pre_noise = {bk.key for bk in keyed if _is_auto_skip(bk.source_text)}
+    visible_keyed = [bk for bk in keyed if bk.key not in pre_noise]
+
+    glossary_terms = await ctx.store.get_glossary(ctx.project_id)
+    prior_briefs   = await ctx.store.get_recent_chapter_briefs(
+        ctx.project_id, before_position=ctx.chapter_position, limit=10,
+    )
+    has_knowledge = bool(glossary_terms) or bool(prior_briefs)
+    context_snapshot = _context_snapshot(
+        glossary_terms=glossary_terms,
+        prior_briefs=prior_briefs,
+    )
 
     skills = SkillLibrary(ctx.target_lang)
     system = prompt.CONTEXT_SYSTEM.format(
@@ -50,32 +66,70 @@ async def build_chapter_brief(
         target_policy=prompt.load_target_policy(ctx.target_lang),
         skill_catalog=skills.catalog(),
     )
-    user     = prompt.CONTEXT_USER.format(
+    user = prompt.CONTEXT_USER.format(
         context_snapshot=context_snapshot,
-        chapter_text=chapter_text(keyed),
+        chapter_text=chapter_text(visible_keyed) or "(all bubbles already pre-filtered as deterministic noise — submit an empty brief)",
     )
-    messages = [Message.system(system), _context_user_message(user, prepared, reader, sensitive, keyed)]
+    messages = [Message.system(system), Message.user_text(user)]
 
     brief: ChapterBrief | None = None
-    valid_keys: set[str] = {bk.key for bk in keyed}
-    noise_keys: set[str] = set()
+    valid_keys: set[str] = {bk.key for bk in visible_keyed}
+    noise_keys: set[str] = set(pre_noise)
+    noise_pages: set[int] = set()
+    valid_pages: set[int] = {bk.page_index for bk in keyed}
+    keys_by_page: dict[int, list[str]] = {}
+    for bk in keyed:
+        keys_by_page.setdefault(bk.page_index, []).append(bk.key)
 
     async def on_mark_noise(args: MarkNoiseArgs) -> ToolResponse:
         unknown = [k for k in args.keys if k not in valid_keys]
         if unknown:
             return ToolResponse(
                 f"Unknown bubble keys (not in chapter): {unknown[:8]}. "
-                "Copy keys exactly from after '#' in the chapter text."
+                "Copy keys exactly from after '#' in the chapter text. "
+                "Note: deterministic-noise bubbles are NOT shown — do not invent keys."
             )
-        # Cap at 60% of chapter so a misfire can't wipe an entire chapter.
-        if len(noise_keys | set(args.keys)) > max(1, int(len(valid_keys) * 0.6)):
+        # Cap is computed against the visible (non-pre-folded) chapter.
+        # Pre-folded keys don't count — they're a deterministic baseline
+        # the agent can't undo or amplify.
+        agent_added = (noise_keys - pre_noise) | set(args.keys)
+        if len(agent_added) > max(1, int(len(valid_keys) * 0.6)):
             return ToolResponse(
-                "Refusing to mark this many bubbles as noise (>60% of chapter). "
+                "Refusing to mark this many bubbles as noise (>60% of visible chapter). "
                 "Only flag platform chrome / watermarks / counters; everything "
                 "else must be translated."
             )
         noise_keys.update(args.keys)
         return ToolResponse(f"Marked {len(args.keys)} as noise. Total noise so far: {len(noise_keys)}.")
+
+    async def on_mark_noise_page(args: MarkNoisePageArgs) -> ToolResponse:
+        unknown = [p for p in args.pages if p not in valid_pages]
+        if unknown:
+            return ToolResponse(
+                f"Unknown page indices (not in chapter): {unknown[:8]}. "
+                f"Valid pages are 0..{max(valid_pages) if valid_pages else 0}."
+            )
+        # Cap at 50% of pages so a misfire can't drop most of the chapter.
+        cap = max(1, int(len(valid_pages) * 0.5))
+        if len(noise_pages | set(args.pages)) > cap:
+            return ToolResponse(
+                "Refusing to drop this many pages (>50% of chapter). "
+                "Only drop pages where EVERY bubble is platform/scanlator "
+                "chrome with no story content."
+            )
+        noise_pages.update(args.pages)
+        # Pages dropped at render time also bypass the translator: every
+        # bubble on those pages is implicitly noise.
+        added = 0
+        for p in args.pages:
+            for k in keys_by_page.get(p, []):
+                if k not in noise_keys:
+                    noise_keys.add(k)
+                    added += 1
+        return ToolResponse(
+            f"Marked {len(args.pages)} pages as full-page noise "
+            f"(+{added} bubble keys auto-added). Total noise pages: {len(noise_pages)}."
+        )
 
     async def on_submit(args: ChapterBriefArgs) -> ToolResponse:
         nonlocal brief
@@ -84,23 +138,36 @@ async def build_chapter_brief(
             return ToolResponse(address_error)
         brief = ChapterBrief(
             summary=args.summary,
-            facts=args.facts,
             glossary={g.source: g.target for g in args.glossary},
             address=address,
             style_notes=args.style_notes,
             page_notes={pn.page: pn.note for pn in args.page_notes},
             key_notes={bn.key: bn.note for bn in args.bubble_notes},
             noise_keys=noise_keys,
+            noise_pages=noise_pages,
         )
         return ToolResponse("ok")
 
     tools = [
-        make_search_knowledge(ctx),
         Tool(LOAD_SKILL_TOOL, _LoadSkillArgs, lambda args: _handle_load_skill(args, skills)),
-        make_look_at(ctx, prepared, reader, keyed),
         make_mark_noise(on_mark_noise),
+        make_mark_noise_page(on_mark_noise_page),
         make_submit_chapter_brief(on_submit),
     ]
+    # search_knowledge is dead weight when the project has no glossary
+    # and no prior briefs. Skip mounting it — fewer tool defs in the
+    # system prompt, and the agent can't be tempted into a no-op call.
+    if has_knowledge:
+        tools.insert(0, make_search_knowledge(ctx))
+    # look_at is mounted by target language. Targets that require explicit
+    # speaker/listener decisions for almost every line (VI, JA, KO, ZH,
+    # TH) get the tool by default; the agent decides per chapter whether
+    # to actually call it. Targets where text alone usually carries
+    # enough context (EN, ES, FR, …) do not get it — saves a tool def.
+    # The wrapper enforces a per-chapter call cap so a misbehaving agent
+    # cannot chain "let me verify" round trips.
+    if ctx.target_lang.lower() in _HIGH_CONTEXT_TARGETS:
+        tools.append(make_look_at(ctx, prepared, reader, visible_keyed))
 
     await tool_loop(
         ctx.context_provider,
@@ -108,7 +175,11 @@ async def build_chapter_brief(
         tools,
         is_done=lambda: brief is not None,
         agent="context",
-        max_turns=12,
+        # Generous cap — context output is bounded by ~16k tokens, but
+        # tool ping-pong (search_knowledge → load_skill → mark_noise →
+        # submit) plus retries on validation errors can chain. We'd
+        # rather burn turns than fail the chapter.
+        max_turns=16,
         hook=ctx.hook,
     )
 
@@ -121,149 +192,36 @@ async def _handle_load_skill(args: _LoadSkillArgs, skills: SkillLibrary) -> Tool
     return ToolResponse(skills.load(args.name))
 
 
-async def _context_snapshot(ctx: TranslateCtx, sensitive: list[BubbleKey]) -> str:
-    store  = ctx.store
+def _context_snapshot(
+    *,
+    glossary_terms: list,
+    prior_briefs: list,
+) -> str:
+    """Emit only sections that carry information.
+
+    Empty glossary / no prior briefs → omit. The agent doesn't need to
+    be told it has nothing to look up. Tools for lookup are mounted
+    conditionally in build_chapter_brief.
+    """
     parts: list[str] = []
 
-    glossary = await store.get_glossary(ctx.project_id)
-    if glossary:
+    if glossary_terms:
         parts.append(
-            f"## Glossary\n{len(glossary)} terms available. "
+            f"## Glossary\n{len(glossary_terms)} terms available. "
             "Call search_knowledge(scope=glossary, queries=[<term>]) to look up."
         )
-    else:
-        parts.append("## Glossary\nEmpty.")
 
-    recent = await store.get_recent_chapter_briefs(
-        ctx.project_id, before_position=ctx.chapter_position, limit=10
-    )
-    if recent:
+    if prior_briefs:
         lines = [
             f"  Ch{r.get('chapter','?')}: {(r.get('brief') or {}).get('summary','')[:120]}"
-            for r in recent
+            for r in prior_briefs
         ]
         parts.append(
             "## Prior chapters (briefs available)\n" + "\n".join(lines) +
             "\nCall search_knowledge(scope=briefs, queries=[<topic>]) for details."
         )
-    else:
-        parts.append("## Prior chapters\nNone.")
 
-    if sensitive:
-        lines = [f'  p{bk.page_index} #{bk.key}: "{bk.source_text}"' for bk in sensitive[:20]]
-        parts.append(
-            "## Address-sensitive bubbles\n"
-            "These affect Vietnamese xưng hô/family pronouns. Storyboard images around the "
-            "relevant pages are attached below; inspect local story context before deciding "
-            "speaker/listener. If still uncertain from the storyboard, write bubble_notes as "
-            "'Uncertain speaker; use neutral phrasing' rather than guessing.\n"
-            + "\n".join(lines)
-        )
-
-    return "\n\n".join(parts)
-
-
-def _address_sensitive(keyed: list[BubbleKey]) -> list[BubbleKey]:
-    return [bk for bk in keyed if _ADDRESS_SENSITIVE_RE.search(bk.source_text)]
-
-
-def _context_user_message(
-    text: str,
-    prepared: PreparedChapter,
-    reader: PreparedReader,
-    sensitive: list[BubbleKey],
-    keyed: list[BubbleKey],
-) -> Message:
-    if not sensitive:
-        return Message.user_text(text)
-
-    parts: list[ContentPart] = [ContentPart.of_text(text)]
-    ordered = sorted(keyed, key=lambda bk: (bk.page_index, bk.idx))
-    for target in sensitive[:2]:
-        storyboard = _storyboard_image(prepared, reader, ordered, target)
-        if storyboard is None:
-            continue
-        parts.append(ContentPart.of_text(
-            f"--- Address-sensitive dialogue-neighborhood storyboard: "
-            f"inspect speaker/listener for #{target.key} ---"
-        ))
-        parts.append(ContentPart.of_image(encode_page_jpeg(storyboard)))
-    return Message.user_parts(parts)
-
-
-def _storyboard_image(
-    prepared: PreparedChapter,
-    reader: PreparedReader,
-    ordered: list[BubbleKey],
-    target: BubbleKey,
-):
-    import cv2
-    import numpy as np
-
-    try:
-        pos = next(i for i, bk in enumerate(ordered) if bk.key == target.key)
-    except StopIteration:
-        return None
-
-    window = ordered[max(0, pos - 3): min(len(ordered), pos + 4)]
-    by_page: dict[int, list[BubbleKey]] = {}
-    for bk in window:
-        by_page.setdefault(bk.page_index, []).append(bk)
-
-    pages = sorted(by_page, key=lambda p: (abs(p - target.page_index), p))[:6]
-    if not pages:
-        return None
-
-    PANEL_W  = 280
-    PADDING  = 8
-    GAP      = 4
-    TOP_BAR_H = 30
-
-    panel_h   = 0
-    page_info = []
-    for page_index in pages:
-        if page_index < 0 or page_index >= prepared.page_count:
-            continue
-        image = reader.read_rgb(page_index)
-        bks   = by_page[page_index]
-        h, w  = image.shape[:2]
-        scale = PANEL_W / w
-        ph    = int(h * scale)
-        panel_h = max(panel_h, ph)
-        page_info.append((image, bks, scale, ph))
-
-    cols     = len(page_info)
-    CANVAS_W = PADDING + cols * PANEL_W + (cols - 1) * GAP + PADDING
-    CANVAS_H = PADDING + TOP_BAR_H + panel_h + PADDING
-    canvas   = np.full((CANVAS_H, CANVAS_W, 3), 250, dtype=np.uint8)
-
-    cv2.putText(
-        canvas,
-        f"Target #{target.key} | p{target.page_index} | {target.source_text}  |  "
-        "Red=target Blue=nearby  |  Identify speaker/listener for Vietnamese pronouns",
-        (PADDING, PADDING + 20),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 2, cv2.LINE_AA,
-    )
-
-    for i, (image, bks, scale, ph) in enumerate(page_info):
-        pw      = int(image.shape[1] * scale)
-        top_pad = (panel_h - ph) // 2
-        x = PADDING + i * (PANEL_W + GAP)
-        y = PADDING + TOP_BAR_H
-
-        canvas[y + top_pad: y + top_pad + ph, x: x + pw] = cv2.resize(image, (pw, ph))
-        cv2.putText(
-            canvas, f"p{pages[i]}",
-            (x + 3, y - 3),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (80, 80, 80), 1, cv2.LINE_AA,
-        )
-        for bk in bks:
-            poly  = [[px * scale + x, py * scale + y + top_pad] for px, py in bk.box.polygon]
-            pts   = np.array(poly, dtype=np.int32)
-            color = (230, 40, 40) if bk.key == target.key else (40, 110, 220)
-            cv2.polylines(canvas, [pts], True, color, 3 if bk.key == target.key else 2)
-
-    return canvas
+    return "\n\n".join(parts) if parts else "(no prior context — translate from chapter text alone)"
 
 
 def _clean_address(address) -> tuple[list[AddressRule], str]:

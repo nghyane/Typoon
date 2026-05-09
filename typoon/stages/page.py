@@ -6,6 +6,8 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 from typoon.adapters.ctx import TranslateCtx
 from typoon.stages.brief import ChapterBrief, brief_slice
@@ -19,6 +21,29 @@ _RETRIES = 1
 _CONTEXT_SIZE = 20
 _VALID_KINDS = {"dialogue", "sfx"}
 _OCR_NOISE_RE = re.compile(r"^[\W_\d]+$")
+_NOISE_TERMS_PATH = Path(__file__).with_name("skills_data") / "noise_terms.txt"
+
+
+@lru_cache(maxsize=1)
+def _noise_term_patterns() -> tuple[re.Pattern[str], ...]:
+    """Load and compile deterministic noise regexes once.
+
+    Patterns live in skills_data/noise_terms.txt — one regex per line,
+    matched case-insensitively against stripped bubble text. Comment
+    lines start with '#'.
+    """
+    if not _NOISE_TERMS_PATH.exists():
+        return ()
+    out: list[re.Pattern[str]] = []
+    for raw in _NOISE_TERMS_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            out.append(re.compile(line, re.IGNORECASE))
+        except re.error:
+            continue
+    return tuple(out)
 
 
 @dataclass(slots=True)
@@ -128,6 +153,9 @@ def _is_auto_skip(text: str) -> bool:
         return True
     if _OCR_NOISE_RE.fullmatch(s) and not any(ch in s for ch in ":/%$¥₩€£"):
         return True
+    for pat in _noise_term_patterns():
+        if pat.fullmatch(s):
+            return True
     return False
 
 

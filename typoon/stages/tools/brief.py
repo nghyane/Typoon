@@ -32,8 +32,7 @@ class BubbleNote(BaseModel):
 
 
 class ChapterBriefArgs(BaseModel):
-    summary: str = Field(description="One-paragraph chapter summary")
-    facts: list[str] = Field(default_factory=list, description="Plot events and character relationship facts that affect meaning but NOT translation decisions — e.g. 'A just discovered B is the enemy', 'C is gravely injured'. Do NOT put language/register/tone decisions here.")
+    summary: str = Field(description="One sentence (≤30 words) capturing register/tone for the page translator. Skip plot recap — page translator does not need it.")
     glossary: list[GlossaryEntry] = Field(
         default_factory=list,
         description="Names, titles, and special terms found in this chapter with consistent translations"
@@ -51,10 +50,10 @@ class ChapterBriefArgs(BaseModel):
     )
     style_notes: list[str] = Field(
         default_factory=list,
-        description="Translation decisions only: loaded skill decisions, register, capitalization, punctuation, SFX, recurring speech patterns — e.g. 'Applied system-terms: translate readable skill names into Vietnamese unless glossary locks source form', 'Character X speaks bluntly, no honorifics', 'Narrator uses formal tone'. Do NOT put plot events or relationship facts here."
+        description="Translation decisions only: loaded skill decisions, register, capitalization, punctuation, SFX, recurring speech patterns. Do NOT put plot events or relationship facts here."
     )
-    page_notes: list[PageNote] = Field(default_factory=list, description="Per-page situation notes")
-    bubble_notes: list[BubbleNote] = Field(default_factory=list, description="Per-bubble context notes")
+    page_notes: list[PageNote] = Field(default_factory=list, description="Per-page situation notes — only when register changes between pages")
+    bubble_notes: list[BubbleNote] = Field(default_factory=list, description="Per-bubble context notes — speaker identity for address-sensitive bubbles, OCR-cleanup hints. Skip bubbles whose speaker/intent is obvious from text.")
 
 
 @tool

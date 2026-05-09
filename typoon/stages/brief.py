@@ -36,37 +36,41 @@ class AddressRule:
 @dataclass(slots=True)
 class ChapterBrief:
     summary:     str                = ""
-    facts:       list[str]          = field(default_factory=list)
     glossary:    dict[str, str]     = field(default_factory=dict)
     address:     list[AddressRule]  = field(default_factory=list)
     style_notes: list[str]          = field(default_factory=list)
     page_notes:  dict[int, str]     = field(default_factory=dict)
     key_notes:   dict[str, str]     = field(default_factory=dict)
     noise_keys:  set[str]           = field(default_factory=set)
+    # Page indices that are entirely non-diegetic (full-page credits, ads,
+    # platform banners, end-of-chapter "next chapter" pages). These pages
+    # are dropped from the public render archive — they will not appear
+    # in the rendered chapter at all.
+    noise_pages: set[int]           = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "summary": self.summary,
-            "facts": self.facts,
             "glossary": self.glossary,
             "address": [r.to_dict() for r in self.address],
             "style_notes": self.style_notes,
             "page_notes": {str(k): v for k, v in self.page_notes.items()},
             "key_notes": self.key_notes,
             "noise_keys": sorted(self.noise_keys),
+            "noise_pages": sorted(self.noise_pages),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "ChapterBrief":
         return cls(
             summary=d.get("summary", ""),
-            facts=d.get("facts", []),
             glossary=d.get("glossary", {}),
             address=[AddressRule.from_dict(r) for r in d.get("address", [])],
             style_notes=d.get("style_notes", d.get("rules", [])),
             page_notes={int(k): v for k, v in d.get("page_notes", {}).items()},
             key_notes=d.get("key_notes", {}),
             noise_keys=set(d.get("noise_keys", [])),
+            noise_pages={int(p) for p in d.get("noise_pages", [])},
         )
 
 

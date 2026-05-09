@@ -1,0 +1,38 @@
+# Deterministic noise patterns — auto-skipped before reaching the LLM.
+#
+# Each non-empty, non-comment line is a Python regex matched against the
+# whole bubble text (case-insensitive, after stripping). If it matches,
+# the bubble is treated as non-diegetic noise and never sent to the
+# translator. Used by typoon.stages.page._is_auto_skip.
+#
+# Keep entries narrow — false positives silently drop story dialogue.
+# Prefer matches anchored to brand tokens / URLs / disclaimer phrasing
+# rather than generic words.
+
+# Bare URLs and domains (reset-scan.co, mangadex.org, etc.)
+^[a-z0-9][a-z0-9.\-]*\.(?:co|com|net|org|io|to|me|xyz|info|live|app)\b.*$
+^https?://\S+$
+^www\.\S+$
+
+# Social / handle markers
+^@[a-z0-9_.]{2,}$
+
+# Bare percentage / page-counter strings
+^\d{1,3}\s*%$
+^p(?:age)?\s*\d+(?:\s*/\s*\d+)?$
+
+# Common scanlator / reader-platform brand tokens
+^(?:o\s+)?(?:reset[\s\-]*scan(?:[\s.\-]*c[o0])?)$
+^(?:u?toon(?:\s*nex)?)$
+^(?:webtoon|webtoons|kakao(?:page)?|naver|line\s*webtoon|piccoma|bilibili|mangadex|mangaplus|asuratoon|asurascans)$
+^(?:read\s*on|read\s*next|next\s*chapter|next\s*episode|continue\s*reading|tap\s*to\s*read)$
+^(?:like|share|subscribe|follow|comment)$
+
+# Disclaimer / preview boilerplate
+^.*\bpreview(?:s)?\s+of\s+the\s+original\b.*$
+^.*\bbuy\s+the\b.*\b(?:original|comic|book|version)\b.*$
+^.*\bavailable\s+in\s+your\s+(?:city|country|region)\b.*$
+^.*\boriginal\s+version\b.*$
+^.*\bsupport\s+(?:us|the\s+author)\b.*$
+^.*\bfor\s+(?:faster|fister)\s+update(?:s)?\b.*$
+^.*\bjoin\s+our\s+discord\b.*$

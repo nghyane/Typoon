@@ -42,11 +42,16 @@ async def translate_chapter(
 
     # Bubbles flagged as noise by the context agent (site chrome, watermarks,
     # buttons, page counters) bypass the translator entirely — they get a
-    # kind="skip" op without an LLM round trip.
-    translatable = [bk for bk in keyed if bk.key not in brief.noise_keys]
+    # kind="skip" op without an LLM round trip. Pages flagged whole as
+    # noise extend that to every bubble on those pages.
+    page_noise_keys = {
+        bk.key for bk in keyed if bk.bubble.page_index in brief.noise_pages
+    }
+    skip_keys = brief.noise_keys | page_noise_keys
+    translatable = [bk for bk in keyed if bk.key not in skip_keys]
     noise_ops: dict[str, TranslationOp] = {
         bk.key: TranslationOp(key=bk.key, kind="skip")
-        for bk in keyed if bk.key in brief.noise_keys
+        for bk in keyed if bk.key in skip_keys
     }
 
     if not translatable:
