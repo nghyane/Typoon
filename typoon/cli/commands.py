@@ -126,9 +126,15 @@ def api(
     the same process via `typoon work --role full` or on a separate
     host (vision/llm) sharing the same DB.
     """
+    import logging
     import uvicorn
     from ..config import load_config
     cfg, _ = load_config()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        datefmt="%H:%M:%S",
+    )
     uvicorn.run(
         "typoon.api.app:app",
         host=host or cfg.server.host,
@@ -400,21 +406,24 @@ async def _debug_scan(
 
 @app.command()
 def prune(
-    days:    int  = typer.Option(30, "--days", "-d",
-                                 help="Prune cache for chapters not updated in N days"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted, don't delete"),
+    days:        int  = typer.Option(30, "--days", "-d",
+                                     help="Prune cache for chapters not updated in N days"),
+    events_days: int  = typer.Option(7, "--events-days",
+                                     help="Drop SSE events older than N days"),
+    dry_run:     bool = typer.Option(False, "--dry-run",
+                                     help="Show what would be deleted, don't delete"),
 ):
-    """Delete intermediate caches (prepared.bnl + masks.npz) for old chapters.
+    """Delete intermediate caches and trim the SSE event table.
 
-    Render archives are NOT touched — readers keep working. The cache
-    files only matter for redo: a redo within the TTL is fast (uses
-    cache); after prune, redo takes longer but still works because the
-    pipeline re-derives everything from the (re-)provided source.
+    - prepared.bnl + masks.npz for chapters not updated in --days.
+      Render archives are NOT touched — readers keep working.
+    - events table rows older than --events-days. Clients past that
+      lose their SSE replay buffer; the live stream keeps working.
     """
-    asyncio.run(_prune(days, dry_run))
+    asyncio.run(_prune(days, events_days, dry_run))
 
 
-async def _prune(days: int, dry_run: bool) -> None:
+async def _prune(days: int, events_days: int, dry_run: bool) -> None:
     from ..adapters.chapter_archive import masks_key, prepared_key
     from ..adapters.storage_registry import build_storage
     from ..config import load_config
@@ -425,43 +434,54 @@ async def _prune(days: int, dry_run: bool) -> None:
     db = await PostgresStore.open(config.database_url)
     try:
         rows = await db.list_prunable_chapters(days)
-        if not rows:
+        if rows:
+            local = build_storage(config, paths).pipeline
+            prepared_freed = 0
+            masks_freed = 0
+            prepared_count = 0
+            masks_count = 0
+            for r in rows:
+                pid, cid = r["project_id"], r["chapter_id"]
+                for key, label in (
+                    (prepared_key(pid, cid), "prepared"),
+                    (masks_key(pid, cid), "masks"),
+                ):
+                    path = paths.artifacts / key
+                    if not path.exists():
+                        continue
+                    size = path.stat().st_size
+                    if dry_run:
+                        console.print(f"[dim]would delete[/] {key} ({_human(size)})")
+                    else:
+                        await local.delete(key)
+                    if label == "prepared":
+                        prepared_count += 1
+                        prepared_freed += size
+                    else:
+                        masks_count += 1
+                        masks_freed += size
+
+            verb = "would free" if dry_run else "freed"
+            console.print(
+                f"[green]✓[/] {verb} "
+                f"[bold]{_human(prepared_freed + masks_freed)}[/] "
+                f"({prepared_count} prepared, {masks_count} masks "
+                f"across {len(rows)} chapter{'s' if len(rows) != 1 else ''})",
+            )
+        else:
             console.print(f"[dim]No chapters older than {days}d to prune.[/]")
-            return
 
-        local = build_storage(config, paths).pipeline
-        prepared_freed = 0
-        masks_freed = 0
-        prepared_count = 0
-        masks_count = 0
-        for r in rows:
-            pid, cid = r["project_id"], r["chapter_id"]
-            for key, label in (
-                (prepared_key(pid, cid), "prepared"),
-                (masks_key(pid, cid), "masks"),
-            ):
-                path = paths.artifacts / key
-                if not path.exists():
-                    continue
-                size = path.stat().st_size
-                if dry_run:
-                    console.print(f"[dim]would delete[/] {key} ({_human(size)})")
-                else:
-                    await local.delete(key)
-                if label == "prepared":
-                    prepared_count += 1
-                    prepared_freed += size
-                else:
-                    masks_count += 1
-                    masks_freed += size
-
-        verb = "would free" if dry_run else "freed"
-        console.print(
-            f"\n[green]✓[/] {verb} "
-            f"[bold]{_human(prepared_freed + masks_freed)}[/] "
-            f"({prepared_count} prepared, {masks_count} masks "
-            f"across {len(rows)} chapter{'s' if len(rows) != 1 else ''})",
-        )
+        if dry_run:
+            async with db._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n FROM events "
+                    "WHERE created_at < NOW() - make_interval(days => $1)",
+                    events_days,
+                )
+            console.print(f"[dim]would drop {row['n']} event row(s) older than {events_days}d[/]")
+        else:
+            n = await db.prune_events(events_days)
+            console.print(f"[green]✓[/] dropped {n} event row(s) older than {events_days}d")
     finally:
         await db.close()
 

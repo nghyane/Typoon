@@ -1,17 +1,18 @@
 """Event bus — Postgres LISTEN/NOTIFY transport.
 
-API and workers connect to the same Postgres DSN; the API holds a LISTEN
-connection per SSE client and replays missed events from the `events`
-table on reconnect.
+API holds ONE LISTEN connection per process and fans out incoming
+NOTIFY payloads to in-process subscribers via local asyncio.Queue.
+Replay-on-reconnect uses the regular pool, not the listener connection.
 
-publish    INSERT events RETURNING id; NOTIFY chan, str(id)
-subscribe  SELECT events WHERE id > last_id (replay), then LISTEN.
-           On NOTIFY, SELECT new row by id.
+publish    INSERT events RETURNING id; pg_notify(chan, str(id))
+subscribe  one-time replay (events.id > last_id), then live
+           events from a local queue fed by the shared listener.
 
-Pool reused across publishes to avoid connection storms. A dedicated
-asyncpg connection per subscriber holds the LISTEN — Postgres LISTEN
-state is per-connection, so the pool's connection-recycling would lose
-notifications.
+Why one listener: opening a dedicated asyncpg connection per SSE
+subscriber blew up Postgres `max_connections` at modest user count.
+LISTEN state is per-connection, but NOTIFY payloads are visible to
+every LISTEN session, so a single connection is enough as long as we
+broadcast in-process.
 """
 
 from __future__ import annotations
@@ -53,6 +54,18 @@ class EventBusProtocol(Protocol):
 # ── Implementation ────────────────────────────────────────────────────
 
 
+# Per-subscriber queue depth. Slow consumers drop oldest events when
+# this fills; the missed-id gap is recovered next time the client
+# reconnects with a Last-Event-ID. 256 is comfortable for a 100-page
+# render's PageDone burst.
+_SUBSCRIBER_QUEUE_SIZE = 256
+
+# Replay cap on reconnect. If a client has been offline long enough to
+# miss more than this, they get the tail; older events are considered
+# historical and live in the events table for audit, not for catch-up.
+_REPLAY_LIMIT = 100
+
+
 class EventBus:
     """Postgres-backed bus. See module docstring."""
 
@@ -64,15 +77,37 @@ class EventBus:
                 f"EventBus requires a postgresql:// DSN, got: {dsn!r}"
             )
         self._dsn = dsn
-        self._pool = None  # asyncpg.Pool
+        self._pool = None  # asyncpg.Pool — used by publish + replay
+        self._listen_conn = None  # asyncpg.Connection — single LISTEN
+        self._subscribers: set[asyncio.Queue[int]] = set()
+        self._init_lock = asyncio.Lock()
+
+    # ── lazy init ────────────────────────────────────────────────────
 
     async def _ensure_pool(self):
+        # Double-checked locking — avoids creating two pools if two
+        # coroutines hit a cold bus simultaneously.
         if self._pool is None:
-            import asyncpg
-            self._pool = await asyncpg.create_pool(
-                self._dsn, min_size=1, max_size=4,
-            )
+            async with self._init_lock:
+                if self._pool is None:
+                    import asyncpg
+                    self._pool = await asyncpg.create_pool(
+                        self._dsn, min_size=1, max_size=4,
+                    )
         return self._pool
+
+    async def _ensure_listener(self):
+        if self._listen_conn is not None:
+            return
+        async with self._init_lock:
+            if self._listen_conn is not None:
+                return
+            import asyncpg
+            conn = await asyncpg.connect(self._dsn)
+            await conn.add_listener(self._CHANNEL, self._on_notify)
+            self._listen_conn = conn
+
+    # ── publish ──────────────────────────────────────────────────────
 
     async def publish(self, event: Event) -> None:
         pool = await self._ensure_pool()
@@ -82,52 +117,81 @@ class EventBus:
                 "INSERT INTO events (data) VALUES ($1::jsonb) RETURNING id",
                 payload,
             )
-            await conn.execute(f"NOTIFY {self._CHANNEL}, '{row['id']}'")
+            # Parameterized — pg_notify avoids string interpolation
+            # with the event id (hardening against any future code path
+            # that lets non-numeric values reach this point).
+            await conn.execute(
+                "SELECT pg_notify($1, $2)",
+                self._CHANNEL, str(row["id"]),
+            )
 
-    async def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]:
-        import asyncpg
-        seq = int(last_id) if last_id.isdigit() else 0
+    # ── listener side ────────────────────────────────────────────────
 
-        # Dedicated connection — LISTEN state is per-connection.
-        conn = await asyncpg.connect(self._dsn)
-        queue: asyncio.Queue[int] = asyncio.Queue()
-
-        def _on_notify(_conn, _pid, _channel, payload: str) -> None:
+    def _on_notify(self, _conn, _pid, _channel, payload: str) -> None:
+        try:
+            event_id = int(payload)
+        except ValueError:
+            return
+        # Snapshot the set so a subscriber unregistering mid-iteration
+        # doesn't blow up.
+        for queue in tuple(self._subscribers):
             try:
-                queue.put_nowait(int(payload))
-            except (ValueError, asyncio.QueueFull):
+                queue.put_nowait(event_id)
+            except asyncio.QueueFull:
+                # Slow consumer — drop. They'll catch up via replay on
+                # their next reconnect (Last-Event-ID).
                 pass
 
-        await conn.add_listener(self._CHANNEL, _on_notify)
+    # ── subscribe ────────────────────────────────────────────────────
+
+    async def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]:
+        await self._ensure_listener()
+        pool = await self._ensure_pool()
+        seq = int(last_id) if last_id.isdigit() else 0
+
+        queue: asyncio.Queue[int] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE)
+        self._subscribers.add(queue)
         try:
-            # Replay missed events.
-            rows = await conn.fetch(
-                "SELECT id, data FROM events WHERE id > $1 ORDER BY id LIMIT 1000",
-                seq,
-            )
+            # Replay: capped — older history stays in the table for audit.
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, data FROM events "
+                    "WHERE id > $1 "
+                    "ORDER BY id "
+                    "LIMIT $2",
+                    seq, _REPLAY_LIMIT,
+                )
             for row in rows:
                 seq = row["id"]
                 yield str(seq), _parse_json(row["data"])
 
-            # Live events.
+            # Live tail: queue is fed by the shared listener.
             while True:
                 new_id = await queue.get()
                 if new_id <= seq:
                     continue
-                row = await conn.fetchrow(
-                    "SELECT id, data FROM events WHERE id = $1", new_id,
-                )
+                async with pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT id, data FROM events WHERE id = $1", new_id,
+                    )
                 if row is None:
                     continue
                 seq = row["id"]
                 yield str(seq), _parse_json(row["data"])
         finally:
-            try:
-                await conn.remove_listener(self._CHANNEL, _on_notify)
-            finally:
-                await conn.close()
+            self._subscribers.discard(queue)
+
+    # ── lifecycle ────────────────────────────────────────────────────
 
     async def close(self) -> None:
+        if self._listen_conn is not None:
+            try:
+                await self._listen_conn.remove_listener(
+                    self._CHANNEL, self._on_notify,
+                )
+            finally:
+                await self._listen_conn.close()
+            self._listen_conn = None
         if self._pool is not None:
             await self._pool.close()
             self._pool = None

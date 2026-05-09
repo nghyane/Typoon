@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from typoon.api.deps import get_store
+from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
     auth, blobs, bubbles, glossary, me, projects, search, sse, upload, workers,
 )
@@ -62,12 +63,14 @@ _origins = [
     _config.server.public_web_url,
     "https://discord.com",
 ]
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
     allow_origin_regex=r"https://[a-z0-9-]+\.discordsays\.com",
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 if _serve_api:

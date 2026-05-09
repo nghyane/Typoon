@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 import tempfile
 from enum import StrEnum
 from pathlib import Path
@@ -49,6 +51,18 @@ logger = logging.getLogger(__name__)
 _POLL_INTERVAL = 2.0
 
 
+def _worker_id(role: str) -> str:
+    """Stable worker identifier: <hostname>-<pid>-<role>-<short-uuid>.
+
+    The hostname+pid prefix makes orphan claims diagnosable from the
+    `tasks.claimed_by` column ('did host db-1 die?'). The short UUID
+    suffix disambiguates multiple workers of the same role on the same
+    host (e.g. several translate concurrency slots).
+    """
+    host = socket.gethostname() or "unknown"
+    return f"{host}-{os.getpid()}-{role}-{uuid4().hex[:6]}"
+
+
 class Role(StrEnum):
     vision  = "vision"
     llm     = "llm"
@@ -63,7 +77,7 @@ class Role(StrEnum):
 async def scan_loop(
     db: Store, stores: StorageRegistry, runtime: VisionRuntime, hook: Hook,
 ) -> None:
-    worker_id = str(uuid4())
+    worker_id = _worker_id("scan")
     while True:
         chapter_id = await db.claim_task("scan", worker_id)
         if chapter_id is None:
@@ -76,7 +90,7 @@ async def scan_loop(
 async def translate_loop(
     db: Store, stores: StorageRegistry, config: Config, hook: Hook,
 ) -> None:
-    worker_id = str(uuid4())
+    worker_id = _worker_id("translate")
     while True:
         chapter_id = await db.claim_task("translate", worker_id)
         if chapter_id is None:
@@ -101,7 +115,7 @@ async def render_loop(
     db: Store, stores: StorageRegistry, runtime: VisionRuntime, hook: Hook,
     *, archive_salt: bytes,
 ) -> None:
-    worker_id = str(uuid4())
+    worker_id = _worker_id("render")
     while True:
         chapter_id = await db.claim_task("render", worker_id)
         if chapter_id is None:

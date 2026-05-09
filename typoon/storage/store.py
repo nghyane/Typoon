@@ -153,6 +153,11 @@ class Store(Protocol):
         chapter_id and project_id keys."""
         ...
 
+    async def prune_events(self, older_than_days: int) -> int:
+        """Drop events older than the cutoff. Returns row count.
+        Used by `typoon prune` to keep the SSE replay table bounded."""
+        ...
+
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         """Return {rendered: bool, page_count: int} or None if missing."""
         ...

@@ -1177,6 +1177,27 @@ class PostgresStore:
             )
         return [dict(r) for r in rows]
 
+    async def prune_events(self, older_than_days: int) -> int:
+        """Drop events older than the cutoff. Returns rows deleted.
+
+        Events stay in the table to support SSE Last-Event-ID replay and
+        provide a short audit trail; clients that fall further behind
+        than this just lose their replay buffer (the live stream
+        continues to work). 7 days is comfortable for a community-scale
+        deploy and keeps the table well below a million rows.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM events "
+                "WHERE created_at < NOW() - make_interval(days => $1)",
+                older_than_days,
+            )
+        # asyncpg returns "DELETE <count>"; parse the trailing number.
+        try:
+            return int(result.rsplit(" ", 1)[1])
+        except (ValueError, IndexError):
+            return 0
+
     async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
