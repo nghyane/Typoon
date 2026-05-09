@@ -10,8 +10,13 @@ import { toast } from '@shared/ui/Toaster'
 export function useChapterMutations(projectId: number) {
   const qc = useQueryClient()
 
+  // After every mutation we refresh both the chapter list (so the row
+  // updates immediately) and the global workers indicator in the
+  // header (so the user sees their action reflected in the queue
+  // count without waiting for the next poll tick).
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['projects', projectId, 'chapters'] })
+    qc.invalidateQueries({ queryKey: ['workers'] })
   }
 
   const redo = useMutation({

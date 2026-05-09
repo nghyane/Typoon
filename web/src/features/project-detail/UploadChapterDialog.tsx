@@ -48,6 +48,10 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
     onSuccess: (ch) => {
       qc.invalidateQueries({ queryKey: ['projects', project.project_id, 'chapters'] })
       qc.invalidateQueries({ queryKey: ['projects'] })
+      // New chapter ingest enqueues scan immediately — refresh the
+      // header indicator so the user sees their upload contribute
+      // to the queue without waiting for the next 4s poll.
+      qc.invalidateQueries({ queryKey: ['workers'] })
       toast.success(`Đã thêm Ch.${ch.idx} (${ch.page_count} trang)`)
       onClose()
     },

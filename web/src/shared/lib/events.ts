@@ -62,12 +62,15 @@ export function useProjectEvents(projectId: number | null | undefined) {
 
       if (PROJECT_LIST_TRIGGERS.has(ev.type)) {
         // Bubble up coarse changes so the global project list reflects
-        // chapter completions / errors without each tab polling.
+        // chapter completions / errors without each tab polling, and
+        // the header workers indicator updates the moment a stage
+        // starts/finishes rather than on its 4s poll cadence.
         qc.invalidateQueries({ queryKey: ['projects'], exact: true })
         qc.invalidateQueries({
           queryKey: ['projects', id],
           exact: true,
         })
+        qc.invalidateQueries({ queryKey: ['workers'] })
       }
     }
 
