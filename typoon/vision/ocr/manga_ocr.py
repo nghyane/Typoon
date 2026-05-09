@@ -1,16 +1,13 @@
-"""Manga OCR backend — kha-white/manga-ocr-base for Japanese manga.
+"""manga-ocr backend — Japanese vertical text via kha-white/manga-ocr-base.
 
-Uses HuggingFace transformers (PyTorch). Model loads lazily on first
-call so non-Japanese projects pay no startup cost.
-
-Apple Vision returns empty / garbage on vertical Japanese in manga
+Apple Vision and Lens both fail on vertical Japanese in stylised manga
 bubbles; manga-ocr is trained on manga109s and handles vertical text,
-furigana, manga fonts, and SFX correctly.
+furigana, manga fonts, and SFX correctly. Implemented as `CropOcr` (one
+forward pass per crop) because the model takes a single 224×224 image
+and returns one string with no geometry.
 
-Batched dispatch: processor resizes every crop to a fixed 224×224, so
-a list-of-crops can be encoded + decoded in a single forward pass with
-identical output to sequential calls (verified). On Mac MPS, batched
-~1.7× faster than sequential.
+Lazy load: tokenizer / processor / model are only loaded on the first
+`ocr_crops` call, so non-Japanese projects pay no startup cost.
 """
 
 from __future__ import annotations
@@ -20,30 +17,22 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+
 _MODEL_NAME = "kha-white/manga-ocr-base"
 
 
-def _manga_ocr_available() -> bool:
+def is_available() -> bool:
     try:
-        import torch  # noqa: F401
+        import torch         # noqa: F401
         import transformers  # noqa: F401
-        import fugashi  # noqa: F401
+        import fugashi       # noqa: F401
         return True
     except ImportError:
         return False
 
 
-class MangaOcrBackend:
-    """Lazy-loaded manga-ocr recognizer.
-
-    Holds tokenizer/processor/model after first `recognize` call. One
-    instance per VisionRuntime; shared across pages and chapters.
-    """
-
-    # Trained on natural grayscale manga — adaptive-threshold preprocessing
-    # in groups.py degrades accuracy. Pipeline checks this flag to skip
-    # binarization for ja crops.
-    wants_raw = True
+class MangaOcrCropOcr:
+    """Lazy-loaded manga-ocr recognizer. Batched dispatch via HF processor."""
 
     def __init__(self) -> None:
         self._tok: Any = None
@@ -75,11 +64,11 @@ class MangaOcrBackend:
             .eval()
         )
 
-    def recognize(
+    def ocr_crops(
         self,
         crops: list[np.ndarray],
         *,
-        lang: str | None = None,  # accepted for protocol compat, ignored
+        lang: str | None = None,  # accepted for protocol parity, ignored
     ) -> list[tuple[str, float]]:
         if not crops:
             return []
@@ -87,12 +76,11 @@ class MangaOcrBackend:
         self._ensure_loaded()
         import torch
 
-        # Skip degenerate crops; keep slot to preserve order.
+        # Skip degenerate crops; reserve their slot to preserve order.
         keep_idx: list[int] = []
         pil_imgs: list[Image.Image] = []
         for i, c in enumerate(crops):
-            ch, cw = c.shape[:2]
-            if ch < 5 or cw < 5:
+            if c.shape[0] < 5 or c.shape[1] < 5:
                 continue
             keep_idx.append(i)
             pil_imgs.append(Image.fromarray(c).convert("RGB"))
@@ -106,27 +94,23 @@ class MangaOcrBackend:
             out = self._model.generate(
                 pv,
                 max_new_tokens=64,
-                num_beams=1,                       # greedy → scores align 1:1 with sequences
+                num_beams=1,
                 do_sample=False,
                 return_dict_in_generate=True,
                 output_scores=True,
             )
-        seqs = out.sequences                       # [B, prompt_len + gen_len]
+        seqs  = out.sequences
         texts = self._tok.batch_decode(seqs, skip_special_tokens=True)
 
-        # Real per-sequence confidence — mean prob of greedy-chosen tokens.
-        # The previous hardcoded 1.0 disabled every confidence-gated noise
-        # filter for ja, letting "w." and large unscoped fragments through.
+        # Per-sequence confidence = mean prob of greedy-chosen content tokens.
         gen_len    = len(out.scores)
-        gen_tokens = seqs[:, -gen_len:]                                # [B, gen_len]
-        # scores[t]: [B, vocab] logits at step t. Stack → [B, gen_len, vocab].
+        gen_tokens = seqs[:, -gen_len:]
         stacked    = torch.stack(out.scores, dim=1)
         probs      = torch.softmax(stacked, dim=-1)
-        chosen     = probs.gather(-1, gen_tokens.unsqueeze(-1)).squeeze(-1)  # [B, gen_len]
+        chosen     = probs.gather(-1, gen_tokens.unsqueeze(-1)).squeeze(-1)
 
         eos_id = self._tok.eos_token_id
         pad_id = self._tok.pad_token_id
-        # Treat tokens up to (and including) the first EOS as content; mask the rest.
         valid = torch.ones_like(gen_tokens, dtype=torch.bool)
         if eos_id is not None:
             after_eos = (gen_tokens == eos_id).cumsum(dim=1) > 1

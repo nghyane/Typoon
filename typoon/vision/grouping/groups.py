@@ -31,7 +31,10 @@ from .geometry import (
 
 class _Scanner(Protocol):
     _det: object
-    def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]: ...
+    @property
+    def ocr(self) -> object: ...
+    @property
+    def lang(self) -> str | None: ...
 
 
 # ── Group building ────────────────────────────────────────────────
@@ -54,7 +57,17 @@ def subgroup_blocks(
     med_h = float(np.median(heights))
     sorted_by_y = sorted(idx_boxes, key=lambda x: x[1])
     gaps = [max(0, sorted_by_y[k + 1][1] - sorted_by_y[k][3]) for k in range(len(sorted_by_y) - 1)]
-    large_gaps = sum(1 for g in gaps if g > med_h * 1.25)
+    # Detect inter-bubble gaps inside a single YOLO scope (e.g. a small
+    # "HA!" sub-text above a larger "KNOW YOUR PLACE." main bubble that
+    # share one scope box). Compare each gap against the larger of the two
+    # neighbouring units' heights — using `min_h` would be inflated by short
+    # lines inside a long bubble (median chapter run: 98% of intra-group
+    # gap/max_h ≤ 0.25; only true inter-bubble gaps reach ≥ 0.7).
+    local_heights = [max(1, b[3] - b[1]) for b in sorted_by_y]
+    large_gaps = sum(
+        1 for k, g in enumerate(gaps)
+        if g > max(local_heights[k], local_heights[k + 1]) * 0.7
+    )
 
     mode = "strict" if container is None else "normal"
     if container is not None:
@@ -153,7 +166,21 @@ def build_groups(state: ScanState) -> None:
         group_boxes = [boxes[i] for i in indices]
         raw_bbox = union_boxes(group_boxes)
         scope_bbox = state.scopes[scope_idx].bbox if scope_idx is not None else None
-        ocr_box = _ocr_crop_box(raw_bbox, set(indices), boxes, state.width, state.height, scope_bbox)
+        # OCR crop only matters for CropOcr backends (manga-ocr): it's
+        # `raw_bbox` clipped to scope and the page boundary. PageOcr backends
+        # OCR the full page and ignore this field. Neighbour-bleed clipping
+        # is not needed: page-level OCR has bubble context already, and
+        # crop-level (manga-ocr) operates on visually distinct ja bubbles.
+        ocr_box = list(raw_bbox)
+        if scope_bbox is not None:
+            ocr_box = [
+                max(ocr_box[0], scope_bbox[0]), max(ocr_box[1], scope_bbox[1]),
+                min(ocr_box[2], scope_bbox[2]), min(ocr_box[3], scope_bbox[3]),
+            ]
+        ocr_box = [
+            max(0, ocr_box[0]), max(0, ocr_box[1]),
+            min(state.width, ocr_box[2]), min(state.height, ocr_box[3]),
+        ]
         pad = fit_padding(group_boxes, state.width, state.height)
         fit = pad_box(raw_bbox, pad, state.width, state.height)
         if scope_bbox is not None:
@@ -170,53 +197,98 @@ def build_groups(state: ScanState) -> None:
 
 
 def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
-    """Run full OCR on each group crop, with rotation retry for angled text.
+    """Recognize text for every detected group, store on `g.text`/`g.confidence`.
 
-    Pre-OCR noise filter on unscoped groups (no YOLO bubble): pure geometry
-    short-circuit so we don't pay OCR cost on detect-noise / page artifacts.
-    Scoped groups always go through — their geometry comes from the bubble
-    detector and is trusted. The kept-set still passes through `_should_skip`
-    after OCR for text-quality decisions.
+    Routes by backend protocol:
+    - `PageOcr` (Apple Vision / Lens / Windows / Tesseract): one OCR call on
+      the whole page, then assign each observation to the group whose
+      `raw_bbox` contains the observation's centre.
+    - `CropOcr` (manga-ocr): one batched call with per-group crops in
+      `raw_bbox` order.
+
+    Pre-OCR geometry short-circuit on unscoped groups (no YOLO bubble) drops
+    obvious detect-noise / page artifacts before paying OCR cost. Scoped
+    groups always go through; their geometry comes from the bubble detector
+    and is trusted.
     """
-    raw = bool(getattr(scanner, "wants_raw", False))
-    # Pass 1: OCR all crops at detected angle
-    crops, groups = [], []
+    from typoon.vision.ocr import CropOcr, PageOcr
+
+    # Mark unscoped noise upfront — geometry-only checks, no OCR needed.
+    eligible: list[GroupState] = []
     for g in state.groups:
         x1, y1, x2, y2 = g.ocr_bbox
         bw, bh = x2 - x1, y2 - y1
         if bw < 5 or bh < 5:
-            continue
-        if not g.scoped and _is_geometric_noise(bw, bh, g.median_angle):
             g.text = ""
             g.confidence = 0.0
             continue
-        if not g.scoped and _is_stripe_cluster(state.units, list(g.unit_indices)):
+        if not g.scoped and (
+            _is_geometric_noise(bw, bh, g.median_angle)
+            or _is_stripe_cluster(state.units, list(g.unit_indices))
+        ):
             g.text = ""
             g.confidence = 0.0
             continue
-        crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle, raw=raw))
-        groups.append(g)
-    for g, (text, conf) in zip(groups, scanner._ocr_crops(crops) if crops else []):
-        g.text = (text or "").strip()
-        g.confidence = float(conf)
+        eligible.append(g)
 
-    # Pass 2: retry low-confidence angled groups with candidate angle offsets
-    retry_groups, retry_crops = [], []
+    if not eligible:
+        return
+
+    ocr = scanner.ocr
+    lang = scanner.lang
+
+    if isinstance(ocr, PageOcr):
+        observations = ocr.ocr_page(state.image, lang=lang)
+        _assign_observations_to_groups(eligible, observations)
+        return
+
+    if isinstance(ocr, CropOcr):
+        crops = [
+            state.image[g.ocr_bbox[1]:g.ocr_bbox[3], g.ocr_bbox[0]:g.ocr_bbox[2]]
+            for g in eligible
+        ]
+        results = ocr.ocr_crops(crops, lang=lang)
+        for g, (text, conf) in zip(eligible, results):
+            g.text = (text or "").strip()
+            g.confidence = float(conf)
+        return
+
+    raise TypeError(f"OCR backend {type(ocr).__name__} implements neither PageOcr nor CropOcr")
+
+
+def _assign_observations_to_groups(
+    groups: list[GroupState],
+    observations: list,
+) -> None:
+    """Bucket observations by group and join into final text per group.
+
+    Each observation goes to the group whose `raw_bbox` contains the
+    observation's centre. Observations that fall in no group are
+    discarded (panel art, scanlator chrome outside any detected unit).
+    Within a group, observations sort by y, then x — natural reading
+    order for left-to-right horizontal text.
+    """
+    buckets: dict[int, list] = {id(g): [] for g in groups}
+    for obs in observations:
+        x1, y1, x2, y2 = obs.bbox
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        for g in groups:
+            gx1, gy1, gx2, gy2 = g.raw_bbox
+            if gx1 <= cx <= gx2 and gy1 <= cy <= gy2:
+                buckets[id(g)].append(obs)
+                break
+
     for g in groups:
-        if g.confidence >= 0.8 or abs(g.median_angle) < 3:
+        matched = buckets[id(g)]
+        if not matched:
+            g.text = ""
+            g.confidence = 0.0
             continue
-        x1, y1, x2, y2 = g.ocr_bbox
-        base = state.image[y1:y2, x1:x2]
-        for offset in (-12, -8, -4, 4, 8, 12):
-            retry_groups.append(g)
-            retry_crops.append(_rotate_crop(base, g.median_angle + offset, raw=raw))
+        matched.sort(key=lambda o: ((o.bbox[1] + o.bbox[3]) // 2, o.bbox[0]))
+        g.text = " ".join(o.text for o in matched).strip()
+        g.confidence = min(o.confidence for o in matched)
 
-    if retry_crops:
-        for g, (text, conf) in zip(retry_groups, scanner._ocr_crops(retry_crops)):
-            text = (text or "").strip()
-            if conf > g.confidence:
-                g.text = text
-                g.confidence = float(conf)
 
 
 def _is_geometric_noise(bw: int, bh: int, angle: float) -> bool:
@@ -286,31 +358,6 @@ def _is_stripe_cluster(units, indices: list[int]) -> bool:
         return False
     return all(_is_stripe_polygon(units[i].region.polygon) for i in indices)
 
-
-
-def _rotate_crop(crop: np.ndarray, angle: float, *, raw: bool = False) -> np.ndarray:
-    """Rotate crop to straighten text, then binarize for cleaner OCR.
-
-    `raw=True` skips binarization for backends (e.g. manga-ocr) trained
-    on natural grayscale manga, where adaptive-threshold preprocessing
-    degrades accuracy.
-    """
-    if abs(angle) >= 3:
-        ch, cw = crop.shape[:2]
-        M = cv2.getRotationMatrix2D((cw / 2, ch / 2), -angle, 1.0)
-        crop = cv2.warpAffine(crop, M, (cw, ch), flags=cv2.INTER_LINEAR, borderValue=(255, 255, 255))
-    if raw:
-        return crop
-    # Adaptive binarization removes bubble-edge noise and improves manga font OCR.
-    # Detect polarity: dark-on-light (manga/manhwa white bubble) vs light-on-dark
-    # (dark/colored bubble background). THRESH_BINARY_INV for the latter so text
-    # pixels always become black in the binarized crop fed to OCR.
-    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    thresh_type = (
-        cv2.THRESH_BINARY if gray.mean() > 127 else cv2.THRESH_BINARY_INV
-    )
-    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, thresh_type, 11, 2)
-    return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
 
 def filter_groups(state: ScanState) -> None:
@@ -419,49 +466,6 @@ def _cluster_by_angle(indices: list[int], angles: list[float], threshold: float 
             clusters.append([i])
             reps.append(ang)
     return clusters
-
-
-def _ocr_crop_box(
-    group_box: list[int], group_indices: set[int], all_boxes: list[list[int]],
-    page_w: int, page_h: int, scope_bbox: list[int] | None = None,
-) -> list[int]:
-    x1, y1, x2, y2 = group_box
-
-    # No OCR padding: the raw_bbox already contains all detected ink pixels.
-    # Adding margin risks pulling in bubble outline ink (for unscoped groups)
-    # or adjacent panel content. Noise fragments like 'ic WHERE' are a
-    # grouping artefact, not a tight-crop issue — fix them in grouping, not here.
-    l, t = x1, y1
-    r, b = x2, y2
-
-    # Clip to scope boundary (hard wall — do not read outside the bubble)
-    if scope_bbox is not None:
-        sx1, sy1, sx2, sy2 = scope_bbox
-        l = max(l, sx1)
-        t = max(t, sy1)
-        r = min(r, sx2)
-        b = min(b, sy2)
-
-    # Clip to page boundary
-    l = max(l, 0)
-    t = max(t, 0)
-    r = min(r, page_w)
-    b = min(b, page_h)
-
-    # Clip away neighboring text regions so their pixels don't contaminate
-    # the crop. Applied after padding so the pad does not reach into neighbors.
-    for i, other in enumerate(all_boxes):
-        if i in group_indices:
-            continue
-        ox1, oy1, ox2, oy2 = other
-        if min(b, oy2) > max(t, oy1):
-            if ox2 <= x1 and ox2 > l: l = ox2 + 1
-            elif ox1 >= x2 and ox1 < r: r = ox1 - 1
-        if min(r, ox2) > max(l, ox1):
-            if oy2 <= y1 and oy2 > t: t = oy2 + 1
-            elif oy1 >= y2 and oy1 < b: b = oy1 - 1
-
-    return [l, t, r, b]
 
 
 def _masks_bbox(masks: list[TextMask], fallback: list[int]) -> list[int]:

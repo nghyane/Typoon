@@ -2,18 +2,11 @@
 
 from __future__ import annotations
 
-import sys
-
 import cv2
 import numpy as np
 import pytest
 
-from typoon.vision.ocr_backend import (
-    AppleVisionBackend,
-    TesseractBackend,
-    _tesseract_available,
-    _vision_available,
-)
+from typoon.vision.ocr import apple_vision, tesseract
 from typoon.vision.scanner import Scanner, create_scanner
 from typoon.vision.types import DetectedGroup
 from .conftest import FIXTURES_DIR, MODELS_DIR, skip_no_ppocr_det
@@ -39,8 +32,12 @@ def _make_scanner(ocr_cls, *, lang: str | None = None) -> Scanner:
     return scanner
 
 
-skip_no_vision = pytest.mark.skipif(not _vision_available(), reason="macOS Vision not available")
-skip_no_tesseract = pytest.mark.skipif(not _tesseract_available(), reason="Tesseract not available")
+skip_no_vision = pytest.mark.skipif(
+    not apple_vision.is_available(), reason="macOS Vision not available"
+)
+skip_no_tesseract = pytest.mark.skipif(
+    not tesseract.is_available(), reason="Tesseract not available"
+)
 
 
 def test_scanned_bubble_defaults():
@@ -67,7 +64,7 @@ class TestVisionScanner:
 
     def test_scan_manga_page(self):
         img = _load_page("ch013/14.webp")
-        bubbles = _make_scanner(AppleVisionBackend, lang="en").scan(img)
+        bubbles = _make_scanner(apple_vision.AppleVisionPageOcr, lang="en").scan(img)
         assert len(bubbles) >= 1
         for b in bubbles:
             assert isinstance(b, DetectedGroup)
@@ -80,7 +77,7 @@ class TestVisionScanner:
                 assert 0 <= p[1] <= h + 1
 
     def test_scan_empty_image(self):
-        assert _make_scanner(AppleVisionBackend, lang="en").scan(
+        assert _make_scanner(apple_vision.AppleVisionPageOcr, lang="en").scan(
             np.full((200, 300, 3), 255, dtype=np.uint8)
         ) == []
 
@@ -89,6 +86,6 @@ class TestVisionScanner:
 @skip_no_ppocr_det
 def test_tesseract_scanner_smoke():
     img = _load_page()
-    bubbles = _make_scanner(TesseractBackend).scan(img)
+    bubbles = _make_scanner(tesseract.TesseractPageOcr).scan(img)
     assert len(bubbles) > 0
     assert all(b.text for b in bubbles)

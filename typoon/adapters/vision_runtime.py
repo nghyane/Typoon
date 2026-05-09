@@ -29,7 +29,7 @@ class VisionRuntime:
         self._yolo_model = None
 
     @staticmethod
-    def from_config(config=None, paths=None):
+    def from_config(config=None, paths=None, *, source_lang: str | None = None):
         from typoon.config import load_config
         from typoon.vision.scanner import create_scanner
 
@@ -37,7 +37,11 @@ class VisionRuntime:
             config, paths = load_config()
         hub = ModelHub(Path(config.models_dir))
         runtime = VisionRuntime(
-            scanner=create_scanner(hub=hub),
+            scanner=create_scanner(
+                hub=hub,
+                ocr_backend=config.ocr_backend,
+                source_lang=source_lang,
+            ),
             eraser=Eraser(str(hub.dir)),
             hub=hub,
             bubble_scope_imgsz=config.bubble_scope_imgsz,

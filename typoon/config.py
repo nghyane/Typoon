@@ -146,6 +146,12 @@ class Config(BaseSettings):
     context_agent: ContextAgentConfig = ContextAgentConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
+    # OCR backend choice. `"auto"` picks the first available backend in
+    # the order google-lens → apple-vision → windows-ocr → tesseract.
+    # Set explicitly (e.g. `"apple_vision"`) to pin a backend regardless
+    # of what's installed. Japanese projects always use manga-ocr if it
+    # is installed, ignoring this setting.
+    ocr_backend: str = "auto"
     # Postgres DSN. Required — engine refuses to start without it.
     database_url: str = ""
     server: ServerConfig = ServerConfig()

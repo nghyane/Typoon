@@ -1,28 +1,24 @@
-"""Page scanner — PP-OCR detection + pluggable OcrBackend.
+"""Page scanner — PP-OCR detection + OCR backend.
 
-Detection: PP-OCR det (DBNet++), shared across all platforms.
-Recognition: injected OcrBackend (Apple Vision / Windows / Tesseract).
+PP-OCR det runs on every page to find text units (passed to grouping).
+OCR is a `PageOcr` (Apple Vision / Lens / Windows / Tesseract) called
+once per page on the full image, or a `CropOcr` (manga-ocr) called
+per group. The grouping pipeline routes between the two by checking
+which protocol the backend implements.
+
+The scanner holds the active source language so the OCR call gets the
+right recogniser without threading `lang` through the grouping API.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from .ocr_backend import OcrBackend, create_ocr_backend
+from .ocr import CropOcr, PageOcr, create_ocr
 
 
 class Scanner:
-    """Combines PP-OCR detector with an OcrBackend.
-
-    Implements the _GroupingScanner protocol expected by grouping pipeline:
-    exposes ._det and ._ocr_crops().
-
-    Source language is set via `set_language` before each scan; one
-    Scanner instance is shared across projects, so the recognizer
-    language must be reset per call.
-    """
-
-    def __init__(self, detector, ocr: OcrBackend) -> None:
+    def __init__(self, detector, ocr: PageOcr | CropOcr) -> None:
         self._det = detector
         self._ocr = ocr
         self._lang: str | None = None
@@ -31,27 +27,25 @@ class Scanner:
         self._lang = lang
 
     @property
-    def wants_raw(self) -> bool:
-        """Skip pipeline binarization if the active backend prefers raw RGB.
+    def lang(self) -> str | None:
+        return self._lang
 
-        `OcrBackend.wants_raw` may be either a bool attribute (per-backend
-        flag) or a callable that resolves the flag against the active
-        language (RoutingBackend).
-        """
-        flag = getattr(self._ocr, "wants_raw", False)
-        return bool(flag(self._lang)) if callable(flag) else bool(flag)
-
-    def _ocr_crops(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
-        return self._ocr.recognize(crops, lang=self._lang)
+    @property
+    def ocr(self) -> PageOcr | CropOcr:
+        return self._ocr
 
     def scan(self, image, *, scope_model=None, scope_imgsz=640, scope_conf=0.3):
         from typoon.vision.grouping import export_groups, scan_page
-        return export_groups(scan_page(self, image, yolo_model=scope_model,
-                                       yolo_imgsz=scope_imgsz, yolo_conf=scope_conf))
+        return export_groups(scan_page(
+            self, image,
+            yolo_model=scope_model,
+            yolo_imgsz=scope_imgsz,
+            yolo_conf=scope_conf,
+        ))
 
 
-def create_scanner(hub=None) -> Scanner:
-    """Create Scanner with best available OCR backend for this platform."""
+def create_scanner(hub=None, *, ocr_backend: str = "auto", source_lang: str | None = None) -> Scanner:
+    """Build a Scanner with PP-OCR det + the configured OCR backend."""
     if hub is None:
         raise RuntimeError("PP-OCR models required")
     from .detect import TextDetector
@@ -59,5 +53,8 @@ def create_scanner(hub=None) -> Scanner:
         hub.resolve("ppocr-det.safetensors"),
         hub.resolve("ppocr-det-config.json"),
     )
-    ocr = create_ocr_backend()
-    return Scanner(detector, ocr)
+    ocr = create_ocr(source_lang, backend=ocr_backend)
+    scanner = Scanner(detector, ocr)
+    if source_lang is not None:
+        scanner.set_language(source_lang)
+    return scanner
