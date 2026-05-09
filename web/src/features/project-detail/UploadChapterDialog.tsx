@@ -12,8 +12,8 @@ interface Props {
   open:    boolean
   onClose: () => void
   project: ApiProject
-  /** Chapter idx already in the project — used to suggest the next number. */
-  existing: Set<number>
+  /** Chapter numbers already present in the project — used to suggest the next one. */
+  existing: Set<string>
 }
 
 const ACCEPT = '.pdf,.cbz,.zip,.png,.jpg,.jpeg,.webp,application/pdf,application/zip,image/*'
@@ -26,15 +26,19 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
   const qc = useQueryClient()
 
   const [files,    setFiles]    = useState<File[]>([])
-  const [idx,      setIdx]      = useState<string>('')
+  const [number,   setNumber]   = useState<string>('')
   const [title,    setTitle]    = useState('')
+  const [start,    setStart]    = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Reset on close. Suggest next chapter number on open.
+  // Reset on close. Suggest next chapter number on open. `start`
+  // intentionally does NOT reset on every open — we remember the
+  // user's preference for this session: somebody who always wants to
+  // dịch ngay won't have to re-tick on every upload.
   useEffect(() => {
     if (open) {
-      setIdx(suggestNextIdx(existing))
+      setNumber(suggestNextNumber(existing))
       setTitle('')
       setFiles([])
     }
@@ -42,17 +46,22 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
 
   const upload = useMutation({
     mutationFn: () => api.uploadChapter(project.project_id, files, {
-      idx:   idx.trim() ? Number(idx) : undefined,
-      title: title.trim() || undefined,
+      number: number.trim() || undefined,
+      title:  title.trim() || undefined,
+      start,
     }),
     onSuccess: (ch) => {
       qc.invalidateQueries({ queryKey: ['projects', project.project_id, 'chapters'] })
       qc.invalidateQueries({ queryKey: ['projects'] })
-      // New chapter ingest enqueues scan immediately — refresh the
-      // header indicator so the user sees their upload contribute
-      // to the queue without waiting for the next 4s poll.
-      qc.invalidateQueries({ queryKey: ['workers'] })
-      toast.success(`Đã thêm Ch.${ch.idx} (${ch.page_count} trang)`)
+      // Workers indicator refreshes only when something actually went
+      // into the queue (start=true). A pure upload doesn't move the
+      // queue counter so we skip that invalidation.
+      if (start) qc.invalidateQueries({ queryKey: ['workers'] })
+      toast.success(
+        start
+          ? `Đã thêm và bắt đầu Ch.${ch.number} (${ch.page_count} trang)`
+          : `Đã thêm Ch.${ch.number} (${ch.page_count} trang)`,
+      )
       onClose()
     },
     onError: (e: Error) => toast.error(e.message),
@@ -80,7 +89,10 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
     }
   }
 
-  const valid = files.length > 0 && idx.trim() !== '' && !Number.isNaN(Number(idx))
+  // Form is valid as soon as files are picked. `number` is optional —
+  // empty falls back to suggestNextNumber on the server side, so we
+  // don't gate the upload button on it.
+  const valid = files.length > 0
 
   return (
     <Modal
@@ -100,7 +112,7 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
           >
             {upload.isPending && <Spinner />}
             <Upload size={14} />
-            Tải lên
+            {start ? 'Tải lên & dịch' : 'Tải lên'}
           </Button>
         </>
       }
@@ -152,15 +164,15 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
           />
         </div>
 
-        {/* Idx + title */}
-        <div className="grid grid-cols-[80px_1fr] gap-3">
+        {/* Number + title */}
+        <div className="grid grid-cols-[120px_1fr] gap-3">
           <div>
             <label className={label}>Số chương</label>
             <input
-              type="number"
-              step="0.1"
-              value={idx}
-              onChange={(e) => setIdx(e.target.value)}
+              type="text"
+              value={number}
+              onChange={(e) => setNumber(e.target.value)}
+              placeholder="VD: 4, 4.5, Extra"
               className={input}
               disabled={upload.isPending}
             />
@@ -184,11 +196,25 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
           </p>
         )}
 
-        {existing.has(Number(idx)) && (
+        {existing.has(number.trim()) && (
           <p className="text-xs text-warning-text">
-            Chương {idx} đã tồn tại — sẽ được ghi đè dữ liệu chuẩn bị.
+            Chương {number.trim()} đã tồn tại — bản tải lên sẽ chèn vào danh sách như một bản dịch khác.
           </p>
         )}
+
+        {/* Default off so a misnamed/wrong upload doesn't auto-burn LLM
+            cost. Power users who always want to translate immediately
+            tick once and the choice persists for the dialog session. */}
+        <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={start}
+            onChange={(e) => setStart(e.target.checked)}
+            disabled={upload.isPending}
+            className="size-4 rounded-xs accent-accent cursor-pointer"
+          />
+          Bắt đầu dịch ngay sau khi tải lên
+        </label>
       </div>
     </Modal>
   )
@@ -277,9 +303,14 @@ function fmtSize(b: number): string {
   return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function suggestNextIdx(existing: Set<number>): string {
-  if (existing.size === 0) return '1'
-  const max = Math.max(...existing)
-  const next = Number.isInteger(max) ? max + 1 : Math.floor(max) + 1
-  return String(next)
+function suggestNextNumber(existing: Set<string>): string {
+  // Suggest next integer past the largest numeric chapter; non-numeric
+  // entries ("Extra", "Oneshot") are ignored. Empty project → "1".
+  let max = 0
+  for (const s of existing) {
+    const n = Number(s)
+    if (Number.isFinite(n) && n > max) max = n
+  }
+  if (max === 0) return '1'
+  return String(Number.isInteger(max) ? max + 1 : Math.floor(max) + 1)
 }

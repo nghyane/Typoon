@@ -48,13 +48,13 @@ function ChapterReaderPage() {
   })
 
   const sorted = useMemo(
-    () => [...chapters].sort((a, b) => a.idx - b.idx),
+    () => [...chapters].sort((a, b) => a.position - b.position),
     [chapters],
   )
   const current = sorted.find((c) => c.chapter_id === cid)
-  const idxInList = current ? sorted.indexOf(current) : -1
-  const prev: ApiChapter | null = idxInList > 0 ? sorted[idxInList - 1]! : null
-  const next: ApiChapter | null = idxInList >= 0 && idxInList < sorted.length - 1 ? sorted[idxInList + 1]! : null
+  const posInList = current ? sorted.indexOf(current) : -1
+  const prev: ApiChapter | null = posInList > 0 ? sorted[posInList - 1]! : null
+  const next: ApiChapter | null = posInList >= 0 && posInList < sorted.length - 1 ? sorted[posInList + 1]! : null
 
   // Archive — opens once per chapter. The URL embeds an updated_at
   // version so a re-render busts the CDN cache automatically.
@@ -91,7 +91,7 @@ function ChapterReaderPage() {
       <ReaderToolbar
         projectId={pid}
         projectTitle={project?.title ?? ''}
-        chapterIdx={current.idx}
+        chapterNumber={current.number}
         chapterTitle={current.title}
         prevId={prev?.chapter_id ?? null}
         nextId={next?.chapter_id ?? null}

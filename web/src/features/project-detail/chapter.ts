@@ -16,32 +16,41 @@ export const STATE_LABEL: Record<ChapterState, string> = {
   done:    'Hoàn thành',
   running: 'Đang xử lý',
   error:   'Lỗi',
-  // pending = enqueued, waiting for worker. Treat it identically to
-  // running for user-facing display: same colour, same wording, the
-  // stage label still applies. The difference (claimed vs unclaimed)
-  // is a backend concern, not a story for the user — and surfacing it
-  // produced a "running → pending → running" flicker on every stage
-  // handoff.
-  pending: 'Đang xử lý',
-  idle:    'Chờ xử lý',
+  // Generic fallback labels used only when the stage is unknown. With a
+  // stage hint, stageLabelFor() below picks the proper "Đang …"/"Chờ …"
+  // wording so the user can distinguish queued from in-flight work.
+  pending: 'Chờ xử lý',
+  idle:    'Chưa bắt đầu',
 }
 
 export const STATE_TONE: Record<ChapterState, BadgeTone> = {
   done:    'success',
   running: 'info',
   error:   'error',
-  pending: 'info',
+  // pending = enqueued, no worker has claimed yet → neutral so a row
+  // sitting in the queue doesn't look like it's actively running.
+  pending: 'neutral',
   idle:    'neutral',
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  scan:      'Quét bong bóng',
+const STAGE_RUNNING_LABEL: Record<string, string> = {
+  prepare:   'Đang chuẩn bị',
+  scan:      'Đang quét bong bóng',
   translate: 'Đang dịch',
   render:    'Đang render',
 }
 
-export function stageLabel(stage: string): string {
-  return STAGE_LABEL[stage] ?? stage
+const STAGE_PENDING_LABEL: Record<string, string> = {
+  prepare:   'Chờ chuẩn bị',
+  scan:      'Chờ quét',
+  translate: 'Chờ dịch',
+  render:    'Chờ render',
+}
+
+export function stageLabelFor(state: ChapterState, stage: string): string {
+  if (state === 'running') return STAGE_RUNNING_LABEL[stage] ?? stage
+  if (state === 'pending') return STAGE_PENDING_LABEL[stage] ?? `Chờ ${stage}`
+  return stage
 }
 
 // ── stats ──────────────────────────────────────────────────────────────────
@@ -64,13 +73,13 @@ export function progressPct(s: ChapterStats): number {
   return s.total === 0 ? 0 : Math.round(((s.done + s.error) / s.total) * 100)
 }
 
-// Per-chapter completion. Only meaningful while in flight — done = 100,
-// idle = 0, error stays at last known progress (0 here). Pending is
-// treated like running: backend distinguishes them but the user does not.
+// Per-chapter completion. Only meaningful while a worker is actively
+// running: done = 100, idle/pending/error = 0 (no progress to show).
+// Pending rows still display a label ("Chờ quét") but no progress bar —
+// nothing has started, percentage would be misleading.
 export function chapterPct(ch: ApiChapter): number {
   if (ch.state === 'done') return 100
-  const inFlight = ch.state === 'running' || ch.state === 'pending'
-  if (inFlight && ch.progress && ch.progress.page_total > 0) {
+  if (ch.state === 'running' && ch.progress && ch.progress.page_total > 0) {
     return Math.round((ch.progress.page_index / ch.progress.page_total) * 100)
   }
   return 0

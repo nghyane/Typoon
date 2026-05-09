@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import tempfile
 import time
 import zipfile
@@ -32,14 +33,14 @@ _MANIFEST_NAME = "manifest.json"
 
 @dataclass(frozen=True)
 class ExportedChapter:
-    chapter_idx: float
+    chapter_number: str
     formats: dict[str, Path]   # format → produced file/dir path
 
 
 @dataclass(frozen=True)
 class ChapterRef:
     chapter_id: int
-    chapter_idx: float
+    chapter_number: str
     archive_backend: str           # which store the archive is in
     archive_locator: str           # opaque locator within that backend
     rendered_at: str | None = None  # opaque marker (DB updated_at, mtime, …)
@@ -69,7 +70,7 @@ async def export_chapters(
         prior = manifest.get(_chapter_key(ref))
         if not force and prior and _is_fresh(prior, rendered_at, formats):
             results.append(ExportedChapter(
-                chapter_idx=ref.chapter_idx,
+                chapter_number=ref.chapter_number,
                 formats={fmt: dest_dir / prior["formats"][fmt] for fmt in formats},
             ))
             continue
@@ -78,16 +79,16 @@ async def export_chapters(
             local_archive = Path(tmp) / "render.bnl"
             reader = stores.reader(ref.archive_backend)
             await reader.get(ref.archive_locator, local_archive)
-            produced = _render_outputs(local_archive, dest_dir, slug, ref.chapter_idx, formats)
+            produced = _render_outputs(local_archive, dest_dir, slug, ref.chapter_number, formats)
 
         manifest[_chapter_key(ref)] = {
             "chapter_id": ref.chapter_id,
-            "chapter_idx": ref.chapter_idx,
+            "chapter_number": ref.chapter_number,
             "rendered_at": rendered_at,
             "exported_at": _now_iso(),
             "formats": {fmt: str(p.relative_to(dest_dir)) for fmt, p in produced.items()},
         }
-        results.append(ExportedChapter(chapter_idx=ref.chapter_idx, formats=produced))
+        results.append(ExportedChapter(chapter_number=ref.chapter_number, formats=produced))
 
     _save_manifest(dest_dir, manifest)
     return results
@@ -100,14 +101,14 @@ def _render_outputs(
     archive_path: Path,
     dest_dir: Path,
     slug: str,
-    chapter_idx: float,
+    chapter_number: str,
     formats: list[ExportFormat],
 ) -> dict[str, Path]:
     out: dict[str, Path] = {}
     with bunle.Reader(str(archive_path)) as reader:
         page_bytes = [reader.page(i) for i in range(reader.page_count)]
 
-    base = f"ch{chapter_idx:.4g}"
+    base = f"ch{_safe(chapter_number)}"
     if "pdf" in formats:
         out["pdf"] = _write_pdf(dest_dir / f"{base}.pdf", page_bytes)
     if "zip" in formats:
@@ -115,6 +116,16 @@ def _render_outputs(
     if "webp" in formats:
         out["webp"] = _write_webp_dir(dest_dir / base, page_bytes)
     return out
+
+
+# Sanitize a chapter number for use in filenames — strip path separators
+# and whitespace, leaving free-form labels like "Extra" or "v2 ch.1"
+# usable as `chextra.pdf` / `chv2_ch.1.pdf`.
+_FILENAME_BAD = re.compile(r"[\\/\s]+")
+
+
+def _safe(s: str) -> str:
+    return _FILENAME_BAD.sub("_", s.strip()) or "chapter"
 
 
 def _write_pdf(path: Path, page_bytes: list[bytes]) -> Path:
@@ -166,7 +177,7 @@ def _save_manifest(dest_dir: Path, manifest: dict) -> None:
 
 
 def _chapter_key(ref: ChapterRef) -> str:
-    return f"{ref.chapter_idx:.4g}"
+    return _safe(ref.chapter_number)
 
 
 def _is_fresh(entry: dict, rendered_at: str, formats: list[str]) -> bool:

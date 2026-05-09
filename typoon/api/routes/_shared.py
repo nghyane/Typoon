@@ -65,7 +65,8 @@ def chapter_out(data: dict, *, archive_url: str | None = None) -> ChapterOut:
     return ChapterOut(
         chapter_id=data["chapter_id"],
         project_id=data["project_id"],
-        idx=data["idx"],
+        number=data["number"],
+        position=data["position"],
         title=data.get("title"),
         state=data["state"],
         stage=data.get("stage") or "",

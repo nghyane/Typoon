@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -52,8 +53,21 @@ _MAX_UPLOAD_BYTES = 1500 * 1024 * 1024
 async def upload_chapter(
     project_id: int,
     files:      list[UploadFile] = File(..., description="ZIP/CBZ/PDF or multiple images"),
-    idx:        float | None     = Form(None, description="Chapter number; auto from filename if omitted"),
+    number:     str | None       = Form(
+        None,
+        description="Display chapter number (free-form: '4', '4.5', 'Extra'). "
+                    "Falls back to the leading number parsed from the filename, "
+                    "then to the next sequential integer in the project.",
+    ),
     title:      str | None       = Form(None),
+    start:      bool             = Form(
+        False,
+        description="When true, enqueue scan immediately so the pipeline runs "
+                    "without a separate /start call. Default false: chapter "
+                    "lands in `idle` and the user (or batch trigger) commits "
+                    "the LLM cost explicitly. Tools that already represent a "
+                    "user commitment (extension import, CLI) should pass true.",
+    ),
     user:  dict            = Depends(require_user),
     db:    Store           = Depends(get_store),
     paths: Paths           = Depends(get_paths),
@@ -62,9 +76,15 @@ async def upload_chapter(
 ):
     """Ingest one chapter from an uploaded archive, PDF, or image set.
 
-    Single archive (ZIP/CBZ/PDF) → idx defaults to a number parsed from
-    the filename; multi-image upload → idx must be supplied or we
-    fall back to filename of the first image.
+    The display `number` is what users see. Resolution order:
+      1. Form `number` (callers like the SPA dialog and the extension
+         supply it explicitly).
+      2. Leading numeric token in the first filename ("ch12.cbz" → "12").
+      3. `max(numeric_number) + 1` over the existing chapters, or "1"
+         on an empty project.
+
+    Server assigns the internal `position` (sort key) — see
+    `_resolve_chapter_position`.
     """
     await require_project_owner(project_id, user, db)
     files = [f for f in files if f.filename]
@@ -81,11 +101,15 @@ async def upload_chapter(
     else:
         kind = "image"  # multi-file upload is always treated as an image set
 
-    raw_idx = idx if idx is not None else _idx_from_filename(files[0].filename or "")
-    if raw_idx is None:
-        raise HTTPException(
-            400, "Could not infer chapter number — supply idx in form data",
-        )
+    # Resolve display number with a 3-step fallback so callers with no
+    # filename context (e.g. extension drag-drop of unnamed pages) still
+    # land on a sensible chapter without a 400. The DB column is
+    # NOT NULL and the UI must always have something to print.
+    raw_number = (
+        (number or "").strip()
+        or _number_from_filename(files[0].filename or "")
+        or await _next_sequential_number(db, project_id)
+    )
 
     loop = asyncio.get_running_loop()
     hook: Hook = ChannelHook(bus, loop)
@@ -106,15 +130,19 @@ async def upload_chapter(
 
         try:
             chapter_id = await pj.ingest_chapter(
-                project_id, raw_idx, pages_dir,
+                project_id, raw_number, pages_dir,
                 title=title, hook=hook,
                 # User uploaded discrete pages — never stitch them together.
                 # Auto-detect would mistake a few large color images for a
                 # webtoon strip and chunk it.
                 strategy="one_to_one",
+                start=start,
             )
         except Exception as e:
-            logger.exception("ingest_chapter failed (project=%s idx=%s)", project_id, raw_idx)
+            logger.exception(
+                "ingest_chapter failed (project=%s number=%s)",
+                project_id, raw_number,
+            )
             raise HTTPException(500, f"ingest failed: {e}") from e
 
     data = await db.get_chapter_with_status(chapter_id, project_id)
@@ -152,14 +180,38 @@ def _read_capped(f: UploadFile) -> bytes:
     return data
 
 
-_IDX_RE = re.compile(r"(?:^|[^\d])(\d+(?:\.\d+)?)")
+_NUMBER_RE = re.compile(r"(?:^|[^\d])(\d+(?:\.\d+)?)")
 
 
-def _idx_from_filename(name: str) -> float | None:
-    """Pull a chapter number out of strings like 'ch12.cbz', 'chapter-7.pdf'."""
+def _number_from_filename(name: str) -> str:
+    """Pull the first numeric token out of strings like 'ch12.cbz' → '12'.
+
+    Returns "" when the filename has no number; the upload route then
+    falls back to `_next_sequential_number`.
+    """
     base = name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-    m = _IDX_RE.search(base)
-    return float(m.group(1)) if m else None
+    m = _NUMBER_RE.search(base)
+    return m.group(1) if m else ""
+
+
+async def _next_sequential_number(db: Store, project_id: int) -> str:
+    """Return `floor(max numeric number) + 1`, or "1" when the project
+    is empty or contains only label-only chapters (Extra/Oneshot).
+
+    Last-resort default for uploads where neither the form `number`
+    nor the filename gives us anything — better to land at "1", "2",
+    "3"… than to bounce a valid pile of pages with a 400.
+    """
+    rows = await db.get_all_chapters(project_id)
+    max_num = 0.0
+    for r in rows:
+        try:
+            n = float(r["number"])
+        except (TypeError, ValueError):
+            continue
+        if n > max_num:
+            max_num = n
+    return str(math.floor(max_num) + 1)
 
 
 _NATURAL_SPLIT = re.compile(r"(\d+)")

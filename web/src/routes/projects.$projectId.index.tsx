@@ -8,6 +8,7 @@ import { useDelayedFlag } from '@shared/lib/useDelayedFlag'
 import { ProjectHero } from '@features/project-detail/ProjectHero'
 import { ChapterList } from '@features/project-detail/ChapterList'
 import { SelectionBar } from '@features/project-detail/SelectionBar'
+import { useChapterMutations } from '@features/project-detail/mutations'
 import { TabBar } from '@features/project-detail/TabBar'
 import { GlossaryPanel } from '@features/project-detail/GlossaryPanel'
 import { SettingsPanel } from '@features/project-detail/SettingsPanel'
@@ -43,6 +44,14 @@ function ProjectDetailPage() {
   const [sel,        setSel]        = useState<Set<number>>(new Set())
   const [uploadOpen, setUploadOpen] = useState(false)
 
+  // ChapterList already constructs its own copy of these mutations.
+  // We instantiate again at the route level only because SelectionBar
+  // needs `startMany`, which is unrelated to the per-row actions. The
+  // hook is cheap (just registers React Query subscriptions) so a
+  // second copy is fine; keeping the bar's wiring at the same level as
+  // `sel` state avoids drilling a callback through ChapterList.
+  const mutations = useChapterMutations(id)
+
   const setHeader   = useHeaderStore((s) => s.set)
   const clearHeader = useHeaderStore((s) => s.clear)
 
@@ -69,21 +78,26 @@ function ProjectDetailPage() {
 
   const showHeroSkeleton = useDelayedFlag(pLoad && !project, 250)
 
+  const sorted = useMemo(
+    () => [...chapters].sort((a, b) => a.position - b.position),
+    [chapters],
+  )
+
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    return chapters.filter((c) => {
+    return sorted.filter((c) => {
       if (!matchFilter(c, filter)) return false
       if (!needle) return true
       return (
-        String(c.idx).includes(needle) ||
+        c.number.toLowerCase().includes(needle) ||
         (c.title?.toLowerCase().includes(needle) ?? false)
       )
     })
-  }, [chapters, filter, q])
+  }, [sorted, filter, q])
 
   const stats        = chapterStats(chapters)
   const allChecked   = sel.size === filtered.length && filtered.length > 0
-  const existingNums = useMemo(() => new Set(chapters.map((c) => c.idx)), [chapters])
+  const existingNums = useMemo(() => new Set(chapters.map((c) => c.number)), [chapters])
 
   useEffect(() => {
     if (project) setHeader(project.title, [{ label: 'Dự án', to: '/projects' }])
@@ -144,7 +158,12 @@ function ProjectDetailPage() {
         <SelectionBar
           count={sel.size}
           onClear={() => setSel(new Set())}
-          onRedo={() => { alert(`Dịch ${sel.size} chương`); setSel(new Set()) }}
+          onStart={() => {
+            mutations.startMany.mutate(Array.from(sel), {
+              onSettled: () => setSel(new Set()),
+            })
+          }}
+          pending={mutations.startMany.isPending}
         />
       )}
 

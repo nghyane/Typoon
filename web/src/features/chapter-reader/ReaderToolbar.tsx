@@ -19,7 +19,7 @@ export type ViewMode = 'continuous' | 'single'
 interface Props {
   projectId:     number
   projectTitle:  string
-  chapterIdx:    number
+  chapterNumber: string
   chapterTitle?: string | null
   prevId:        number | null
   nextId:        number | null
@@ -30,7 +30,7 @@ interface Props {
 }
 
 export function ReaderToolbar({
-  projectId, projectTitle, chapterIdx, chapterTitle,
+  projectId, projectTitle, chapterNumber, chapterTitle,
   prevId, nextId, page, totalPages, mode, onModeChange,
 }: Props) {
   const [hidden, setHidden] = useState(false)
@@ -77,7 +77,7 @@ export function ReaderToolbar({
           </Link>
           <span className="text-text-subtle/60">/</span>
           <span className="text-text font-medium tabular shrink-0">
-            Ch.{String(chapterIdx).replace(/\.0$/, '')}
+            Ch.{chapterNumber}
           </span>
           {chapterTitle && (
             <span className="text-text-muted truncate">{chapterTitle}</span>

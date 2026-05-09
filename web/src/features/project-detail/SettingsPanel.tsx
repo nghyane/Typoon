@@ -7,7 +7,8 @@ import { Button } from '@shared/ui/Button'
 import { input, Spinner } from '@shared/ui/primitives'
 import { LangPicker, type LangOption } from '@shared/ui/LangPicker'
 import {
-  SettingsSection, SettingsRow, SettingsValue, SettingsToggle, SettingsAction, Textarea,
+  SettingsSection, SettingsRow, SettingsValue, SettingsToggle, SettingsAction,
+  SettingsDivider, Textarea,
 } from '@shared/ui/SettingsForm'
 import { toast } from '@shared/ui/Toaster'
 
@@ -138,7 +139,7 @@ export function SettingsPanel({ project }: Props) {
         </SettingsRow>
       </SettingsSection>
 
-      <Divider />
+      <SettingsDivider />
 
       {/* Source — read-only, only when present */}
       {project.source_url && (
@@ -163,7 +164,7 @@ export function SettingsPanel({ project }: Props) {
               <SettingsValue>{project.source_lang.toUpperCase()}</SettingsValue>
             </SettingsRow>
           </SettingsSection>
-          <Divider />
+          <SettingsDivider />
         </>
       )}
 
@@ -185,7 +186,7 @@ export function SettingsPanel({ project }: Props) {
               />
             </SettingsRow>
           </SettingsSection>
-          <Divider />
+          <SettingsDivider />
         </>
       )}
 
@@ -235,8 +236,4 @@ export function SettingsPanel({ project }: Props) {
       )}
     </div>
   )
-}
-
-function Divider() {
-  return <hr className="border-0 h-px bg-border-soft" />
 }

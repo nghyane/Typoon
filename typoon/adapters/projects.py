@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ChapterStatus:
     chapter_id:   int
-    idx:          float
+    number:       str
     state:        str    # done | running | error | pending | idle
     stage:        str    # scan | translate | render | ""
     render_count: int
@@ -113,24 +113,33 @@ class Projects:
     async def ingest_chapter(
         self,
         project_id: int,
-        idx: float,
+        number: str,
         source_dir: Path,
         *,
         title: str | None = None,
         hook: Hook | None = None,
         strategy: str = "auto",
+        start: bool = False,
     ) -> int:
-        """Pack pages from `source_dir` as a chapter and enqueue scan.
+        """Pack pages from `source_dir` as a chapter and (optionally)
+        enqueue the scan stage.
 
         `source_dir` must contain a flat list of image files in reading
         order — callers (HTTP upload, CLI add) are responsible for
         unpacking archives or rendering PDFs into that shape first.
 
-        Returns the chapter_id. `strategy` is forwarded to
-        `prepare_chapter_to_archive` (auto / one_to_one / stitch).
+        `number` is the display string ("4", "4.5", "Extra"). The server
+        derives the internal `position` from it. Returns the chapter_id.
+        `strategy` is forwarded to `prepare_chapter_to_archive`
+        (auto / one_to_one / stitch).
+
+        `start=False` (default) leaves the chapter in `idle` so the
+        caller can review or trigger later via `start_chapters`. Set
+        `start=True` for callers that already committed to running the
+        pipeline (CLI `add`, extension import).
         """
-        chapter_id = await self._db.get_or_create_chapter(
-            project_id, idx, title=title,
+        chapter_id = await self._db.create_chapter(
+            project_id, number, title=title,
         )
         try:
             _key, n = await prepare_chapter_to_archive(
@@ -142,7 +151,7 @@ class Projects:
         except Exception as e:
             if hook is not None:
                 hook.on(ChapterFailed(
-                    chapter_id=chapter_id, chapter_idx=idx,
+                    chapter_id=chapter_id, chapter_number=number,
                     project_id=project_id, stage="prepare", error=e,
                 ))
             raise
@@ -150,18 +159,43 @@ class Projects:
         await self._db.set_prepared_done(chapter_id, n)
         if hook is not None:
             hook.on(ChapterDownloaded(
-                chapter_id=chapter_id, chapter_idx=idx,
+                chapter_id=chapter_id, chapter_number=number,
                 project_id=project_id, page_count=n,
             ))
-        await self._db.enqueue(chapter_id, "scan")
+        if start:
+            await self._db.enqueue(chapter_id, "scan")
         return chapter_id
+
+    # ── Manual trigger ────────────────────────────────────────────────
+
+    async def start_chapters(
+        self, project_id: int, chapter_ids: list[int],
+    ) -> int:
+        """Enqueue `scan` for idle chapters. Returns count actually
+        started.
+
+        Skips:
+          - chapters already in flight (pending/running) — already on
+            their way, re-enqueue is a no-op.
+          - done/error chapters — caller must use `redo()` to reset
+            derived data first.
+          - unknown ids / ids from another project.
+        """
+        started = 0
+        for cid in chapter_ids:
+            ch = await self._db.get_chapter_with_status(cid, project_id)
+            if ch is None or ch["state"] != "idle":
+                continue
+            await self._db.enqueue(cid, "scan")
+            started += 1
+        return started
 
     # ── Redo — full reset + re-enqueue ───────────────────────────────
 
     async def redo(
         self,
         slug: str,
-        indices: list[float] | None = None,
+        chapter_ids: list[int] | None = None,
     ) -> int:
         """Reset chapters' derived state and enqueue scan. Returns count.
 
@@ -173,9 +207,9 @@ class Projects:
         proj     = await self.require(slug)
         chapters = await self._db.get_all_chapters(proj["id"])
 
-        if indices is not None:
-            idx_set  = set(indices)
-            chapters = [c for c in chapters if c["idx"] in idx_set]
+        if chapter_ids is not None:
+            wanted = set(chapter_ids)
+            chapters = [c for c in chapters if c["id"] in wanted]
 
         for ch in chapters:
             await self._db.delete_chapter_data(ch["id"])
@@ -196,7 +230,7 @@ class Projects:
             for ch in await self._db.get_chapters_with_status(proj["id"]):
                 chapters.append(ChapterStatus(
                     chapter_id=ch["chapter_id"],
-                    idx=ch["idx"],
+                    number=ch["number"],
                     state=ch["state"],
                     stage=ch.get("stage") or "",
                     render_count=int(ch.get("page_count") or 0) if ch["state"] == "done" else 0,
@@ -216,13 +250,13 @@ class Projects:
 
     async def _import_and_enqueue(self, proj: dict, folder: Path, hook: Hook) -> None:
         for i, src_dir in enumerate(_chapter_dirs(folder), start=1):
-            ch_num     = _parse_idx(src_dir.name) or float(i)
-            chapter_id = await self._db.get_or_create_chapter(proj["id"], ch_num)
+            number     = _parse_number(src_dir.name) or str(i)
+            chapter_id = await self._db.create_chapter(proj["id"], number)
 
             existing = await self._db.get_chapter_render_state(chapter_id)
             if existing and existing["page_count"] > 0:
                 hook.on(ChapterSkipped(
-                    chapter_id=chapter_id, chapter_idx=ch_num,
+                    chapter_id=chapter_id, chapter_number=number,
                     project_id=proj["id"], reason="prepared_exists",
                 ))
             else:
@@ -234,12 +268,12 @@ class Projects:
                     )
                     await self._db.set_prepared_done(chapter_id, n)
                     hook.on(ChapterDownloaded(
-                        chapter_id=chapter_id, chapter_idx=ch_num,
+                        chapter_id=chapter_id, chapter_number=number,
                         project_id=proj["id"], page_count=n,
                     ))
                 except Exception as e:
                     hook.on(ChapterFailed(
-                        chapter_id=chapter_id, chapter_idx=ch_num,
+                        chapter_id=chapter_id, chapter_number=number,
                         project_id=proj["id"], stage="prepare", error=e,
                     ))
                     continue
@@ -259,6 +293,11 @@ def _chapter_dirs(folder: Path) -> list[Path]:
     )
 
 
-def _parse_idx(name: str) -> float | None:
+def _parse_number(name: str) -> str | None:
+    """Extract the leading numeric token from a folder name.
+
+    Returns the matched string ("12", "4.5") or None if no digit was
+    found. Callers fall back to a positional counter when None.
+    """
     m = re.search(r"(\d+(?:\.\d+)?)", name)
-    return float(m.group(1)) if m else None
+    return m.group(1) if m else None

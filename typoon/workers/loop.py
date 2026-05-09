@@ -122,7 +122,7 @@ async def scan_loop(
             await asyncio.sleep(_POLL_INTERVAL)
             continue
         proj = await _project_for(db, chapter_id)
-        await _run_scan(chapter_id, proj["id"], db, stores, runtime, hook)
+        await _run_scan(chapter_id, proj["id"], proj["source_lang"], db, stores, runtime, hook)
 
 
 async def translate_loop(
@@ -139,7 +139,7 @@ async def translate_loop(
         ctx  = make_ctx(
             project_id=proj["id"],
             chapter_id=chapter_id,
-            chapter_idx=ch["idx"],
+            chapter_position=ch["position"],
             source_lang=proj["source_lang"],
             target_lang=proj["target_lang"],
             store=db,
@@ -170,6 +170,7 @@ async def render_loop(
 async def _run_scan(
     chapter_id: int,
     project_id: int,
+    source_lang: str,
     db: Store,
     stores: StorageRegistry,
     runtime: VisionRuntime,
@@ -187,6 +188,7 @@ async def _run_scan(
                 prepared = reader.chapter()
                 result = await asyncio.to_thread(
                     scan_chapter, prepared, reader, runtime,
+                    source_lang=source_lang,
                     chapter_id=chapter_id, project_id=project_id, hook=hook,
                 )
 

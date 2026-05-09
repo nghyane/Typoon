@@ -13,6 +13,22 @@ function onUnauthorized() {
   window.dispatchEvent(new CustomEvent('typoon:unauthorized'))
 }
 
+// `fetch` rejects with TypeError when the network layer fails — server
+// down/restarting, DNS, CORS preflight, dropped connection. Surface it
+// as a single recognizable message so callers (toasts, error UIs) can
+// show "đang bảo trì" instead of leaking a raw browser string.
+export class BackendUnavailableError extends Error {
+  constructor() { super('Máy chủ tạm thời không phản hồi. Có thể đang bảo trì hoặc khởi động lại.') }
+}
+
+async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch {
+    throw new BackendUnavailableError()
+  }
+}
+
 function authHeaders(): Record<string, string> {
   const t = localStorage.getItem(TOKEN_KEY)
   return t ? { Authorization: `Bearer ${t}` } : {}
@@ -44,7 +60,10 @@ export type ChapterState = 'idle' | 'pending' | 'running' | 'error' | 'done'
 export interface ApiChapter {
   chapter_id: number
   project_id: number
-  idx:        number
+  /** Display chapter number, free-form: "4", "4.5", "Extra". */
+  number:     string
+  /** Server-managed sort key. UI uses it to order rows; never to address a chapter. */
+  position:   number
   title:      string | null
   state:      ChapterState
   stage:      string  // '' | 'scan' | 'translate' | 'render'
@@ -85,8 +104,8 @@ export interface ApiQueueStats {
 export interface ApiSearchHit {
   kind: 'bubble' | 'translation' | 'brief' | 'glossary'
   text: string
-  chapter_idx: number | null
-  page_index:  number | null
+  chapter_number: string | null
+  page_index:     number | null
 }
 
 export interface ApiSettings {
@@ -127,7 +146,7 @@ export interface ApiMeProject {
 // ── Transport ────────────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}/api${path}`, {
+  const res = await safeFetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
@@ -139,6 +158,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     onUnauthorized()
     throw new Error('401 Unauthorized')
   }
+  // 502/503/504 = reverse proxy (nginx/Tailscale) is up but BE is down or
+  // booting. /api/healthz returns 503 when DB is unreachable. Same UX as a
+  // dropped connection: tell the user the server is temporarily down.
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new BackendUnavailableError()
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`)
@@ -149,7 +174,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function postForm<T>(path: string, fd: FormData): Promise<T> {
   // Browsers must set Content-Type with the multipart boundary themselves;
   // request() injects application/json which would corrupt the body.
-  const res = await fetch(`${API_BASE}/api${path}`, {
+  const res = await safeFetch(`${API_BASE}/api${path}`, {
     method: 'POST',
     body: fd,
     headers: authHeaders(),
@@ -157,6 +182,9 @@ async function postForm<T>(path: string, fd: FormData): Promise<T> {
   if (res.status === 401) {
     onUnauthorized()
     throw new Error('401 Unauthorized')
+  }
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new BackendUnavailableError()
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -197,18 +225,36 @@ export const api = {
   deleteChapter: (pid: number, cid: number) =>
     request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
 
-  // Upload — single archive (PDF/CBZ/ZIP) or multiple image files
+  // Upload — single archive (PDF/CBZ/ZIP) or multiple image files.
+  // `start` defaults to false on the server: chapter lands `idle` and
+  // the user (or batch trigger) commits to running the pipeline. Tools
+  // that already represent a user commitment (extension, CLI) should
+  // pass true.
   uploadChapter: (
     pid: number,
     files: File[],
-    opts: { idx?: number; title?: string } = {},
+    opts: { number?: string; title?: string; start?: boolean } = {},
   ) => {
     const fd = new FormData()
     for (const f of files) fd.append('files', f)
-    if (opts.idx   !== undefined) fd.append('idx',   String(opts.idx))
-    if (opts.title)               fd.append('title', opts.title)
+    if (opts.number !== undefined) fd.append('number', opts.number)
+    if (opts.title)                fd.append('title',  opts.title)
+    if (opts.start)                fd.append('start',  'true')
     return postForm<ApiChapter>(`/projects/${pid}/chapters/upload`, fd)
   },
+
+  // Manually trigger scan on an idle chapter. Use redoChapter() instead
+  // for chapters that already finished or errored.
+  startChapter: (pid: number, cid: number) =>
+    request<ApiChapter>(`/projects/${pid}/chapters/${cid}/start`, { method: 'POST' }),
+
+  // Batch trigger — returns { started, total }; `started` may be less
+  // than `total` because non-idle chapters in the selection are skipped.
+  startChapters: (pid: number, chapterIds: number[]) =>
+    request<{ started: number; total: number }>(
+      `/projects/${pid}/chapters/start`,
+      { method: 'POST', body: json({ chapter_ids: chapterIds }) },
+    ),
 
   // Bubbles
   listBubbles: (pid: number, cid: number) =>
@@ -259,8 +305,8 @@ export const api = {
   },
 
   // Asset URLs
-  pageUrl: (pid: number, cid: number, idx: number) =>
-    `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${idx}`,
+  pageUrl: (pid: number, cid: number, page: number) =>
+    `${API_BASE}/api/projects/${pid}/chapters/${cid}/pages/${page}`,
 
   // ── Me / API tokens ───────────────────────────────────────────────────────
   myProjects: () => request<ApiMeProject[]>('/me/projects'),

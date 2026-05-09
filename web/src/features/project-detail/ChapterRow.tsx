@@ -1,11 +1,11 @@
-import { Check, Eye, RefreshCw, AlertCircle, Trash2 } from 'lucide-react'
+import { Check, Eye, Play, RefreshCw, AlertCircle, Trash2 } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import type { ApiChapter } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
 import { Spinner } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
-import { STATE_LABEL, STATE_TONE, stageLabel, chapterPct } from './chapter'
+import { STATE_LABEL, STATE_TONE, stageLabelFor, chapterPct } from './chapter'
 import type { useChapterMutations } from './mutations'
 
 const PROGRESS_BAR_BY_TONE: Record<string, string> = {
@@ -36,23 +36,25 @@ interface Props {
 export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutations }: Props) {
   const tone   = STATE_TONE[ch.state]
   const label  = STATE_LABEL[ch.state]
-  const stage  = ch.stage ? stageLabel(ch.stage) : ''
-  // "running" and "pending" both mean "in flight" to the user. Show the
-  // stage label whenever we know which step it's on so the row doesn't
-  // flicker through generic labels during stage handoffs.
-  const inFlight = ch.state === 'running' || ch.state === 'pending'
-  const sub      = inFlight && stage ? stage : label
+  // Stage-aware label: distinguishes "Chờ quét" (pending) from
+  // "Đang quét" (running). Falls back to plain state label when stage
+  // is unknown (idle/done/error).
+  const sub      = ch.stage ? stageLabelFor(ch.state, ch.stage) : label
+  const running  = ch.state === 'running'
+  const pending  = ch.state === 'pending'
+  const inFlight = running || pending
   const pct      = chapterPct(ch)
-  const showBar  = inFlight
+  const showBar  = running   // only running has real progress data
 
   const counter = ch.state === 'done'
     ? `${ch.page_count} / ${ch.page_count}`
-    : inFlight && ch.progress
+    : running && ch.progress
     ? `${ch.progress.page_index} / ${ch.progress.page_total}`
     : `${ch.page_count} trang`
 
   const redoPending   = mutations.redo.isPending   && mutations.redo.variables   === ch.chapter_id
-  const removePending = mutations.remove.isPending && mutations.remove.variables?.chapterId === ch.chapter_id
+  const startPending  = mutations.start.isPending  && mutations.start.variables  === ch.chapter_id
+  const removePending = mutations.remove.isPending && mutations.remove.variables === ch.chapter_id
 
   return (
     <tr
@@ -81,7 +83,7 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
       <td className="px-3 py-3 min-w-0">
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="font-semibold text-text tabular shrink-0">
-            Ch.{String(ch.idx).replace(/\.0$/, '')}
+            Ch.{ch.number}
           </span>
           {ch.title && (
             <span className="text-sm text-text-muted truncate">{ch.title}</span>
@@ -98,15 +100,16 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
       <td className="px-3 py-3 w-64">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 text-xs">
-            {inFlight ? (
+            {running ? (
               <Spinner size={10} className="text-info-text" />
             ) : (
               <span className={cn('size-1.5 rounded-full shrink-0', DOT_BY_TONE[tone])} />
             )}
             <span className={cn(
               'whitespace-nowrap',
-              inFlight             ? 'text-info-text'
+              running              ? 'text-info-text'
               : ch.state === 'error' ? 'text-error-text'
+              : pending              ? 'text-text-muted'
               : 'text-text-muted',
             )}>{sub}</span>
             <span className="ml-auto text-[11px] tabular text-text-subtle">{counter}</span>
@@ -145,16 +148,32 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
           )}
           {isOwner && (
             <>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon
-                title="Chạy lại"
-                disabled={redoPending || inFlight}
-                onClick={() => mutations.redo.mutate(ch.chapter_id)}
-              >
-                <RefreshCw size={14} className={redoPending ? 'animate-spin' : ''} />
-              </Button>
+              {/* idle → "Bắt đầu dịch"; non-idle → "Chạy lại" (redo
+                  resets derived data first). One slot, one icon, the
+                  semantics swap with the chapter state. */}
+              {ch.state === 'idle' ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon
+                  title="Bắt đầu dịch"
+                  disabled={startPending}
+                  onClick={() => mutations.start.mutate(ch.chapter_id)}
+                >
+                  <Play size={14} className={startPending ? 'animate-pulse' : ''} />
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon
+                  title="Chạy lại"
+                  disabled={redoPending || inFlight}
+                  onClick={() => mutations.redo.mutate(ch.chapter_id)}
+                >
+                  <RefreshCw size={14} className={redoPending ? 'animate-spin' : ''} />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
@@ -163,8 +182,8 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
                 title="Xoá"
                 disabled={removePending || inFlight}
                 onClick={() => {
-                  if (confirm(`Xoá chương ${ch.idx}?`))
-                    mutations.remove.mutate({ chapterId: ch.chapter_id, idx: ch.idx })
+                  if (confirm(`Xoá Ch.${ch.number}?`))
+                    mutations.remove.mutate(ch.chapter_id)
                 }}
               >
                 <Trash2 size={14} />

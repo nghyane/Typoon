@@ -11,10 +11,12 @@ import { input } from './primitives'
 // =============================================================================
 
 export function SettingsSection({
-  title, description, children, danger = false,
+  title, description, action, children, danger = false,
 }: {
   title:        string
   description?: ReactNode
+  /** Optional control rendered inline with the section header (e.g. "Create" button). */
+  action?:      ReactNode
   children:     ReactNode
   danger?:      boolean
 }) {
@@ -24,16 +26,24 @@ export function SettingsSection({
       danger && 'border border-error/30 rounded-md bg-error-bg/30 px-5',
     )}>
       <header className="mb-5">
-        <h2 className={cn('text-base font-semibold', danger ? 'text-error-text' : 'text-text')}>
-          {title}
-        </h2>
+        <div className="flex items-center justify-between gap-4">
+          <h2 className={cn('text-base font-semibold', danger ? 'text-error-text' : 'text-text')}>
+            {title}
+          </h2>
+          {action && <div className="shrink-0">{action}</div>}
+        </div>
         {description && (
-          <p className="text-[13px] text-text-subtle mt-0.5">{description}</p>
+          <p className="text-[13px] text-text-subtle mt-1 leading-relaxed">{description}</p>
         )}
       </header>
       <div className="space-y-5">{children}</div>
     </section>
   )
+}
+
+/** Thin horizontal divider between settings sections. */
+export function SettingsDivider() {
+  return <hr className="border-0 h-px bg-border-soft max-w-2xl" />
 }
 
 export function SettingsRow({

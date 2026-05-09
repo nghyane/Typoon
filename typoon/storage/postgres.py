@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -37,6 +37,18 @@ MAX_TASK_ATTEMPTS = 3
 # that crashes hard (OOM, killed) would leave its chapter forever
 # stuck on "running" in the UI even though no one is working on it.
 STALE_CLAIM_SECONDS = 10 * 60
+
+# ── Chapter position assignment ───────────────────────────────────────
+#
+# `chapters.position` is a per-project sort key, server-managed. New
+# rows land INITIAL_GAP apart on append; midpoint bisect on insert
+# keeps it dense-ish without rewriting siblings. A full project
+# rebalance only fires when adjacent neighbours sit fewer than
+# REBALANCE_MIN_GAP apart — a corner case that real manga insertion
+# patterns (mostly append, occasional Extra/Volume cover) do not
+# usually reach.
+INITIAL_GAP        = 1024
+REBALANCE_MIN_GAP  = 2
 
 
 def _read_schema_sql() -> str:
@@ -74,8 +86,8 @@ _TS_PROJECTS = (
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_CHAPTERS = (
-    "id, project_id, idx, title, source_url, rendered, page_count, "
-    "archive_backend, archive_locator, "
+    "id, project_id, position, number, title, source_url, "
+    "rendered, page_count, archive_backend, archive_locator, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_USERS = (
@@ -86,6 +98,91 @@ _TS_USERS = (
 
 def _row_dict(row: asyncpg.Record | None) -> dict | None:
     return dict(row) if row else None
+
+
+def _try_float(s: str) -> float | None:
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _resolve_chapter_position(
+    conn: asyncpg.Connection, project_id: int, number: str,
+) -> int:
+    """Compute the `position` for a new chapter being inserted.
+
+    Caller must hold the project's advisory xact lock.
+
+    Strategy:
+      - "Extra"/"Oneshot"/anything not parseable as a float → append at
+        max(position) + INITIAL_GAP.
+      - Numeric `number` → place between the last sibling whose number
+        parses to ≤ target and the first sibling > target. Equality
+        goes to `prev` so a later upload of the same `number` lands
+        AFTER the existing one (first-come stays first).
+      - When the chosen gap is below REBALANCE_MIN_GAP, redistribute the
+        whole project to INITIAL_GAP spacing and retry once.
+    """
+    target = _try_float(number)
+    rows = await conn.fetch(
+        "SELECT position, number FROM chapters "
+        "WHERE project_id=$1 ORDER BY position",
+        project_id,
+    )
+    if not rows:
+        return INITIAL_GAP
+
+    if target is None:
+        return rows[-1]["position"] + INITIAL_GAP
+
+    prev_pos: int | None = None
+    next_pos: int | None = None
+    for r in rows:
+        n = _try_float(r["number"])
+        if n is None:
+            continue  # non-numeric siblings ignored for ordering
+        if n <= target:
+            prev_pos = r["position"]
+        elif next_pos is None:
+            next_pos = r["position"]
+            break
+
+    if prev_pos is None and next_pos is None:
+        # Project contains only non-numeric chapters — append.
+        return rows[-1]["position"] + INITIAL_GAP
+    if prev_pos is None:
+        return next_pos - INITIAL_GAP    # type: ignore[operator]
+    if next_pos is None:
+        return prev_pos + INITIAL_GAP
+
+    if next_pos - prev_pos < REBALANCE_MIN_GAP:
+        await _rebalance_positions(conn, project_id)
+        return await _resolve_chapter_position(conn, project_id, number)
+    return (prev_pos + next_pos) // 2
+
+
+async def _rebalance_positions(conn: asyncpg.Connection, project_id: int) -> None:
+    """Redistribute every chapter's position to INITIAL_GAP spacing.
+
+    Called only when bisect runs out of room between two siblings — a
+    pathological case for manga workloads but tolerable as a single
+    UPDATE within the upload transaction.
+    """
+    await conn.execute(
+        """
+        UPDATE chapters AS c
+        SET    position = ranked.new_pos
+        FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (ORDER BY position) * $2 AS new_pos
+            FROM   chapters
+            WHERE  project_id = $1
+        ) AS ranked
+        WHERE c.id = ranked.id
+        """,
+        project_id, INITIAL_GAP,
+    )
 
 
 class PostgresStore:
@@ -106,8 +203,18 @@ class PostgresStore:
             dsn, min_size=2, max_size=10, statement_cache_size=0,
         )
         async with pool.acquire() as conn:
-            await conn.execute(_read_schema_sql())
+            # Verify the schema version BEFORE applying schema.sql so a
+            # stale volume fails loud with the dropdb hint instead of
+            # crashing on `CREATE INDEX` against a missing column. The
+            # meta table is created on the spot when missing — that's
+            # the only DDL we need before we know what shape to expect.
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta ("
+                "  key TEXT PRIMARY KEY, value TEXT NOT NULL"
+                ")"
+            )
             await _verify_schema_version(conn)
+            await conn.execute(_read_schema_sql())
         return PostgresStore(pool)
 
     async def close(self) -> None:
@@ -304,29 +411,32 @@ class PostgresStore:
 
     # ── Chapters ──────────────────────────────────────────────────
 
-    async def get_or_create_chapter(
+    async def create_chapter(
         self,
         project_id: int,
-        idx: float,
-        source_url: str | None = None,
+        number: str,
+        *,
         title: str | None = None,
+        source_url: str | None = None,
     ) -> int:
-        async with self._pool.acquire() as conn:
+        """Insert a new chapter, computing its `position` from `number`.
+
+        Position assignment lives in `_resolve_chapter_position`:
+        midpoint bisect for numeric `number`, append for non-numeric
+        labels ("Extra", "Oneshot"), full-project rebalance when an
+        adjacent gap falls below `REBALANCE_MIN_GAP`.
+
+        Concurrency: a `pg_advisory_xact_lock(project_id)` serialises
+        position assignment per project so two parallel uploads cannot
+        race into the same UNIQUE(project_id, position) slot.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", project_id)
+            position = await _resolve_chapter_position(conn, project_id, number)
             row = await conn.fetchrow(
-                "SELECT id, title FROM chapters WHERE project_id=$1 AND idx=$2",
-                project_id, idx,
-            )
-            if row:
-                if title is not None and not row["title"]:
-                    await conn.execute(
-                        "UPDATE chapters SET title=$1 WHERE id=$2 AND (title IS NULL OR title='')",
-                        title, row["id"],
-                    )
-                return row["id"]
-            row = await conn.fetchrow(
-                "INSERT INTO chapters (project_id, idx, source_url, title) "
-                "VALUES ($1,$2,$3,$4) RETURNING id",
-                project_id, idx, source_url, title,
+                "INSERT INTO chapters (project_id, position, number, title, source_url) "
+                "VALUES ($1,$2,$3,$4,$5) RETURNING id",
+                project_id, position, number, title, source_url,
             )
             return row["id"]
 
@@ -336,17 +446,11 @@ class PostgresStore:
                 f"SELECT {_TS_CHAPTERS} FROM chapters WHERE id=$1", chapter_id,
             ))
 
-    async def get_chapter_by_idx(self, project_id: int, idx: float) -> dict | None:
-        async with self._pool.acquire() as conn:
-            return _row_dict(await conn.fetchrow(
-                f"SELECT {_TS_CHAPTERS} FROM chapters WHERE project_id=$1 AND idx=$2",
-                project_id, idx,
-            ))
-
     async def get_all_chapters(self, project_id: int) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_TS_CHAPTERS} FROM chapters WHERE project_id=$1 ORDER BY idx",
+                f"SELECT {_TS_CHAPTERS} FROM chapters "
+                "WHERE project_id=$1 ORDER BY position",
                 project_id,
             )
             return [dict(r) for r in rows]
@@ -360,7 +464,8 @@ class PostgresStore:
             result.append({
                 "chapter_id":      ch["id"],
                 "project_id":      ch["project_id"],
-                "idx":             ch["idx"],
+                "position":        ch["position"],
+                "number":          ch["number"],
                 "title":           ch.get("title"),
                 "state":           state,
                 "stage":           stage,
@@ -384,7 +489,8 @@ class PostgresStore:
         return {
             "chapter_id":      chapter_id,
             "project_id":      project_id,
-            "idx":             ch["idx"],
+            "position":        ch["position"],
+            "number":          ch["number"],
             "title":           ch.get("title"),
             "state":           state,
             "stage":           stage,
@@ -810,23 +916,23 @@ class PostgresStore:
     async def get_recent_chapter_briefs(
         self,
         project_id: int,
-        before_chapter_idx: float,
+        before_position: int,
         limit: int = 3,
     ) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT c.idx, cb.brief_json, cb.summary, cb.terms_text, "
+                "SELECT c.number, cb.brief_json, cb.summary, cb.terms_text, "
                 "       cb.facts_text, cb.rules_text "
                 "FROM chapter_briefs cb "
                 "JOIN chapters c ON c.id = cb.chapter_id "
-                "WHERE c.project_id=$1 AND c.idx<$2 "
-                "ORDER BY c.idx DESC LIMIT $3",
-                project_id, before_chapter_idx, limit,
+                "WHERE c.project_id=$1 AND c.position<$2 "
+                "ORDER BY c.position DESC LIMIT $3",
+                project_id, before_position, limit,
             )
         result = []
         for row in rows:
             out = dict(row)
-            out["chapter"] = out.pop("idx")
+            out["chapter"] = out.pop("number")
             out["brief"] = _to_jsonable_dict(out.pop("brief_json"))
             result.append(out)
         return result
@@ -837,7 +943,7 @@ class PostgresStore:
         queries: list[str],
         limit: int = 10,
         *,
-        before_chapter_idx: float | None = None,
+        before_position: int | None = None,
     ) -> list[str]:
         results: list[str] = []
         seen: set[str] = set()
@@ -846,20 +952,20 @@ class PostgresStore:
                 clean = _clean_query(query)
                 if not clean:
                     continue
-                if before_chapter_idx is not None:
+                if before_position is not None:
                     rows = await conn.fetch(
-                        "SELECT c.idx, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
+                        "SELECT c.number, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
                         "FROM chapter_briefs cb "
                         "JOIN chapters c ON c.id = cb.chapter_id "
-                        "WHERE c.project_id=$1 AND c.idx<$2 "
+                        "WHERE c.project_id=$1 AND c.position<$2 "
                         "  AND cb.search_tsv @@ websearch_to_tsquery('simple', $3) "
                         "ORDER BY ts_rank(cb.search_tsv, websearch_to_tsquery('simple', $3)) DESC "
                         "LIMIT $4",
-                        project_id, before_chapter_idx, clean, limit,
+                        project_id, before_position, clean, limit,
                     )
                 else:
                     rows = await conn.fetch(
-                        "SELECT c.idx, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
+                        "SELECT c.number, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
                         "FROM chapter_briefs cb "
                         "JOIN chapters c ON c.id = cb.chapter_id "
                         "WHERE c.project_id=$1 "
@@ -873,7 +979,7 @@ class PostgresStore:
                         str(r[k] or "") for k in
                         ("summary", "terms_text", "facts_text", "rules_text")
                     ).strip()
-                    hit = f"[Ch{r['idx']} brief] {text}"
+                    hit = f"[Ch{r['number']} brief] {text}"
                     if text and hit not in seen:
                         seen.add(hit)
                         results.append(hit)
@@ -896,7 +1002,7 @@ class PostgresStore:
                 if not clean:
                     continue
                 rows = await conn.fetch(
-                    "SELECT b.source_text, t.translated_text, c.idx, t.page_index "
+                    "SELECT b.source_text, t.translated_text, c.number, t.page_index "
                     "FROM translations t "
                     "JOIN bubbles b "
                     "  ON b.chapter_id=t.chapter_id "
@@ -910,7 +1016,7 @@ class PostgresStore:
                     project_id, clean, limit,
                 )
                 for r in rows:
-                    h = f"[Ch{r['idx']} p{r['page_index']}] {r['source_text']} → {r['translated_text']}"
+                    h = f"[Ch{r['number']} p{r['page_index']}] {r['source_text']} → {r['translated_text']}"
                     if h not in seen:
                         seen.add(h)
                         results.append(h)

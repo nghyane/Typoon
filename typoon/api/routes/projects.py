@@ -321,9 +321,62 @@ async def redo_chapter(
 ):
     proj = await require_project_owner(project_id, user, db)
     ch   = await require_chapter(project_id, chapter_id, db)
-    await Projects(db, paths, stores.pipeline).redo(proj["slug"], [ch["idx"]])
+    await Projects(db, paths, stores.pipeline).redo(proj["slug"], [ch["id"]])
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return chapter_out(data, archive_url=_archive_url(stores, data))
+
+
+# ── Manual pipeline trigger ───────────────────────────────────────────
+#
+# Upload defaults to `start=false` so users can review chapters before
+# committing LLM cost. These endpoints kick the scan stage on idle
+# chapters; they're the web UI counterpart to `redo` (which is for
+# rerunning chapters that already finished or errored out).
+
+
+class StartChaptersBody(BaseModel):
+    chapter_ids: list[int]
+
+
+@router.post("/{project_id}/chapters/{chapter_id}/start", response_model=ChapterOut)
+async def start_chapter(
+    project_id: int,
+    chapter_id: int,
+    user:   dict            = Depends(require_user),
+    db:     Store           = Depends(get_store),
+    paths:  Paths           = Depends(get_paths),
+    stores: StorageRegistry = Depends(get_storage),
+):
+    """Enqueue scan for a single idle chapter. No-op if it's already
+    running, queued, or finished — caller should use `/redo` to rerun
+    a non-idle chapter."""
+    await require_project_owner(project_id, user, db)
+    await require_chapter(project_id, chapter_id, db)
+    await Projects(db, paths, stores.pipeline).start_chapters(
+        project_id, [chapter_id],
+    )
+    data = await db.get_chapter_with_status(chapter_id, project_id)
+    return chapter_out(data, archive_url=_archive_url(stores, data))
+
+
+@router.post("/{project_id}/chapters/start")
+async def start_chapters(
+    project_id: int,
+    body:   StartChaptersBody,
+    user:   dict            = Depends(require_user),
+    db:     Store           = Depends(get_store),
+    paths:  Paths           = Depends(get_paths),
+    stores: StorageRegistry = Depends(get_storage),
+):
+    """Batch trigger for the selection-bar action. Returns the count
+    actually started (idle chapters only); ids that were already in
+    flight or done are silently skipped so a partial selection still
+    succeeds."""
+    await require_project_owner(project_id, user, db)
+    started = await Projects(db, paths, stores.pipeline).start_chapters(
+        project_id, body.chapter_ids,
+    )
+    return {"started": started, "total": len(body.chapter_ids)}
 
 
 # ── Chapter brief ─────────────────────────────────────────────────────

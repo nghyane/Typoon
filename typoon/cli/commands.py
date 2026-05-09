@@ -99,13 +99,26 @@ async def _redo(slug: str, from_ch: float, to_ch: float) -> None:
     projects = await Projects.open()
     try:
         proj    = await projects.require(slug)
-        indices: list[float] | None = None
+        chapter_ids: list[int] | None = None
         if from_ch > 0 or to_ch > 0:
-            all_chs = await projects._db.get_all_chapters(proj["id"])
-            lo      = from_ch or all_chs[0]["idx"]
-            hi      = to_ch   or all_chs[-1]["idx"]
-            indices = [c["idx"] for c in all_chs if lo <= c["idx"] <= hi]
-        count = await projects.redo(slug, indices)
+            # Range filter applies only to chapters whose `number`
+            # parses to a float; non-numeric labels (Extra/Oneshot) are
+            # ignored. Run without --from/--to to include everything.
+            lo = from_ch if from_ch > 0 else None
+            hi = to_ch   if to_ch   > 0 else None
+            picked: list[int] = []
+            for c in await projects._db.get_all_chapters(proj["id"]):
+                try:
+                    n = float(c["number"])
+                except (TypeError, ValueError):
+                    continue
+                if lo is not None and n < lo:
+                    continue
+                if hi is not None and n > hi:
+                    continue
+                picked.append(c["id"])
+            chapter_ids = picked
+        count = await projects.redo(slug, chapter_ids)
         console.print(f"[green]✓[/] {count} chapter(s) reset and enqueued — run 'typoon work' to process")
     finally:
         await projects.close()
@@ -233,18 +246,29 @@ async def _export(
             console.print("[yellow]No chapters in project.[/]")
             return
 
-        # Filter to rendered chapters within the requested range.
+        # Filter to rendered chapters within the requested range. The
+        # range filter parses each chapter's `number` as a float;
+        # non-numeric chapters (Extra/Oneshot) are included only when
+        # no range is given.
+        ranged = lo is not None or hi is not None
         refs: list[ChapterRef] = []
         for ch in all_chs:
-            if lo is not None and ch["idx"] < lo:
-                continue
-            if hi is not None and ch["idx"] > hi:
-                continue
+            try:
+                n = float(ch["number"])
+            except (TypeError, ValueError):
+                if ranged:
+                    continue
+                n = None
+            if n is not None:
+                if lo is not None and n < lo:
+                    continue
+                if hi is not None and n > hi:
+                    continue
             if not ch.get("rendered") or not ch.get("archive_backend") or not ch.get("archive_locator"):
                 continue
             refs.append(ChapterRef(
                 chapter_id=ch["id"],
-                chapter_idx=ch["idx"],
+                chapter_number=ch["number"],
                 archive_backend=ch["archive_backend"],
                 archive_locator=ch["archive_locator"],
                 rendered_at=str(ch.get("updated_at") or ""),
@@ -269,7 +293,7 @@ async def _export(
 
         for r in results:
             for fmt, path in r.formats.items():
-                console.print(f"[green]✓[/] ch{r.chapter_idx:.4g} [{fmt}]  {path}")
+                console.print(f"[green]✓[/] ch{r.chapter_number} [{fmt}]  {path}")
 
         if open_ and "pdf" in fmt_list and results:
             first_pdf = results[0].formats.get("pdf")
@@ -354,6 +378,20 @@ async def _debug_scan(
     run_id   = f"p{project_id}_c{chapter_id}"
     sink     = FileArtifactSink(out_root, run_id, clean=True)
 
+    # Project source_lang drives OCR recognizer selection — without it,
+    # ja/ko/zh pages OCR to empty and get filtered as noise.
+    from ..storage import PostgresStore
+    db = await PostgresStore.open(config.database_url)
+    try:
+        proj = await db.get_project(project_id)
+    finally:
+        await db.close()
+    if proj is None:
+        console.print(f"[red]project {project_id} not found[/]")
+        raise typer.Exit(1)
+    source_lang = proj["source_lang"]
+    console.print(f"  source_lang=[cyan]{source_lang}[/]")
+
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
         try:
@@ -375,7 +413,7 @@ async def _debug_scan(
             for page_index in targets:
                 console.print(f"  scan page {page_index + 1}/{total}…")
                 image = reader.read_rgb(page_index)
-                state = runtime.scan_page_state(image)
+                state = runtime.scan_page_state(image, source_lang=source_lang)
 
                 # Per-stage overlays — same writers used by scan_chapter().
                 from ..stages.scan import _write_artifacts
@@ -532,5 +570,5 @@ def _print_project(proj) -> None:
             detail = f"[dim]{ch.stage}[/]"
         elif ch.state == "error":
             detail = f"[red]{ch.stage}: {ch.error[:60]}[/]"
-        t.add_row(icon, f"[dim]#{ch.chapter_id}[/]", f"ch{ch.idx:.4g}", detail)
+        t.add_row(icon, f"[dim]#{ch.chapter_id}[/]", f"ch{ch.number}", detail)
     console.print(t)

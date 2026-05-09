@@ -71,7 +71,16 @@ CREATE INDEX IF NOT EXISTS idx_projects_owner_shared
 CREATE TABLE IF NOT EXISTS chapters (
     id              BIGSERIAL PRIMARY KEY,
     project_id      BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    idx             DOUBLE PRECISION NOT NULL,
+    -- Sort key. Server-managed dense-ish ranking with siblings spaced
+    -- INITIAL_GAP apart on append; midpoint bisect on insert; full
+    -- rebalance only when adjacent gap drops below 2. Internal — never
+    -- shown in UI, never used as stable reference (chapter_id is the
+    -- only stable id the API/CLI accept).
+    position        INTEGER NOT NULL,
+    -- Display string. Free-form: "4", "4.5", "Extra", "Oneshot",
+    -- "v2 ch.1", "". Not unique — multi-group translations of the same
+    -- chapter share a number, distinguished by `title`.
+    number          TEXT NOT NULL,
     title           TEXT,
     source_url      TEXT,
     rendered        BOOLEAN NOT NULL DEFAULT FALSE,
@@ -92,8 +101,10 @@ CREATE TABLE IF NOT EXISTS chapters (
     progress_total  INTEGER,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(project_id, idx)
+    UNIQUE(project_id, position)
 );
+CREATE INDEX IF NOT EXISTS idx_chapters_project_position
+    ON chapters(project_id, position);
 
 -- ── Project pins (per-user bookmarks) ───────────────────────────────
 

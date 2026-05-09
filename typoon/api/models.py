@@ -14,7 +14,11 @@ class Progress(BaseModel):
 class ChapterOut(BaseModel):
     chapter_id: int
     project_id: int
-    idx:        float
+    # Display string (free-form): "4", "4.5", "Extra", "Oneshot".
+    number:     str
+    # Server-managed sort key. Internal — UI must use it only to order
+    # rows; never to address a chapter (use chapter_id for that).
+    position:   int
     title:      str | None = None
     state:      str        # idle | pending | running | error | done
     stage:      str        # scan | translate | render | ""
@@ -108,8 +112,8 @@ class QueueStatsOut(BaseModel):
 class SearchHit(BaseModel):
     kind: str   # bubble | translation | brief | glossary
     text: str
-    chapter_idx: float | None = None
-    page_index:  int | None = None
+    chapter_number: str | None = None
+    page_index:     int | None = None
 
 
 class SearchResults(BaseModel):
