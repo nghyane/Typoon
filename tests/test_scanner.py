@@ -27,14 +27,16 @@ def _load_page(name: str = "ch013/03.webp") -> np.ndarray:
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
-def _make_scanner(ocr_cls, **ocr_kwargs) -> Scanner:
+def _make_scanner(ocr_cls, *, lang: str | None = None) -> Scanner:
     from typoon.vision.detect import TextDetector
     det_path = MODELS_DIR / "ppocr-det.safetensors"
     cfg_path = MODELS_DIR / "ppocr-det-config.json"
     if not det_path.exists():
         pytest.skip("PP-OCR det model not found")
     detector = TextDetector(str(det_path), str(cfg_path))
-    return Scanner(detector=detector, ocr=ocr_cls(**ocr_kwargs))
+    scanner = Scanner(detector=detector, ocr=ocr_cls())
+    scanner.set_language(lang)
+    return scanner
 
 
 skip_no_vision = pytest.mark.skipif(not _vision_available(), reason="macOS Vision not available")
@@ -65,7 +67,7 @@ class TestVisionScanner:
 
     def test_scan_manga_page(self):
         img = _load_page("ch013/14.webp")
-        bubbles = _make_scanner(AppleVisionBackend, languages=["en-US"]).scan(img)
+        bubbles = _make_scanner(AppleVisionBackend, lang="en").scan(img)
         assert len(bubbles) >= 1
         for b in bubbles:
             assert isinstance(b, DetectedGroup)
@@ -78,7 +80,7 @@ class TestVisionScanner:
                 assert 0 <= p[1] <= h + 1
 
     def test_scan_empty_image(self):
-        assert _make_scanner(AppleVisionBackend, languages=["en-US"]).scan(
+        assert _make_scanner(AppleVisionBackend, lang="en").scan(
             np.full((200, 300, 3), 255, dtype=np.uint8)
         ) == []
 

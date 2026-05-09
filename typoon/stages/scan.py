@@ -64,12 +64,18 @@ def scan_chapter(
     reader: PreparedReader,
     runtime: VisionRuntime,
     *,
+    source_lang: str | None = None,
     chapter_id: int = 0,
     project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> ScanOutput:
-    """Run vision pipeline on every prepared page. Returns ScanOutput."""
+    """Run vision pipeline on every prepared page. Returns ScanOutput.
+
+    `source_lang` is the project's ISO 639-1 source language code,
+    threaded into the OCR recognizer so non-Latin scripts (ja/ko/zh)
+    are not silently filtered as noise.
+    """
     pages:    list[scan.Page] = []
     geometry: list[PageGeometry]     = []
     masks     = MaskStore()
@@ -78,7 +84,7 @@ def scan_chapter(
 
     for index in range(total):
         image = reader.read_rgb(index)
-        state = runtime.scan_page_state(image)
+        state = runtime.scan_page_state(image, source_lang=source_lang)
         h, w  = image.shape[:2]
 
         bubbles, page_geom, page_masks = _extract_page(index, state, w, h)

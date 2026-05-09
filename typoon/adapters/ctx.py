@@ -17,7 +17,7 @@ class TranslateCtx:
     store:                Store
     project_id:           int
     chapter_id:           int       # DB primary key
-    chapter_idx:          float     # chapter number (for brief lookup by idx)
+    chapter_position:     int       # sort cursor for "before this chapter" lookups
     source_lang:          str
     target_lang:          str
     hook:                 Hook
@@ -26,7 +26,7 @@ class TranslateCtx:
 def make_ctx(
     project_id: int,
     chapter_id: int,
-    chapter_idx: float,
+    chapter_position: int,
     source_lang: str,
     target_lang: str,
     store: Store,
@@ -50,7 +50,7 @@ def make_ctx(
         store=store,
         project_id=project_id,
         chapter_id=chapter_id,
-        chapter_idx=chapter_idx,
+        chapter_position=chapter_position,
         source_lang=source_lang,
         target_lang=target_lang,
         hook=hook,

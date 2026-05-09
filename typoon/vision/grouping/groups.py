@@ -161,8 +161,12 @@ def build_groups(state: ScanState) -> None:
                    min(fit[2], scope_bbox[2]), min(fit[3], scope_bbox[3])]
             fit = fit_to_scope(fit, scope_bbox, pad)
         med_angle = float(np.median([angles[i] for i in indices])) if indices else 0.0
+        det_conf = max(
+            (state.units[i].region.confidence for i in indices), default=0.0,
+        )
         state.groups.append(GroupState(gi, indices, scoped, scope_idx, raw_bbox, ocr_box, fit,
-                                       scope_bbox=scope_bbox, median_angle=med_angle))
+                                       scope_bbox=scope_bbox, median_angle=med_angle,
+                                       det_conf=float(det_conf)))
 
 
 def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
@@ -183,6 +187,10 @@ def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
         if bw < 5 or bh < 5:
             continue
         if not g.scoped and _is_geometric_noise(bw, bh, g.median_angle):
+            g.text = ""
+            g.confidence = 0.0
+            continue
+        if not g.scoped and _is_stripe_cluster(state.units, list(g.unit_indices)):
             g.text = ""
             g.confidence = 0.0
             continue
@@ -224,6 +232,60 @@ def _is_geometric_noise(bw: int, bh: int, angle: float) -> bool:
     if abs(angle) > 20.0:
         return True
     return False
+
+
+def _polygon_axis(poly: list[list[float]]) -> tuple[float, float]:
+    """Return (long_axis_angle_deg, aspect) of polygon's rotated rect.
+
+    `aspect` = long_side / short_side (≥ 1.0).
+    `long_axis_angle_deg` is the long edge's angle relative to horizontal,
+    in (-90°, 90°].
+    """
+    if len(poly) < 4:
+        return 0.0, 1.0
+    tl, tr, br, bl = poly[0], poly[1], poly[2], poly[3]
+    top_w = math.hypot(tr[0] - tl[0], tr[1] - tl[1])
+    side_h = math.hypot(bl[0] - tl[0], bl[1] - tl[1])
+    if top_w >= side_h:
+        ang = math.degrees(math.atan2(tr[1] - tl[1], tr[0] - tl[0]))
+        long_, short_ = top_w, max(1.0, side_h)
+    else:
+        ang = math.degrees(math.atan2(bl[1] - tl[1], bl[0] - tl[0]))
+        long_, short_ = side_h, max(1.0, top_w)
+    return ang, long_ / short_
+
+
+def _axis_deviation(angle_deg: float) -> float:
+    """Distance from nearest cardinal axis (0° or 90°), in degrees [0, 45]."""
+    a = abs(angle_deg) % 180.0
+    return min(a, abs(a - 90.0), 180.0 - a)
+
+
+def _is_stripe_polygon(poly: list[list[float]]) -> bool:
+    """Detector polygon shape that matches a hatching/screentone stroke.
+
+    PP-OCR det fires on dense parallel ink strokes (screentone, hatching,
+    motion lines) and returns thin diagonal stripes. Real glyph clusters
+    after unclip+merge are roughly axis-aligned — vertical Japanese
+    columns sit at 90° (axis_dev ≈ 0), horizontal Latin runs at 0°.
+    A polygon that is BOTH narrow (aspect ≥ 3.5) AND tilted off both
+    cardinal axes (≥ 12°) is structurally a stroke fragment, not text.
+    """
+    ang, aspect = _polygon_axis(poly)
+    return aspect >= 3.5 and _axis_deviation(ang) >= 12.0
+
+
+def _is_stripe_cluster(units, indices: list[int]) -> bool:
+    """Group looks like a hatching cluster: every unit polygon is a stripe.
+
+    All-or-nothing on purpose — one real glyph fragment in the group means
+    the cluster carries information. This avoids killing a real bubble
+    that happens to neighbor a stripe.
+    """
+    if not indices:
+        return False
+    return all(_is_stripe_polygon(units[i].region.polygon) for i in indices)
+
 
 
 def _rotate_crop(crop: np.ndarray, angle: float, *, raw: bool = False) -> np.ndarray:
@@ -415,42 +477,50 @@ def _is_uppercase_heavy(text: str) -> bool:
     return alpha >= 12 and sum(ch.isupper() for ch in text) / max(1, alpha) >= 0.55
 
 
-def _looks_like_system_card(g: GroupState, text: str, wr: float, hr: float) -> bool:
-    if len(g.unit_indices) < 3 or (wr <= 0.24 and hr <= 0.16):
-        return False
-    words = [p for p in re.split(r"\s+", text.strip()) if p]
-    return len(words) >= 4 and _is_uppercase_heavy(text)
+def _required_proof(short_side: int) -> float:
+    """Linear ramp: tiny fragments (~20px) need 0.65, large (~100px+) need 0.85.
 
-
-def _looks_like_narration(text: str, conf: float) -> bool:
-    if conf < 0.70:
-        return False
-    words = [w for w in re.split(r"\s+", text.strip()) if w]
-    alnum = sum(ch.isalnum() for ch in text)
-    if len(words) < 3 or alnum < 10 or alnum / max(1, len(text)) < 0.55:
-        return False
-    return len(set(w.lower() for w in words)) >= min(3, len(words))
+    Encodes the principle that bigger claims need stronger proof. A real
+    glyph cluster at 100+px should light up both detectors; an artwork
+    fragment that happens to look kana-shaped (kẹp tóc hình "3" → "と")
+    sits in the mid-confidence valley both detectors fall into when given
+    a non-text input.
+    """
+    s = max(20, min(100, short_side))
+    return 0.65 + (s - 20) / 80.0 * (0.85 - 0.65)
 
 
 def _should_skip(g: GroupState, pw: int, ph: int) -> tuple[bool, str | None]:
+    """Group-level accept/reject.
+
+    Two responsibilities only:
+      1. text quality   — empty, no-alnum (cheap textual checks)
+      2. is-text proof  — for unscoped groups (no YOLO bubble), require both
+         detectors to agree, scaled by claim size.
+
+    Removed the older `free_low_conf`, `free_short_low_conf`,
+    `free_large_sfx_like`, `free_angled_low_conf`, `_looks_like_narration`,
+    `_looks_like_system_card` heuristics. Those layered ocr_conf thresholds
+    by ad-hoc text shape — but `manga-ocr`/PP-OCR-rec are generative and
+    have no "no-text" class, so ocr_conf alone never reliably answers
+    "is this text". `det_conf` is the trained is-text signal; combining
+    both via geometric mean and ramping by size replaces all of them.
+    """
     text = g.text.strip()
     if not text:
         return True, "ocr_empty"
-    bw = max(1, g.raw_bbox[2] - g.raw_bbox[0])
-    bh = max(1, g.raw_bbox[3] - g.raw_bbox[1])
-    ar = (bw * bh) / max(1, pw * ph)
-    wr, hr = bw / max(1, pw), bh / max(1, ph)
     if not sum(ch.isalnum() for ch in text):
         return True, "ocr_no_alnum"
+    bw = max(1, g.raw_bbox[2] - g.raw_bbox[0])
+    bh = max(1, g.raw_bbox[3] - g.raw_bbox[1])
     if not g.scoped:
-        if _looks_like_system_card(g, text, wr, hr): return False, None
-        if abs(g.median_angle) > 20.0:              return True, "free_skewed"
-        if _looks_like_narration(text, g.confidence): return False, None
-        if g.confidence < 0.35:                      return True, "free_low_conf"
-        if g.confidence < 0.60 and abs(g.median_angle) > 3: return True, "free_angled_low_conf"
-        if (ar > 0.025 or wr > 0.24 or hr > 0.16) and g.confidence < 0.70: return True, "free_large_sfx_like"
-        if len(text) <= 2 and g.confidence < 0.80:  return True, "free_short_low_conf"
-        if bw < 20 or bh < 20:                      return True, "free_tiny"
+        if abs(g.median_angle) > 20.0:
+            return True, "free_skewed"
+        if bw < 20 or bh < 20:
+            return True, "free_tiny"
+        proof = math.sqrt(max(0.0, g.det_conf) * max(0.0, g.confidence))
+        if proof < _required_proof(min(bw, bh)):
+            return True, "free_weak_proof"
     return False, None
 
 

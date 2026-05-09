@@ -77,12 +77,12 @@ class MockStore:
     async def get_glossary(self, pid): return dict(self.glossary)
     async def save_chapter_brief(self, chapter_id, brief): self.briefs[chapter_id] = brief
     async def get_chapter_brief(self, chapter_id): return self.briefs.get(chapter_id)
-    async def get_recent_chapter_briefs(self, pid, before_chapter_idx, limit=3):
+    async def get_recent_chapter_briefs(self, pid, before_position, limit=3):
         rows = []
         for ch_id, brief in sorted(self.briefs.items(), reverse=True):
             rows.append({"chapter": 0, "brief": brief, "summary": brief.get("summary", "")})
         return rows[:limit]
-    async def search_briefs(self, pid, queries, limit=10, *, before_chapter_idx=None): return []
+    async def search_briefs(self, pid, queries, limit=10, *, before_position=None): return []
     async def save_translations(self, chapter_id, records): self._translations[chapter_id] = records
     async def save_bubbles(self, chapter_id, bubbles): pass
     async def get_bubbles(self, chapter_id): return []
@@ -175,7 +175,7 @@ def make_session(
         store=MockStore(),
         project_id=1,
         chapter_id=1,
-        chapter_idx=1.0,
+        chapter_position=1,
         source_lang="en",
         target_lang="vi",
         hook=Hook(),

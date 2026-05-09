@@ -9,7 +9,6 @@ import numpy as np
 
 from typoon.models import ModelHub
 from typoon.vision.erase import Eraser
-from typoon.vision.types import DetectedGroup
 
 
 class VisionRuntime:
@@ -56,16 +55,19 @@ class VisionRuntime:
             self._yolo_model = load_yolo_model(path)
         return self._yolo_model
 
-    def scan_page_state(self, image: np.ndarray):
-        """Run full vision pipeline and return ScanState for artifact writing."""
+    def scan_page_state(self, image: np.ndarray, *, source_lang: str | None = None):
+        """Run full vision pipeline and return ScanState for artifact writing.
+
+        `source_lang` selects the OCR recognizer language (project's
+        ISO 639-1 code, e.g. "ja", "ko", "zh"). When omitted, the
+        backend falls back to English — pass it explicitly for any
+        non-English project or detected text gets dropped as noise.
+        """
         from typoon.vision.grouping import scan_page
+        self.scanner.set_language(source_lang)
         return scan_page(
             self.scanner,
             image,
             yolo_model=self._get_yolo_model(),
             yolo_imgsz=self._bubble_scope_imgsz,
         )
-
-    def scan_page(self, image: np.ndarray) -> list[DetectedGroup]:
-        from typoon.vision.grouping import export_groups
-        return export_groups(self.scan_page_state(image))

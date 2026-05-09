@@ -103,10 +103,42 @@ class MangaOcrBackend:
 
         pv = self._proc(pil_imgs, return_tensors="pt").pixel_values.to(self._device)
         with torch.no_grad():
-            ids = self._model.generate(pv, max_new_tokens=64)
-        texts = self._tok.batch_decode(ids, skip_special_tokens=True)
+            out = self._model.generate(
+                pv,
+                max_new_tokens=64,
+                num_beams=1,                       # greedy → scores align 1:1 with sequences
+                do_sample=False,
+                return_dict_in_generate=True,
+                output_scores=True,
+            )
+        seqs = out.sequences                       # [B, prompt_len + gen_len]
+        texts = self._tok.batch_decode(seqs, skip_special_tokens=True)
 
-        for slot, raw in zip(keep_idx, texts):
+        # Real per-sequence confidence — mean prob of greedy-chosen tokens.
+        # The previous hardcoded 1.0 disabled every confidence-gated noise
+        # filter for ja, letting "w." and large unscoped fragments through.
+        gen_len    = len(out.scores)
+        gen_tokens = seqs[:, -gen_len:]                                # [B, gen_len]
+        # scores[t]: [B, vocab] logits at step t. Stack → [B, gen_len, vocab].
+        stacked    = torch.stack(out.scores, dim=1)
+        probs      = torch.softmax(stacked, dim=-1)
+        chosen     = probs.gather(-1, gen_tokens.unsqueeze(-1)).squeeze(-1)  # [B, gen_len]
+
+        eos_id = self._tok.eos_token_id
+        pad_id = self._tok.pad_token_id
+        # Treat tokens up to (and including) the first EOS as content; mask the rest.
+        valid = torch.ones_like(gen_tokens, dtype=torch.bool)
+        if eos_id is not None:
+            after_eos = (gen_tokens == eos_id).cumsum(dim=1) > 1
+            valid &= ~after_eos
+        if pad_id is not None:
+            valid &= gen_tokens != pad_id
+
+        masked      = chosen.masked_fill(~valid, 0.0)
+        counts      = valid.sum(dim=1).clamp(min=1).to(masked.dtype)
+        confidences = (masked.sum(dim=1) / counts).tolist()
+
+        for slot, raw, conf in zip(keep_idx, texts, confidences):
             text = raw.replace(" ", "").strip()
-            results[slot] = (text, 1.0 if text else 0.0)
+            results[slot] = (text, float(conf) if text else 0.0)
         return results

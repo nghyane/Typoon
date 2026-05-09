@@ -135,7 +135,7 @@ async def _context_snapshot(ctx: TranslateCtx, sensitive: list[BubbleKey]) -> st
         parts.append("## Glossary\nEmpty.")
 
     recent = await store.get_recent_chapter_briefs(
-        ctx.project_id, before_chapter_idx=ctx.chapter_idx, limit=10
+        ctx.project_id, before_position=ctx.chapter_position, limit=10
     )
     if recent:
         lines = [

@@ -102,6 +102,7 @@ class GroupState:
     fit_bbox: list[int]
     text: str = ""
     confidence: float = 0.0
+    det_conf: float = 0.0   # max detector confidence across member units
     accepted: bool = False
     reject_reason: str | None = None
     scope_bbox: list[int] | None = None

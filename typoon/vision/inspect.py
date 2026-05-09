@@ -46,6 +46,7 @@ def state_to_dict(page_index: int, image_file: str, state: ScanState) -> dict[st
             {
                 "idx": u.idx,
                 "bbox": u.bbox,
+                "polygon": u.region.polygon,
                 "det_conf": u.region.confidence,
                 "noise": u.is_noise,
                 "noise_reason": u.noise_reason,
@@ -66,6 +67,7 @@ def state_to_dict(page_index: int, image_file: str, state: ScanState) -> dict[st
                 "ocr_bbox": g.ocr_bbox,
                 "text": g.text,
                 "confidence": g.confidence,
+                "det_conf": g.det_conf,
                 "accepted": g.accepted,
                 "reject_reason": g.reject_reason,
                 "scoped": g.scoped,
