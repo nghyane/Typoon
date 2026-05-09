@@ -24,6 +24,14 @@ class ProviderConfig(BaseModel):
     endpoint: str = ""
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    # Maximum concurrent in-flight requests against this provider,
+    # shared across every agent that resolves to it (context, translate,
+    # vision). Sized by Little's law: at ~3s/call latency, 24 in-flight
+    # ≈ 8 RPS, which sits inside paid Tier 1 budgets (OpenAI 500 RPM /
+    # Anthropic Tier 1). Higher tiers tolerate more — bump to 64 for
+    # 2000+ RPM accounts. Free tiers should drop to 1–2. Set to 0 to
+    # disable the gate entirely (rely solely on retry + backoff).
+    concurrency: int = 24
 
 
 class TranslationConfig(BaseModel):

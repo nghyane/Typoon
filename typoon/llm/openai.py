@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import openai
 
+from ._retry import parse_retry_after_header, with_retry
 from .ir import (
     CallResponse,
     ContentPart,
@@ -18,6 +19,31 @@ from .ir import (
 )
 
 _TIMEOUT = 300
+
+
+def _parse_retry_after(exc: BaseException) -> float | None:
+    """Extract Retry-After from an OpenAI SDK exception, if present."""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    return parse_retry_after_header(headers)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (
+        openai.RateLimitError,
+        openai.APITimeoutError,
+        openai.APIConnectionError,
+        openai.InternalServerError,
+    )):
+        return True
+    # APIStatusError is the catch-all for proxy / gateway failures
+    # that aren't mapped to a more specific subclass — OpenRouter wraps
+    # upstream 429 here because the proxy emits it, not OpenAI itself.
+    if isinstance(exc, openai.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        if status == 429 or (status is not None and 500 <= status < 600):
+            return True
+    return False
 
 
 class OpenAIProvider:
@@ -56,7 +82,13 @@ class OpenAIProvider:
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
 
-        resp = await self._client.chat.completions.create(**kwargs)
+        resp = await with_retry(
+            lambda: self._client.chat.completions.create(**kwargs),
+            is_retryable=_is_retryable,
+            parse_retry_after=_parse_retry_after,
+            provider="openai",
+        )
+
         if not resp.choices:
             raise RuntimeError(
                 f"OpenAI returned empty response (no choices). "

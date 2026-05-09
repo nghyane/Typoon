@@ -10,6 +10,7 @@ import json
 
 import anthropic
 
+from ._retry import parse_retry_after_header, with_retry
 from .ir import (
     CallResponse,
     ContentPart,
@@ -20,6 +21,27 @@ from .ir import (
 )
 
 _MAX_TOKENS = 64_000
+
+
+def _parse_retry_after(exc: BaseException) -> float | None:
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    return parse_retry_after_header(headers)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (
+        anthropic.RateLimitError,
+        anthropic.APITimeoutError,
+        anthropic.APIConnectionError,
+        anthropic.InternalServerError,
+    )):
+        return True
+    if isinstance(exc, anthropic.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        if status == 429 or (status is not None and 500 <= status < 600):
+            return True
+    return False
 
 
 class AnthropicProvider:
@@ -61,7 +83,12 @@ class AnthropicProvider:
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         import json
         kwargs = self._build_kwargs(messages, tools)
-        response = await self._client.messages.create(**kwargs)
+        response = await with_retry(
+            lambda: self._client.messages.create(**kwargs),
+            is_retryable=_is_retryable,
+            parse_retry_after=_parse_retry_after,
+            provider="anthropic",
+        )
 
         tool_calls: list[ToolCallMsg] = []
         text_parts: list[str] = []

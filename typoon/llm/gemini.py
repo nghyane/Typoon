@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 
+import httpx
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
+from ._retry import parse_retry_after_header, with_retry
 from .ir import (
     CallResponse,
     ContentPart,
@@ -15,6 +18,30 @@ from .ir import (
     ToolCallMsg,
     ToolDef,
 )
+
+
+def _parse_retry_after(exc: BaseException) -> float | None:
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    return parse_retry_after_header(headers)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    # google-genai surfaces 4xx as ClientError, 5xx as ServerError.
+    # Retry 429 (rate limit) and any 5xx transient.
+    if isinstance(exc, genai_errors.ServerError):
+        return True
+    if isinstance(exc, genai_errors.ClientError):
+        return getattr(exc, "code", None) == 429
+    if isinstance(exc, genai_errors.APIError):
+        code = getattr(exc, "code", None)
+        if code == 429 or (code is not None and 500 <= code < 600):
+            return True
+    # httpx-level transport failures bubble up unchanged when the SDK
+    # cannot even reach the server.
+    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException)):
+        return True
+    return False
 
 
 class GeminiProvider:
@@ -38,10 +65,15 @@ class GeminiProvider:
         if tools:
             config["tools"] = [_build_tools(tools)]
 
-        resp = await self._client.aio.models.generate_content(
-            model=self._model,
-            contents=contents,
-            config=types.GenerateContentConfig(**config),
+        resp = await with_retry(
+            lambda: self._client.aio.models.generate_content(
+                model=self._model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config),
+            ),
+            is_retryable=_is_retryable,
+            parse_retry_after=_parse_retry_after,
+            provider="gemini",
         )
 
         tool_calls: list[ToolCallMsg] = []
