@@ -35,19 +35,28 @@ _serve_storage = _role in ("storage", "full")
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Per-process shutdown signal.
+    """Per-process startup/shutdown hooks.
 
-    Long-lived endpoints (notably the SSE event stream) check
-    `app.state.shutdown` so they can return immediately when uvicorn
-    starts a graceful shutdown — otherwise every still-open browser
-    tab keeps the process alive at "Waiting for connections to close"
-    until the graceful timeout fires.
+    - app.state.shutdown is an asyncio.Event long-lived endpoints can
+      observe (notably the SSE event stream) so they exit immediately
+      when uvicorn starts a graceful shutdown rather than holding the
+      process at "Waiting for connections to close".
+    - The EventBus listener task is started here so reconnects stay
+      transparent to subscribers; without it the first /api/events
+      hit would create the listener and a Postgres restart would leave
+      the bus blind until a client reconnected.
     """
+    from typoon.api.deps import get_bus
     app.state.shutdown = asyncio.Event()
+    bus = await get_bus()
+    if _serve_api:
+        # Storage-only role doesn't host SSE, no need to listen.
+        await bus.start()
     try:
         yield
     finally:
         app.state.shutdown.set()
+        await bus.close()
 
 
 app = FastAPI(title="Typoon API", lifespan=_lifespan)

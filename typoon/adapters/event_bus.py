@@ -1,18 +1,23 @@
-"""Event bus — Postgres LISTEN/NOTIFY transport.
+"""Event bus — Postgres LISTEN/NOTIFY with in-process fan-out.
 
-API holds ONE LISTEN connection per process and fans out incoming
-NOTIFY payloads to in-process subscribers via local asyncio.Queue.
-Replay-on-reconnect uses the regular pool, not the listener connection.
+Two independent paths:
 
-publish    INSERT events RETURNING id; pg_notify(chan, str(id))
-subscribe  one-time replay (events.id > last_id), then live
-           events from a local queue fed by the shared listener.
+  Live path: a background asyncio task holds one LISTEN connection,
+             decodes the NOTIFY payload (event id + data inline), and
+             fans out to per-subscriber asyncio.Queue. Reconnects on
+             its own with exponential backoff if the connection dies.
 
-Why one listener: opening a dedicated asyncpg connection per SSE
-subscriber blew up Postgres `max_connections` at modest user count.
-LISTEN state is per-connection, but NOTIFY payloads are visible to
-every LISTEN session, so a single connection is enough as long as we
-broadcast in-process.
+  Replay:    one-shot SELECT at subscribe time using the regular pool,
+             ordered, capped. Last-Event-ID resumption.
+
+NOTIFY payload format:
+
+  {"id": <BIGINT>, "data": <event_dict>}
+
+We ship the data inline so subscribers never re-query the events table
+on the hot path. Postgres NOTIFY caps payload size at 8000 bytes; on
+the rare event that exceeds the budget we send only the id and the
+listener fetches the row (degraded but rare).
 """
 
 from __future__ import annotations
@@ -26,6 +31,30 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 from typoon.runs.events import Event, Hook
 
 logger = logging.getLogger(__name__)
+
+
+# ── Tunables ──────────────────────────────────────────────────────────
+
+
+_CHANNEL = "typoon_events"
+
+# Per-subscriber queue depth. Slow consumers drop oldest events when
+# this fills; the missed-id gap is recovered next time the client
+# reconnects with a Last-Event-ID. 256 is comfortable for a 100-page
+# render's PageDone burst.
+_SUBSCRIBER_QUEUE_SIZE = 256
+
+# Replay cap on reconnect. Older history stays in the table for audit
+# but is not delivered as catch-up.
+_REPLAY_LIMIT = 100
+
+# Postgres NOTIFY hard limit is 8000 bytes; leave headroom for json
+# framing overhead and channel name.
+_NOTIFY_PAYLOAD_BUDGET = 7800
+
+# Exponential backoff bounds for the listener reconnect loop.
+_LISTENER_BACKOFF_INITIAL = 1.0
+_LISTENER_BACKOFF_MAX = 30.0
 
 
 # ── Serialization ─────────────────────────────────────────────────────
@@ -48,28 +77,15 @@ def event_to_dict(event: Event) -> dict:
 class EventBusProtocol(Protocol):
     async def publish(self, event: Event) -> None: ...
     def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]: ...
+    async def start(self) -> None: ...
     async def close(self) -> None: ...
 
 
 # ── Implementation ────────────────────────────────────────────────────
 
 
-# Per-subscriber queue depth. Slow consumers drop oldest events when
-# this fills; the missed-id gap is recovered next time the client
-# reconnects with a Last-Event-ID. 256 is comfortable for a 100-page
-# render's PageDone burst.
-_SUBSCRIBER_QUEUE_SIZE = 256
-
-# Replay cap on reconnect. If a client has been offline long enough to
-# miss more than this, they get the tail; older events are considered
-# historical and live in the events table for audit, not for catch-up.
-_REPLAY_LIMIT = 100
-
-
 class EventBus:
     """Postgres-backed bus. See module docstring."""
-
-    _CHANNEL = "typoon_events"
 
     def __init__(self, dsn: str) -> None:
         if not dsn or not dsn.startswith(("postgresql://", "postgres://")):
@@ -77,18 +93,17 @@ class EventBus:
                 f"EventBus requires a postgresql:// DSN, got: {dsn!r}"
             )
         self._dsn = dsn
-        self._pool = None  # asyncpg.Pool — used by publish + replay
-        self._listen_conn = None  # asyncpg.Connection — single LISTEN
-        self._subscribers: set[asyncio.Queue[int]] = set()
-        self._init_lock = asyncio.Lock()
+        self._pool = None  # asyncpg.Pool — publish + replay
+        self._pool_lock = asyncio.Lock()
+        self._subscribers: set[asyncio.Queue[tuple[int, dict]]] = set()
+        self._listener_task: asyncio.Task | None = None
+        self._closed = asyncio.Event()
 
-    # ── lazy init ────────────────────────────────────────────────────
+    # ── pool ─────────────────────────────────────────────────────────
 
     async def _ensure_pool(self):
-        # Double-checked locking — avoids creating two pools if two
-        # coroutines hit a cold bus simultaneously.
         if self._pool is None:
-            async with self._init_lock:
+            async with self._pool_lock:
                 if self._pool is None:
                     import asyncpg
                     self._pool = await asyncpg.create_pool(
@@ -96,47 +111,148 @@ class EventBus:
                     )
         return self._pool
 
-    async def _ensure_listener(self):
-        if self._listen_conn is not None:
-            return
-        async with self._init_lock:
-            if self._listen_conn is not None:
-                return
-            import asyncpg
-            conn = await asyncpg.connect(self._dsn)
-            await conn.add_listener(self._CHANNEL, self._on_notify)
-            self._listen_conn = conn
-
     # ── publish ──────────────────────────────────────────────────────
 
     async def publish(self, event: Event) -> None:
         pool = await self._ensure_pool()
-        payload = json.dumps(event_to_dict(event))
+        data = event_to_dict(event)
+        data_json = json.dumps(data)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO events (data) VALUES ($1::jsonb) RETURNING id",
-                payload,
+                data_json,
             )
-            # Parameterized — pg_notify avoids string interpolation
-            # with the event id (hardening against any future code path
-            # that lets non-numeric values reach this point).
+            event_id = int(row["id"])
+            notify = json.dumps({"id": event_id, "data": data})
+            if len(notify) > _NOTIFY_PAYLOAD_BUDGET:
+                # Oversized — fall back to id-only; subscribers will
+                # fetch the row from the table. Logged once because if
+                # this trips often, an event type is too fat.
+                logger.warning(
+                    "event %s payload too large for NOTIFY (%d bytes); "
+                    "shipping id only", data.get("type"), len(notify),
+                )
+                notify = json.dumps({"id": event_id})
             await conn.execute(
-                "SELECT pg_notify($1, $2)",
-                self._CHANNEL, str(row["id"]),
+                "SELECT pg_notify($1, $2)", _CHANNEL, notify,
             )
 
-    # ── listener side ────────────────────────────────────────────────
+    # ── listener task ────────────────────────────────────────────────
 
-    def _on_notify(self, _conn, _pid, _channel, payload: str) -> None:
-        try:
-            event_id = int(payload)
-        except ValueError:
+    async def start(self) -> None:
+        """Start the background listener. Idempotent.
+
+        Call once at app startup (FastAPI lifespan). Workers publishing
+        events do not need to call this — only readers (the SSE host)
+        need a listener.
+        """
+        if self._listener_task is not None and not self._listener_task.done():
             return
+        self._closed.clear()
+        self._listener_task = asyncio.create_task(
+            self._listener_loop(), name="event-bus-listener",
+        )
+
+    async def _listener_loop(self) -> None:
+        backoff = _LISTENER_BACKOFF_INITIAL
+        while not self._closed.is_set():
+            try:
+                await self._run_listener_once()
+                # Clean exit (close requested) — break out.
+                return
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "event listener crashed; reconnecting in %.1fs", backoff,
+                )
+                # Wait either for the backoff window or close, whichever
+                # comes first, so shutdown isn't blocked by a long sleep.
+                try:
+                    await asyncio.wait_for(self._closed.wait(), timeout=backoff)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, _LISTENER_BACKOFF_MAX)
+            else:
+                backoff = _LISTENER_BACKOFF_INITIAL
+
+    async def _run_listener_once(self) -> None:
+        import asyncpg
+        conn = await asyncpg.connect(self._dsn)
+        terminated = asyncio.Event()
+
+        def _on_terminate(_conn) -> None:
+            terminated.set()
+
+        try:
+            conn.add_termination_listener(_on_terminate)
+            await conn.add_listener(_CHANNEL, self._on_notify)
+            # Wait for either an orderly close or the connection
+            # dropping out from under us. asyncpg drives the listener
+            # via its read loop — termination_listener fires when that
+            # loop sees EOF.
+            close_task = asyncio.create_task(self._closed.wait())
+            term_task = asyncio.create_task(terminated.wait())
+            done, pending = await asyncio.wait(
+                {close_task, term_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            if term_task in done and not self._closed.is_set():
+                # Connection died — let the outer loop reconnect.
+                raise ConnectionError("Postgres LISTEN connection terminated")
+        finally:
+            try:
+                await conn.remove_listener(_CHANNEL, self._on_notify)
+            except Exception:
+                pass
+            try:
+                await conn.close(timeout=2.0)
+            except Exception:
+                pass
+
+    def _on_notify(
+        self, _conn, _pid: int, _channel: str, payload: str,
+    ) -> None:
+        try:
+            msg = json.loads(payload)
+        except (ValueError, TypeError):
+            logger.warning("dropping malformed NOTIFY payload")
+            return
+        event_id = msg.get("id")
+        if not isinstance(event_id, int):
+            return
+        data = msg.get("data")
+        if data is None:
+            # Degraded oversized path: NOTIFY only had the id, fetch
+            # the row asynchronously. Schedule on the loop so we don't
+            # block the listener.
+            asyncio.create_task(self._fetch_and_fanout(event_id))
+            return
+        self._fanout(event_id, data)
+
+    async def _fetch_and_fanout(self, event_id: int) -> None:
+        try:
+            pool = await self._ensure_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT data FROM events WHERE id = $1", event_id,
+                )
+            if row is None:
+                return
+            self._fanout(event_id, _parse_json(row["data"]))
+        except Exception:
+            logger.exception("oversized event fetch failed for id=%d", event_id)
+
+    def _fanout(self, event_id: int, data: dict) -> None:
+        item = (event_id, data)
         # Snapshot the set so a subscriber unregistering mid-iteration
-        # doesn't blow up.
+        # doesn't blow up (set mutation during iteration).
         for queue in tuple(self._subscribers):
             try:
-                queue.put_nowait(event_id)
+                queue.put_nowait(item)
             except asyncio.QueueFull:
                 # Slow consumer — drop. They'll catch up via replay on
                 # their next reconnect (Last-Event-ID).
@@ -144,15 +260,21 @@ class EventBus:
 
     # ── subscribe ────────────────────────────────────────────────────
 
-    async def subscribe(self, last_id: str = "0") -> AsyncIterator[tuple[str, dict]]:
-        await self._ensure_listener()
+    async def subscribe(
+        self, last_id: str = "0",
+    ) -> AsyncIterator[tuple[str, dict]]:
         pool = await self._ensure_pool()
         seq = int(last_id) if last_id.isdigit() else 0
 
-        queue: asyncio.Queue[int] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE)
+        # Register the live queue BEFORE replay so events that arrive
+        # during replay are not dropped. The seq filter below dedups
+        # any overlap between replay and live.
+        queue: asyncio.Queue[tuple[int, dict]] = asyncio.Queue(
+            maxsize=_SUBSCRIBER_QUEUE_SIZE,
+        )
         self._subscribers.add(queue)
         try:
-            # Replay: capped — older history stays in the table for audit.
+            # Cold path: replay.
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT id, data FROM events "
@@ -165,33 +287,28 @@ class EventBus:
                 seq = row["id"]
                 yield str(seq), _parse_json(row["data"])
 
-            # Live tail: queue is fed by the shared listener.
+            # Hot path: live tail. The listener fans out (id, data)
+            # tuples — no per-event SELECT.
             while True:
-                new_id = await queue.get()
-                if new_id <= seq:
+                event_id, data = await queue.get()
+                if event_id <= seq:
                     continue
-                async with pool.acquire() as conn:
-                    row = await conn.fetchrow(
-                        "SELECT id, data FROM events WHERE id = $1", new_id,
-                    )
-                if row is None:
-                    continue
-                seq = row["id"]
-                yield str(seq), _parse_json(row["data"])
+                seq = event_id
+                yield str(seq), data
         finally:
             self._subscribers.discard(queue)
 
     # ── lifecycle ────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        if self._listen_conn is not None:
+        self._closed.set()
+        if self._listener_task is not None:
+            self._listener_task.cancel()
             try:
-                await self._listen_conn.remove_listener(
-                    self._CHANNEL, self._on_notify,
-                )
-            finally:
-                await self._listen_conn.close()
-            self._listen_conn = None
+                await self._listener_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._listener_task = None
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
@@ -208,8 +325,8 @@ class EventHook(Hook):
     """Bridge sync Hook.on(event) → async EventBus.publish(event).
 
     Thread-safe: stages run on worker threads (asyncio.to_thread). We
-    capture the event loop at construction and schedule publishes onto it
-    via run_coroutine_threadsafe.
+    capture the event loop at construction and schedule publishes onto
+    it via run_coroutine_threadsafe.
     """
 
     def __init__(self, bus: EventBus, loop: asyncio.AbstractEventLoop) -> None:
