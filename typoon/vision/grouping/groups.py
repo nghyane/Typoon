@@ -166,15 +166,28 @@ def build_groups(state: ScanState) -> None:
 
 
 def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
-    """Run full OCR on each group crop, with rotation retry for angled text."""
+    """Run full OCR on each group crop, with rotation retry for angled text.
+
+    Pre-OCR noise filter on unscoped groups (no YOLO bubble): pure geometry
+    short-circuit so we don't pay OCR cost on detect-noise / page artifacts.
+    Scoped groups always go through — their geometry comes from the bubble
+    detector and is trusted. The kept-set still passes through `_should_skip`
+    after OCR for text-quality decisions.
+    """
     raw = bool(getattr(scanner, "wants_raw", False))
     # Pass 1: OCR all crops at detected angle
     crops, groups = [], []
     for g in state.groups:
         x1, y1, x2, y2 = g.ocr_bbox
-        if x2 - x1 >= 5 and y2 - y1 >= 5:
-            crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle, raw=raw))
-            groups.append(g)
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 5 or bh < 5:
+            continue
+        if not g.scoped and _is_geometric_noise(bw, bh, g.median_angle):
+            g.text = ""
+            g.confidence = 0.0
+            continue
+        crops.append(_rotate_crop(state.image[y1:y2, x1:x2], g.median_angle, raw=raw))
+        groups.append(g)
     for g, (text, conf) in zip(groups, scanner._ocr_crops(crops) if crops else []):
         g.text = (text or "").strip()
         g.confidence = float(conf)
@@ -196,6 +209,21 @@ def ocr_groups(state: ScanState, scanner: _Scanner) -> None:
             if conf > g.confidence:
                 g.text = text
                 g.confidence = float(conf)
+
+
+def _is_geometric_noise(bw: int, bh: int, angle: float) -> bool:
+    """Pre-OCR filter on bbox geometry alone — unscoped groups only.
+
+    Mirrors the geometry checks in `_should_skip` (`free_tiny`,
+    `free_skewed`) so they run before OCR instead of after. Verified on
+    fixture chapters: scoped dialogue has min(W,H) ≥ 113 and angle ≈ 0°,
+    while unscoped detect-noise spans the full filter range.
+    """
+    if min(bw, bh) < 20:
+        return True
+    if abs(angle) > 20.0:
+        return True
+    return False
 
 
 def _rotate_crop(crop: np.ndarray, angle: float, *, raw: bool = False) -> np.ndarray:
