@@ -100,4 +100,17 @@ async def project_event_stream(
                     if task is not None and not task.done():
                         task.cancel()
 
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            # Cloudflare Tunnel + many proxies will buffer or compress
+            # text/event-stream by default; disable both so events
+            # reach the browser as soon as we yield them. The 15s
+            # heartbeat above is the secondary defence against idle
+            # connection eviction.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
