@@ -62,8 +62,9 @@ export function useChapterArchive(url: string | null | undefined): Result {
 
 /**
  * In Discord Activity, absolute CDN URLs are blocked by CSP.
- * Rewrite them to /cdn/<path> which goes through the API proxy
- * and Discord's URL Mapping (/cdn → bunle-cdn-16g.pages.dev).
+ * Rewrite to /cdn<pathname> — Discord URL Mapping forwards
+ * /cdn → bunle-cdn-16g.pages.dev, preserving the full path
+ * (including /t/... from cdn_prefix).
  */
 function toProxyUrl(url: string): string {
   if (!isDiscordActivity) return url

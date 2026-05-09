@@ -131,39 +131,6 @@ async def healthz(db: Store = Depends(get_store)):
     return {"ok": True}
 
 
-if _serve_api:
-    # CDN proxy — forwards /cdn/<path> to the configured cdn_prefix.
-    # Keeps all archive URLs relative so they work in Discord Activity
-    # (CSP blocks absolute external origins) and in dev via Vite proxy.
-    # Range requests are forwarded so the bunle reader can slice archives.
-    #
-    # Discord URL Mapping: /cdn → bunle-cdn-16g.pages.dev (host only, no /t).
-    # FastAPI adds the /t prefix via cdn_prefix config before forwarding.
-    import httpx
-    from fastapi import Request
-    _cdn_client = httpx.AsyncClient(
-        base_url=_config.storage.public.cdn_prefix.rstrip("/") + "/",
-        follow_redirects=True,
-        timeout=30,
-    )
-
-    @app.get("/cdn/{path:path}")
-    async def cdn_proxy(path: str, request: Request, v: str = ""):
-        qs = f"?v={v}" if v else ""
-        headers = {}
-        if rng := request.headers.get("range"):
-            headers["range"] = rng
-        r = await _cdn_client.get(path + qs, headers=headers)
-        from fastapi.responses import Response
-        return Response(
-            content=r.content,
-            status_code=r.status_code,
-            headers={
-                k: r.headers[k]
-                for k in ("content-type", "content-range", "accept-ranges", "cache-control")
-                if k in r.headers
-            },
-        )
 
 
     # external CDN (bunle CDN proxying HF) and skips this mount.

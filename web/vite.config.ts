@@ -31,7 +31,6 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api':   { target, changeOrigin: true },
         '/files': { target, changeOrigin: true },
-        '/cdn':   { target, changeOrigin: true },
       },
     },
   }
