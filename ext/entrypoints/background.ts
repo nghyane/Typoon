@@ -105,15 +105,11 @@ function handleMessage(
     return true
   }
 
-  if (msg?.type === 'queue/clear-finished') {
-    void clearFinished().then(() => respond({ ok: true }))
-    return true
-  }
-
-  if (msg?.type === 'queue/clear-all') {
-    void clearAll().then(() => respond({ ok: true }))
-    return true
-  }
+  // Bulk delete handlers used to live here; the popup no longer
+  // exposes "Xoá lịch sử" / "Xoá tất cả" because the SW now
+  // auto-evicts done jobs after 24h. If a future surface needs
+  // these, re-add them — keep the type guard symmetrical with the
+  // popup affordance, never the other way round.
 
   respond({ ok: false, error: `unknown message: ${msg?.type}` })
   return false
@@ -121,8 +117,26 @@ function handleMessage(
 
 // ── Queue mutations ─────────────────────────────────────────────────
 
+// Done jobs are kept for a short window so the user can see what
+// they just upload-ed when they reopen the popup; after that they're
+// noise. Auto-purge on every read keeps the queue lean without
+// requiring a UI action ("Xoá lịch sử" used to live in the popup
+// but bulk-delete is a workflow no real user asks for).
+const DONE_RETENTION_MS = 24 * 60 * 60 * 1000  // 24h
+
 async function readQueue(): Promise<UploadQueue> {
-  return (await chromeStorage.get<UploadQueue>(UPLOAD_QUEUE_KEY)) ?? EMPTY_QUEUE
+  const q = (await chromeStorage.get<UploadQueue>(UPLOAD_QUEUE_KEY)) ?? EMPTY_QUEUE
+  const cutoff = Date.now() - DONE_RETENTION_MS
+  const kept = q.jobs.filter(j => {
+    if (j.phase !== 'done') return true
+    return (j.finishedAt ?? j.enqueuedAt) >= cutoff
+  })
+  if (kept.length !== q.jobs.length) {
+    const trimmed: UploadQueue = { jobs: kept }
+    await chromeStorage.set(UPLOAD_QUEUE_KEY, trimmed)
+    return trimmed
+  }
+  return q
 }
 
 async function writeQueue(q: UploadQueue): Promise<void> {
@@ -187,22 +201,6 @@ async function retryJob(id: string): Promise<boolean> {
   }
   await writeQueue(q)
   return true
-}
-
-async function clearFinished(): Promise<void> {
-  const q = await readQueue()
-  q.jobs = q.jobs.filter(j => j.phase !== 'done' && j.phase !== 'error')
-  await writeQueue(q)
-}
-
-async function clearAll(): Promise<void> {
-  // Wipe everything except a job that's actively running — cancelling
-  // mid-upload would leave the inbox key in a half-uploaded state and
-  // we have no way to reach in-flight XHRs from here. The bucket
-  // lifecycle rule sweeps anything we don't actively abort.
-  const q = await readQueue()
-  q.jobs = q.jobs.filter(isJobRunning)
-  await writeQueue(q)
 }
 
 async function resetStaleJobs(): Promise<void> {

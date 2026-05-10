@@ -184,17 +184,6 @@ export async function retryJob(jobId: string): Promise<void> {
   await browser.runtime.sendMessage({ type: 'queue/retry', jobId }).catch(() => {})
 }
 
-/** Clear all done + error rows from the queue (UI [Xóa đã xong] button). */
-export async function clearFinishedJobs(): Promise<void> {
-  await browser.runtime.sendMessage({ type: 'queue/clear-finished' }).catch(() => {})
-}
-
-/** Wipe the entire queue except actively-running jobs. Used by the
- *  popup "Xóa tất cả" button when the user wants a clean slate. */
-export async function clearAllJobs(): Promise<void> {
-  await browser.runtime.sendMessage({ type: 'queue/clear-all' }).catch(() => {})
-}
-
 // ── 3. Suggest the next chapter number ─────────────────────────────
 
 /** Best-effort "what's the next chapter number?" — pulls existing

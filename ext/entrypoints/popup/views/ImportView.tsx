@@ -1,18 +1,18 @@
-// Popup-driven import flow with a background upload queue.
+// Popup-driven import flow with a lightweight "Recent" panel.
 //
-// Layout: 3-zone sticky shell (header / body / footer) — same pattern
-// as the SPA modal, adapted for a 380 px popup. The footer pins the
-// primary action so the user never has to scroll to find "Tải lên",
-// even with a long thumb strip. The queue lives below the form in
-// the body (compact rows, hover-reveal actions).
+// Pro-design north star: show progress of the system, not its
+// internals. The user opens the popup to do one thing — turn the
+// chapter they're viewing into a Typoon chapter — and reopens it to
+// answer one question — "did the last upload land?". Everything else
+// (per-phase pills, MB/s, ETA, bulk delete) was visual noise and is
+// gone. Three states only: running / done / error. Errors get an
+// inline retry button; done rows show a relative timestamp and
+// auto-vanish after 24h (the SW garbage-collects on every read).
 
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, LogOut, MoreHorizontal, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, Loader2, LogOut, RefreshCw, X } from 'lucide-react'
 import { Button } from '@shared/ui/Button'
 import { Field, input, Spinner } from '@shared/ui/Field'
-import { JobPhasePill } from '@shared/ui/JobPhasePill'
-import { JobProgressBar } from '@shared/ui/JobProgressBar'
-import { InlineConfirm } from '@shared/ui/InlineConfirm'
 import { cn } from '@shared/lib/cn'
 import { ProjectPicker } from './ProjectPicker'
 import { CreateProjectModal } from './CreateProjectModal'
@@ -21,7 +21,7 @@ import { useMyProjects } from '@shell/hooks/useMyProjects'
 import { useProfile } from '@shell/hooks/useProfile'
 import { useQueue } from '@shell/hooks/useQueue'
 import {
-  cancelJob, clearAllJobs, clearFinishedJobs, consumePendingPick,
+  cancelJob, consumePendingPick,
   dismissJob, enqueueUpload, retryJob, startPickerOnActiveTab,
   suggestNextNumber, tryAutoPick,
   type PickedSelection,
@@ -179,13 +179,11 @@ export function ImportView() {
           )}
 
           {queue.jobs.length > 0 && (
-            <QueuePanel
+            <RecentPanel
               jobs={queue.jobs}
               onDismiss={dismissJob}
               onCancel={cancelJob}
               onRetry={retryJob}
-              onClearFinished={clearFinishedJobs}
-              onClearAll={clearAllJobs}
             />
           )}
         </div>
@@ -226,14 +224,14 @@ function Header({
   avatarUrl:   string | null
   onLogout:    () => void
 }) {
+  // Minimal header — no wordmark, no tagline. Browser already shows
+  // the extension name in the popup's chrome (icon + Action title);
+  // duplicating it inside the panel just steals vertical space.
+  // Avatar + chevron is the only chrome we need: account context +
+  // logout, accessible from any sub-view.
   const [open, setOpen] = useState(false)
   return (
-    <header className="flex items-center justify-between gap-2 px-3 h-11 bg-bg/95 backdrop-blur border-b border-border-soft shrink-0">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[13px] font-semibold text-text tracking-tight">Typoon</span>
-        <span className="text-[11px] text-text-subtle">Importer</span>
-      </div>
-
+    <header className="flex items-center justify-end px-2 h-9 shrink-0">
       <div className="relative">
         <button
           type="button"
@@ -470,50 +468,27 @@ function Footer({
 }
 
 
-// ── Queue panel ────────────────────────────────────────────────────
+
+// ── Recent panel ───────────────────────────────────────────────────
+//
+// One-line rows, three states: running / done / error. No bulk
+// actions, no phase pills, no per-row progress bars, no kebab menus.
+// Done jobs auto-evict after 24h server-side (see SW readQueue).
 
 
-function QueuePanel({
-  jobs, onDismiss, onCancel, onRetry, onClearFinished, onClearAll,
+function RecentPanel({
+  jobs, onDismiss, onCancel, onRetry,
 }: {
-  jobs: QueuedJob[]
+  jobs:      QueuedJob[]
   onDismiss: (id: string) => void
   onCancel:  (id: string) => void
   onRetry:   (id: string) => void
-  onClearFinished: () => void
-  onClearAll:      () => void
 }) {
-  const finishedCount = jobs.filter(j => j.phase === 'done' || j.phase === 'error').length
-  const idleCount     = jobs.filter(
-    j => j.phase === 'queued' || j.phase === 'done' || j.phase === 'error',
-  ).length
-
   return (
-    <section className="space-y-1.5">
-      <div className="flex items-center justify-between px-1">
-        <h2 className="text-[10px] uppercase tracking-wider text-text-subtle font-semibold">
-          Hàng đợi <span className="text-text-muted tabular">{jobs.length}</span>
-        </h2>
-        <div className="flex items-center gap-3">
-          {finishedCount > 0 && (
-            <button
-              type="button"
-              onClick={onClearFinished}
-              className="text-[11px] text-text-subtle hover:text-text-muted underline-offset-2 hover:underline"
-            >
-              Xoá đã xong
-            </button>
-          )}
-          {idleCount > 0 && (
-            <InlineConfirm
-              label="Xoá tất cả"
-              confirmLabel="Xác nhận?"
-              onConfirm={onClearAll}
-              className="text-[11px]"
-            />
-          )}
-        </div>
-      </div>
+    <section className="space-y-1">
+      <h2 className="px-1 text-[10px] uppercase tracking-wider text-text-subtle font-semibold">
+        Gần đây
+      </h2>
       <ul className="space-y-1">
         {jobs.map(j => (
           <JobRow
@@ -533,226 +508,186 @@ function QueuePanel({
 function JobRow({
   job, onDismiss, onCancel, onRetry,
 }: {
-  job: QueuedJob
+  job:       QueuedJob
   onDismiss: () => void
   onCancel:  () => void
   onRetry:   () => void
 }) {
-  const { phase, fetched, total, bytesSent, bytesTotal, speedBps, etaSeconds } = job
+  const state = bucketize(job.phase)
 
-  // Determinate phases drive a real progress fraction; indeterminate
-  // ones (packing / finalizing) show a shimmer-only bar with no
-  // numeric percentage. `queued` shows nothing — the pill carries
-  // the state and the row stays compact.
-  const determinate   = phase === 'fetching' || phase === 'uploading'
-  const indeterminate = phase === 'packing'  || phase === 'finalizing'
-  const showBar       = determinate || indeterminate
-
-  const pct = phase === 'fetching' && total > 0
-    ? (fetched / total) * 100
-    : phase === 'uploading' && bytesTotal && bytesTotal > 0
-      ? ((bytesSent ?? 0) / bytesTotal) * 100
-      : indeterminate ? 100 : 0
-
-  // ── Two-line layout ────────────────────────────────────────────
-  //
-  // Line 1: chapter ID (mono badge) + title. The ID is the user's
-  //   anchor; the title is the human label. When neither is set we
-  //   fall back to "Chương" with no badge.
-  //
-  // Line 2: phase pill + secondary context (project name, or error
-  //   message in tone red). Right-aligned tabular detail (size /
-  //   speed / ETA) shows only while bytes are flowing — once the job
-  //   is done the chapter ID already lives on line 1, so we don't
-  //   echo it as Ch.X again.
+  // Title chosen with the user's mental model in mind:
+  //   "Ch.328 — Title" if both available
+  //   "Ch.328"         if only number
+  //   project title    fallback (rare; very early in the pipeline)
   const num   = job.chapterNumber ?? job.job.number?.trim()
-  const title = job.job.title?.trim() ?? null
-
-  const detail = phase === 'fetching'
-    ? `${fetched}/${total}`
-    : phase === 'uploading' && bytesTotal
-      ? fmtUploadDetail(bytesSent ?? 0, bytesTotal, speedBps, etaSeconds)
-      : null
-
-  const errorMsg = phase === 'error' ? (job.error ?? 'Lỗi không rõ') : null
+  const title = job.job.title?.trim()
+  const head  = num
+    ? (title ? `Ch.${num} — ${title}` : `Ch.${num}`)
+    : (title ?? 'Chương')
 
   return (
     <li
       className={cn(
         'group relative bg-surface rounded-md px-2.5 py-2',
+        'flex items-center gap-2',
         'transition-colors hover:bg-surface-2',
       )}
     >
-      {/* Line 1 — anchor + title + actions */}
-      <div className="flex items-start gap-1.5">
-        {num && <ChapterBadge value={num} />}
-        <span className="flex-1 min-w-0 text-xs truncate leading-5">
-          {title
-            ? <span className="text-text font-medium">{title}</span>
-            : <span className="text-text-subtle italic">Chưa đặt tên</span>}
-        </span>
-        <RowActions
-          phase={phase}
-          onDismiss={onDismiss}
-          onCancel={onCancel}
-          onRetry={onRetry}
-        />
+      <StateIcon state={state} />
+
+      <div className="flex-1 min-w-0">
+        <p className="text-xs text-text font-medium truncate leading-snug">
+          {head}
+        </p>
+        <p className="text-[11px] text-text-subtle truncate leading-snug">
+          <SecondaryLine job={job} state={state} />
+        </p>
       </div>
 
-      {/* Line 2 — pill + secondary + detail */}
-      <div className="mt-1 flex items-center gap-1.5 text-[11px]">
-        <JobPhasePill phase={phase} />
-        {errorMsg ? (
-          <span
-            className="flex-1 min-w-0 text-error-text/90 truncate leading-tight"
-            title={errorMsg}
-          >
-            {errorMsg}
-          </span>
-        ) : (
-          <span
-            className="flex-1 min-w-0 text-text-subtle truncate"
-            title={job.job.projectTitle ?? ''}
-          >
-            {job.job.projectTitle ?? ''}
-          </span>
-        )}
-        {detail && (
-          <span className="text-[10px] tabular text-text-muted shrink-0">
-            {detail}
-          </span>
-        )}
-      </div>
-
-      {showBar && (
-        <div className="mt-1.5">
-          <JobProgressBar pct={pct} indeterminate={indeterminate && !determinate} />
-        </div>
-      )}
+      <RowAction
+        state={state}
+        phase={job.phase}
+        onCancel={onCancel}
+        onRetry={onRetry}
+        onDismiss={onDismiss}
+      />
     </li>
   )
 }
 
 
-function ChapterBadge({ value }: { value: string }) {
-  // Mono badge with monospace font so 'Ch.328' stays a fixed width
-  // regardless of digit count and aligns optically with the title row.
+// Three buckets — that's the whole status vocabulary the user sees.
+type RowState = 'running' | 'done' | 'error'
+
+function bucketize(phase: JobPhase): RowState {
+  if (phase === 'done')  return 'done'
+  if (phase === 'error') return 'error'
+  return 'running'      // queued + fetching + packing + uploading + finalizing
+}
+
+
+function StateIcon({ state }: { state: RowState }) {
+  if (state === 'done') {
+    return (
+      <span className="size-5 rounded-full bg-success-bg text-success-text grid place-items-center shrink-0">
+        <Check size={11} strokeWidth={3} />
+      </span>
+    )
+  }
+  if (state === 'error') {
+    return (
+      <span className="size-5 rounded-full bg-error-bg text-error-text grid place-items-center shrink-0">
+        <AlertTriangle size={10} strokeWidth={2.5} />
+      </span>
+    )
+  }
   return (
-    <span
-      className={cn(
-        'inline-flex items-center h-5 px-1.5 rounded-sm flex-none',
-        'bg-surface-2 text-text-muted text-[10px] font-mono tabular leading-none',
-      )}
-      title={`Chương ${value}`}
-    >
-      Ch.{value}
+    <span className="size-5 rounded-full bg-info-bg text-info-text grid place-items-center shrink-0">
+      <Loader2 size={11} className="animate-spin" />
     </span>
   )
 }
 
 
-// ── Row actions — hover-revealed kebab menu ───────────────────────
+function SecondaryLine({ job, state }: { job: QueuedJob; state: RowState }) {
+  const project = job.job.projectTitle ?? ''
+
+  if (state === 'error') {
+    return (
+      <span className="text-error-text/90" title={job.error ?? ''}>
+        {job.error ?? 'Lỗi không rõ'}
+      </span>
+    )
+  }
+  if (state === 'done') {
+    const ts = job.finishedAt ?? job.enqueuedAt
+    return (
+      <>
+        <span title={new Date(ts).toLocaleString()}>
+          {fmtRelative(Date.now() - ts)}
+        </span>
+        {project && <> · <span title={project}>{project}</span></>}
+      </>
+    )
+  }
+  return (
+    <>
+      <span>{liveLabel(job.phase)}</span>
+      {project && <> · <span title={project}>{project}</span></>}
+    </>
+  )
+}
 
 
-function RowActions({
-  phase, onDismiss, onCancel, onRetry,
+function liveLabel(phase: JobPhase): string {
+  if (phase === 'queued')   return 'Trong hàng đợi'
+  if (phase === 'fetching') return 'Đang tải ảnh'
+  return 'Đang upload'      // packing / uploading / finalizing all read the same to the user
+}
+
+
+// One affordance per row, picked by state. Errors get a primary
+// "Thử lại"; running shows nothing (cancel is rare and lives in
+// the kebab-less past — users wait or close the popup); done shows
+// a tiny X to dismiss before the 24h eviction.
+function RowAction({
+  state, phase, onCancel, onRetry, onDismiss,
 }: {
-  phase: JobPhase
-  onDismiss: () => void
+  state:   RowState
+  phase:   JobPhase
   onCancel:  () => void
   onRetry:   () => void
+  onDismiss: () => void
 }) {
-  const [open, setOpen] = useState(false)
-
-  // Pick the action set per phase. Empty set → no kebab at all.
-  const items = useMemo(() => {
-    const out: Array<{ label: string; icon: typeof X; onClick: () => void; danger?: boolean }> = []
-    if (phase === 'queued') {
-      out.push({ label: 'Huỷ', icon: X, onClick: onCancel, danger: true })
-    } else if (phase === 'error') {
-      out.push({ label: 'Thử lại', icon: RefreshCw, onClick: onRetry })
-      out.push({ label: 'Bỏ',      icon: X,         onClick: onDismiss, danger: true })
-    } else if (phase === 'done') {
-      out.push({ label: 'Xoá khỏi danh sách', icon: X, onClick: onDismiss, danger: true })
-    }
-    return out
-  }, [phase, onCancel, onDismiss, onRetry])
-
-  if (items.length === 0) return null
-
-  return (
-    <div className="relative shrink-0">
+  if (state === 'error') {
+    return (
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
-        className={cn(
-          'size-5 rounded-sm flex items-center justify-center',
-          'text-text-subtle hover:text-text hover:bg-hover',
-          'opacity-0 group-hover:opacity-100 focus:opacity-100',
-          'transition-opacity cursor-pointer',
-          open && 'opacity-100',
-        )}
-        aria-label="Thao tác"
+        onClick={onRetry}
+        className="text-[11px] font-medium text-accent-text hover:brightness-110 px-1.5 h-6 rounded-sm cursor-pointer shrink-0"
       >
-        <MoreHorizontal size={12} />
+        Thử lại
       </button>
-      {open && (
-        <>
-          <button
-            type="button"
-            aria-label="Đóng menu"
-            className="fixed inset-0 z-10 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div className="absolute right-0 top-full mt-1 z-20 w-44 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden py-1">
-            {items.map(({ label, icon: Icon, onClick, danger }) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => { setOpen(false); onClick() }}
-                className={cn(
-                  'w-full flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer',
-                  danger ? 'text-error-text hover:bg-error/10' : 'text-text hover:bg-hover',
-                )}
-              >
-                <Icon size={11} className="text-text-subtle" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
+    )
+  }
+  if (state === 'done') {
+    return (
+      <button
+        type="button"
+        onClick={onDismiss}
+        title="Xoá khỏi danh sách"
+        aria-label="Xoá"
+        className="size-5 rounded-sm text-text-subtle hover:text-text hover:bg-hover grid place-items-center cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shrink-0"
+      >
+        <X size={11} />
+      </button>
+    )
+  }
+  // Cancel only makes sense before the worker grabs the job.
+  if (phase === 'queued') {
+    return (
+      <button
+        type="button"
+        onClick={onCancel}
+        className="text-[11px] text-text-subtle hover:text-text-muted px-1.5 h-6 rounded-sm cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+      >
+        Huỷ
+      </button>
+    )
+  }
+  return null
 }
 
 
 // ── Formatters ─────────────────────────────────────────────────────
 
 
-function fmtUploadDetail(
-  sent: number, total: number,
-  speedBps: number | undefined, etaSeconds: number | undefined,
-): string {
-  const head = `${fmtSize(sent)}/${fmtSize(total)}`
-  const tail: string[] = []
-  if (speedBps && speedBps > 0)     tail.push(fmtSpeed(speedBps))
-  if (etaSeconds && etaSeconds > 0) tail.push(fmtEta(etaSeconds))
-  return tail.length ? `${head} · ${tail.join(' · ')}` : head
-}
-
-function fmtSize(b: number): string {
-  if (b < 1024)              return `${b}B`
-  if (b < 1024 * 1024)       return `${(b / 1024).toFixed(0)}KB`
-  return `${(b / 1024 / 1024).toFixed(1)}MB`
-}
-
-function fmtSpeed(bps: number): string {
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)}KB/s`
-  return `${(bps / 1024 / 1024).toFixed(1)}MB/s`
-}
-
-function fmtEta(s: number): string {
-  if (s < 60) return `${s}s`
-  return `${Math.floor(s / 60)}m${(s % 60).toString().padStart(2, '0')}s`
+function fmtRelative(deltaMs: number): string {
+  if (deltaMs < 60_000)         return 'vừa xong'
+  const m = Math.floor(deltaMs / 60_000)
+  if (m < 60)                   return `${m} phút trước`
+  const h = Math.floor(m / 60)
+  if (h < 24)                   return `${h} giờ trước`
+  const d = Math.floor(h / 24)
+  return `${d} ngày trước`
 }
