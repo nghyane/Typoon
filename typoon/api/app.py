@@ -147,16 +147,16 @@ async def healthz(db: Store = Depends(get_store)):
     return {"ok": True}
 
 
-
-
-    # external CDN (bunle CDN proxying HF) and skips this mount.
-    # StaticFiles supports HTTP Range so the in-browser bunle reader can
-    # request slices without pulling the whole archive.
-    # Must mount BEFORE the broader /files mount so requests to
-    # /files/render/<token>.bnl route here, not to the project files mount.
+# Static file mounts. Render archives and project covers/thumbnails are
+# served via sendfile; StaticFiles supports HTTP Range so the in-browser
+# bunle reader can request slices without pulling the whole archive.
+#
+# `/files/render` must be mounted BEFORE `/files` so requests to
+# `/files/render/<token>.bnl` route here, not to the project files mount.
+# Storage-only role still serves /files because workers need to fetch
+# render archives via the same path.
+if _serve_api:
     _archive_dir = _paths.artifacts / "render"
     _archive_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/files/render", StaticFiles(directory=str(_archive_dir)), name="render")
-
-    # Static project files (covers, future thumbnails) served via sendfile.
     app.mount("/files", StaticFiles(directory=str(_paths.projects)), name="files")
