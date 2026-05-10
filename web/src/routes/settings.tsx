@@ -10,6 +10,7 @@ import { DataTable, Th } from '@shared/ui/DataTable'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { toast } from '@shared/ui/Toaster'
 import { Modal } from '@shared/ui/Modal'
+import { confirm } from '@shared/ui/Confirm'
 import { timeAgo } from '@shared/lib/time'
 import { cn } from '@shared/lib/cn'
 
@@ -152,9 +153,19 @@ function TokensSection() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  const onRevoke = (t: ApiTokenInfo) => {
-    if (confirm(`Thu hồi token "${t.name}"? Tool đang dùng token này sẽ ngừng hoạt động.`))
-      revoke.mutate(t.id)
+  const askRevoke = async (t: ApiTokenInfo) => {
+    const ok = await confirm({
+      title:       `Thu hồi token "${t.name}"?`,
+      description: (
+        <>
+          Tool đang dùng token này sẽ <strong className="text-text">ngừng hoạt động</strong> ngay lập tức.
+          Hành động không thể hoàn tác.
+        </>
+      ),
+      confirmText: 'Thu hồi',
+      tone:        'danger',
+    })
+    if (ok) revoke.mutate(t.id)
   }
 
   return (
@@ -208,7 +219,12 @@ function TokensSection() {
             )}
 
             {!isLoading && tokens.map((t) => (
-              <TokenRow key={t.id} token={t} onRevoke={() => onRevoke(t)} />
+              <TokenRow
+                key={t.id}
+                token={t}
+                pending={revoke.isPending && revoke.variables === t.id}
+                onRevoke={() => askRevoke(t)}
+              />
             ))}
           </tbody>
         </DataTable>
@@ -223,7 +239,13 @@ function TokensSection() {
   )
 }
 
-function TokenRow({ token: t, onRevoke }: { token: ApiTokenInfo; onRevoke: () => void }) {
+function TokenRow({
+  token: t, pending, onRevoke,
+}: {
+  token:    ApiTokenInfo
+  pending:  boolean
+  onRevoke: () => void
+}) {
   return (
     <tr className="border-b border-border-soft last:border-0 group hover:bg-hover transition-colors">
       <td className="px-3 py-2.5 text-[13px] font-medium text-text">
@@ -251,10 +273,12 @@ function TokenRow({ token: t, onRevoke }: { token: ApiTokenInfo; onRevoke: () =>
           size="sm"
           icon
           onClick={onRevoke}
-          className="opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-error-text"
+          disabled={pending}
+          className="text-text-subtle hover:text-error-text hover:bg-error/10"
           title="Thu hồi"
+          aria-label={`Thu hồi token ${t.name}`}
         >
-          <Trash2 size={13} />
+          {pending ? <Spinner /> : <Trash2 size={13} />}
         </Button>
       </td>
     </tr>
@@ -314,12 +338,19 @@ function CreateTokenWizard({
 
   const submit = () => { if (canSubmit) create.mutate(trimmed) }
 
-  const tryClose = () => {
-    // After reveal: require explicit "Đã lưu" confirmation. We don't trap the
-    // user; we just require an extra confirm() so an accidental Esc doesn't
-    // make them lose a non-recoverable secret.
+  const tryClose = async () => {
+    // After reveal: require explicit "đã lưu" confirmation before close.
+    // The user isn't trapped — they can still cancel — but an accidental
+    // Esc / backdrop click won't lose a non-recoverable secret.
     if (created && !confirmedSaved) {
-      if (!confirm('Token chỉ hiện 1 lần. Bạn đã copy và lưu chưa?')) return
+      const ok = await confirm({
+        title:       'Đóng mà chưa lưu token?',
+        description: 'Token chỉ hiện 1 lần. Sau khi đóng, bạn sẽ không xem lại được — phải tạo token mới.',
+        confirmText: 'Đóng',
+        cancelText:  'Để tôi copy',
+        tone:        'danger',
+      })
+      if (!ok) return
     }
     onClose()
   }

@@ -4,6 +4,7 @@ import { Plus, Pencil, Trash2, BookText } from 'lucide-react'
 import { api, type ApiGlossaryTerm } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
 import { Modal } from '@shared/ui/Modal'
+import { confirm } from '@shared/ui/Confirm'
 import { input, label as labelCls, Spinner } from '@shared/ui/primitives'
 import { DataToolbar, SearchInput } from '@shared/ui/DataToolbar'
 import { DataTable, Th } from '@shared/ui/DataTable'
@@ -131,7 +132,15 @@ export function GlossaryPanel({ projectId }: Props) {
                     variant="ghost"
                     size="sm"
                     icon
-                    onClick={() => confirm(`Xoá "${t.source_term}"?`) && del.mutate(t.id)}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title:       `Xoá "${t.source_term}"?`,
+                        description: 'Thuật ngữ sẽ bị xoá khỏi từ điển. Hành động không thể hoàn tác.',
+                        confirmText: 'Xoá',
+                        tone:        'danger',
+                      })
+                      if (ok) del.mutate(t.id)
+                    }}
                     className="hover:text-error-text"
                     title="Xoá"
                   >

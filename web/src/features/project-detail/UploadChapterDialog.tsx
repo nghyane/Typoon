@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, type DragEvent } from 'react'
+import { useState, useRef, useEffect, useMemo, type DragEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FileText, Image as ImageIcon, Archive, X } from 'lucide-react'
+import { Upload, Image as ImageIcon, Archive, X } from 'lucide-react'
+import { uploadChapterZip, packPagesToZip, type UploadProgress } from '@typoon/upload-sdk'
 import { api, type ApiProject } from '@shared/api/api'
 import { cn } from '@shared/lib/cn'
 import { Modal } from '@shared/ui/Modal'
@@ -16,11 +17,14 @@ interface Props {
   existing: Set<string>
 }
 
-const ACCEPT = '.pdf,.cbz,.zip,.png,.jpg,.jpeg,.webp,application/pdf,application/zip,image/*'
+// Accepts the same set the engine knows how to unzip + the `.zip/.cbz`
+// archive shape the SDK can pass through verbatim. PDF is dropped: the
+// engine no longer rasterises PDFs, and pdf.js in the browser bundle
+// would balloon the SPA. CLI ingest still handles PDF.
+const ACCEPT = '.cbz,.zip,.png,.jpg,.jpeg,.webp,application/zip,image/*'
 
-// All-image extension regex (lowercase). Anything else is treated as an
-// archive/PDF for the single-file branch.
-const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|tiff?)$/i
+const IMAGE_EXT   = /\.(png|jpe?g|webp|bmp|tiff?)$/i
+const ARCHIVE_EXT = /\.(zip|cbz)$/i
 
 export function UploadChapterDialog({ open, onClose, project, existing }: Props) {
   const qc = useQueryClient()
@@ -28,94 +32,89 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
   const [files,    setFiles]    = useState<File[]>([])
   const [number,   setNumber]   = useState<string>('')
   const [title,    setTitle]    = useState('')
-  const [start,    setStart]    = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [progress, setProgress] = useState<UploadProgress | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Reset on close. Suggest next chapter number on open. `start`
-  // intentionally does NOT reset on every open — we remember the
-  // user's preference for this session: somebody who always wants to
-  // dịch ngay won't have to re-tick on every upload.
+  // Reset on open.
   useEffect(() => {
     if (open) {
       setNumber(suggestNextNumber(existing))
       setTitle('')
       setFiles([])
+      setProgress(null)
     }
   }, [open, existing])
 
   const upload = useMutation({
-    mutationFn: () => api.uploadChapter(project.project_id, files, {
-      number: number.trim() || undefined,
-      title:  title.trim() || undefined,
-      start,
-    }),
+    mutationFn: async () => {
+      // Phase 1: pack into zip. The SDK accepts the zip blob ready-made,
+      // so we either pass through a user-supplied zip/cbz or build one
+      // here from the picked images.
+      setProgress({ phase: 'packing', bytesSent: 0, bytesTotal: 0, partsSent: 0, partsTotal: 0 })
+      const zip = await buildZip(files)
+      return uploadChapterZip(api, project.project_id, zip, {
+        number: number.trim() || undefined,
+        title:  title.trim() || undefined,
+        onProgress: setProgress,
+      })
+    },
     onSuccess: (ch) => {
       qc.invalidateQueries({ queryKey: ['projects', project.project_id, 'chapters'] })
       qc.invalidateQueries({ queryKey: ['projects'] })
-      // Workers indicator + quota meter refresh only when something
-      // actually went into the queue (start=true). A pure upload
-      // doesn't move either counter so we skip those invalidations.
-      if (start) {
-        qc.invalidateQueries({ queryKey: ['workers'] })
-        qc.invalidateQueries({ queryKey: ['quota'] })
-      }
-      toast.success(
-        start
-          ? `Đã thêm và bắt đầu Ch.${ch.number} (${ch.page_count} trang)`
-          : `Đã thêm Ch.${ch.number} (${ch.page_count} trang)`,
-      )
+      // Server always enqueues scan from the multipart finalize path, so
+      // workers + quota meters always need a refresh.
+      qc.invalidateQueries({ queryKey: ['workers'] })
+      qc.invalidateQueries({ queryKey: ['quota'] })
+      toast.success(`Đã thêm và bắt đầu Ch.${ch.number} (${ch.page_count} trang)`)
       onClose()
     },
     onError: (e: Error) => toast.error(e.message),
+    onSettled: () => setProgress(null),
   })
 
-  const isArchive = files.length === 1 && !IMAGE_EXT.test(files[0].name)
-  const totalSize = files.reduce((s, f) => s + f.size, 0)
+  const isArchive = files.length === 1 && ARCHIVE_EXT.test(files[0]!.name)
+  const totalSize = useMemo(() => files.reduce((s, f) => s + f.size, 0), [files])
+  const isPending = upload.isPending
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     setDragOver(false)
-    if (upload.isPending) return
+    if (isPending) return
     const dropped = Array.from(e.dataTransfer.files)
     if (dropped.length > 0) addFiles(dropped)
   }
 
   const addFiles = (incoming: File[]) => {
-    // If user drops an archive/PDF, replace the whole list (single-chapter
+    // If user drops a zip/cbz, replace the whole list (single-archive
     // upload). For images, accumulate so users can drag multiple times.
-    const hasArchive = incoming.some((f) => !IMAGE_EXT.test(f.name))
-    if (hasArchive) {
-      setFiles([incoming.find((f) => !IMAGE_EXT.test(f.name))!])
+    const archive = incoming.find(f => ARCHIVE_EXT.test(f.name))
+    if (archive) {
+      setFiles([archive])
     } else {
-      setFiles((prev) => [...prev, ...incoming.filter((f) => IMAGE_EXT.test(f.name))])
+      setFiles(prev => [...prev, ...incoming.filter(f => IMAGE_EXT.test(f.name))])
     }
   }
 
-  // Form is valid as soon as files are picked. `number` is optional —
-  // empty falls back to suggestNextNumber on the server side, so we
-  // don't gate the upload button on it.
-  const valid = files.length > 0
+  const valid = files.length > 0 && !isPending
 
   return (
     <Modal
       open={open}
-      onClose={() => { if (!upload.isPending) onClose() }}
+      onClose={() => { if (!isPending) onClose() }}
       title={`Tải chương — ${project.title}`}
       size="md"
       footer={
         <>
-          <Button onClick={onClose} disabled={upload.isPending}>
-            Huỷ
-          </Button>
+          <Button onClick={onClose} disabled={isPending}>Huỷ</Button>
           <Button
             variant="primary"
             onClick={() => upload.mutate()}
-            disabled={!valid || upload.isPending}
+            disabled={!valid}
           >
-            {upload.isPending && <Spinner />}
+            {isPending && <Spinner />}
             <Upload size={14} />
-            {start ? 'Tải lên & dịch' : 'Tải lên'}
+            Tải lên & dịch
           </Button>
         </>
       }
@@ -123,17 +122,17 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
       <div className="px-5 py-4 space-y-4">
         {/* Drop zone */}
         <div
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
-          onClick={() => !upload.isPending && fileRef.current?.click()}
+          onClick={() => !isPending && fileRef.current?.click()}
           className={cn(
             'rounded-md border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors',
             'min-h-32 p-6 text-center',
             dragOver
               ? 'border-accent bg-accent-bg'
               : 'border-border-soft bg-surface-2/40 hover:border-text-subtle',
-            upload.isPending && 'opacity-60 cursor-not-allowed',
+            isPending && 'opacity-60 cursor-not-allowed',
           )}
         >
           {files.length === 0 ? (
@@ -142,16 +141,14 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
               <p className="text-sm font-medium text-text">
                 Kéo thả tệp vào đây hoặc <span className="underline">chọn tệp</span>
               </p>
-              <p className="text-xs text-text-subtle mt-1">
-                Hỗ trợ: PDF, CBZ, ZIP, hoặc nhiều ảnh
-              </p>
+              <p className="text-xs text-text-subtle mt-1">Hỗ trợ: CBZ, ZIP, hoặc nhiều ảnh</p>
             </>
           ) : (
             <FileList
               files={files}
               isArchive={isArchive}
               onClear={() => setFiles([])}
-              onRemove={(i) => setFiles(files.filter((_, j) => j !== i))}
+              onRemove={i => setFiles(files.filter((_, j) => j !== i))}
             />
           )}
           <input
@@ -159,7 +156,7 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
             type="file"
             accept={ACCEPT}
             multiple
-            onChange={(e) => {
+            onChange={e => {
               if (e.target.files) addFiles(Array.from(e.target.files))
               e.target.value = ''
             }}
@@ -167,17 +164,16 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
           />
         </div>
 
-        {/* Number + title */}
         <div className="grid grid-cols-[120px_1fr] gap-3">
           <div>
             <label className={label}>Số chương</label>
             <input
               type="text"
               value={number}
-              onChange={(e) => setNumber(e.target.value)}
+              onChange={e => setNumber(e.target.value)}
               placeholder="VD: 4, 4.5, Extra"
               className={input}
-              disabled={upload.isPending}
+              disabled={isPending}
             />
           </div>
           <div>
@@ -185,45 +181,91 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={e => setTitle(e.target.value)}
               placeholder="VD: Mở đầu"
               className={input}
-              disabled={upload.isPending}
+              disabled={isPending}
             />
           </div>
         </div>
 
-        {files.length > 0 && (
+        {files.length > 0 && !progress && (
           <p className="text-xs text-text-subtle">
             {files.length === 1 ? '1 tệp' : `${files.length} ảnh`} · {fmtSize(totalSize)}
           </p>
         )}
+
+        {progress && <ProgressBar progress={progress} />}
 
         {existing.has(number.trim()) && (
           <p className="text-xs text-warning-text">
             Chương {number.trim()} đã tồn tại — bản tải lên sẽ chèn vào danh sách như một bản dịch khác.
           </p>
         )}
-
-        {/* Default off so a misnamed/wrong upload doesn't auto-burn LLM
-            cost. Power users who always want to translate immediately
-            tick once and the choice persists for the dialog session. */}
-        <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={start}
-            onChange={(e) => setStart(e.target.checked)}
-            disabled={upload.isPending}
-            className="size-4 rounded-xs accent-accent cursor-pointer"
-          />
-          Bắt đầu dịch ngay sau khi tải lên
-        </label>
       </div>
     </Modal>
   )
 }
 
-// ── Internals ────────────────────────────────────────────────────────────────
+
+// ── Internals ────────────────────────────────────────────────────────
+
+
+async function buildZip(files: File[]): Promise<Blob> {
+  if (files.length === 1 && ARCHIVE_EXT.test(files[0]!.name)) {
+    // Already a zip/cbz — pass through. Engine's `unpack_zip` handles
+    // it.
+    return files[0]!
+  }
+  // Image set → store-mode zip ordered by filename. Engine natural-
+  // sorts after unzip, so the SDK's 0001-prefix filename scheme just
+  // preserves the user's drop order.
+  const sorted = [...files].sort((a, b) => naturalCompare(a.name, b.name))
+  const pages = await Promise.all(sorted.map(async f => ({
+    source: f.name,
+    bytes:  new Uint8Array(await f.arrayBuffer()),
+  })))
+  return packPagesToZip(pages)
+}
+
+function naturalCompare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function ProgressBar({ progress }: { progress: UploadProgress }) {
+  const { phase, bytesSent, bytesTotal, partsSent, partsTotal, speedBps, etaSeconds } = progress
+  const pct = bytesTotal > 0 ? Math.min(100, (bytesSent / bytesTotal) * 100) : 0
+  return (
+    <div className="space-y-1">
+      <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
+        <div
+          className="h-full bg-accent transition-[width] duration-200 ease-out"
+          style={{ width: phase === 'packing' ? '5%' : `${pct}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-xs text-text-subtle">
+        <span>{phaseLabel(phase, partsSent, partsTotal)}</span>
+        <span>
+          {phase === 'uploading' ? (
+            <>
+              {fmtSize(bytesSent)}/{fmtSize(bytesTotal)}
+              {speedBps && ` · ${fmtSpeed(speedBps)}`}
+              {etaSeconds !== undefined && etaSeconds > 0 && ` · ${fmtEta(etaSeconds)}`}
+            </>
+          ) : phase === 'finalizing'
+            ? 'Đang xử lý…'
+            : null}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function phaseLabel(phase: UploadProgress['phase'], partsSent: number, partsTotal: number): string {
+  if (phase === 'packing')    return 'Đang đóng gói…'
+  if (phase === 'uploading')  return `Tải lên (${partsSent}/${partsTotal})`
+  return 'Engine đang xử lý'
+}
 
 function FileList({
   files, isArchive, onClear, onRemove,
@@ -234,13 +276,15 @@ function FileList({
   onRemove: (i: number) => void
 }) {
   if (isArchive) {
-    const f = files[0]
+    const f = files[0]!
     return (
       <div
         className="w-full flex items-center gap-3 px-3 py-2 rounded-sm bg-surface-2"
-        onClick={(e) => e.stopPropagation()}
+        onClick={e => e.stopPropagation()}
       >
-        <FileIcon name={f.name} />
+        <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
+          <Archive size={15} className="text-text-muted" />
+        </div>
         <div className="flex-1 min-w-0 text-left">
           <p className="text-sm text-text truncate">{f.name}</p>
           <p className="text-xs text-text-subtle">{fmtSize(f.size)}</p>
@@ -255,7 +299,7 @@ function FileList({
     )
   }
   return (
-    <div className="w-full" onClick={(e) => e.stopPropagation()}>
+    <div className="w-full" onClick={e => e.stopPropagation()}>
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-text-muted">
           {files.length} ảnh — sẽ sắp xếp theo tên tệp
@@ -289,15 +333,6 @@ function FileList({
   )
 }
 
-function FileIcon({ name }: { name: string }) {
-  const lower = name.toLowerCase()
-  const Icon = lower.endsWith('.pdf') ? FileText : Archive
-  return (
-    <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
-      <Icon size={15} className="text-text-muted" />
-    </div>
-  )
-}
 
 function fmtSize(b: number): string {
   if (b < 1024)              return `${b} B`
@@ -306,9 +341,20 @@ function fmtSize(b: number): string {
   return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
+function fmtSpeed(bps: number): string {
+  if (bps < 1024)              return `${bps.toFixed(0)} B/s`
+  if (bps < 1024 * 1024)       return `${(bps / 1024).toFixed(0)} KB/s`
+  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`
+}
+
+function fmtEta(seconds: number): string {
+  if (seconds < 60) return `còn ${seconds}s`
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `còn ${m}m${s.toString().padStart(2, '0')}s`
+}
+
 function suggestNextNumber(existing: Set<string>): string {
-  // Suggest next integer past the largest numeric chapter; non-numeric
-  // entries ("Extra", "Oneshot") are ignored. Empty project → "1".
   let max = 0
   for (const s of existing) {
     const n = Number(s)

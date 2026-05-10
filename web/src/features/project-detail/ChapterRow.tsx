@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import type { ApiChapter } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
 import { Spinner } from '@shared/ui/primitives'
+import { confirm } from '@shared/ui/Confirm'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
 import { STATE_LABEL, STATE_TONE, stageLabelFor, chapterPct } from './chapter'
@@ -192,9 +193,14 @@ export function ChapterRow({ ch, checked, onToggle, isOwner, projectId, mutation
                 className="hover:text-error-text"
                 title="Xoá"
                 disabled={removePending || inFlight}
-                onClick={() => {
-                  if (confirm(`Xoá Ch.${ch.number}?`))
-                    mutations.remove.mutate(ch.chapter_id)
+                onClick={async () => {
+                  const ok = await confirm({
+                    title:       `Xoá Ch.${ch.number}?`,
+                    description: 'Bản dịch và file render của chương sẽ bị xoá. Hành động không thể hoàn tác.',
+                    confirmText: 'Xoá',
+                    tone:        'danger',
+                  })
+                  if (ok) mutations.remove.mutate(ch.chapter_id)
                 }}
               >
                 <Trash2 size={14} />

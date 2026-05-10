@@ -2,6 +2,20 @@ import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 
+// Esc key routing: only the top-most open Modal closes on Escape.
+// Without this, nested modals (e.g. Confirm opened from inside another Modal)
+// would all close on a single Esc press — which can re-open the parent's
+// guard-confirm in a loop.
+const escStack: Array<() => void> = []
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || escStack.length === 0) return
+    e.stopPropagation()
+    escStack[escStack.length - 1]!()
+  })
+}
+
 interface Props {
   open:     boolean
   onClose:  () => void
@@ -9,6 +23,12 @@ interface Props {
   size?:    'sm' | 'md' | 'lg'
   children: ReactNode
   footer?:  ReactNode
+  /**
+   * Stacking layer. Default `base` (z-50). Use `top` (z-70) for modals that
+   * may open from inside another modal — e.g. the global Confirm dialog —
+   * so they always render above the parent and above toast notifications.
+   */
+  layer?:   'base' | 'top'
 }
 
 const SIZE = {
@@ -17,19 +37,29 @@ const SIZE = {
   lg: 'max-w-4xl',
 }
 
-export function Modal({ open, onClose, title, size = 'md', children, footer }: Props) {
+const LAYER = {
+  base: 'z-50',
+  top:  'z-[70]',
+}
+
+export function Modal({ open, onClose, title, size = 'md', children, footer, layer = 'base' }: Props) {
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    escStack.push(onClose)
+    return () => {
+      const i = escStack.lastIndexOf(onClose)
+      if (i >= 0) escStack.splice(i, 1)
+    }
   }, [open, onClose])
 
   if (!open) return null
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      className={cn(
+        'fixed inset-0 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm',
+        LAYER[layer],
+      )}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div

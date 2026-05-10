@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { BottomNav } from './BottomNav'
 import { Toaster } from '@shared/ui/Toaster'
+import { ConfirmHost } from '@shared/ui/Confirm'
 import { useCurrentUser } from '@features/auth/auth'
 
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -48,6 +49,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
             <BottomNav />
           </div>
           <Toaster />
+          <ConfirmHost />
         </>
       )}
     </div>

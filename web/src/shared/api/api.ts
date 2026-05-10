@@ -4,6 +4,11 @@ const API_BASE = window.location.hostname.endsWith('.discordsays.com')
   ? ''
   : (import.meta.env.VITE_API_URL ?? '')
 
+import type {
+  UploadInitBody, UploadInitOut,
+  UploadFinalizeBody, UploadAbortBody,
+} from '@typoon/upload-sdk'
+
 const TOKEN_KEY = 'typoon_token'
 
 // 401 from any request → kick the user back to /login. We can't import
@@ -239,23 +244,28 @@ export const api = {
   deleteChapter: (pid: number, cid: number) =>
     request<void>(`/projects/${pid}/chapters/${cid}`, { method: 'DELETE' }),
 
-  // Upload — single archive (PDF/CBZ/ZIP) or multiple image files.
-  // `start` defaults to false on the server: chapter lands `idle` and
-  // the user (or batch trigger) commits to running the pipeline. Tools
-  // that already represent a user commitment (extension, CLI) should
-  // pass true.
-  uploadChapter: (
-    pid: number,
-    files: File[],
-    opts: { number?: string; title?: string; start?: boolean } = {},
-  ) => {
-    const fd = new FormData()
-    for (const f of files) fd.append('files', f)
-    if (opts.number !== undefined) fd.append('number', opts.number)
-    if (opts.title)                fd.append('title',  opts.title)
-    if (opts.start)                fd.append('start',  'true')
-    return postForm<ApiChapter>(`/projects/${pid}/chapters/upload`, fd)
-  },
+  // Chapter upload — multipart-only.
+  //
+  // Web SPA does not call this directly: it goes through the shared
+  // `@typoon/upload-sdk` driver (`uploadChapterZip`) which packs the
+  // user's image set into a zip, splits into 8 MiB parts, PUTs each
+  // part with a presigned URL, then calls `uploadFinalize`. The three
+  // endpoints below are the engine-side handshake.
+  uploadInit: (pid: number, body: UploadInitBody) =>
+    request<UploadInitOut>(
+      `/projects/${pid}/chapters/upload-init`,
+      { method: 'POST', body: json(body) },
+    ),
+  uploadFinalize: (pid: number, body: UploadFinalizeBody) =>
+    request<ApiChapter>(
+      `/projects/${pid}/chapters/upload-finalize`,
+      { method: 'POST', body: json(body) },
+    ),
+  uploadAbort: (pid: number, body: UploadAbortBody) =>
+    request<void>(
+      `/projects/${pid}/chapters/upload-abort`,
+      { method: 'POST', body: json(body) },
+    ),
 
   // Manually trigger scan on an idle chapter. Use redoChapter() instead
   // for chapters that already finished or errored.

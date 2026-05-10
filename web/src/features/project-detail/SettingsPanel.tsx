@@ -11,6 +11,7 @@ import {
   SettingsDivider, Textarea,
 } from '@shared/ui/SettingsForm'
 import { toast } from '@shared/ui/Toaster'
+import { confirm } from '@shared/ui/Confirm'
 
 interface Props { project: ApiProject }
 
@@ -203,9 +204,14 @@ export function SettingsPanel({ project }: Props) {
             action={
               <Button
                 variant="danger"
-                onClick={() => {
-                  if (!confirm(`Xoá dự án "${project.title}" và toàn bộ dữ liệu?`)) return
-                  del.mutate()
+                onClick={async () => {
+                  const ok = await confirm({
+                    title:       `Xoá dự án "${project.title}"?`,
+                    description: 'Toàn bộ chương, bản dịch, bong bóng, thuật ngữ và file render sẽ bị xoá vĩnh viễn. Hành động không thể hoàn tác.',
+                    confirmText: 'Xoá dự án',
+                    tone:        'danger',
+                  })
+                  if (ok) del.mutate()
                 }}
                 disabled={del.isPending}
               >
