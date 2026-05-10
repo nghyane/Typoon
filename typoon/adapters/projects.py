@@ -1,28 +1,26 @@
 """Project management — CRUD, redo, status, and local ingestion.
 
-This adapter no longer scrapes remote sites. Chapters arrive as local
-files (folder, zip/cbz, PDF, individual images) — see `sources.upload`
-for the extraction pipeline. Workers consume scan/translate/render
+This adapter no longer scrapes remote sites. Chapters arrive as a flat
+folder of images: the HTTP upload route unpacks the inbox zip first,
+the CLI walks a local folder. Workers consume scan/translate/render
 tasks from the DB.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from typoon.adapters.chapter_archive import masks_key
 from typoon.adapters.storage_registry import StorageRegistry
-from typoon.paths import Paths, ProjectPaths, slugify
-from typoon.runs.events import (
-    ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
-)
-from typoon.sources.constants import IMAGE_EXTS
-from typoon.sources.local import LocalSource
-from typoon.stages.prepare_archive import prepare_chapter_to_archive
+from typoon.paths import Paths
+from typoon.runs.events import Hook
 from typoon.storage import PostgresStore, Store
+
+if TYPE_CHECKING:
+    from typoon.adapters.inbox import InboxHandle
 
 logger = logging.getLogger(__name__)
 
@@ -86,86 +84,38 @@ class Projects:
             raise ValueError(f"Project '{slug}' not found. Run 'typoon status'.")
         return proj
 
-    # ── Local folder import (CLI: `typoon add`) ───────────────────────
+    # ── Single chapter queue (API: upload-finalize) ───────────────────
 
-    async def import_new(
-        self,
-        folder: Path,
-        title: str,
-        source_lang: str,
-        target_lang: str,
-        hook: Hook,
-    ) -> int:
-        slug       = slugify(title)
-        project_id = await self._db.get_or_create_project(
-            slug=slug, title=title,
-            source_lang=source_lang, target_lang=target_lang,
-        )
-        proj = await self._db.get_project(project_id)
-        ProjectPaths(self._paths.projects, slug).ensure()
-        await self._import_and_enqueue(proj, folder, hook)
-        return project_id
-
-    async def import_more(self, slug: str, folder: Path, hook: Hook) -> None:
-        proj = await self.require(slug)
-        await self._import_and_enqueue(proj, folder, hook)
-
-    # ── Single chapter ingest (API: upload endpoint) ──────────────────
-
-    async def ingest_chapter(
+    async def queue_chapter(
         self,
         project_id: int,
         number: str,
-        source_dir: Path,
+        handle: "InboxHandle",
         *,
         title: str | None = None,
-        hook: Hook | None = None,
-        strategy: str = "auto",
-        start: bool = False,
     ) -> int:
-        """Pack pages from `source_dir` as a chapter and (optionally)
-        enqueue the scan stage.
+        """Create a chapter row + persist the inbox handle + enqueue
+        prepare. Returns chapter_id.
 
-        `source_dir` must contain a flat list of image files in reading
-        order — callers (HTTP upload, CLI add) are responsible for
-        unpacking archives or rendering PDFs into that shape first.
+        The HTTP upload-finalize route returns 202 the moment this
+        function completes — it does NOT wait for prepare. The prepare
+        worker reads back the inbox handle, downloads/unpacks the zip,
+        runs `prepare_chapter_to_archive`, calls `set_prepared_done`,
+        clears the inbox handle, and advances the task to `scan`.
 
-        `number` is the display string ("4", "4.5", "Extra"). The server
-        derives the internal `position` from it. Returns the chapter_id.
-        `strategy` is forwarded to `prepare_chapter_to_archive`
-        (auto / one_to_one / stitch).
-
-        `start=False` (default) leaves the chapter in `idle` so the
-        caller can review or trigger later via `start_chapters`. Set
-        `start=True` for callers that already committed to running the
-        pipeline (CLI `add`, extension import).
+        This is the only ingest path the engine accepts. The legacy
+        CLI `typoon add` ran `prepare_chapter_to_archive` synchronously
+        from a local folder; that command was removed when uploads
+        moved to the multipart inbox flow.
         """
         chapter_id = await self._db.create_chapter(
             project_id, number, title=title,
         )
-        try:
-            _key, n = await prepare_chapter_to_archive(
-                LocalSource(source_dir),
-                project_id=project_id, chapter_id=chapter_id,
-                store=self._pipeline,
-                strategy=strategy,
-            )
-        except Exception as e:
-            if hook is not None:
-                hook.on(ChapterFailed(
-                    chapter_id=chapter_id, chapter_number=number,
-                    project_id=project_id, stage="prepare", error=e,
-                ))
-            raise
-
-        await self._db.set_prepared_done(chapter_id, n)
-        if hook is not None:
-            hook.on(ChapterDownloaded(
-                chapter_id=chapter_id, chapter_number=number,
-                project_id=project_id, page_count=n,
-            ))
-        if start:
-            await self._db.enqueue(chapter_id, "scan")
+        # Bind the chapter id onto the handle so the worker can claim it.
+        from dataclasses import replace
+        bound = replace(handle, chapter_id=chapter_id, title=title)
+        await self._db.set_inbox_handle(bound)
+        await self._db.enqueue(chapter_id, "prepare")
         return chapter_id
 
     # ── Manual trigger ────────────────────────────────────────────────
@@ -281,57 +231,5 @@ class Projects:
         return result
 
     # ── Internal ──────────────────────────────────────────────────────
-
-    async def _import_and_enqueue(self, proj: dict, folder: Path, hook: Hook) -> None:
-        for i, src_dir in enumerate(_chapter_dirs(folder), start=1):
-            number     = _parse_number(src_dir.name) or str(i)
-            chapter_id = await self._db.create_chapter(proj["id"], number)
-
-            existing = await self._db.get_chapter_render_state(chapter_id)
-            if existing and existing["page_count"] > 0:
-                hook.on(ChapterSkipped(
-                    chapter_id=chapter_id, chapter_number=number,
-                    project_id=proj["id"], reason="prepared_exists",
-                ))
-            else:
-                try:
-                    _key, n = await prepare_chapter_to_archive(
-                        LocalSource(src_dir),
-                        project_id=proj["id"], chapter_id=chapter_id,
-                        store=self._pipeline,
-                    )
-                    await self._db.set_prepared_done(chapter_id, n)
-                    hook.on(ChapterDownloaded(
-                        chapter_id=chapter_id, chapter_number=number,
-                        project_id=proj["id"], page_count=n,
-                    ))
-                except Exception as e:
-                    hook.on(ChapterFailed(
-                        chapter_id=chapter_id, chapter_number=number,
-                        project_id=proj["id"], stage="prepare", error=e,
-                    ))
-                    continue
-
-            await self._db.enqueue(chapter_id, "scan")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────
-
-
-def _chapter_dirs(folder: Path) -> list[Path]:
-    if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir() if f.is_file()):
-        return [folder]
-    return sorted(
-        d for d in folder.iterdir()
-        if d.is_dir() and any(f.suffix.lower() in IMAGE_EXTS for f in d.iterdir() if f.is_file())
-    )
-
-
-def _parse_number(name: str) -> str | None:
-    """Extract the leading numeric token from a folder name.
-
-    Returns the matched string ("12", "4.5") or None if no digit was
-    found. Callers fall back to a positional counter when None.
-    """
-    m = re.search(r"(\d+(?:\.\d+)?)", name)
-    return m.group(1) if m else None
+    # (no internal helpers — chapter ingest goes through the public
+    # `queue_chapter` API and the worker's prepare loop)

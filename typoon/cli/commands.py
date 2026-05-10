@@ -1,4 +1,11 @@
-"""CLI — user interaction only."""
+"""CLI — user interaction only.
+
+Chapter ingest is HTTP-only: the web SPA + browser extension upload
+zips through `/api/projects/.../chapters/upload-init|finalize`. The
+CLI used to expose `typoon add /folder/` for local ingest; that
+shortcut is gone. Use the SPA upload dialog or POST a zip directly to
+`upload-finalize` from your own tooling.
+"""
 
 from __future__ import annotations
 
@@ -9,67 +16,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..runs.events import Hook
-from .events import render as render_event
-
 app     = typer.Typer(name="typoon", help="Manga translation pipeline.")
 console = Console()
-
-
-class ConsoleHook(Hook):
-    def on(self, event) -> None:
-        render_event(event)
-
-
-# ── add ───────────────────────────────────────────────────────────────
-
-
-@app.command()
-def add(
-    target:      str  = typer.Argument(..., help="Folder path or project slug"),
-    folder:      Path = typer.Argument(None, help="Chapter folder (when slug given first)"),
-    target_lang: str  = typer.Option("vi", "--target-lang", "-t"),
-    source_lang: str  = typer.Option("ko", "--source-lang", "-s"),
-    name:        str  = typer.Option(None, "--name", "-n"),
-):
-    """Import local chapter images and enqueue for translation.
-
-    \b
-    Examples:
-      typoon add ./solo-leveling/ -s ko -t vi
-      typoon add solo-leveling ./ch015/
-    """
-    asyncio.run(_add(target, folder, target_lang, source_lang, name))
-
-
-async def _add(
-    target: str,
-    folder: Path | None,
-    target_lang: str,
-    source_lang: str,
-    name: str | None,
-) -> None:
-    from ..adapters.projects import Projects
-    projects = await Projects.open()
-    try:
-        if folder is not None:
-            await projects.require(target)
-            src = Path(folder)
-            if not src.is_dir():
-                console.print(f"[red]Not a directory:[/] {src}")
-                raise typer.Exit(2)
-            await projects.import_more(target, src, ConsoleHook())
-        else:
-            src = Path(target)
-            if not src.is_dir():
-                console.print(f"[red]Not a directory:[/] {src}")
-                raise typer.Exit(2)
-            project_id = await projects.import_new(src, name or src.name, source_lang, target_lang, ConsoleHook())
-            proj = await projects._db.get_project(project_id)
-            slug = proj["slug"]
-            console.print(f"\n[dim]slug: [bold]{slug}[/][/]")
-    finally:
-        await projects.close()
 
 
 # ── redo ──────────────────────────────────────────────────────────────
@@ -195,7 +143,14 @@ async def _work(role: str, concurrency: int) -> None:
             f"[red]invalid role: {role}[/] — use vision|llm|api|storage|full",
         )
         raise typer.Exit(1)
-    console.print(f"[dim]workers started role={role_enum} translate×{concurrency} — Ctrl+C to stop[/]")
+    stage_summary = {
+        Role.api:     "(api only — no workers)",
+        Role.storage: "(storage only — no workers)",
+        Role.vision:  "prepare + scan + render",
+        Role.llm:     f"prepare + translate×{concurrency}",
+        Role.full:    f"prepare + scan + translate×{concurrency} + render",
+    }.get(role_enum, "")
+    console.print(f"[dim]workers started role={role_enum}: {stage_summary} — Ctrl+C to stop[/]")
     await run_workers(role_enum, translate_concurrency=concurrency)
 
 
@@ -205,13 +160,13 @@ async def _work(role: str, concurrency: int) -> None:
 @app.command()
 def export(
     slug:    str   = typer.Argument(..., help="Project slug"),
-    formats: str   = typer.Option("pdf", "--format", "-f", help="Comma-separated: pdf,zip,webp"),
+    formats: str   = typer.Option("pdf", "--format", "-f", help="Comma-separated: pdf,zip,jpg"),
     range_:  str   = typer.Option("", "--range", "-r", help="Chapter range e.g. 1-3 or 5"),
     to:      Path  = typer.Option(None, "--to",   help="Override output dir (default: ~/.typoon/exports/<slug>/)"),
     force:   bool  = typer.Option(False, "--force", help="Re-export even if manifest is fresh"),
     open_:   bool  = typer.Option(True,  "--open/--no-open", help="Open the first PDF in system viewer"),
 ):
-    """Export rendered chapters to a folder (PDF / zip / individual WebP)."""
+    """Export rendered chapters to a folder (PDF / zip / individual JPEG)."""
     asyncio.run(_export(slug, formats, range_, to, force, open_))
 
 
@@ -230,7 +185,7 @@ async def _export(
     from ..stages.export import ChapterRef, export_chapters
 
     fmt_list = [f.strip() for f in formats.split(",") if f.strip()]
-    valid = {"pdf", "zip", "webp"}
+    valid = {"pdf", "zip", "jpg"}
     bad = [f for f in fmt_list if f not in valid]
     if bad:
         console.print(f"[red]Unknown format(s): {', '.join(bad)}. Choose from {sorted(valid)}.[/]")
@@ -534,7 +489,7 @@ async def _status(slug: str | None) -> None:
     try:
         all_status = await projects.get_status(slug)
         if not all_status:
-            msg = f"Project '{slug}' not found." if slug else "No projects. Run: typoon add <folder>"
+            msg = f"Project '{slug}' not found." if slug else "No projects. Upload a chapter from the web app."
             console.print(f"[dim]{msg}[/]")
             return
         for proj in all_status:

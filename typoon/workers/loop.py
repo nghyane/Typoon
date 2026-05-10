@@ -1,8 +1,8 @@
 """Worker process entrypoint — poll DB, claim tasks, run stages.
 
 Roles (deployment topology):
-  vision     — scan + render (needs GPU + VisionRuntime)
-  llm        — translate (LLM I/O, no GPU)
+  vision     — prepare + scan + render (needs ANE/GPU + VisionRuntime)
+  llm        — prepare + translate (LLM I/O, no GPU)
   api        — FastAPI server only (no worker loops)
   full       — everything in-process (dev, single-host Mac)
 
@@ -10,10 +10,15 @@ Each loop: claim → load → stage → save → complete.
 On failure: release claim, increment attempts, log error.
 
 Pipeline contract (RFC-001 + RFC-004):
-  prepare → upload prepared.bnl + DB.set_prepared_done
-  scan    → upload masks.npz + DB.save_geometry + DB.save_bubbles
-  translate → DB.save_translations + DB.save_chapter_brief
-  render  → upload render.bnl + DB.set_rendered(True)
+  prepare  → fetch zip from inbox → unpack → upload prepared.bnl + DB.set_prepared_done
+  scan     → upload masks.npz + DB.save_geometry + DB.save_bubbles
+  translate→ DB.save_translations + DB.save_chapter_brief
+  render   → upload render.bnl + DB.set_rendered(True)
+
+Prepare lives in `vision` and `llm` because it is CPU-only (zip unpack +
+JPEG encode + bunle.pack). Putting it on every worker process means the
+upload-finalize API can return 202 instantly and the closest available
+worker picks it up.
 """
 
 from __future__ import annotations
@@ -112,6 +117,23 @@ class Role(StrEnum):
 # ── Loops ─────────────────────────────────────────────────────────────
 
 
+async def prepare_loop(
+    db: Store, stores: StorageRegistry, hook: Hook,
+    *, paths: Paths, inbox,
+) -> None:
+    worker_id = _worker_id("prepare")
+    while True:
+        chapter_id = await db.claim_task("prepare", worker_id)
+        if chapter_id is None:
+            await asyncio.sleep(_POLL_INTERVAL)
+            continue
+        proj = await _project_for(db, chapter_id)
+        await _run_prepare(
+            chapter_id, proj["id"], db, stores, hook,
+            paths=paths, inbox=inbox,
+        )
+
+
 async def scan_loop(
     db: Store, stores: StorageRegistry, runtime: VisionRuntime, hook: Hook,
 ) -> None:
@@ -165,6 +187,98 @@ async def render_loop(
 
 
 # ── Stage runners ─────────────────────────────────────────────────────
+
+
+async def _run_prepare(
+    chapter_id: int,
+    project_id: int,
+    db: Store,
+    stores: StorageRegistry,
+    hook: Hook,
+    *,
+    paths: Paths,
+    inbox,
+) -> None:
+    """Materialise an inbox handle on disk, prepare the chapter, advance to scan.
+
+    The handle, persisted by `Projects.queue_chapter` at upload-finalize
+    time, points at the multipart upload on the S3 inbox. The worker
+    completes it (idempotent), downloads the assembled zip, unpacks
+    into a temp folder, runs `prepare_chapter_to_archive`, calls
+    `set_prepared_done`, clears the inbox handle, and advances the task
+    to `scan`.
+
+    On failure: fail_task records the error, attempts++. The inbox key
+    survives so a retry can re-fetch.
+    """
+    from typoon.sources.upload import UnpackError, unpack_zip  # noqa: PLC0415
+
+    pipeline = stores.pipeline
+    hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage="prepare"))
+
+    try:
+        handle = await db.get_inbox_handle(chapter_id)
+        if handle is None:
+            raise RuntimeError(
+                f"prepare claim {chapter_id}: missing inbox handle "
+                f"(was the chapter created without queue_chapter?)",
+            )
+
+        with tempfile.TemporaryDirectory(prefix="typoon-prepare-") as tmp_str:
+            tmp = Path(tmp_str)
+            pages_dir = tmp / "pages"
+
+            # complete_multipart is idempotent: if a prior attempt already
+            # completed it, S3 returns NoSuchUpload and we proceed to fetch.
+            try:
+                await inbox.complete_multipart(
+                    tmp_id=handle.tmp_id,
+                    upload_id=handle.upload_id,
+                    parts=list(handle.parts),
+                )
+            except Exception as e:
+                if "NoSuchUpload" not in str(e):
+                    raise
+
+            zip_path = tmp / "chapter.zip"
+            size = await inbox.fetch(tmp_id=handle.tmp_id, dest=zip_path)
+            if size <= 0:
+                raise RuntimeError(f"prepare {chapter_id}: empty zip from inbox")
+            try:
+                n_unpacked = unpack_zip(zip_path.read_bytes(), pages_dir)
+            except UnpackError as e:
+                raise RuntimeError(f"prepare {chapter_id}: unpack failed: {e}") from e
+            if n_unpacked == 0:
+                raise RuntimeError(f"prepare {chapter_id}: zip contained no pages")
+
+            from typoon.stages.prepare_archive import prepare_chapter_to_archive  # noqa: PLC0415
+            from typoon.sources.local import LocalSource  # noqa: PLC0415
+            _key, page_count = await prepare_chapter_to_archive(
+                LocalSource(pages_dir),
+                project_id=project_id, chapter_id=chapter_id,
+                store=pipeline,
+                strategy="auto",
+                work=tmp,
+            )
+
+        await db.set_prepared_done(chapter_id, page_count)
+        await db.advance_task(chapter_id, "prepare", "scan")
+        await db.clear_inbox_handle(chapter_id)
+
+        # The bucket lifecycle rule sweeps anything we miss.
+        try:
+            await inbox.delete(tmp_id=handle.tmp_id)
+        except Exception as e:
+            logger.warning(
+                "inbox cleanup failed (chapter=%d tmp=%s): %s",
+                chapter_id, handle.tmp_id, e,
+            )
+
+        hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage="prepare"))
+    except Exception as e:
+        logger.exception("prepare failed chapter_id=%d", chapter_id)
+        await db.fail_task(chapter_id, "prepare", str(e))
+        hook.on(StageFailed(chapter_id=chapter_id, project_id=project_id, stage="prepare", error=e))
 
 
 async def _run_scan(
@@ -335,7 +449,20 @@ async def run_workers(
     if role in (Role.vision, Role.full):
         runtime = VisionRuntime.from_config(config)[0]
 
+    # Inbox is needed by the prepare loop only. Build lazily so non-prepare
+    # roles don't pay the boto3 import + client init cost.
+    from typoon.adapters.inbox import build_inbox  # noqa: PLC0415
+    inbox = build_inbox(
+        config.storage,
+        paths_root=paths.artifacts,
+        base_url=config.server.public_api_url,
+    )
+
     loops: list = []
+    if role in (Role.vision, Role.full, Role.llm):
+        # Prepare is CPU-bound (zip + JPEG encode), no GPU/ANE. Runs on
+        # any role that does worker traffic at all.
+        loops.append(prepare_loop(db, stores, hook, paths=paths, inbox=inbox))
     if role in (Role.vision, Role.full):
         assert runtime is not None
         loops.append(scan_loop(db, stores, runtime, hook))

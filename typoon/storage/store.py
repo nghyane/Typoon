@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from typoon.adapters.inbox import InboxHandle
 
 
 class Store(Protocol):
@@ -100,6 +103,11 @@ class Store(Protocol):
     async def fail_task(self, chapter_id: int, stage: str, error: str) -> None: ...
     async def get_tasks(self, chapter_id: int) -> list[dict]: ...
     async def delete_tasks_from(self, chapter_id: int, stage: str) -> None: ...
+
+    # ── Chapter inbox (deferred prepare handle) ───────────────────
+    async def set_inbox_handle(self, handle: "InboxHandle") -> None: ...
+    async def get_inbox_handle(self, chapter_id: int) -> "InboxHandle | None": ...
+    async def clear_inbox_handle(self, chapter_id: int) -> None: ...
 
     # ── Quota (per-user chapter consumption) ──────────────────────
     async def record_chapter_consume(

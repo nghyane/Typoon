@@ -43,3 +43,6 @@ ext/*.zip
 # Secrets
 .env
 .jwt_secret
+
+# Workspace packages
+packages/*/node_modules/

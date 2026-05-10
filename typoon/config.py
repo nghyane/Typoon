@@ -121,7 +121,44 @@ class PipelineStoreConfig(BaseModel):
     type:           str = "local"      # local | http
     # http
     http_base_url:  str = ""           # e.g. http://100.72.203.52:8000
-    http_api_token: str = ""           # env: TYPOON_PIPELINE_TOKEN
+    http_api_token: str = ""           # env: PIPELINE_HTTP_TOKEN
+
+
+class InboxConfig(BaseModel):
+    """Short-lived chapter-zip inbox.
+
+    Browser clients (web SPA, extension) PUT a packed chapter zip via
+    pre-signed multipart URLs straight to this backend, sparing the
+    engine's home upstream bandwidth. The worker then fetches the zip
+    and prepares the chapter.
+
+    Backends:
+      - `local`: filesystem under `paths.artifacts/_inbox/`. Multipart
+        is simulated; PUTs go to a sibling local API route. Dev only.
+      - `s3`:    any S3-compatible endpoint (R2 / AWS S3 / B2 /
+        MinIO / Wasabi). Set `s3_endpoint` to the provider URL.
+
+    The bucket SHOULD have a 24h lifecycle rule on the prefix as a
+    safety net for upload-aborted prefixes; the engine deletes
+    successful uploads after ingest.
+
+    The bucket MUST have CORS configured to expose the `ETag` header
+    on PUT responses, otherwise the browser cannot complete the
+    multipart flow:
+
+        AllowedOrigins: <web origin> + chrome-extension://<id>
+        AllowedMethods: PUT
+        ExposeHeaders:  ETag
+        MaxAgeSeconds:  3600
+    """
+    type:                 str = "local"      # local | s3
+    # s3-compatible
+    s3_endpoint:          str = ""
+    s3_bucket:            str = ""
+    s3_region:            str = "auto"
+    s3_access_key_id:     str = ""
+    s3_secret_access_key: str = ""
+    s3_prefix:            str = "tmp/"
 
 
 class StorageConfig(BaseModel):
@@ -132,6 +169,7 @@ class StorageConfig(BaseModel):
     """
     public:            PublicStoreConfig   = Field(default_factory=PublicStoreConfig)
     pipeline:          PipelineStoreConfig = Field(default_factory=PipelineStoreConfig)
+    inbox:             InboxConfig         = Field(default_factory=InboxConfig)
     archive_path_salt: str = ""
 
 
@@ -309,22 +347,43 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
 
     # Storage: env wins over toml. Salt defaults to a derivation of
     # `jwt_secret` so dev doesn't need a separate env var; prod can
-    # rotate it independently via TYPOON_ARCHIVE_PATH_SALT.
-    config.storage.public.type           = os.environ.get("TYPOON_PUBLIC_TYPE",       config.storage.public.type)
-    config.storage.public.hf_repo        = os.environ.get("TYPOON_HF_REPO",           config.storage.public.hf_repo)
-    config.storage.public.hf_token       = os.environ.get("HF_TOKEN",                 config.storage.public.hf_token)
-    config.storage.public.cdn_prefix     = os.environ.get("TYPOON_CDN_PREFIX",        config.storage.public.cdn_prefix)
-    config.storage.pipeline.type         = os.environ.get("TYPOON_PIPELINE_TYPE",     config.storage.pipeline.type)
-    config.storage.pipeline.http_base_url  = os.environ.get("TYPOON_PIPELINE_BASE_URL", config.storage.pipeline.http_base_url)
-    config.storage.pipeline.http_api_token = os.environ.get("TYPOON_PIPELINE_TOKEN",    config.storage.pipeline.http_api_token)
+    # rotate it independently via ARCHIVE_PATH_SALT.
+    #
+    # Naming: storage backend vars are namespaced by backend
+    # (HF_*, R2_*, PIPELINE_*, PUBLIC_*) — no `TYPOON_` prefix on
+    # storage config. The `TYPOON_` prefix is reserved for app-level
+    # deployment markers (TYPOON_ENV, TYPOON_PORT, TYPOON_API_ROLE).
+    config.storage.public.type           = os.environ.get("PUBLIC_STORE_TYPE",      config.storage.public.type)
+    config.storage.public.hf_repo        = os.environ.get("HF_REPO",                config.storage.public.hf_repo)
+    config.storage.public.hf_token       = os.environ.get("HF_TOKEN",               config.storage.public.hf_token)
+    config.storage.public.cdn_prefix     = os.environ.get("HF_CDN_PREFIX",          config.storage.public.cdn_prefix)
+    config.storage.pipeline.type         = os.environ.get("PIPELINE_STORE_TYPE",    config.storage.pipeline.type)
+    config.storage.pipeline.http_base_url  = os.environ.get("PIPELINE_HTTP_BASE_URL", config.storage.pipeline.http_base_url)
+    config.storage.pipeline.http_api_token = os.environ.get("PIPELINE_HTTP_TOKEN",    config.storage.pipeline.http_api_token)
     config.storage.archive_path_salt     = os.environ.get(
-        "TYPOON_ARCHIVE_PATH_SALT", config.storage.archive_path_salt,
+        "ARCHIVE_PATH_SALT", config.storage.archive_path_salt,
     )
     if not config.storage.archive_path_salt:
         import hashlib
         config.storage.archive_path_salt = hashlib.sha256(
             (config.auth.jwt_secret + ":archive").encode()
         ).hexdigest()
+
+    # Inbox (browser-direct chapter zip upload). All env-only so the
+    # secret access key never lands in toml. Type auto-flips to `s3`
+    # the moment the four required S3 fields are present; otherwise
+    # it falls back to the local-on-disk inbox simulator (dev only).
+    config.storage.inbox.s3_endpoint          = os.environ.get("INBOX_S3_ENDPOINT",          config.storage.inbox.s3_endpoint)
+    config.storage.inbox.s3_bucket            = os.environ.get("INBOX_S3_BUCKET",            config.storage.inbox.s3_bucket)
+    config.storage.inbox.s3_region            = os.environ.get("INBOX_S3_REGION",            config.storage.inbox.s3_region)
+    config.storage.inbox.s3_access_key_id     = os.environ.get("INBOX_S3_ACCESS_KEY_ID",     config.storage.inbox.s3_access_key_id)
+    config.storage.inbox.s3_secret_access_key = os.environ.get("INBOX_S3_SECRET_ACCESS_KEY", config.storage.inbox.s3_secret_access_key)
+    config.storage.inbox.s3_prefix            = os.environ.get("INBOX_S3_PREFIX",            config.storage.inbox.s3_prefix)
+    if (config.storage.inbox.s3_endpoint
+            and config.storage.inbox.s3_bucket
+            and config.storage.inbox.s3_access_key_id
+            and config.storage.inbox.s3_secret_access_key):
+        config.storage.inbox.type = "s3"
 
     return config, paths
 

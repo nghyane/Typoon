@@ -9,6 +9,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException
 
 from typoon.adapters.channel_bus import ChannelBus
+from typoon.adapters.inbox import ChapterInbox, build_inbox
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
 from typoon.api.auth import verify_jwt
 from typoon.api.auth_token import looks_like_api_token, verify_api_token
@@ -19,6 +20,7 @@ from typoon.storage import PostgresStore, Store
 _store: Store | None = None
 _bus:   ChannelBus | None = None
 _storage: StorageRegistry | None = None
+_inbox: ChapterInbox | None = None
 _lock = asyncio.Lock()
 
 
@@ -69,6 +71,23 @@ def get_storage() -> StorageRegistry:
         cfg, paths = _config_and_paths()
         _storage = build_storage(cfg, paths)
     return _storage
+
+
+def get_inbox() -> ChapterInbox:
+    """Browser-facing chapter zip inbox (S3-compatible or local dev).
+
+    Created lazily on first use; reused across requests so the boto3
+    HTTP pool stays warm.
+    """
+    global _inbox
+    if _inbox is None:
+        cfg, paths = _config_and_paths()
+        _inbox = build_inbox(
+            cfg.storage,
+            paths_root=paths.artifacts,
+            base_url=cfg.server.public_api_url,
+        )
+    return _inbox
 
 
 def get_auth_cfg() -> AuthConfig:

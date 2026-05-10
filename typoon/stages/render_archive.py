@@ -51,7 +51,7 @@ async def render_chapter_to_archive(
     number of pages the reader will see.
     """
     with workdir(work) as tmp:
-        out_dir = tmp / "render_webp"
+        out_dir = tmp / "render_jpg"
         archive_path = tmp / "render.bnl"
 
         rendered = await asyncio.to_thread(

@@ -71,18 +71,33 @@ _paths.ensure()
 # Discord Activity sandbox origins. `storage` role serves only worker
 # traffic (no browser), so a permissive CORS doesn't widen attack
 # surface there beyond what worker tokens already gate.
+#
+# Browser extensions (RFC-009) authenticate with `Authorization: Bearer`
+# tokens — no cookie auth, no CSRF surface — so allowing the
+# extension origin patterns here only widens the *advertised* CORS,
+# not the actual auth surface. Token revocation in /api/me/tokens is
+# the real lever.
 _origins = [
     _config.server.public_web_url,
     "https://discord.com",
 ]
+_extension_origin_re = (
+    # Chrome / Edge: 32-char a-p ID.
+    r"chrome-extension://[a-p]{32}"
+    # Firefox: UUID with hyphens.
+    r"|moz-extension://[0-9a-f-]{36}"
+)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
-    allow_origin_regex=r"https://[a-z0-9-]+\.discordsays\.com",
+    allow_origin_regex=(
+        r"https://[a-z0-9-]+\.discordsays\.com"
+        r"|" + _extension_origin_re
+    ),
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=["X-Request-ID", "ETag"],
 )
 
 # Host header validation. Behind Cloudflare Tunnel (or any proxy) the
@@ -109,6 +124,7 @@ if _serve_api:
     app.include_router(me.router)
     app.include_router(projects.router)
     app.include_router(upload.router)
+    app.include_router(upload.local_router)
     app.include_router(bubbles.router)
     app.include_router(glossary.router)
     app.include_router(workers.router)

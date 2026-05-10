@@ -1,4 +1,11 @@
-"""CLI event rendering — singledispatch, one handler per event type."""
+"""CLI event rendering — singledispatch, one handler per event type.
+
+Event types here mirror the worker pipeline (`StageStarted/Done/Failed`,
+`PageDone`) and the LLM agent loop (`LLMCall/Response`, `ToolResult`).
+Chapter-level events from the deleted CLI ingest path
+(`ChapterDownloaded/Skipped/Failed/Done`) are not handled — they no
+longer exist.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,6 @@ from functools import singledispatch
 from rich.console import Console
 
 from typoon.runs.events import (
-    ChapterDone, ChapterDownloaded, ChapterFailed, ChapterSkipped,
     Event, LLMCall, LLMResponse, PipelineError, StageDone, StageStarted,
     StageFailed, ToolResult,
 )
@@ -19,16 +25,6 @@ console = Console()
 @singledispatch
 def render(event: Event) -> None:
     pass
-
-
-@render.register
-def _(event: ChapterDownloaded) -> None:
-    console.print(f"  [cyan]↓[/] ch{event.chapter_number}  {event.page_count} pages")
-
-
-@render.register
-def _(event: ChapterSkipped) -> None:
-    console.print(f"  [dim]–[/] ch{event.chapter_number}  {event.reason}")
 
 
 @render.register
@@ -51,19 +47,6 @@ def _(event: StageFailed) -> None:
 @render.register
 def _(event: PipelineError) -> None:
     console.print(f"    [red]error[/] [{event.stage}] {event.error}")
-    if event.error and event.error.__traceback__:
-        console.print("".join(traceback.format_tb(event.error.__traceback__)), style="dim red")
-
-
-@render.register
-def _(event: ChapterDone) -> None:
-    console.print(f"  [green]✓[/] ch{event.chapter_number}  {event.bubble_count} pages rendered")
-    console.print(f"    [dim]{event.render_dir}[/]")
-
-
-@render.register
-def _(event: ChapterFailed) -> None:
-    console.print(f"  [red]✗[/] ch{event.chapter_number}  {event.stage}: {event.error}")
     if event.error and event.error.__traceback__:
         console.print("".join(traceback.format_tb(event.error.__traceback__)), style="dim red")
 

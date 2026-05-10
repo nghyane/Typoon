@@ -15,14 +15,18 @@ import json
 import logging
 import re as _re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import asyncpg
+
+if TYPE_CHECKING:
+    from typoon.adapters.inbox import InboxHandle
 
 logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "13"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -621,6 +625,61 @@ class PostgresStore:
             await conn.execute(
                 "DELETE FROM tasks WHERE chapter_id=$1 AND stage = ANY($2::text[])",
                 chapter_id, stages_to_delete,
+            )
+
+    # ── Chapter inbox (deferred prepare handle) ───────────────────
+    #
+    # The `/upload-finalize` route persists everything the prepare
+    # worker needs (multipart coordinates or a local folder path) into
+    # `chapter_inbox`, then enqueues the prepare task. The worker reads
+    # the row, materialises the chapter zip on disk, and clears the row
+    # once prepare succeeds. One row per chapter.
+
+    async def set_inbox_handle(self, handle: "InboxHandle") -> None:
+        parts_json = json.dumps(
+            [{"number": p.number, "etag": p.etag} for p in handle.parts],
+        )
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO chapter_inbox "
+                "  (chapter_id, tmp_id, upload_id, parts, title) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5) "
+                "ON CONFLICT (chapter_id) DO UPDATE SET "
+                "  tmp_id=EXCLUDED.tmp_id, upload_id=EXCLUDED.upload_id, "
+                "  parts=EXCLUDED.parts, title=EXCLUDED.title",
+                handle.chapter_id, handle.tmp_id, handle.upload_id,
+                parts_json, handle.title,
+            )
+
+    async def get_inbox_handle(self, chapter_id: int) -> "InboxHandle | None":
+        from typoon.adapters.inbox import CompletedPart, InboxHandle
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tmp_id, upload_id, parts, title "
+                "FROM chapter_inbox WHERE chapter_id=$1",
+                chapter_id,
+            )
+        if row is None:
+            return None
+        raw = row["parts"]
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return InboxHandle(
+            chapter_id=chapter_id,
+            tmp_id=row["tmp_id"],
+            upload_id=row["upload_id"],
+            parts=tuple(
+                CompletedPart(number=int(p["number"]), etag=str(p["etag"]))
+                for p in raw
+            ),
+            title=row["title"],
+        )
+
+    async def clear_inbox_handle(self, chapter_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM chapter_inbox WHERE chapter_id=$1",
+                chapter_id,
             )
 
     # ── Quota (per-user chapter consumption) ──────────────────────

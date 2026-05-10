@@ -161,6 +161,23 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(stage, claimed_by, claimed_at);
 
+-- ── Chapter inbox (browser-direct upload handle) ────────────────────
+-- Persists the multipart upload coordinates between `/upload-finalize`
+-- (which returns 202 immediately) and the prepare worker (which calls
+-- inbox.complete_multipart + fetch). One row per chapter; deleted by
+-- the worker after prepare succeeds + the inbox key is removed from R2.
+--
+-- `parts` is a sorted JSON array `[{"number": 1, "etag": "..."}, ...]`.
+
+CREATE TABLE IF NOT EXISTS chapter_inbox (
+    chapter_id   BIGINT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
+    tmp_id       TEXT NOT NULL,
+    upload_id    TEXT NOT NULL,
+    parts        JSONB NOT NULL,
+    title        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── Bubbles + geometry ──────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS bubbles (

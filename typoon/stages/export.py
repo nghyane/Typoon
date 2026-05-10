@@ -1,4 +1,4 @@
-"""Export rendered chapters to user-facing files (PDF, zip, WebP).
+"""Export rendered chapters to user-facing files (PDF, zip, image folder).
 
 The export stage downloads `render.bnl` from the artifact store, decodes
 each page, and produces the requested format(s) into a destination
@@ -11,7 +11,6 @@ by default and never collide with the internal `artifacts/` namespace.
 
 from __future__ import annotations
 
-import io
 import json
 import re
 import tempfile
@@ -23,11 +22,10 @@ from typing import Literal
 
 import bunle
 import img2pdf
-from PIL import Image
 
 from typoon.adapters.storage_registry import StorageRegistry
 
-ExportFormat = Literal["pdf", "zip", "webp"]
+ExportFormat = Literal["pdf", "zip", "jpg"]
 _MANIFEST_NAME = "manifest.json"
 
 
@@ -113,8 +111,8 @@ def _render_outputs(
         out["pdf"] = _write_pdf(dest_dir / f"{base}.pdf", page_bytes)
     if "zip" in formats:
         out["zip"] = _write_zip(dest_dir / f"{base}.zip", page_bytes)
-    if "webp" in formats:
-        out["webp"] = _write_webp_dir(dest_dir / base, page_bytes)
+    if "jpg" in formats:
+        out["jpg"] = _write_image_dir(dest_dir / base, page_bytes, ext="jpg")
     return out
 
 
@@ -129,17 +127,11 @@ def _safe(s: str) -> str:
 
 
 def _write_pdf(path: Path, page_bytes: list[bytes]) -> Path:
-    # Re-encode each page as JPEG q=95 with no chroma subsampling, then
-    # let img2pdf passthrough the JPEG bytes verbatim into the PDF.
-    jpeg_pages: list[bytes] = []
-    for raw in page_bytes:
-        with Image.open(io.BytesIO(raw)) as img:
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=95, subsampling=0)
-            jpeg_pages.append(buf.getvalue())
+    # Render output is already JPEG q=92 — img2pdf accepts JPEG bytes
+    # passthrough into the PDF, no re-encode needed.
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
-        f.write(img2pdf.convert(jpeg_pages))
+        f.write(img2pdf.convert(page_bytes))
     return path
 
 
@@ -147,14 +139,14 @@ def _write_zip(path: Path, page_bytes: list[bytes]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
         for i, raw in enumerate(page_bytes):
-            zf.writestr(f"{i:04d}.webp", raw)
+            zf.writestr(f"{i:04d}.jpg", raw)
     return path
 
 
-def _write_webp_dir(out_dir: Path, page_bytes: list[bytes]) -> Path:
+def _write_image_dir(out_dir: Path, page_bytes: list[bytes], *, ext: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     for i, raw in enumerate(page_bytes):
-        (out_dir / f"{i:04d}.webp").write_bytes(raw)
+        (out_dir / f"{i:04d}.{ext}").write_bytes(raw)
     return out_dir
 
 
