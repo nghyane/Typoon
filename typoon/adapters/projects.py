@@ -13,7 +13,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from typoon.adapters.blob_store import BlobStore
+from typoon.adapters.chapter_archive import masks_key
+from typoon.adapters.storage_registry import StorageRegistry
 from typoon.paths import Paths, ProjectPaths, slugify
 from typoon.runs.events import (
     ChapterDownloaded, ChapterFailed, ChapterSkipped, Hook,
@@ -47,12 +48,13 @@ class ProjectStatus:
 
 
 class Projects:
-    def __init__(self, db: Store, paths: Paths, pipeline: BlobStore) -> None:
+    def __init__(self, db: Store, paths: Paths, stores: StorageRegistry) -> None:
         self._db       = db
         self._paths    = paths
-        # The pipeline blob store is where prepared.bnl lives. Public
-        # render archives are written by the render worker, not here.
-        self._pipeline = pipeline
+        # Pipeline holds prepared.bnl + masks.npz; readers map dispatches
+        # public render archive deletes through whichever backend wrote them.
+        self._stores   = stores
+        self._pipeline = stores.pipeline
 
     @classmethod
     async def open(cls) -> "Projects":
@@ -64,7 +66,7 @@ class Projects:
         return cls(
             await PostgresStore.open(config.database_url),
             paths,
-            stores.pipeline,
+            stores,
         )
 
     async def close(self) -> None:
@@ -212,10 +214,42 @@ class Projects:
             chapters = [c for c in chapters if c["id"] in wanted]
 
         for ch in chapters:
+            # Drop derived blobs BEFORE the DB row is reset — once
+            # `delete_chapter_data` nulls archive_backend/locator we
+            # lose the dispatch info for the old render archive.
+            await self._purge_derived_blobs(
+                proj["id"], ch["id"],
+                ch.get("archive_backend"), ch.get("archive_locator"),
+            )
             await self._db.delete_chapter_data(ch["id"])
             await self._db.enqueue(ch["id"], "scan")
 
         return len(chapters)
+
+    async def _purge_derived_blobs(
+        self,
+        project_id: int,
+        chapter_id: int,
+        archive_backend: str | None,
+        archive_locator: str | None,
+    ) -> None:
+        """Delete masks.npz + the public render archive.
+
+        prepared.bnl is intentionally kept: scan re-derives geometry/masks
+        from the same prepared pixels, so dropping it would force a
+        re-upload for no gain. masks.npz must go because scan rewrites it
+        from scratch and a stale copy would render against the old
+        geometry if scan failed mid-stage. The public render archive
+        also must go: redo invalidates it and leaving the blob behind
+        creates an orphan on the public store.
+        """
+        await self._pipeline.delete(masks_key(project_id, chapter_id))
+        if archive_backend and archive_locator:
+            try:
+                await self._stores.reader(archive_backend).delete(archive_locator)
+            except RuntimeError:
+                # Backend no longer configured — orphan, nothing to do.
+                pass
 
     # ── Status (CLI) ──────────────────────────────────────────────────
 

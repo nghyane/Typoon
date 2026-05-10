@@ -143,11 +143,32 @@ async def get_project(
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(
     project_id: int,
-    user:  dict          = Depends(require_user),
-    db:    Store         = Depends(get_store),
-    paths: Paths         = Depends(get_paths),
+    user:   dict            = Depends(require_user),
+    db:     Store           = Depends(get_store),
+    paths:  Paths           = Depends(get_paths),
+    stores: StorageRegistry = Depends(get_storage),
 ):
     proj = await require_project_owner(project_id, user, db)
+
+    # Drop derived blobs for every chapter BEFORE the cascading DB
+    # delete wipes their archive_backend/locator pointers. Pipeline
+    # blobs (prepared.bnl, masks.npz) and public render archives live
+    # on remote stores in prod (HTTP / HuggingFace) — the on-disk
+    # rmtree below only covers the local fallback.
+    from typoon.adapters.chapter_archive import masks_key, prepared_key
+
+    chapters = await db.get_all_chapters(project_id)
+    for ch in chapters:
+        await stores.pipeline.delete(prepared_key(project_id, ch["id"]))
+        await stores.pipeline.delete(masks_key(project_id, ch["id"]))
+        backend = ch.get("archive_backend")
+        locator = ch.get("archive_locator")
+        if backend and locator:
+            try:
+                await stores.reader(backend).delete(locator)
+            except RuntimeError:
+                pass  # backend no longer configured — orphan, nothing to do
+
     await db.delete_project(project_id)
     shutil.rmtree(ProjectPaths(paths.projects, proj["slug"]).root, ignore_errors=True)
     shutil.rmtree(paths.artifacts / "p" / str(project_id), ignore_errors=True)
@@ -326,7 +347,7 @@ async def redo_chapter(
     proj = await require_project_owner(project_id, user, db)
     ch   = await require_chapter(project_id, chapter_id, db)
     await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
-    await Projects(db, paths, stores.pipeline).redo(proj["slug"], [ch["id"]])
+    await Projects(db, paths, stores).redo(proj["slug"], [ch["id"]])
     await record_chapter_consume(user, db, auth, chapter_id, project_id)
     data = await db.get_chapter_with_status(chapter_id, project_id)
     return chapter_out(data, archive_url=_archive_url(stores, data))
@@ -361,7 +382,7 @@ async def start_chapter(
     await require_project_owner(project_id, user, db)
     await require_chapter(project_id, chapter_id, db)
     await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
-    started = await Projects(db, paths, stores.pipeline).start_chapters(
+    started = await Projects(db, paths, stores).start_chapters(
         project_id, [chapter_id],
     )
     # Only record if the chapter was actually idle and got enqueued —
@@ -407,7 +428,7 @@ async def start_chapters(
             user, db, cfg.rate_limit, auth, count=len(idle_ids),
         )
 
-    started = await Projects(db, paths, stores.pipeline).start_chapters(
+    started = await Projects(db, paths, stores).start_chapters(
         project_id, body.chapter_ids,
     )
     for cid in idle_ids[:started]:

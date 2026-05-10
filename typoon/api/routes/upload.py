@@ -127,7 +127,7 @@ async def upload_chapter(
     loop = asyncio.get_running_loop()
     hook: Hook = ChannelHook(bus, loop)
 
-    pj = Projects(db, paths, stores.pipeline)
+    pj = Projects(db, paths, stores)
 
     # Unpack to temp, ingest, return chapter status.
     with tempfile.TemporaryDirectory(prefix="typoon-upload-") as tmp:
