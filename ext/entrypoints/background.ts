@@ -243,10 +243,6 @@ async function retryJob(id: string): Promise<boolean> {
     chapterNumber: undefined,
     finishedAt: undefined,
     fetched: 0,
-    bytesSent: undefined,
-    bytesTotal: undefined,
-    speedBps: undefined,
-    etaSeconds: undefined,
   }
   await writeQueue(q)
   return true
@@ -320,30 +316,19 @@ async function runJob(id: string): Promise<void> {
     // 2. Pack into store-mode zip. Synchronous; ~50ms for 30 pages.
     const zip = packPagesToZip(fetchedBlobs)
 
-    // 3. Multipart PUT via the shared SDK. Progress callback is
-    //    debounced inside the SDK; we relay to chrome.storage.
-    let lastPersist = 0
-    await updateJob(id, {
-      phase: 'uploading',
-      bytesTotal: zip.size,
-    })
+    // 3. Multipart PUT via the shared SDK. Per-byte progress is no
+    //    longer surfaced (popup shows three buckets: running / done
+    //    / error), so we only flip the phase when finalize starts.
+    //    One storage write per phase boundary instead of N at 4fps.
+    let lastPhase: UploadProgress['phase'] | null = null
+    await updateJob(id, { phase: 'uploading' })
     const chapter = await uploadChapterZip(client, job.projectId, zip, {
       number: job.number,
       title:  job.title,
       onProgress: (p: UploadProgress) => {
-        // Persist at most every 250ms — chrome.storage.local writes
-        // serialise the whole queue, so we keep the I/O cost tiny.
-        const now = Date.now()
-        if (p.phase === 'finalizing' && p.bytesSent < p.bytesTotal) return
-        if (now - lastPersist < 250) return
-        lastPersist = now
-        void updateJob(id, {
-          phase: p.phase === 'finalizing' ? 'finalizing' : 'uploading',
-          bytesSent:  p.bytesSent,
-          bytesTotal: p.bytesTotal,
-          speedBps:   p.speedBps,
-          etaSeconds: p.etaSeconds,
-        })
+        if (p.phase === lastPhase) return
+        lastPhase = p.phase
+        void updateJob(id, { phase: p.phase })
       },
     })
 
@@ -351,10 +336,6 @@ async function runJob(id: string): Promise<void> {
       phase: 'done',
       chapterNumber: chapter.number,
       finishedAt: Date.now(),
-      bytesSent: zip.size,
-      bytesTotal: zip.size,
-      speedBps: undefined,
-      etaSeconds: undefined,
     })
 
     notifyDone(job, chapter.number)

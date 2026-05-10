@@ -37,15 +37,6 @@ export interface QueuedJob {
   /** Pages fetched from the source CDN so far. Total = job.images.length. */
   fetched:   number
   total:     number
-  /** Bytes pushed to the inbox so far. Populated only while
-   *  `phase === 'uploading'`. */
-  bytesSent?:    number
-  bytesTotal?:   number
-  /** Bytes/second across the multipart PUT pool, EMA over ~3s.
-   *  Undefined until the SDK has at least two progress samples. */
-  speedBps?:     number
-  /** Seconds remaining at the current speed. */
-  etaSeconds?:   number
   /** Engine-assigned chapter number once finalize succeeds. */
   chapterNumber?: string
   /** Error message when phase === 'error'. */
@@ -63,21 +54,8 @@ export const UPLOAD_QUEUE_KEY = 'typoon.queue'
 
 export const EMPTY_QUEUE: UploadQueue = { jobs: [] }
 
-const ACTIVE_PHASES = new Set<JobPhase>(['queued', 'fetching', 'packing', 'uploading', 'finalizing'])
 const RUNNING_PHASES = new Set<JobPhase>(['fetching', 'packing', 'uploading', 'finalizing'])
-
-export function isJobActive(j: QueuedJob): boolean {
-  return ACTIVE_PHASES.has(j.phase)
-}
 
 export function isJobRunning(j: QueuedJob): boolean {
   return RUNNING_PHASES.has(j.phase)
-}
-
-export function activeCount(q: UploadQueue): number {
-  return q.jobs.filter(isJobActive).length
-}
-
-export function runningJob(q: UploadQueue): QueuedJob | undefined {
-  return q.jobs.find(isJobRunning)
 }
