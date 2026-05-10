@@ -1,12 +1,17 @@
 // Multipart-part PUT with progress + retry.
 //
-// XHR (not fetch) is used because Chrome stable still lacks
-// `fetch` upload streaming — `XMLHttpRequest.upload.onprogress` is
-// the only path to byte-level upload progress that works in MV3
-// service workers, the SPA, and Firefox. Each PUT is a single
-// presigned URL; the server (R2/S3/local) returns the part's ETag
-// in the `ETag` response header, which we hand back to
-// `upload-finalize`.
+// Two transport paths, picked at runtime:
+//   - XMLHttpRequest when available (popup, content script, SPA).
+//     Gives byte-level upload progress via `xhr.upload.onprogress`,
+//     which `fetch` still lacks in stable Chrome.
+//   - `fetch` fallback for MV3 service workers — they have no XHR
+//     constructor at all. We lose mid-part progress and only emit
+//     once the part lands; the per-part counter still ticks so the
+//     UI shows movement at part boundaries.
+//
+// Each PUT is a single presigned URL; the server (R2/S3/local)
+// returns the part's ETag in the `ETag` response header, which we
+// hand back to `upload-finalize`.
 //
 // Retry policy: 3 attempts, exponential backoff (250ms → 1s → 4s),
 // only on transient failures (network error or 5xx). 4xx is
@@ -87,6 +92,23 @@ function putOnce(
   tracker:    ProgressTracker,
   signal:     AbortSignal | undefined,
 ): Promise<string> {
+  // MV3 service workers have no `XMLHttpRequest`; fall back to fetch.
+  // Popup / content / SPA contexts get the XHR path which can stream
+  // upload progress.
+  if (typeof XMLHttpRequest === 'undefined') {
+    return putOnceFetch(partNumber, url, body, tracker, signal)
+  }
+  return putOnceXhr(partNumber, url, body, tracker, signal)
+}
+
+
+function putOnceXhr(
+  partNumber: number,
+  url:        string,
+  body:       Blob,
+  tracker:    ProgressTracker,
+  signal:     AbortSignal | undefined,
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', url, true)
@@ -132,6 +154,41 @@ function putOnce(
 
     xhr.send(body)
   })
+}
+
+
+async function putOnceFetch(
+  partNumber: number,
+  url:        string,
+  body:       Blob,
+  tracker:    ProgressTracker,
+  signal:     AbortSignal | undefined,
+): Promise<string> {
+  // No mid-part progress in this branch — `Request` upload streaming
+  // is gated behind `duplex: 'half'` and isn't reliable on the SW
+  // path. We emit once the body is accepted; `finalize()` in the
+  // outer retry wrapper still settles the per-part total.
+  const res = await fetch(url, {
+    method: 'PUT',
+    body,
+    signal,
+  })
+
+  if (res.status >= 200 && res.status < 300) {
+    tracker.add(partNumber, body.size)
+    const raw = res.headers.get('ETag')
+    if (!raw) {
+      throw new PermanentPutError(
+        res.status,
+        'Missing ETag — kiểm tra CORS bucket (ExposeHeaders: ETag).',
+      )
+    }
+    return raw.replace(/^"|"$/g, '')
+  }
+  if (res.status >= 400 && res.status < 500) {
+    throw new PermanentPutError(res.status, `PUT ${res.status}`)
+  }
+  throw new Error(`PUT ${res.status}`)
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
