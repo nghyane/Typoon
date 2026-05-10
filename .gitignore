@@ -31,6 +31,15 @@ web/node_modules/
 web/dist/
 web/preview/
 
+# Browser extension
+ext/node_modules/
+ext/.output/
+ext/.wxt/
+ext/*.zip
+
+# Workspace root (bun symlinks workspace deps here)
+/node_modules/
+
 # Secrets
 .env
 .jwt_secret

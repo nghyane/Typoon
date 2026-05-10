@@ -1,0 +1,10 @@
+{
+  "name": "typoon-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "web",
+    "ext",
+    "packages/*"
+  ]
+}
