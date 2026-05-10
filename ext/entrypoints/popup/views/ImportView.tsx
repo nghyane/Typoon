@@ -69,11 +69,16 @@ export function ImportView() {
     return () => { alive = false }
   }, [])
 
-  // Restore last-used project once the projects list arrives.
+  // Restore the user's last-used project, falling back to the first
+  // entry when storage doesn't have one yet (fresh install, cleared
+  // settings). `useMyProjects` returns the list ordered by recency
+  // server-side, so projects[0] is "the most recent project this
+  // user touched" — a sane default that lets the form render
+  // submit-ready instead of greeting users with a blank picker.
   useEffect(() => {
     if (project || !projects.length) return
     const last = projects.find(p => p.project_id === config.lastProjectId)
-    setProject(last ?? null)
+    setProject(last ?? projects[0]!)
   }, [projects, config.lastProjectId, project])
 
   // Persist the project pick to lastProjectId immediately, not just
@@ -535,15 +540,13 @@ function JobRow({
 }) {
   const { phase, fetched, total, bytesSent, bytesTotal, speedBps, etaSeconds } = job
 
-  // Determinate phases:
-  //   fetching → fraction of pages pulled from the source CDN
-  //   uploading → fraction of bytes pushed to the inbox
-  // Indeterminate phases:
-  //   packing / finalizing → shimmer, no real fraction
-  //   queued → empty bar
-  const determinate = phase === 'fetching' || phase === 'uploading'
-  const indeterminate = phase === 'packing' || phase === 'finalizing'
-  const showBar = determinate || indeterminate
+  // Determinate phases drive a real progress fraction; indeterminate
+  // ones (packing / finalizing) show a shimmer-only bar with no
+  // numeric percentage. `queued` shows nothing — the pill carries
+  // the state and the row stays compact.
+  const determinate   = phase === 'fetching' || phase === 'uploading'
+  const indeterminate = phase === 'packing'  || phase === 'finalizing'
+  const showBar       = determinate || indeterminate
 
   const pct = phase === 'fetching' && total > 0
     ? (fetched / total) * 100
@@ -551,19 +554,27 @@ function JobRow({
       ? ((bytesSent ?? 0) / bytesTotal) * 100
       : indeterminate ? 100 : 0
 
-  const labelText = job.job.title?.trim()
-    ? job.job.title
-    : job.job.number
-      ? `Chương ${job.job.number}`
-      : 'Chương'
+  // ── Two-line layout ────────────────────────────────────────────
+  //
+  // Line 1: chapter ID (mono badge) + title. The ID is the user's
+  //   anchor; the title is the human label. When neither is set we
+  //   fall back to "Chương" with no badge.
+  //
+  // Line 2: phase pill + secondary context (project name, or error
+  //   message in tone red). Right-aligned tabular detail (size /
+  //   speed / ETA) shows only while bytes are flowing — once the job
+  //   is done the chapter ID already lives on line 1, so we don't
+  //   echo it as Ch.X again.
+  const num   = job.chapterNumber ?? job.job.number?.trim()
+  const title = job.job.title?.trim() ?? null
 
   const detail = phase === 'fetching'
     ? `${fetched}/${total}`
     : phase === 'uploading' && bytesTotal
       ? fmtUploadDetail(bytesSent ?? 0, bytesTotal, speedBps, etaSeconds)
-      : phase === 'done' && job.chapterNumber
-        ? `Ch.${job.chapterNumber}`
-        : null
+      : null
+
+  const errorMsg = phase === 'error' ? (job.error ?? 'Lỗi không rõ') : null
 
   return (
     <li
@@ -572,19 +583,14 @@ function JobRow({
         'transition-colors hover:bg-surface-2',
       )}
     >
-      <div className="flex items-center gap-2">
-        <JobPhasePill phase={phase} />
-        <span className="flex-1 min-w-0 text-xs">
-          <span className="text-text font-medium truncate">{labelText}</span>
-          {job.job.projectTitle && (
-            <span className="text-text-subtle"> · {job.job.projectTitle}</span>
-          )}
+      {/* Line 1 — anchor + title + actions */}
+      <div className="flex items-start gap-1.5">
+        {num && <ChapterBadge value={num} />}
+        <span className="flex-1 min-w-0 text-xs truncate leading-5">
+          {title
+            ? <span className="text-text font-medium">{title}</span>
+            : <span className="text-text-subtle italic">Chưa đặt tên</span>}
         </span>
-        {detail && (
-          <span className="text-[10px] tabular text-text-muted shrink-0">
-            {detail}
-          </span>
-        )}
         <RowActions
           phase={phase}
           onDismiss={onDismiss}
@@ -593,18 +599,54 @@ function JobRow({
         />
       </div>
 
+      {/* Line 2 — pill + secondary + detail */}
+      <div className="mt-1 flex items-center gap-1.5 text-[11px]">
+        <JobPhasePill phase={phase} />
+        {errorMsg ? (
+          <span
+            className="flex-1 min-w-0 text-error-text/90 truncate leading-tight"
+            title={errorMsg}
+          >
+            {errorMsg}
+          </span>
+        ) : (
+          <span
+            className="flex-1 min-w-0 text-text-subtle truncate"
+            title={job.job.projectTitle ?? ''}
+          >
+            {job.job.projectTitle ?? ''}
+          </span>
+        )}
+        {detail && (
+          <span className="text-[10px] tabular text-text-muted shrink-0">
+            {detail}
+          </span>
+        )}
+      </div>
+
       {showBar && (
         <div className="mt-1.5">
           <JobProgressBar pct={pct} indeterminate={indeterminate && !determinate} />
         </div>
       )}
-
-      {phase === 'error' && job.error && (
-        <p className="mt-1 text-[10px] text-error-text/90 leading-snug truncate" title={job.error}>
-          {job.error}
-        </p>
-      )}
     </li>
+  )
+}
+
+
+function ChapterBadge({ value }: { value: string }) {
+  // Mono badge with monospace font so 'Ch.328' stays a fixed width
+  // regardless of digit count and aligns optically with the title row.
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center h-5 px-1.5 rounded-sm flex-none',
+        'bg-surface-2 text-text-muted text-[10px] font-mono tabular leading-none',
+      )}
+      title={`Chương ${value}`}
+    >
+      Ch.{value}
+    </span>
   )
 }
 
