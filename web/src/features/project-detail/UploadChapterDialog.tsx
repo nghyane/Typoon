@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useMemo, type DragEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, Image as ImageIcon, Archive, X } from 'lucide-react'
+import { Upload, Image as ImageIcon, Archive, X, AlertTriangle } from 'lucide-react'
 import { uploadChapterZip, packPagesToZip, type UploadProgress } from '@typoon/upload-sdk'
 import { api, type ApiProject } from '@shared/api/api'
 import { cn } from '@shared/lib/cn'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
-import { input, label, Spinner } from '@shared/ui/primitives'
+import { input, label } from '@shared/ui/primitives'
+import { UploadProgressFooter } from '@shared/ui/UploadProgressFooter'
 import { toast } from '@shared/ui/Toaster'
 
 interface Props {
@@ -73,9 +74,11 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
     onSettled: () => setProgress(null),
   })
 
-  const isArchive = files.length === 1 && ARCHIVE_EXT.test(files[0]!.name)
-  const totalSize = useMemo(() => files.reduce((s, f) => s + f.size, 0), [files])
-  const isPending = upload.isPending
+  const isArchive   = files.length === 1 && ARCHIVE_EXT.test(files[0]!.name)
+  const totalSize   = useMemo(() => files.reduce((s, f) => s + f.size, 0), [files])
+  const isPending   = upload.isPending
+  const hasConflict = number.trim() !== '' && existing.has(number.trim())
+  const valid       = files.length > 0 && !isPending
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -96,7 +99,14 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
     }
   }
 
-  const valid = files.length > 0 && !isPending
+  // Footer is replaced wholesale during async upload — phase indicator
+  // + dominant progress bar carry far more signal than two greyed-out
+  // buttons. Modal X stays the abort path (currently triggers
+  // mutation onSettled cleanup; a true cancel-token pass would let us
+  // abort the in-flight XHR — TODO when SDK exposes AbortSignal).
+  const footerCustom = isPending && progress
+    ? <UploadProgressFooter progress={progress} />
+    : undefined
 
   return (
     <Modal
@@ -104,80 +114,86 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
       onClose={() => { if (!isPending) onClose() }}
       title={`Tải chương — ${project.title}`}
       size="md"
-      footer={
+      footerLeft={!isPending && files.length > 0 ? (
+        <FooterContext
+          files={files}
+          isArchive={isArchive}
+          totalSize={totalSize}
+          number={number}
+        />
+      ) : undefined}
+      footer={!isPending ? (
         <>
-          <Button onClick={onClose} disabled={isPending}>Huỷ</Button>
+          <Button variant="ghost" onClick={onClose}>Huỷ</Button>
           <Button
             variant="primary"
             onClick={() => upload.mutate()}
             disabled={!valid}
           >
-            {isPending && <Spinner />}
             <Upload size={14} />
             Tải lên & dịch
           </Button>
         </>
-      }
+      ) : undefined}
+      footerCustom={footerCustom}
     >
       <div className="px-5 py-4 space-y-4">
-        {/* Drop zone */}
-        <div
+        {/* Compact drop zone — always visible, never replaced by the
+            file list. Click anywhere to add more; users can drag in
+            additional images on top of an existing selection. */}
+        <DropZone
+          dragOver={dragOver}
+          isPending={isPending}
+          hasFiles={files.length > 0}
           onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDrop}
           onClick={() => !isPending && fileRef.current?.click()}
-          className={cn(
-            'rounded-md border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-colors',
-            'min-h-32 p-6 text-center',
-            dragOver
-              ? 'border-accent bg-accent-bg'
-              : 'border-border-soft bg-surface-2/40 hover:border-text-subtle',
-            isPending && 'opacity-60 cursor-not-allowed',
-          )}
-        >
-          {files.length === 0 ? (
-            <>
-              <Upload size={20} className="text-text-subtle mb-2" />
-              <p className="text-sm font-medium text-text">
-                Kéo thả tệp vào đây hoặc <span className="underline">chọn tệp</span>
-              </p>
-              <p className="text-xs text-text-subtle mt-1">Hỗ trợ: CBZ, ZIP, hoặc nhiều ảnh</p>
-            </>
-          ) : (
-            <FileList
-              files={files}
-              isArchive={isArchive}
-              onClear={() => setFiles([])}
-              onRemove={i => setFiles(files.filter((_, j) => j !== i))}
-            />
-          )}
-          <input
-            ref={fileRef}
-            type="file"
-            accept={ACCEPT}
-            multiple
-            onChange={e => {
-              if (e.target.files) addFiles(Array.from(e.target.files))
-              e.target.value = ''
-            }}
-            className="hidden"
-          />
-        </div>
+        />
+        <input
+          ref={fileRef}
+          type="file"
+          accept={ACCEPT}
+          multiple
+          onChange={e => {
+            if (e.target.files) addFiles(Array.from(e.target.files))
+            e.target.value = ''
+          }}
+          className="hidden"
+        />
 
-        <div className="grid grid-cols-[120px_1fr] gap-3">
+        {/* File list — separate from the drop zone so the picker stays
+            available for adding more. Renders thumbnails for images,
+            a single-row card for archives. */}
+        {files.length > 0 && (
+          <FileList
+            files={files}
+            isArchive={isArchive}
+            disabled={isPending}
+            onClear={() => setFiles([])}
+            onRemove={i => setFiles(files.filter((_, j) => j !== i))}
+          />
+        )}
+
+        {/* Form fields. Labels right-aligned to inputs of equal weight
+            instead of fighting a hard 120 px sidebar. */}
+        <div className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-3">
           <div>
             <label className={label}>Số chương</label>
             <input
               type="text"
               value={number}
               onChange={e => setNumber(e.target.value)}
-              placeholder="VD: 4, 4.5, Extra"
-              className={input}
+              placeholder="—"
+              className={cn(input, hasConflict && 'border-warning')}
               disabled={isPending}
             />
           </div>
           <div>
-            <label className={label}>Tiêu đề (tuỳ chọn)</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className={cn(label, 'mb-0')}>Tiêu đề</label>
+              <span className="text-[11px] text-text-subtle">Tuỳ chọn</span>
+            </div>
             <input
               type="text"
               value={title}
@@ -187,21 +203,17 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
               disabled={isPending}
             />
           </div>
+
+          {hasConflict && (
+            <div className="col-span-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-warning-bg text-warning-text">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <p className="text-xs leading-relaxed">
+                Đã có chương <span className="font-semibold tabular">{number.trim()}</span> trong dự án.
+                Bản tải lên sẽ được lưu như một bản dịch song song.
+              </p>
+            </div>
+          )}
         </div>
-
-        {files.length > 0 && !progress && (
-          <p className="text-xs text-text-subtle">
-            {files.length === 1 ? '1 tệp' : `${files.length} ảnh`} · {fmtSize(totalSize)}
-          </p>
-        )}
-
-        {progress && <ProgressBar progress={progress} />}
-
-        {existing.has(number.trim()) && (
-          <p className="text-xs text-warning-text">
-            Chương {number.trim()} đã tồn tại — bản tải lên sẽ chèn vào danh sách như một bản dịch khác.
-          </p>
-        )}
       </div>
     </Modal>
   )
@@ -209,6 +221,76 @@ export function UploadChapterDialog({ open, onClose, project, existing }: Props)
 
 
 // ── Internals ────────────────────────────────────────────────────────
+
+
+function DropZone({
+  dragOver, isPending, hasFiles,
+  onDragOver, onDragLeave, onDrop, onClick,
+}: {
+  dragOver:  boolean
+  isPending: boolean
+  hasFiles:  boolean
+  onDragOver: (e: DragEvent<HTMLDivElement>) => void
+  onDragLeave: () => void
+  onDrop:     (e: DragEvent<HTMLDivElement>) => void
+  onClick:    () => void
+}) {
+  return (
+    <div
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onClick={onClick}
+      className={cn(
+        'rounded-md border-2 border-dashed flex items-center gap-3 px-4 cursor-pointer transition-all',
+        hasFiles ? 'h-12' : 'h-20',
+        dragOver
+          ? 'border-accent bg-accent-bg scale-[1.005]'
+          : 'border-border-soft bg-surface-2/40 hover:border-text-subtle',
+        isPending && 'opacity-60 cursor-not-allowed pointer-events-none',
+      )}
+    >
+      <Upload size={hasFiles ? 14 : 18} className="text-text-subtle shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className={cn('font-medium text-text', hasFiles ? 'text-xs' : 'text-sm')}>
+          {hasFiles ? 'Thêm tệp khác' : 'Kéo thả tệp vào đây'}
+          <span className="text-text-subtle font-normal"> hoặc </span>
+          <span className="underline underline-offset-2">chọn tệp</span>
+        </p>
+        {!hasFiles && (
+          <p className="text-xs text-text-subtle mt-0.5">CBZ, ZIP, hoặc nhiều ảnh</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function FooterContext({
+  files, isArchive, totalSize, number,
+}: {
+  files:     File[]
+  isArchive: boolean
+  totalSize: number
+  number:    string
+}) {
+  const trimmed = number.trim()
+  return (
+    <span className="flex items-center gap-1.5 truncate">
+      <span className="text-text font-medium tabular">
+        {isArchive ? '1 tệp' : `${files.length} ảnh`}
+      </span>
+      <span className="text-text-subtle/60">·</span>
+      <span className="tabular">{fmtSize(totalSize)}</span>
+      {trimmed && (
+        <>
+          <span className="text-text-subtle/60">·</span>
+          <span className="tabular">Ch.{trimmed}</span>
+        </>
+      )}
+    </span>
+  )
+}
 
 
 async function buildZip(files: File[]): Promise<Blob> {
@@ -232,103 +314,112 @@ function naturalCompare(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 }
 
-function ProgressBar({ progress }: { progress: UploadProgress }) {
-  const { phase, bytesSent, bytesTotal, partsSent, partsTotal, speedBps, etaSeconds } = progress
-  const pct = bytesTotal > 0 ? Math.min(100, (bytesSent / bytesTotal) * 100) : 0
-  return (
-    <div className="space-y-1">
-      <div className="h-1.5 rounded-full bg-surface-2 overflow-hidden">
-        <div
-          className="h-full bg-accent transition-[width] duration-200 ease-out"
-          style={{ width: phase === 'packing' ? '5%' : `${pct}%` }}
-        />
+
+function FileList({
+  files, isArchive, disabled, onClear, onRemove,
+}: {
+  files:     File[]
+  isArchive: boolean
+  disabled:  boolean
+  onClear:   () => void
+  onRemove:  (i: number) => void
+}) {
+  if (isArchive) {
+    const f = files[0]!
+    return (
+      <div className="flex items-center gap-3 px-3 py-2 rounded-sm bg-surface-2">
+        <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
+          <Archive size={15} className="text-text-muted" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-text truncate">{f.name}</p>
+          <p className="text-xs text-text-subtle tabular">{fmtSize(f.size)}</p>
+        </div>
+        <Button variant="ghost" size="sm" icon onClick={onClear} disabled={disabled} title="Xoá">
+          <X size={13} />
+        </Button>
       </div>
-      <div className="flex justify-between text-xs text-text-subtle">
-        <span>{phaseLabel(phase, partsSent, partsTotal)}</span>
-        <span>
-          {phase === 'uploading' ? (
-            <>
-              {fmtSize(bytesSent)}/{fmtSize(bytesTotal)}
-              {speedBps && ` · ${fmtSpeed(speedBps)}`}
-              {etaSeconds !== undefined && etaSeconds > 0 && ` · ${fmtEta(etaSeconds)}`}
-            </>
-          ) : phase === 'finalizing'
-            ? 'Đang xử lý…'
-            : null}
+    )
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-text-muted">
+          <span className="text-text font-medium tabular">{files.length}</span> ảnh
+          <span className="text-text-subtle"> · sắp xếp theo tên tệp</span>
         </span>
+        <button
+          onClick={onClear}
+          disabled={disabled}
+          className="text-xs text-text-subtle hover:text-text cursor-pointer disabled:opacity-50"
+        >
+          Xoá tất cả
+        </button>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1.5 max-h-44 overflow-auto overscroll-contain pr-0.5">
+        {files.map((f, i) => (
+          <Thumb
+            key={`${f.name}-${i}-${f.lastModified}`}
+            file={f}
+            disabled={disabled}
+            onRemove={() => onRemove(i)}
+          />
+        ))}
       </div>
     </div>
   )
 }
 
-function phaseLabel(phase: UploadProgress['phase'], partsSent: number, partsTotal: number): string {
-  if (phase === 'packing')    return 'Đang đóng gói…'
-  if (phase === 'uploading')  return `Tải lên (${partsSent}/${partsTotal})`
-  return 'Engine đang xử lý'
-}
 
-function FileList({
-  files, isArchive, onClear, onRemove,
+function Thumb({
+  file, disabled, onRemove,
 }: {
-  files:    File[]
-  isArchive: boolean
-  onClear:  () => void
-  onRemove: (i: number) => void
+  file:     File
+  disabled: boolean
+  onRemove: () => void
 }) {
-  if (isArchive) {
-    const f = files[0]!
-    return (
-      <div
-        className="w-full flex items-center gap-3 px-3 py-2 rounded-sm bg-surface-2"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
-          <Archive size={15} className="text-text-muted" />
-        </div>
-        <div className="flex-1 min-w-0 text-left">
-          <p className="text-sm text-text truncate">{f.name}</p>
-          <p className="text-xs text-text-subtle">{fmtSize(f.size)}</p>
-        </div>
-        <button
-          onClick={onClear}
-          className="size-7 rounded-sm flex items-center justify-center text-text-subtle hover:text-text hover:bg-hover cursor-pointer"
-        >
-          <X size={13} />
-        </button>
-      </div>
-    )
-  }
+  const [src, setSrc] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file)
+    setSrc(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
   return (
-    <div className="w-full" onClick={e => e.stopPropagation()}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs text-text-muted">
-          {files.length} ảnh — sẽ sắp xếp theo tên tệp
+    <div
+      className="relative group aspect-[3/4] rounded-xs bg-surface-2 overflow-hidden"
+      title={file.name}
+    >
+      {src && !failed ? (
+        <img
+          src={src}
+          alt={file.name}
+          loading="lazy"
+          className="absolute inset-0 w-full h-full object-cover"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <ImageIcon size={16} className="text-text-subtle" />
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/70 to-transparent flex items-end px-1.5 pb-1">
+        <span className="text-[10px] text-white/90 truncate font-medium">
+          {file.name.replace(/\.[^.]+$/, '')}
         </span>
+      </div>
+      {!disabled && (
         <button
-          onClick={onClear}
-          className="text-xs text-text-muted hover:text-text cursor-pointer"
+          onClick={onRemove}
+          className="absolute top-1 right-1 size-5 rounded-full bg-error text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity shadow"
+          title="Xoá ảnh này"
+          aria-label={`Xoá ${file.name}`}
         >
-          Xoá tất cả
+          <X size={11} />
         </button>
-      </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(80px,1fr))] gap-2 max-h-40 overflow-auto">
-        {files.map((f, i) => (
-          <div
-            key={`${f.name}-${i}`}
-            className="relative group aspect-square rounded-xs bg-surface-2 flex items-center justify-center text-xs text-text-muted truncate p-1.5"
-            title={f.name}
-          >
-            <ImageIcon size={14} className="text-text-subtle absolute top-1 left-1" />
-            <span className="truncate">{f.name.slice(0, 14)}</span>
-            <button
-              onClick={() => onRemove(i)}
-              className="absolute top-0.5 right-0.5 size-5 rounded-full bg-error text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
-            >
-              <X size={10} />
-            </button>
-          </div>
-        ))}
-      </div>
+      )}
     </div>
   )
 }
@@ -341,18 +432,6 @@ function fmtSize(b: number): string {
   return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function fmtSpeed(bps: number): string {
-  if (bps < 1024)              return `${bps.toFixed(0)} B/s`
-  if (bps < 1024 * 1024)       return `${(bps / 1024).toFixed(0)} KB/s`
-  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`
-}
-
-function fmtEta(seconds: number): string {
-  if (seconds < 60) return `còn ${seconds}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `còn ${m}m${s.toString().padStart(2, '0')}s`
-}
 
 function suggestNextNumber(existing: Set<string>): string {
   let max = 0

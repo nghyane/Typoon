@@ -2,6 +2,20 @@ import { useEffect, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 
+// =============================================================================
+// Modal — three-zone layout (sticky header, scrollable body, sticky footer).
+//
+// Pro pattern: header + footer pinned, only body scrolls. Primary action
+// stays one click away regardless of scroll depth, and the title/close
+// stay visible so users don't lose context in long forms.
+//
+// Footer can be a single slot (`footer`) for simple right-aligned actions,
+// or split via `footerLeft` (live context: "12 ảnh · 24 MB") + `footer`
+// (action buttons). When the entire footer should be replaced — e.g. by a
+// progress strip during async submission — pass `footerCustom` and skip
+// both `footer` and `footerLeft`.
+// =============================================================================
+
 // Esc key routing: only the top-most open Modal closes on Escape.
 // Without this, nested modals (e.g. Confirm opened from inside another Modal)
 // would all close on a single Esc press — which can re-open the parent's
@@ -22,7 +36,12 @@ interface Props {
   title:    string
   size?:    'sm' | 'md' | 'lg'
   children: ReactNode
-  footer?:  ReactNode
+  /** Right-aligned action slot in the footer. */
+  footer?:      ReactNode
+  /** Optional left-aligned context line ("12 ảnh · 24 MB · Ch.5"). */
+  footerLeft?:  ReactNode
+  /** Replace the entire footer with a custom node (e.g. async progress strip). */
+  footerCustom?: ReactNode
   /**
    * Stacking layer. Default `base` (z-50). Use `top` (z-70) for modals that
    * may open from inside another modal — e.g. the global Confirm dialog —
@@ -42,7 +61,10 @@ const LAYER = {
   top:  'z-[70]',
 }
 
-export function Modal({ open, onClose, title, size = 'md', children, footer, layer = 'base' }: Props) {
+export function Modal({
+  open, onClose, title, size = 'md', children,
+  footer, footerLeft, footerCustom, layer = 'base',
+}: Props) {
   useEffect(() => {
     if (!open) return
     escStack.push(onClose)
@@ -53,6 +75,8 @@ export function Modal({ open, onClose, title, size = 'md', children, footer, lay
   }, [open, onClose])
 
   if (!open) return null
+
+  const hasFooter = footerCustom !== undefined || footer !== undefined || footerLeft !== undefined
 
   return (
     <div
@@ -80,14 +104,25 @@ export function Modal({ open, onClose, title, size = 'md', children, footer, lay
           </button>
         </header>
 
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto overscroll-contain">
           {children}
         </div>
 
-        {footer && (
-          <footer className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border-soft bg-bg/40 shrink-0">
-            {footer}
-          </footer>
+        {hasFooter && (
+          footerCustom !== undefined ? (
+            <footer className="border-t border-border-soft bg-bg/40 shrink-0">
+              {footerCustom}
+            </footer>
+          ) : (
+            <footer className="flex items-center gap-3 px-5 py-3 border-t border-border-soft bg-bg/40 shrink-0">
+              <div className="flex-1 min-w-0 text-xs text-text-subtle truncate">
+                {footerLeft}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {footer}
+              </div>
+            </footer>
+          )
         )}
       </div>
     </div>
