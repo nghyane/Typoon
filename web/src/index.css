@@ -76,6 +76,14 @@ html { -webkit-font-smoothing: antialiased; }
 
 html, body, #root { height: 100%; }
 
+/* Disable browser pull-to-refresh / rubber-band reload.
+   The reader is a long vertical scroll; on mobile a downward overscroll
+   at the top of the page would otherwise trigger a hard reload, killing
+   the open Bunle archive and re-fetching every visible page. `none`
+   also stops chained scroll bleeding into iframe ancestors (Discord
+   Activity wraps the app in an iframe). */
+html, body { overscroll-behavior: none; }
+
 body {
   margin: 0;
   font-family: var(--font-sans);

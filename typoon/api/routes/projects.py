@@ -261,9 +261,11 @@ def _archive_url(
     `archive_backend`, so chapters rendered against an old primary
     keep working after the operator switches the writer.
 
-    The version query string is the row's `updated_at` so a re-render
-    busts the CDN cache. The path is stable for cache-key purposes —
-    only the query changes.
+    The version query string is the row's `rendered_at` so the URL
+    only changes when a render archive is actually (re)written. Using
+    `updated_at` here would bust the CDN cache on every task lifecycle
+    write (claim, complete, progress) — the browser would then close
+    the open Bunle and re-fetch every page mid-read.
     """
     if row.get("state") != "done":
         return None
@@ -272,7 +274,7 @@ def _archive_url(
     if not backend or not locator:
         return None
     return stores.reader(backend).url(
-        locator, version=str(row.get("updated_at") or ""),
+        locator, version=str(row.get("rendered_at") or ""),
     )
 
 

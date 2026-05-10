@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "10"
+SCHEMA_VERSION = "11"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -88,6 +88,7 @@ _TS_PROJECTS = (
 _TS_CHAPTERS = (
     "id, project_id, position, number, title, source_url, "
     "rendered, page_count, archive_backend, archive_locator, "
+    f"{_ts('rendered_at')}, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_USERS = (
@@ -472,6 +473,7 @@ class PostgresStore:
                 "page_count":      int(ch.get("page_count") or 0),
                 "error":           error,
                 "updated_at":      ch.get("updated_at") or ch.get("created_at"),
+                "rendered_at":     ch.get("rendered_at"),
                 "archive_backend": ch.get("archive_backend"),
                 "archive_locator": ch.get("archive_locator"),
             })
@@ -497,6 +499,7 @@ class PostgresStore:
             "page_count":      int(ch.get("page_count") or 0),
             "error":           error,
             "updated_at":      ch.get("updated_at") or ch.get("created_at"),
+            "rendered_at":     ch.get("rendered_at"),
             "archive_backend": ch.get("archive_backend"),
             "archive_locator": ch.get("archive_locator"),
             "progress":        progress and {
@@ -714,7 +717,8 @@ class PostgresStore:
                 )
             await conn.execute(
                 "UPDATE chapters SET rendered=FALSE, "
-                "archive_backend=NULL, archive_locator=NULL "
+                "archive_backend=NULL, archive_locator=NULL, "
+                "rendered_at=NULL "
                 "WHERE id=$1", chapter_id,
             )
 
@@ -1324,8 +1328,8 @@ class PostgresStore:
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE chapters SET archive_backend=$1, archive_locator=$2 "
-                "WHERE id=$3",
+                "UPDATE chapters SET archive_backend=$1, archive_locator=$2, "
+                "rendered_at=NOW() WHERE id=$3",
                 backend, locator, chapter_id,
             )
 

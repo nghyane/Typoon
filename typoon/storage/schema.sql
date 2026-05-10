@@ -92,6 +92,16 @@ CREATE TABLE IF NOT EXISTS chapters (
     -- migration.
     archive_backend TEXT,
     archive_locator TEXT,
+    -- Cache-bust token for the public render URL. Bumped exclusively
+    -- when a render archive is actually written (set_archive); ordinary
+    -- task UPDATEs and progress writes do NOT touch this. The reader
+    -- embeds it as ?v=<rendered_at> so a stable archive serves a stable
+    -- URL — without this, the trigger that bumps `updated_at` on every
+    -- task lifecycle / progress write would change ?v= and force the
+    -- browser to discard the open Bunle and re-fetch every page. NULL
+    -- until first render done; reset to NULL by redo so the next render
+    -- replaces the cached entry.
+    rendered_at     TIMESTAMPTZ,
     -- Per-chapter pipeline progress, updated by the worker after each
     -- page completes a stage. UI reads this directly to draw the
     -- progress bar; we don't keep a separate event log just to compute
