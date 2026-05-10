@@ -35,7 +35,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   if (!loading && !user) return null
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg text-text text-sm">
+    <div className="flex h-dvh overflow-hidden bg-bg text-text text-sm">
       {user && (
         <>
           <Sidebar
