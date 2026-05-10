@@ -122,15 +122,64 @@ function handleMessage(
 // noise. Auto-purge on every read keeps the queue lean without
 // requiring a UI action ("Xoá lịch sử" used to live in the popup
 // but bulk-delete is a workflow no real user asks for).
-const DONE_RETENTION_MS = 24 * 60 * 60 * 1000  // 24h
+// Auto-prune rules applied on every readQueue:
+//
+//   1. TTL — done > 24h or error > 7 days are dropped. Done is the
+//      shorter window because users only need confirmation that the
+//      last upload landed; error stays longer so users coming back
+//      after a weekend still see what failed.
+//   2. Cap — at most MAX_ROWS visible total. When over, drop the
+//      oldest dismissable rows (done first, then error) by
+//      finishedAt; running/queued never get evicted because they
+//      represent live work.
+//
+// Both rules run on read so the popup is never the one paying. The
+// list grows during a busy session and self-heals between sessions
+// without any UI action.
+
+const DONE_RETENTION_MS  =       24 * 60 * 60 * 1000   // 24h
+const ERROR_RETENTION_MS =   7 * 24 * 60 * 60 * 1000   // 7 days
+const MAX_ROWS = 20
 
 async function readQueue(): Promise<UploadQueue> {
-  const q = (await chromeStorage.get<UploadQueue>(UPLOAD_QUEUE_KEY)) ?? EMPTY_QUEUE
-  const cutoff = Date.now() - DONE_RETENTION_MS
-  const kept = q.jobs.filter(j => {
-    if (j.phase !== 'done') return true
-    return (j.finishedAt ?? j.enqueuedAt) >= cutoff
+  const q   = (await chromeStorage.get<UploadQueue>(UPLOAD_QUEUE_KEY)) ?? EMPTY_QUEUE
+  const now = Date.now()
+
+  // Stage 1 — TTL purge.
+  const live = q.jobs.filter(j => {
+    if (j.phase === 'done') {
+      return now - (j.finishedAt ?? j.enqueuedAt) < DONE_RETENTION_MS
+    }
+    if (j.phase === 'error') {
+      return now - (j.finishedAt ?? j.enqueuedAt) < ERROR_RETENTION_MS
+    }
+    return true   // running / queued / fetching / packing / uploading / finalizing
   })
+
+  // Stage 2 — cap. Only dismissable rows can be evicted; running
+  // work always survives. Oldest goes first within done/error.
+  let kept = live
+  if (live.length > MAX_ROWS) {
+    const dismissable = live
+      .map((j, idx) => ({ j, idx }))
+      .filter(({ j }) => j.phase === 'done' || j.phase === 'error')
+      .sort((a, b) => {
+        // Done evicted before error (shorter relevance), then by age.
+        if (a.j.phase !== b.j.phase) return a.j.phase === 'done' ? -1 : 1
+        const at = a.j.finishedAt ?? a.j.enqueuedAt
+        const bt = b.j.finishedAt ?? b.j.enqueuedAt
+        return at - bt
+      })
+    const drop = new Set<number>()
+    let need = live.length - MAX_ROWS
+    for (const { idx } of dismissable) {
+      if (need <= 0) break
+      drop.add(idx)
+      need--
+    }
+    kept = live.filter((_, idx) => !drop.has(idx))
+  }
+
   if (kept.length !== q.jobs.length) {
     const trimmed: UploadQueue = { jobs: kept }
     await chromeStorage.set(UPLOAD_QUEUE_KEY, trimmed)
