@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — the worker
@@ -563,6 +563,32 @@ class PostgresStore:
                 worker_id, stage, MAX_TASK_ATTEMPTS,
             )
         return row["chapter_id"] if row else None
+
+    async def release_claims_by_prefix(self, prefix: str) -> int:
+        """Release every claim whose `claimed_by` starts with `prefix`.
+
+        Called on worker startup with the local hostname to clear ghost
+        claims left by a previous PID that died without graceful exit
+        (SIGKILL, OOM, machine reboot). Returns the row count released
+        so the caller can log it.
+
+        We do not touch `attempts` here: the task was interrupted by an
+        external event, not by an exception in the stage code, so the
+        next claim should run with the same attempt budget. A truly
+        broken stage will still hit MAX_TASK_ATTEMPTS via fail_task on
+        each retry attempt.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE tasks SET claimed_by = NULL, claimed_at = NULL "
+                "WHERE claimed_by LIKE $1",
+                f"{prefix}%",
+            )
+        # asyncpg execute() returns "UPDATE <n>"
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except ValueError:
+            return 0
 
     async def complete_task(self, chapter_id: int, stage: str) -> None:
         async with self._pool.acquire() as conn:

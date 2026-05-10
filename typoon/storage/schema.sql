@@ -161,6 +161,30 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(stage, claimed_by, claimed_at);
 
+-- Wake LISTEN'ing workers the instant a task becomes claimable: either
+-- a fresh INSERT (new work), or an UPDATE that released a claim
+-- (fail_task, release_claims_by_prefix). The payload carries the stage
+-- so each worker only handles its own channel.
+
+CREATE OR REPLACE FUNCTION notify_task_ready() RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        PERFORM pg_notify('typoon_task_' || NEW.stage, NEW.chapter_id::text);
+    ELSIF TG_OP = 'UPDATE'
+          AND OLD.claimed_by IS NOT NULL
+          AND NEW.claimed_by IS NULL THEN
+        PERFORM pg_notify('typoon_task_' || NEW.stage, NEW.chapter_id::text);
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tasks_notify_ready ON tasks;
+CREATE TRIGGER tasks_notify_ready
+    AFTER INSERT OR UPDATE ON tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_task_ready();
+
 -- ── Chapter inbox (browser-direct upload handle) ────────────────────
 -- Persists the multipart upload coordinates between `/upload-finalize`
 -- (which returns 202 immediately) and the prepare worker (which calls
