@@ -1,0 +1,51 @@
+/* =========================================================
+   Typoon design tokens — copied from web/src/index.css
+   Keep in sync manually; diff against the web copy in PR review.
+   ========================================================= */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  --color-bg:         #1E1F22;
+  --color-surface:    #2B2D31;
+  --color-surface-2:  #313338;
+  --color-hover:      #383A40;
+  --color-interactive-hover: #404249;
+
+  --color-border:      #1A1B1E;
+  --color-border-soft: rgba(255, 255, 255, 0.04);
+
+  --color-text:         #F2F3F5;
+  --color-text-muted:   #B5BAC1;
+  --color-text-subtle:  #80848E;
+
+  --color-accent:       #FFA08C;
+  --color-accent-fg:    #1A1410;
+  --color-accent-bg:    rgba(244, 123, 103, 0.14);
+  --color-accent-text:  #FFB4A4;
+  --color-accent-strong: #F47B67;
+
+  --color-info:        #4F88E6;
+  --color-info-bg:     rgba(79, 136, 230, 0.16);
+  --color-info-text:   #8AB4F2;
+
+  --color-success:     #23A55A;
+  --color-success-bg:  rgba(35, 165, 90, 0.16);
+  --color-success-text: #4FD17F;
+
+  --color-warning:     #F0B232;
+  --color-warning-bg:  rgba(240, 178, 50, 0.16);
+  --color-warning-text: #F5C76C;
+
+  --color-error:       #F23F43;
+  --color-error-bg:    rgba(242, 63, 67, 0.16);
+  --color-error-text:  #FF8A8D;
+
+  --color-row-active:  #34363C;
+}

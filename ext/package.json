@@ -1,0 +1,37 @@
+{
+  "name": "typoon-ext",
+  "description": "Hội Mê Truyện Importer — pick images from any page and upload as a chapter",
+  "private": true,
+  "version": "0.5.1",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "compile": "tsc --noEmit",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.100.8",
+    "@typoon/upload-sdk": "workspace:*",
+    "clsx": "^2.1.1",
+    "fflate": "^0.8.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tailwind-merge": "^3.5.0",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@wxt-dev/module-react": "^1.1.5",
+    "tailwindcss": "^4.2.4",
+    "typescript": "~5.8.3",
+    "wxt": "^0.20.25"
+  }
+}
