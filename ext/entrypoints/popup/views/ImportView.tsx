@@ -263,7 +263,7 @@ function Header({
             <div className="absolute right-0 top-full mt-1 z-20 w-48 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden">
               <div className="px-3 py-2.5 border-b border-border-soft">
                 <p className="text-xs font-medium text-text truncate">
-                  {profileName ?? 'Đang tải…'}
+                  {profileName ?? 'Tài khoản'}
                 </p>
               </div>
               <button
