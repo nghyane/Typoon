@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Save, Trash2 } from 'lucide-react'
+import { Save, Trash2, ImagePlus } from 'lucide-react'
 import { api, type ApiProject } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
+import { Cover } from '@shared/ui/Cover'
+import { cn } from '@shared/lib/cn'
 import { input, Spinner } from '@shared/ui/primitives'
 import { LangPicker, type LangOption } from '@shared/ui/LangPicker'
 import {
@@ -83,6 +85,25 @@ export function SettingsPanel({ project }: Props) {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const uploadCover = useMutation({
+    mutationFn: (file: File) => api.uploadCover(project.project_id, file),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      qc.invalidateQueries({ queryKey: ['projects', project.project_id] })
+      toast.success('Đã cập nhật ảnh bìa')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const onPickCover = (file: File | null) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      toast.error('Tệp phải là ảnh')
+      return
+    }
+    uploadCover.mutate(file)
+  }
+
   const toggleShare = useMutation({
     mutationFn: (next: boolean) => api.patchSettings(project.project_id, { shared: next }),
     onSuccess: (_, next) => {
@@ -136,6 +157,18 @@ export function SettingsPanel({ project }: Props) {
             onChange={(v) => setDraft({ ...draft, target_lang: v })}
             options={TARGET_LANGS}
             disabled={!isOwner}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Ảnh bìa"
+          hint="Hiển thị trong danh sách dự án và trang chi tiết. Khuyến nghị tỷ lệ 2:3, JPG/PNG."
+        >
+          <CoverDropzone
+            project={project}
+            disabled={!isOwner}
+            uploading={uploadCover.isPending}
+            onPick={onPickCover}
           />
         </SettingsRow>
       </SettingsSection>
@@ -240,6 +273,115 @@ export function SettingsPanel({ project }: Props) {
           </Button>
         </div>
       )}
+    </div>
+  )
+}
+
+// =============================================================================
+// CoverDropzone — preview + click-to-pick + drag-and-drop. Uploading state
+// shows a spinner overlay; drag-over highlights the drop region. Designed
+// to read as a single tile so the user understands "the image IS the input".
+// =============================================================================
+
+function CoverDropzone({
+  project, disabled, uploading, onPick,
+}: {
+  project:   ApiProject
+  disabled:  boolean
+  uploading: boolean
+  onPick:    (file: File | null) => void
+}) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+
+  const interactive = !disabled && !uploading
+  const hasCover    = !!project.cover_url
+
+  const open = () => {
+    if (!interactive) return
+    fileRef.current?.click()
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    if (!interactive) return
+    const file = e.dataTransfer.files?.[0] ?? null
+    onPick(file)
+  }
+
+  return (
+    <div className="flex items-start gap-4">
+      <button
+        type="button"
+        onClick={open}
+        onDragOver={(e) => { e.preventDefault(); if (interactive) setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        disabled={!interactive}
+        aria-label={hasCover ? 'Đổi ảnh bìa' : 'Tải ảnh bìa'}
+        className={cn(
+          'group relative w-24 aspect-[2/3] rounded-md overflow-hidden shrink-0',
+          'bg-surface-2 ring-1 ring-inset ring-border-soft transition-all',
+          interactive && 'cursor-pointer hover:ring-text-subtle',
+          dragOver && 'ring-2 ring-accent ring-offset-2 ring-offset-surface',
+          !interactive && 'opacity-60 cursor-not-allowed',
+        )}
+      >
+        <Cover
+          src={project.cover_url}
+          title={project.title}
+          fontSize="text-xl"
+          version={project.updated_at}
+          className="absolute inset-0"
+        />
+
+        {/* Hover/drag overlay — shows the affordance without cluttering the tile */}
+        {interactive && (
+          <div className={cn(
+            'absolute inset-0 flex flex-col items-center justify-center gap-1.5',
+            'bg-black/55 text-white text-[11px] font-medium',
+            'opacity-0 transition-opacity duration-150',
+            'group-hover:opacity-100 group-focus-visible:opacity-100',
+            dragOver && 'opacity-100',
+          )}>
+            <ImagePlus size={18} />
+            <span>{hasCover ? 'Đổi ảnh' : 'Tải ảnh'}</span>
+          </div>
+        )}
+
+        {/* Uploading overlay — wins over hover, blocks pointer */}
+        {uploading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+            <Spinner />
+          </div>
+        )}
+      </button>
+
+      <div className="min-w-0 pt-1 space-y-1">
+        <p className="text-[13px] text-text-muted">
+          {disabled
+            ? 'Chỉ chủ dự án có thể đổi ảnh bìa.'
+            : <>Nhấn vào ảnh hoặc <span className="text-text">kéo thả</span> tệp để tải lên.</>}
+        </p>
+        <p className="text-xs text-text-subtle leading-relaxed">
+          JPG hoặc PNG. Khuyến nghị tỷ lệ 2:3, tối thiểu 600×900.
+        </p>
+      </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        onChange={(e) => {
+          const file = e.target.files?.[0] ?? null
+          onPick(file)
+          // Reset so picking the same file again still fires onChange.
+          e.target.value = ''
+        }}
+        className="hidden"
+        disabled={!interactive}
+      />
     </div>
   )
 }
