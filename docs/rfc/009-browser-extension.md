@@ -8,8 +8,11 @@ Typoon project mà không rời browser.
 
 Extension popup nhỏ. User paste API token 1 lần. Khi đang ở page MangaDex
 (title hoặc chapter), popup hiện project dropdown + form import. Service
-worker fetch pages từ MangaDex API public, pack, POST `/chapters/upload`.
-Engine không thay đổi (đã có `/chapters/upload` từ trước).
+worker fetch pages từ MangaDex API public, pack một zip, multipart-PUT
+lên inbox storage qua presigned URLs (`/chapters/upload-init` +
+`/chapters/upload-finalize`). Engine sau đó fetch zip từ inbox và ingest;
+luồng này không còn đi qua CF Tunnel → không bị chiếm băng thông
+upstream của engine.
 
 ## Why
 
@@ -105,7 +108,9 @@ Phase 1 cần engine expose:
 | `POST /api/me/tokens` | RFC-008 mới | UI tạo token để paste vào ext |
 | `GET /api/me/projects` | mới (alias `/api/projects?filter=mine`) | dropdown project |
 | `POST /api/projects` | có | "Tạo dự án mới" trong popup |
-| `POST /api/projects/{id}/chapters/upload` | có | core endpoint |
+| `POST /api/projects/{id}/chapters/upload-init`     | mới | presign multipart parts |
+| `POST /api/projects/{id}/chapters/upload-finalize` | mới | complete + ingest |
+| `POST /api/projects/{id}/chapters/upload-abort`    | mới | huy upload đang dở |
 | `GET /api/projects/{id}/chapters` | có | hide chapter idx đã có để tránh duplicate |
 
 Không cần thêm endpoint nào khác Phase 1.
@@ -161,7 +166,10 @@ gửi page metadata về service worker:
 Click [Tải + Upload]:
 1. Fetch chapter pages từ MangaDex at-home server.
 2. Pack `FormData` với mỗi page là 1 file image.
-3. POST `/api/projects/{id}/chapters/upload`.
+3. POST `/api/projects/{id}/chapters/upload-init` → PUT từng part zip
+   lên presigned URL → POST `/api/projects/{id}/chapters/upload-finalize`.
+   SDK chia sẻ ở `packages/upload-sdk` loàn driver multipart + progress
+   + retry; web SPA và ext dùng chung.
 4. Hiện progress trong popup; nếu user đóng popup, service worker tiếp tục
    chạy + notify khi xong.
 
@@ -270,30 +278,35 @@ trong code ngày test.
 
 ## Upload to engine
 
-Service worker:
+Tài nguyên upload nằm ở `packages/upload-sdk` (workspace bun, share với web
+SPA). SW import `uploadChapterZip` + `packPagesToZip`, fetch tất cả phân
+tử CDN song song, pack store-mode zip, upload multipart lên inbox
+(S3-compat: R2/S3/B2/MinIO/Wasabi). Engine sau đó fetch zip từ inbox và
+chuẩn bị chapter; băng thông upstream của engine không bị ăn.
+
 ```ts
+import { uploadChapterZip, packPagesToZip } from '@typoon/upload-sdk'
+import { TypoonClient } from '@core/typoon'
+
 async function uploadChapter(opts: {
   apiUrl: string,
-  token: string,
+  token:  string,
   projectId: number,
-  pages: Blob[],            // ordered
-  idx: number,
-  title?: string,
+  pages:  Uint8Array[],   // raw bytes đã fetch từ CDN
+  number?: string,
+  title?:  string,
+  onProgress?: (p: { bytesSent: number; bytesTotal: number; speedBps?: number }) => void,
 }) {
-  const fd = new FormData()
-  pages.forEach((blob, i) =>
-    fd.append("files", blob, `${i.toString().padStart(3, "0")}.jpg`),
-  )
-  fd.append("idx", String(opts.idx))
-  if (opts.title) fd.append("title", opts.title)
-
-  const r = await fetch(`${opts.apiUrl}/api/projects/${opts.projectId}/chapters/upload`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${opts.token}` },
-    body: fd,
+  const client = new TypoonClient({ apiUrl: opts.apiUrl, token: opts.token })
+  const zip = packPagesToZip(opts.pages.map((bytes, i) => ({
+    source: `${i.toString().padStart(4, '0')}.jpg`,
+    bytes,
+  })))
+  return uploadChapterZip(client, opts.projectId, zip, {
+    number: opts.number,
+    title:  opts.title,
+    onProgress: opts.onProgress,
   })
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`)
-  return r.json()
 }
 ```
 

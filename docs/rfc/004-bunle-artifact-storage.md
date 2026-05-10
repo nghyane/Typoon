@@ -101,16 +101,20 @@ Typoon owns encoding decisions; Bunle is the container.
 Typoon encodes pages before `pack_dir`. Bunle stores them byte-identical.
 
 ```text
-prepared pages -> WebP lossless     (Pillow lossless save / cwebp -lossless)
-render pages   -> WebP q=95         (configurable per project)
+prepared pages -> WebP q=92 method=4   (Pillow save)
+render pages   -> WebP q=92 method=4   (configurable per project)
 ```
 
 Per-archive constraint (Typoon-side): all pages in a single archive use the
 same encoder settings.
 
-Prepared pages must be lossless. All downstream geometry, OCR boxes, and
-render input are defined against prepared pixels. Render pages may be lossy
-unless an export-grade render is requested.
+The canonical-pixel contract for prepared pages is **consistency** (every
+stage decodes the same bytes for page i), not bit-level fidelity. Lossy
+WebP q=92 round-trips through downstream YOLO / OCR / AOT inpaint without
+measurable accuracy loss while saving ~10× on encode time and ~4× on
+archive size vs lossless. An export-grade lossless render is still
+available as a per-export option when bit-fidelity matters; the canonical
+runtime archive is lossy.
 
 PNG is not used in canonical archives. PNG appears only inside `debug-runs/`.
 

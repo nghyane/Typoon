@@ -29,7 +29,7 @@ cdn_prefix = "https://cdn.bunle.cloud/t"
 [storage.pipeline]
 type = "http"            # or "local" for dev
 http_base_url = "http://100.72.203.52:8000"   # tailnet
-# http_api_token via env: TYPOON_PIPELINE_TOKEN
+# http_api_token via env: PIPELINE_HTTP_TOKEN
 ```
 
 ## Goals
@@ -179,17 +179,17 @@ TYPOON_API_ROLE=api typoon api
 
 # Vision worker — scan + render; reads pipeline via tailnet, writes
 # render.bnl to the public store
-TYPOON_PIPELINE_TYPE=http \
-TYPOON_PIPELINE_BASE_URL=http://100.72.203.52:8000 \
-TYPOON_PIPELINE_TOKEN=typ_… \
-TYPOON_PUBLIC_TYPE=huggingface \
+PIPELINE_STORE_TYPE=http \
+PIPELINE_HTTP_BASE_URL=http://100.72.203.52:8000 \
+PIPELINE_HTTP_TOKEN=typ_… \
+PUBLIC_STORE_TYPE=huggingface \
 HF_TOKEN=hf_… \
 typoon work --role vision
 
 # LLM worker — translate; reads pipeline via tailnet for image context
-TYPOON_PIPELINE_TYPE=http \
-TYPOON_PIPELINE_BASE_URL=http://100.72.203.52:8000 \
-TYPOON_PIPELINE_TOKEN=typ_… \
+PIPELINE_STORE_TYPE=http \
+PIPELINE_HTTP_BASE_URL=http://100.72.203.52:8000 \
+PIPELINE_HTTP_TOKEN=typ_… \
 typoon work --role llm
 ```
 
@@ -272,7 +272,7 @@ the upstream URL, plus a matching prefix in the matching Python adapter's
    on the production CDN.
 
 Rollout to production: add the `/t/` route in the production
-`bunle-cdn` repo, deploy, then flip `TYPOON_CDN_PREFIX` to
+`bunle-cdn` repo, deploy, then flip `HF_CDN_PREFIX` to
 `https://cdn.bunle.cloud/t`. Old URLs still work — the change is
 backwards-compatible.
 

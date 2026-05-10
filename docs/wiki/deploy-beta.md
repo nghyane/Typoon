@@ -1,12 +1,16 @@
 # Beta Deploy — macOS + Cloudflare Tunnel + Pages
 
-Single-host Mac deploy. FastAPI + workers run locally; Cloudflare Tunnel
-exposes the API; Cloudflare Pages serves the SPA.
+Single-host Mac deploy. FastAPI + workers run locally; Cloudflare
+Tunnel exposes the API; Cloudflare Pages serves the SPA. Chapter
+uploads go browser → R2 inbox direct, never through the home upstream
+or the tunnel.
 
 ```
-browser ──HTTPS──► CF edge ──tunnel──► localhost:8000 (FastAPI)
-                     │
-                     └──► CF Pages (mangalocal.com, static SPA)
+                    ┌─► CF Pages (mangalocal.com, static SPA)
+browser ─HTTPS──► CF edge
+                    └─► tunnel ─► localhost:8000  (FastAPI + workers)
+        │
+        └─PUT(zip) ──► R2 inbox  ◄─GET──  worker (after upload-finalize)
 ```
 
 ---
@@ -49,10 +53,24 @@ TRUSTED_HOSTS=api.mangalocal.com,mangalocal.com,localhost,127.0.0.1
 JWT_SECRET=<86-char urlsafe token>
 
 # Public render storage — HuggingFace + bunle CDN
-TYPOON_PUBLIC_TYPE=huggingface
-TYPOON_HF_REPO=nghyane/mcz-cdn
-TYPOON_CDN_PREFIX=https://927251094806098001.discordsays.com/cdn/t
+PUBLIC_STORE_TYPE=huggingface
+HF_REPO=nghyane/mcz-cdn
+HF_CDN_PREFIX=https://927251094806098001.discordsays.com/cdn/t
 HF_TOKEN=<hf token from ~/.cache/huggingface/token>
+
+# Browser-direct chapter uploads — bypasses the home upstream
+# bandwidth by PUTting a multipart-zipped chapter straight to an
+# S3-compatible inbox bucket. Any S3-compatible provider works: R2,
+# AWS S3, Backblaze B2, MinIO, Wasabi.
+#
+# The server reads only ENV — no secret in the toml. Bucket/CORS/
+# lifecycle wiring lives in section 5.5.
+INBOX_S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+INBOX_S3_BUCKET=mangalocal-uploads
+INBOX_S3_REGION=auto
+INBOX_S3_ACCESS_KEY_ID=<inbox access key>
+INBOX_S3_SECRET_ACCESS_KEY=<inbox secret>
+INBOX_S3_PREFIX=tmp/
 ```
 
 `TYPOON_ENV=production` makes the engine raise at startup if `JWT_SECRET`
@@ -287,23 +305,73 @@ tail -f ~/Library/Logs/cloudflared-typoon.log
 
 ---
 
-## 5. Storage — local → HuggingFace
+## 5. Storage
 
-Render archives must be on a public CDN when the SPA runs cross-origin
-(CF Pages at `mangalocal.com` ≠ API at `api.mangalocal.com`).
+Render archives live on HuggingFace (`HF_REPO`), served via the bunle
+CDN through the Discord Activity proxy (`HF_CDN_PREFIX`). The SPA runs
+cross-origin (CF Pages at `mangalocal.com` ≠ API at
+`api.mangalocal.com`), so a public CDN is required.
 
-| Backend | Writer | URL pattern |
-|---|---|---|
-| `huggingface` | new renders | `https://927251094806098001.discordsays.com/cdn/t/render/<key>.bnl?v=<ts>` |
-| `local` | legacy reader | `https://api.mangalocal.com/files/render/<key>.bnl?v=<ts>` |
+Render URL pattern:
 
-`storage_registry.py` registers both backends as readers automatically
-when `HF_TOKEN` is set, so old `archive_backend=local` rows keep
-serving after the switch.
+```
+https://927251094806098001.discordsays.com/cdn/t/render/<key>.bnl?v=<ts>
+```
 
-To migrate a legacy chapter: use the redo button in the UI or
-`POST /api/projects/{pid}/chapters/{cid}/redo` — the worker re-renders
-and uploads to HF.
+---
+
+## 5.5 Inbox bucket (browser-direct upload)
+
+Recommended default: Cloudflare R2 (free egress to Cloudflare, free
+10 GB storage). Any S3-compatible endpoint works the same way.
+
+### Create bucket + API token (R2 dashboard)
+
+1. **R2 → Create bucket** → name `mangalocal-uploads`. Region `auto`.
+2. **R2 → API Tokens → Create** → permission `Object Read & Write`,
+   scope to the bucket. Save the access key id + secret. Copy
+   `Account ID` from R2 home → S3 endpoint is
+   `https://<account>.r2.cloudflarestorage.com`.
+
+### CORS — required
+
+Browser PUT responses must surface `ETag` so the SDK can pass it back
+to `upload-finalize`. Without `ExposeHeaders: ETag` the SDK fails with
+`Missing ETag — kiểm tra CORS bucket`.
+
+R2 bucket → Settings → CORS Policy:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "https://mangalocal.com",
+      "https://927251094806098001.discordsays.com",
+      "chrome-extension://<extension-id>"
+    ],
+    "AllowedMethods":  ["PUT"],
+    "AllowedHeaders":  ["*"],
+    "ExposeHeaders":   ["ETag"],
+    "MaxAgeSeconds":   3600
+  }
+]
+```
+
+The DA origin (`*.discordsays.com`) is required because users running
+the SPA inside the Discord Activity iframe PUT from that origin, not
+from `mangalocal.com`.
+
+### Lifecycle — sweep aborted uploads
+
+R2 bucket → Settings → Lifecycle Rules → Add rule:
+
+- **Prefix**: `tmp/` (matches `INBOX_S3_PREFIX`).
+- **Action**: delete after `1 day`.
+- **Multipart cleanup**: abort incomplete multipart after `1 day`.
+
+The engine deletes successful uploads inline after ingest; the rule
+catches anything that slipped through (browser closed mid-upload,
+crash before `upload-abort`).
 
 ---
 
@@ -329,11 +397,17 @@ Run after any deploy or restart:
 curl -sS https://api.mangalocal.com/api/healthz          # 200 {"ok":true}
 curl -sS https://api.mangalocal.com/api/projects          # 401 (auth gate)
 
-# CORS
+# CORS — main API
 curl -sS -X OPTIONS https://api.mangalocal.com/api/projects \
   -H "Origin: https://mangalocal.com" \
   -H "Access-Control-Request-Method: GET" \
   -o /dev/null -w "%{http_code}\n"                        # 200
+
+# Upload init (auth-gated; expects 401 without token)
+curl -sS -X POST https://api.mangalocal.com/api/projects/0/chapters/upload-init \
+  -H "Content-Type: application/json" \
+  --data '{"byte_size":1}' \
+  -o /dev/null -w "%{http_code}\n"                        # 401
 
 # Host header rejection
 curl -sS https://api.mangalocal.com/api/healthz \
@@ -342,10 +416,16 @@ curl -sS https://api.mangalocal.com/api/healthz \
 # Web SPA
 curl -sS https://mangalocal.com/ -o /dev/null -w "%{http_code}\n"  # 200
 
-# BNL Range (bunle reader)
+# Render archive Range (bunle reader through HF CDN)
 curl -sS -H "Range: bytes=0-15" \
-  "https://api.mangalocal.com/files/render/<locator>.bnl" \
+  "https://927251094806098001.discordsays.com/cdn/t/render/<locator>.bnl" \
   -o /dev/null -w "%{http_code}\n"                        # 206
+
+# Inbox CORS — must expose ETag on PUT preflight
+curl -sS -X OPTIONS "$INBOX_S3_ENDPOINT/$INBOX_S3_BUCKET/probe" \
+  -H "Origin: https://mangalocal.com" \
+  -H "Access-Control-Request-Method: PUT" \
+  -i 2>&1 | grep -i 'access-control-expose-headers'      # contains ETag
 ```
 
 ---
