@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { Image as ImageIcon, X } from 'lucide-react'
 import { api } from '@shared/api/api'
 import { cn } from '@shared/lib/cn'
+import { detectLang } from '@shared/lib/detectLang'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
 import { LangPicker } from '@shared/ui/LangPicker'
@@ -33,13 +34,24 @@ export function CreateProjectDialog({ open, onClose }: Props) {
   const [title,       setTitle]       = useState('')
   const [description, setDescription] = useState('')
   const [sourceLang,  setSourceLang]  = useState('en')
+  const [sourceTouched, setSourceTouched] = useState(false)
   const [targetLang,  setTargetLang]  = useState('vi')
   const [coverFile,   setCoverFile]   = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // Auto-detect source language from the title as the user types.
+  // Stops once the user manually picks a language so we don't fight
+  // their choice on the next keystroke.
+  function onTitleChange(next: string) {
+    setTitle(next)
+    if (sourceTouched) return
+    const guess = detectLang(next)
+    if (guess) setSourceLang(guess)
+  }
+
   const reset = () => {
     setTitle(''); setDescription('')
-    setSourceLang('en'); setTargetLang('vi')
+    setSourceLang('en'); setSourceTouched(false); setTargetLang('vi')
     setCoverFile(null)
     if (fileRef.current) fileRef.current.value = ''
   }
@@ -99,7 +111,7 @@ export function CreateProjectDialog({ open, onClose }: Props) {
           <label className={label}>Tên dự án <span className="text-error-text">*</span></label>
           <input
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => onTitleChange(e.target.value)}
             placeholder="VD: Solo Leveling"
             className={input}
             autoFocus
@@ -122,7 +134,11 @@ export function CreateProjectDialog({ open, onClose }: Props) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className={label}>Ngôn ngữ nguồn</label>
-            <LangPicker value={sourceLang} onChange={setSourceLang} options={SOURCE_LANGS} />
+            <LangPicker
+              value={sourceLang}
+              onChange={(v) => { setSourceLang(v); setSourceTouched(true) }}
+              options={SOURCE_LANGS}
+            />
           </div>
           <div>
             <label className={label}>Ngôn ngữ đích</label>

@@ -2,16 +2,20 @@
 // + 2 language pickers. The SPA has a richer "new project" experience;
 // here we ship the smallest set the engine actually requires.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@shared/ui/Button'
 import { Field, input } from '@shared/ui/Field'
 import { TypoonClient, type ApiMeProject, type ApiProject } from '@core/typoon'
 import { API_URL } from '@core/config'
+import { detectLang } from '@core/lang/detect'
 import { useConfig } from '@shell/hooks/useConfig'
 
 interface Props {
   initialTitle: string
+  /** Free-form text used to auto-detect the source language (page
+   *  title, picked filename). Optional. */
+  langHint?:    string
   onCreated:    (p: ApiMeProject) => void
   onCancel:     () => void
 }
@@ -24,13 +28,28 @@ const COMMON_LANGS: Array<[code: string, label: string]> = [
   ['vi', 'Tiếng Việt'],
 ]
 
-export function CreateProjectModal({ initialTitle, onCreated, onCancel }: Props) {
+export function CreateProjectModal({ initialTitle, langHint, onCreated, onCancel }: Props) {
   const { config } = useConfig()
   const qc = useQueryClient()
 
   const [title,  setTitle]  = useState(initialTitle)
-  const [source, setSource] = useState('ja')
+  // Pre-fill the source language from the title hint when one of the
+  // four scripts (ja/ko/zh/en) shows up. Falls back to 'ja' which is
+  // the dominant case for this user base. The user can still override
+  // via the dropdown — auto-detect runs once on mount, not on every
+  // title edit.
+  const [source, setSource] = useState<string>(() => detectLang(langHint ?? initialTitle) ?? 'ja')
   const [target, setTarget] = useState('vi')
+
+  // Re-run detection if the hint changes after mount (e.g. modal
+  // reopened with a different page). Only overrides while the user
+  // hasn't manually touched the picker yet.
+  const [touched, setTouched] = useState(false)
+  useEffect(() => {
+    if (touched) return
+    const guess = detectLang(langHint ?? initialTitle)
+    if (guess) setSource(guess)
+  }, [langHint, initialTitle, touched])
 
   const m = useMutation({
     mutationFn: (): Promise<ApiProject> => new TypoonClient({
@@ -70,7 +89,7 @@ export function CreateProjectModal({ initialTitle, onCreated, onCancel }: Props)
           <select
             className={input}
             value={source}
-            onChange={e => setSource(e.target.value)}
+            onChange={e => { setSource(e.target.value); setTouched(true) }}
             disabled={m.isPending}
           >
             {COMMON_LANGS.map(([code, label]) =>

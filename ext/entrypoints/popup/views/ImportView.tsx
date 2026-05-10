@@ -205,6 +205,7 @@ export function ImportView() {
       {creating !== null && (
         <CreateProjectModal
           initialTitle={creating}
+          langHint={local.kind === 'ready' ? local.selection.pageTitle : undefined}
           onCreated={(p) => { setProject(p); setAutoSuggested(null); setCreating(null) }}
           onCancel={() => setCreating(null)}
         />
