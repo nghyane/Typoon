@@ -140,6 +140,7 @@ async def _exchange_and_issue(
     discord_user = await fetch_user(access_token)
 
     role_ids: list[str] = []
+    discord_guilds: list[dict] = []
 
     # Gate by guild membership. Empty guild_id → gating disabled.
     if cfg.discord_guild_id:
@@ -149,6 +150,7 @@ async def _exchange_and_issue(
             raise HTTPException(403, await _gate_message(cfg.discord_guild_id))
         # Capture guild icon for branding (widget doesn't expose it).
         _persist_guild_meta(cfg.discord_guild_id, icon=match.get("icon"))
+        discord_guilds = guilds
 
         # Pull role IDs the user holds in this guild. Requires the
         # `guilds.members.read` OAuth scope. When missing or 404, fall
@@ -157,6 +159,13 @@ async def _exchange_and_issue(
         member = await fetch_guild_member(access_token, cfg.discord_guild_id)
         if member:
             role_ids = [str(r) for r in member.get("roles", []) if r]
+    else:
+        # Gating disabled but we still want to cache memberships for
+        # the visibility scope picker. Fall back to the guilds endpoint.
+        try:
+            discord_guilds = await fetch_user_guilds(access_token)
+        except Exception:
+            discord_guilds = []
 
     user = await db.upsert_user_from_identity(
         provider="discord",
@@ -170,6 +179,23 @@ async def _exchange_and_issue(
             "verified":    discord_user.verified,
         },
     )
+
+    # Cache guild memberships for visibility checks (spawn scope,
+    # cache hit eligibility, Hội Mê Truyện feed access). Replace
+    # strategy keeps the cache in sync if user leaves a guild.
+    if discord_guilds:
+        await db.upsert_user_guilds(user["id"], [
+            {
+                "id": g["id"],
+                "name": g.get("name"),
+                "icon_url": (
+                    f"https://cdn.discordapp.com/icons/{g['id']}/{g['icon']}.png"
+                    if g.get("icon") else None
+                ),
+            }
+            for g in discord_guilds
+        ])
+
     return issue_jwt(user["id"], cfg=cfg, role_ids=role_ids)
 
 

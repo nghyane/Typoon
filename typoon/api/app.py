@@ -25,8 +25,8 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
-    auth, blobs, bubbles, glossary, me, project_events,
-    projects, search, upload, workers,
+    auth, blobs, dmca, feed, glossary, library, material, me,
+    translate, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -129,14 +129,14 @@ app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 if _serve_api:
     app.include_router(auth.router)
     app.include_router(me.router)
-    app.include_router(projects.router)
-    app.include_router(upload.router)
-    app.include_router(upload.local_router)
-    app.include_router(bubbles.router)
+    app.include_router(material.router)
+    app.include_router(translate.router)
+    app.include_router(library.router)
+    app.include_router(feed.router)
     app.include_router(glossary.router)
+    app.include_router(dmca.router)
+    app.include_router(dmca.admin_router)
     app.include_router(workers.router)
-    app.include_router(search.router)
-    app.include_router(project_events.router)
 
 if _serve_storage:
     app.include_router(blobs.router)
@@ -154,16 +154,12 @@ async def healthz(db: Store = Depends(get_store)):
     return {"ok": True}
 
 
-# Static file mounts. Render archives and project covers/thumbnails are
-# served via sendfile; StaticFiles supports HTTP Range so the in-browser
-# bunle reader can request slices without pulling the whole archive.
-#
-# `/files/render` must be mounted BEFORE `/files` so requests to
-# `/files/render/<token>.bnl` route here, not to the project files mount.
-# Storage-only role still serves /files because workers need to fetch
-# render archives via the same path.
+# Render archives served via /files/render for local-dev artifact_store
+# fallback. In production the public route is /cdn/t/render/<token>.bnl
+# through the DA proxy → bunle CDN, not this mount. StaticFiles supports
+# HTTP Range so the in-browser bunle reader can request slices without
+# pulling the whole archive.
 if _serve_api:
     _archive_dir = _paths.artifacts / "render"
     _archive_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/files/render", StaticFiles(directory=str(_archive_dir)), name="render")
-    app.mount("/files", StaticFiles(directory=str(_paths.projects)), name="files")

@@ -1,78 +1,85 @@
-"""Shared route helpers."""
+"""Shared route helpers — material / chapter / translation access checks.
+
+Patterns:
+  - `require_material` resolves and 404s.
+  - `require_chapter` ensures chapter belongs to material.
+  - `require_translation` resolves a per-user wrapper; visibility gate
+    composes with the draft's visibility for cross-user reads.
+  - `require_material_admin` checks ownership for ext / upload origins
+    (source-backed materials have no per-user admin).
+"""
 
 from __future__ import annotations
 
 from fastapi import HTTPException
 
-from typoon.api.models import ChapterOut, Progress
 from typoon.storage import Store
 
 
-async def require_project(project_id: int, db: Store) -> dict:
-    """Resolve project by id or 404. Permission-agnostic — caller must
-    pair with `_require_view`/`_require_owner` for access control."""
-    proj = await db.get_project(project_id)
-    if proj is None:
-        raise HTTPException(404, "Project not found")
-    return proj
+# ── Material ──────────────────────────────────────────────────────────
 
 
-async def require_project_view(project_id: int, user: dict, db: Store) -> dict:
-    """Project visible to user (owner OR shared). 404 hides existence
-    of private projects from non-owners."""
-    proj = await db.get_project(project_id)
-    if proj is None:
-        raise HTTPException(404, "Project not found")
-    if proj.get("owner_id") != user["id"] and not proj.get("shared"):
-        raise HTTPException(404, "Project not found")
-    return proj
+async def require_material(material_id: int, db: Store) -> dict:
+    """Resolve material by id or 404. Source-backed materials are
+    cross-user readable; ext / upload are also readable by any
+    authenticated user (privacy isolation is at translation level)."""
+    mat = await db.get_material(material_id)
+    if mat is None:
+        raise HTTPException(404, "Material not found")
+    return mat
 
 
-async def require_project_owner(project_id: int, user: dict, db: Store) -> dict:
-    """Project must be owned by user. Returns project row.
+async def require_material_admin(
+    material_id: int, user: dict, db: Store,
+) -> dict:
+    """Mutation gate. For ext / upload, only `imported_by` may edit /
+    delete. Source-backed materials are not user-editable (their state
+    is owned by the manifest snapshot)."""
+    mat = await require_material(material_id, db)
+    if mat["origin"] == "source":
+        raise HTTPException(
+            403, "Source-backed material is not editable",
+        )
+    if mat.get("imported_by") != user["id"]:
+        raise HTTPException(403, "Only the importer can do this")
+    return mat
 
-    NULL owner_id is treated as no-owner — nobody can mutate via the
-    API. Admin can backfill owner_id via direct SQL or future admin
-    endpoint.
-    """
-    proj = await db.get_project(project_id)
-    if proj is None:
-        raise HTTPException(404, "Project not found")
-    if proj.get("owner_id") != user["id"]:
-        raise HTTPException(403, "Only the owner can do this")
-    return proj
+
+# ── Chapter ──────────────────────────────────────────────────────────
 
 
-async def require_chapter(project_id: int, chapter_id: int, db: Store) -> dict:
+async def require_chapter(
+    material_id: int, chapter_id: int, db: Store,
+) -> dict:
     ch = await db.get_chapter(chapter_id)
-    if ch is None or ch["project_id"] != project_id:
+    if ch is None or ch["material_id"] != material_id:
         raise HTTPException(404, "Chapter not found")
     return ch
 
 
-def chapter_out(data: dict, *, archive_url: str | None = None) -> ChapterOut:
-    page_count = int(data.get("page_count") or 0)
-    progress_data = data.get("progress")
-    progress = (
-        Progress(
-            stage=progress_data.get("stage") or data.get("stage") or "",
-            page_index=int(progress_data.get("page_index") or 0),
-            page_total=int(progress_data.get("page_total") or page_count),
-        )
-        if progress_data and data["state"] == "running"
-        else None
-    )
-    return ChapterOut(
-        chapter_id=data["chapter_id"],
-        project_id=data["project_id"],
-        number=data["number"],
-        position=data["position"],
-        title=data.get("title"),
-        state=data["state"],
-        stage=data.get("stage") or "",
-        page_count=page_count,
-        error=data.get("error") or "",
-        updated_at=data.get("updated_at"),
-        progress=progress,
-        archive_url=archive_url if data["state"] == "done" else None,
-    )
+# ── Translation ──────────────────────────────────────────────────────
+
+
+async def require_translation_owner(
+    translation_id: int, user: dict, db: Store,
+) -> dict:
+    """Mutation gate for translation endpoints (edit, share toggle,
+    redo, delete). Owner only."""
+    t = await db.get_translation(translation_id)
+    if t is None:
+        raise HTTPException(404, "Translation not found")
+    if t["owner_id"] != user["id"]:
+        raise HTTPException(403, "Only the owner can do this")
+    return t
+
+
+# ── Library entry ────────────────────────────────────────────────────
+
+
+async def require_library_entry(
+    entry_id: int, user: dict, db: Store,
+) -> dict:
+    e = await db.get_library_entry(entry_id, user["id"])
+    if e is None:
+        raise HTTPException(404, "Library entry not found")
+    return e

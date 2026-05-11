@@ -1,4 +1,10 @@
-"""User self-service endpoints — API tokens for tool clients."""
+"""User self-service endpoints — identity, API tokens, quota.
+
+The /projects alias is gone — its replacement is /api/library and the
+list of the user's own translations is implicit (each user's
+translations table rows). Discord guild memberships are exposed here
+so the SPA can resolve current activity context (scope_guild_id).
+"""
 
 from __future__ import annotations
 
@@ -7,9 +13,11 @@ from pydantic import BaseModel, Field
 
 from typoon.api.auth_token import issue_api_token
 from typoon.api.deps import get_auth_cfg, get_config, get_store, require_user
+from typoon.api.models import GuildOut, MeOut
 from typoon.api.quota import get_quota_snapshot
 from typoon.config import AuthConfig, Config
 from typoon.storage import Store
+
 
 router = APIRouter(
     prefix="/api/me", tags=["me"],
@@ -40,32 +48,36 @@ class TokenCreated(TokenInfo):
     token: str
 
 
-# ── Routes ────────────────────────────────────────────────────────────
+# ── /me ──────────────────────────────────────────────────────────────
 
 
-@router.get("/projects")
-async def my_projects(
+@router.get("", response_model=MeOut)
+async def me(
     user: dict  = Depends(require_user),
     db:   Store = Depends(get_store),
 ):
-    """Convenience alias of /api/projects?filter=mine.
+    """Current user + cached guild memberships.
 
-    Tools (extension, CLI) call this without needing to know about
-    filter query params.
+    Guild list drives the visibility scope picker in the spawn modal
+    and the Hội Mê Truyện guild picker in the browse hub. Refreshed
+    by the auth/exchange endpoint at login; this read is a simple
+    cache lookup.
     """
-    rows = await db.list_projects(viewer_id=user["id"], filter="mine")
-    return [
-        {
-            "project_id":  r["id"],
-            "slug":        r["slug"],
-            "title":       r["title"],
-            "cover_url":   f"/files/{r['slug']}/cover.jpg" if r.get("cover_path") else None,
-            "source_lang": r["source_lang"],
-            "target_lang": r["target_lang"],
-            "shared":      bool(r.get("shared")),
-        }
-        for r in rows
-    ]
+    guilds = await db.get_user_guilds(user["id"])
+    return MeOut(
+        id=user["id"],
+        display_name=user["display_name"],
+        avatar_url=user.get("avatar_url"),
+        guilds=[
+            GuildOut(
+                id=g["id"], name=g.get("name"), icon_url=g.get("icon_url"),
+            )
+            for g in guilds
+        ],
+    )
+
+
+# ── API tokens (CLI / extension) ─────────────────────────────────────
 
 
 @router.get("/tokens", response_model=list[TokenInfo])
@@ -83,18 +95,16 @@ async def create_token(
     user: dict  = Depends(require_user),
     db:   Store = Depends(get_store),
 ):
-    """Create a new API token. The plaintext is in the response and
-    will never be retrievable again — caller must show + persist it
-    immediately.
+    """Create a new API token. The plaintext appears in the response
+    once and is never retrievable again — caller must persist it on
+    the spot.
     """
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "name required")
-    token_id, plaintext, prefix = await issue_api_token(
+    token_id, plaintext, _prefix = await issue_api_token(
         db, user_id=user["id"], name=name,
     )
-    # Round-trip through list_api_tokens to get the same shape (with
-    # null last_used + created_at as ISO strings).
     rows = await db.list_api_tokens(user["id"])
     row = next((r for r in rows if r["id"] == token_id), None)
     if row is None:
@@ -122,9 +132,5 @@ async def get_quota(
     cfg:  Config     = Depends(get_config),
     auth: AuthConfig = Depends(get_auth_cfg),
 ):
-    """Per-user chapter quota snapshot for the sidebar widget.
-
-    `is_admin` lets the SPA hide the quota chip entirely for admins
-    (they bypass enforcement; showing N/N would be misleading).
-    """
+    """Per-user translation quota snapshot for the sidebar widget."""
     return await get_quota_snapshot(user, db, cfg.rate_limit, auth)

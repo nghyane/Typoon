@@ -1,6 +1,6 @@
 """Typoon API — FastAPI application."""
 
 from .app import app
-from .models import ChapterOut, Progress, ProjectOut
+from .models import ChapterOut, MaterialOut, TranslationOut
 
-__all__ = ["app", "ChapterOut", "Progress", "ProjectOut"]
+__all__ = ["app", "ChapterOut", "MaterialOut", "TranslationOut"]

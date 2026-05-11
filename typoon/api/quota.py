@@ -1,20 +1,21 @@
-"""Per-user chapter quota — beta rate limit.
+"""Per-user translation quota — beta rate limit.
 
-A "chapter slot" is consumed each time a user triggers an action that
-will spend LLM tokens on a chapter: upload+start, manual /start, /redo.
-Free reads (list, fetch) and idle uploads do not count.
+A "chapter slot" is consumed each time a user triggers an LLM-costing
+action (draft create or render create for a translation). Cache hits
+do NOT consume — quota tracks real cost only.
 
 Counters are time-windowed over `chapter_consumes` rows (last hour,
-last day) plus a live-task count for concurrency. Admins bypass.
+last day). Admins bypass.
 
 Routes call `enforce_chapter_quota(user, db, cfg, count=N)` BEFORE
-enqueueing, then `record_chapter_consume(...)` AFTER each successful
-enqueue. Splitting the two lets a partial batch (e.g. /chapters/start
-with 10 ids when only 7 fit in the remaining hourly window) fail
+enqueueing the LLM-costing work, then `record_consume(...)` AFTER each
+successful spawn. Splitting the two lets a partial batch fail
 explicitly instead of silently overshooting.
 """
 
 from __future__ import annotations
+
+from typing import Literal
 
 from fastapi import HTTPException
 
@@ -34,22 +35,23 @@ def is_admin(user: dict, auth: AuthConfig) -> bool:
 async def get_quota_snapshot(
     user: dict, db: Store, cfg: RateLimitConfig, auth: AuthConfig,
 ) -> dict:
-    """Shape consumed by GET /api/me/quota and the SPA sidebar widget."""
+    """Shape consumed by GET /api/me/quota and the SPA sidebar widget.
+
+    Concurrency limits (in_flight) dropped in the material refactor —
+    the old implementation joined through `projects.owner_id` which no
+    longer exists. Hour + day windows are the meaningful gate.
+    """
     admin = is_admin(user, auth)
-    used_hour    = await db.count_user_consumes_since(user["id"], _HOUR)
-    used_day     = await db.count_user_consumes_since(user["id"], _DAY)
-    in_flight    = await db.count_user_in_flight_chapters(user["id"])
+    used_hour = await db.count_user_consumes_since(user["id"], _HOUR)
+    used_day  = await db.count_user_consumes_since(user["id"], _DAY)
     return {
-        "is_admin":             admin,
-        "limit_hour":           cfg.chapters_per_hour,
-        "used_hour":            used_hour,
-        "remaining_hour":       max(0, cfg.chapters_per_hour - used_hour),
-        "limit_day":            cfg.chapters_per_day,
-        "used_day":             used_day,
-        "remaining_day":        max(0, cfg.chapters_per_day - used_day),
-        "limit_concurrent":     cfg.concurrent_chapters,
-        "in_flight":            in_flight,
-        "remaining_concurrent": max(0, cfg.concurrent_chapters - in_flight),
+        "is_admin":       admin,
+        "limit_hour":     cfg.chapters_per_hour,
+        "used_hour":      used_hour,
+        "remaining_hour": max(0, cfg.chapters_per_hour - used_hour),
+        "limit_day":      cfg.chapters_per_day,
+        "used_day":       used_day,
+        "remaining_day":  max(0, cfg.chapters_per_day - used_day),
     }
 
 
@@ -57,23 +59,15 @@ async def enforce_chapter_quota(
     user: dict, db: Store, cfg: RateLimitConfig, auth: AuthConfig,
     count: int = 1,
 ) -> None:
-    """Raise 429 if `count` more chapters would exceed any window.
+    """Raise 429 if `count` more LLM events would exceed any window.
 
     Admin bypass. `count` is the number of slots the caller is about
-    to consume in this request (always 1 except for batch /start).
+    to consume (always 1 except for batch operations).
     """
     if is_admin(user, auth):
         return
     if count <= 0:
         return
-
-    in_flight = await db.count_user_in_flight_chapters(user["id"])
-    if in_flight + count > cfg.concurrent_chapters:
-        raise HTTPException(
-            429,
-            f"Đang xử lý {in_flight} chương; giới hạn đồng thời "
-            f"là {cfg.concurrent_chapters}. Đợi xong rồi thử lại.",
-        )
 
     used_hour = await db.count_user_consumes_since(user["id"], _HOUR)
     if used_hour + count > cfg.chapters_per_hour:
@@ -94,12 +88,16 @@ async def enforce_chapter_quota(
         )
 
 
-async def record_chapter_consume(
+async def record_consume(
     user: dict, db: Store, auth: AuthConfig,
-    chapter_id: int, project_id: int,
+    *,
+    translation_id: int,
+    kind: Literal["draft_create", "render_create"],
 ) -> None:
     """Persist a consume row. Admins skipped (they bypass enforcement
     above; logging admin runs would distort user-facing counters)."""
     if is_admin(user, auth):
         return
-    await db.record_chapter_consume(user["id"], chapter_id, project_id)
+    await db.record_chapter_consume(
+        user_id=user["id"], translation_id=translation_id, kind=kind,
+    )
