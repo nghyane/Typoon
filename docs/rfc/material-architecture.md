@@ -1,258 +1,382 @@
-# RFC — Material + Translation Architecture (Phase B Re-architect)
+# RFC — Material + Translation Architecture (v4 — DA-native, guild-scoped)
 
-> **Status**: design draft. Not yet implemented. Created on
-> commit `f8977dd` as the rollback point. Refactor branches start
-> from there; reverting to that SHA undoes everything below.
+> **Status**: design final. Implementation begins from commit `f8977dd`
+> (the rollback point). Reverting to that SHA undoes everything below.
+>
+> Changelog from v3:
+> - DA-only (no plain web mode) → simpler auth, lower DMCA exposure
+> - Guild-scoped sharing (`visibility ∈ {private, guild, all_guilds}`)
+> - Auto-share opt-out (default share) replacing manual opt-in
+> - Content-addressable cache (CAS by prepared.bnl hash) for cross-user dedup
+> - 3-layer pipeline ownership (chapter / draft / translation) to maximize cache hit
+> - Community glossary scaffold (phase 1 minimum, vote/contribution phase 2)
+> - DMCA takedown procedure with per-guild scope
+> - Removed `projects`, `project_pins`, `material_pins`, and `shared` boolean
 
 ## 1. Why this exists
 
 Today the codebase has one entity for "a manga the user is working
-on": `projects`. The schema treats it as a **long-running translation
-endeavor over a whole series** — owner, source-target lang pair,
-share flag, chapter list, glossary, render archives.
+on": `projects`. The schema treats it as a long-running translation
+endeavor over a whole series — owner, source-target lang pair, share
+flag, chapter list, glossary, render archives.
 
-That model contradicts how the user base actually behaves:
+That model contradicts user behavior:
 
 - **Reader-leaning** — most opens are "I want to read this chapter,
   in my language, now". The user does not perceive a project.
 - **Translate-on-demand** — when a chapter is unreadable raw, the
-  user wants to spawn a single-chapter translation, not commit to
-  managing the whole series.
-- **Mixed origin** — material comes from manifest sources
-  (HappyMH, MangaDex, OTruyen), from the browser extension capturing
-  arbitrary sites, from manual upload of doujins / scans the user
-  has on disk, occasionally from ad-hoc paste of a single image.
+  user spawns a single-chapter translation, not a whole-series
+  workflow.
+- **Mixed origin** — material comes from manifest sources, browser
+  extension captures, manual zip uploads, occasionally ad-hoc paste.
+- **DA-only deployment** — app runs exclusively inside Discord
+  Activity. Identity is Discord; audience scope is Discord guilds;
+  no SEO surface; no plain-web access path. The `projects` model
+  doesn't leverage any of this.
 
-The `projects` abstraction forces every one of those into a
-"translation workflow over a series" container that the user has
-to create up-front, even when the user just wants to read one
-chapter.
-
-This RFC proposes splitting `projects` into two entities — **Material**
-(the manga, source-agnostic) and **Translation** (a per-chapter,
-per-target-lang artifact) — and consolidating every read/translate
-surface around them.
+This RFC splits `projects` into **Material** (the manga, source-
+agnostic) and **Translation** (a per-chapter, per-target-lang
+artifact). Sharing is guild-scoped (not public). Caching is
+content-addressable across users in shared guilds. No `projects`
+left after merge.
 
 ## 2. Goals
 
 1. **One mental model** — Material is the unit a user follows / saves /
-   reads, regardless of where its pages live (source, ext capture,
-   upload).
-2. **Translation is an action, not a container** — spawn-able from a
-   chapter row, not from a "create project" wizard.
-3. **Many translations per chapter** — same raw chapter can host VN,
-   EN, and a private user variant simultaneously, each with its own
-   render archive and bubble text.
-4. **Reading discovery** — when several translations exist for a
-   chapter, the user sees the list and picks one (MangaDex scanlation
-   pattern).
-5. **Source-agnostic library** — `/library` works the same whether a
-   material was scraped from HappyMH, captured via extension, or
-   uploaded as a zip.
-6. **No parallel old/new pipelines** — `projects` and `chapters` get
-   deleted in the same PR that ships the new schema, after E2E parity.
+   reads, regardless of origin (source, ext capture, upload).
+2. **Translation is an action** — spawned from a chapter row, not
+   from a "create project" wizard.
+3. **3-layer pipeline ownership** — prepare and scan shared across
+   all translations of a chapter; draft shared across translations
+   of (chapter, lang_pair, glossary_fp); render shared per draft
+   when no edits. Same translation request from 100 users in the
+   same guild costs ~1 LLM call instead of 100.
+4. **Guild-scoped sharing** — Hội Mê Truyện is a per-guild feed.
+   No global public feed. DMCA exposure is per-guild.
+5. **Library entries** group multiple Materials representing the
+   same manga (per-user, optionally fuzzy-matched).
+6. **DA-only** — no plain-web flow, no anonymous access, no SEO
+   landing. Auth is Discord OAuth via SDK. Discord identity and
+   guild memberships drive every access decision.
+7. **No parallel old/new pipelines** — `projects` and its dependents
+   get deleted in the same PR that ships the new schema, after E2E
+   parity.
 
-Non-goals (deferred to later phases):
+Non-goals (deferred):
 
 - Cross-user translation marketplace (rating, claiming, review).
 - Per-chapter translation forking ("variant of @user2's VN with my
-  edits").
+  edits"). Sparse edits over a shared draft cover 80% of this.
 - Soft-deleted history surfaces.
-- Multi-target-lang on a single chapter for the **same owner**
-  (each owner gets one translation per (chapter, target_lang)).
+- External ID matching (MangaDex universal ID for cross-source
+  identity).
+- Watch Party shared-scroll reading.
+- Discord Rich Presence (phase 2).
+- Guild Bot embed notifications (phase 2).
+- Public web access. Permanent.
 
 ## 3. Mental model
 
 ```
-Material        Identity of a manga, source-agnostic.
-                  Origin: source-backed | ext-captured | uploaded
-                  May be associated with one upstream
-                    (source, upstream_ref) — unique when present.
+Material           Identity of a manga, source-agnostic, per-user.
+  origin ∈ {source, extension, upload}
+  Two users importing the same HappyMH manga get two material rows.
 
-  Chapter       A unit of pages inside a Material.
-                  Pages live either in a remote source (raw URLs the
-                  reader fetches via DA proxy) or in storage as
-                  user-uploaded files.
+Chapter            A unit of pages inside a Material.
+  pages_origin ∈ {remote, local}
+  remote: pages fetched at read-time via manifest runtime.
+  local:  prepared.bnl lives in our blob store.
+  Identity is per-chapter — same physical chapter from different users
+  may share prepared.bnl via content-addressable storage (CAS).
 
-    Translation  An owner's render of a chapter into a target lang.
-                  Carries its own bubbles, geometry, briefs, glossary
-                  binding, render archive, share flag.
-                  Many translations per chapter possible.
+TranslationDraft   LLM output bound to (chapter, source_lang, target_lang,
+                   glossary_fingerprint). Shared with visibility scope.
+  visibility ∈ {private, guild, all_guilds}
+  Cache hit when: same chapter, same lang pair, same glossary signature.
+
+Translation        Per-user wrapper around a draft.
+  Owns the render archive (or shares draft's default archive).
+  Holds sparse edits (translation_edits) if user overrode bubbles.
+  Carries user-facing flags (visibility for Hội Mê Truyện feed
+  inclusion).
+
+LibraryEntry       Per-user grouping of one or more Materials that
+                   represent the same manga from the user's POV.
+  Bookmark, last-read tracking, "Continue reading" hang off here.
 ```
-
-Old: `Project -> Chapter -> (bubbles, geometry, translations, archive)`
-New: `Material -> Chapter -> Translation -> (bubbles, geometry, archive)`
-
-The whole "bubbles / geometry / translations_text / chapter_briefs"
-graph that today is keyed by `chapter_id` migrates to being keyed
-by `translation_id` — because in reality each translation **redoes**
-its own OCR + geometry + LLM run; sharing across translations is a
-future optimization, not a current capability.
 
 ## 4. Schema
 
-### 4.1 New tables
+The DDL is the source of truth (`typoon/storage/schema.sql`). This
+section sketches; refer to the migration commit for the actual file.
+
+### 4.1 Identity
 
 ```sql
--- ── Material ──────────────────────────────────────────────────────
--- Identity for a manga. Source-backed + non-source-backed share the
--- same table; `origin` discriminates and (source, upstream_ref) is
--- unique only when both are present (partial unique index).
+-- users + identities unchanged from current schema.
+-- New: cache guild memberships (refreshed on login + periodically).
+CREATE TABLE user_guilds (
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    guild_id     TEXT NOT NULL,
+    guild_name   TEXT,
+    guild_icon   TEXT,
+    refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, guild_id)
+);
+CREATE INDEX idx_user_guilds_guild ON user_guilds(guild_id);
+```
 
+### 4.2 Material
+
+```sql
 CREATE TABLE materials (
-    id              BIGSERIAL PRIMARY KEY,
-    origin          TEXT NOT NULL CHECK (origin IN ('source','extension','upload')),
+    id            BIGSERIAL PRIMARY KEY,
+    owner_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    origin        TEXT NOT NULL CHECK (origin IN ('source','extension','upload')),
 
     -- Source-backed identity. NULL for ext + upload.
-    source          TEXT,         -- 'happymh' | 'mangadex' | 'otruyen' | …
-    upstream_ref    TEXT,         -- mangaUrl as the manifest runtime knows it
+    source        TEXT,        -- 'happymh' | 'mangadex' | …
+    upstream_ref  TEXT,        -- mangaUrl as the manifest runtime knows it
 
-    -- Display snapshot — denormalized from the source at import time,
-    -- refreshed when the source reports a change.
-    title           TEXT NOT NULL,
-    cover_url       TEXT,
-    description     TEXT,
-    author          TEXT,
-    status          TEXT,
-    languages       TEXT[] NOT NULL DEFAULT '{}',   -- source's available langs
+    -- Display snapshot — denormalized; refresh when manifest reports
+    -- a change.
+    title         TEXT NOT NULL,
+    cover_url     TEXT,
+    description   TEXT,
+    author        TEXT,
+    status        TEXT,
+    languages     TEXT[] NOT NULL DEFAULT '{}',
 
-    -- Provenance (who first imported / uploaded this).
-    imported_by     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    -- NSFW gate. Set by manifest (manifest.nsfw), by ext UI, or by
+    -- user during upload. Forces draft visibility='private'.
+    nsfw          BOOLEAN NOT NULL DEFAULT FALSE,
 
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
--- Source-backed materials are deduped by (source, upstream_ref);
--- a second user importing the same manga reuses the row. ext + upload
--- materials are per-import (no dedup — each capture is its own thing).
-CREATE UNIQUE INDEX uniq_materials_source_ref
-    ON materials (source, upstream_ref)
+-- Materials are per-user — no cross-user dedup constraint. Two users
+-- import the same HappyMH manga: two rows. Privacy isolation, DMCA
+-- isolation. The CAS layer below handles compute dedup separately.
+CREATE INDEX idx_materials_owner   ON materials(owner_id);
+CREATE INDEX idx_materials_lookup  ON materials(owner_id, source, upstream_ref)
     WHERE source IS NOT NULL;
+```
 
+### 4.3 Chapter
 
--- ── Chapter ──────────────────────────────────────────────────────
--- A chapter inside a material. Pages either reference upstream URLs
--- (resolved at read-time via the manifest runtime) or live in our
--- pipeline storage (uploaded). Pure identity — no pipeline state.
-
+```sql
 CREATE TABLE chapters (
-    id              BIGSERIAL PRIMARY KEY,
-    material_id     BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    id                BIGSERIAL PRIMARY KEY,
+    material_id       BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
 
-    position        INTEGER NOT NULL,   -- sparse server-managed sort key
-    number          TEXT NOT NULL,      -- display, free-form
-    label           TEXT,               -- full label as the source presents it
-    upstream_url    TEXT,               -- chapter URL on source; NULL for upload
+    position          INTEGER NOT NULL,    -- sparse server-managed sort key
+    number            TEXT NOT NULL,       -- display, free-form
+    label             TEXT,                -- full label as the source presents
+    upstream_url      TEXT,                -- chapter URL on source; NULL for upload
 
-    -- Source of the page pixels:
-    -- 'remote' = fetch via manifest at read-time (no local storage)
-    -- 'local'  = pages live in our blob store (upload + ext capture)
-    pages_origin    TEXT NOT NULL CHECK (pages_origin IN ('remote','local')),
+    pages_origin      TEXT NOT NULL CHECK (pages_origin IN ('remote','local')),
 
-    -- For pages_origin = 'local'; the prepared archive key in the
-    -- pipeline blob store (replaces today's prepared_key()).
-    prepared_locator TEXT,
-    prepared_backend TEXT,
+    -- Content-addressable storage for prepared.bnl. SHA256 of the
+    -- packed archive bytes. Lets two chapters with identical pixel
+    -- content (same upload zip, same source content) share prepared
+    -- output and downstream caches.
+    prepared_hash     TEXT,                 -- hex sha256, NULL until prepare done
+    prepared_backend  TEXT,
+    prepared_locator  TEXT,
+    page_count        INTEGER NOT NULL DEFAULT 0,
 
-    page_count      INTEGER NOT NULL DEFAULT 0,
-
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (material_id, position)
 );
+CREATE INDEX idx_chapters_material  ON chapters(material_id, position);
+CREATE INDEX idx_chapters_prepared  ON chapters(prepared_hash)
+    WHERE prepared_hash IS NOT NULL;
+```
 
+`prepared_hash` is the CAS key. Two chapter rows with the same hash
+share the same prepared.bnl blob in storage and the same downstream
+scan output.
 
--- ── Translation ─────────────────────────────────────────────────
--- The pipeline output for a (chapter, owner, target_lang) tuple.
--- Many translations per chapter possible. Owns its own bubbles,
--- briefs, render archive, share flag.
+### 4.4 Scan output (Layer 1 — chapter level)
 
+Bubbles, geometry, and masks bind to **chapter_id**, not translation.
+They depend only on pixels, so every translation on the chapter reads
+the same data.
+
+```sql
+CREATE TABLE bubbles (
+    chapter_id    BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    page_index    INTEGER NOT NULL,
+    bubble_idx    INTEGER NOT NULL,
+    source_text   TEXT NOT NULL,
+    confidence    REAL NOT NULL,
+    shape_kind    TEXT NOT NULL DEFAULT 'dialogue'
+                     CHECK (shape_kind IN ('dialogue','burst')),
+    source_text_tsv tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', source_text)) STORED,
+    PRIMARY KEY (chapter_id, page_index, bubble_idx)
+);
+CREATE INDEX idx_bubbles_source_text_tsv ON bubbles USING GIN (source_text_tsv);
+
+CREATE TABLE bubble_geometry (
+    chapter_id  BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    page_index  INTEGER NOT NULL,
+    bubble_idx  INTEGER NOT NULL,
+    polygon     JSONB NOT NULL,
+    fit_box     JSONB NOT NULL,
+    erase_box   JSONB NOT NULL,
+    text_box    JSONB NOT NULL,
+    PRIMARY KEY (chapter_id, page_index, bubble_idx)
+);
+
+CREATE TABLE page_geometry (
+    chapter_id  BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    page_index  INTEGER NOT NULL,
+    width       INTEGER NOT NULL,
+    height      INTEGER NOT NULL,
+    PRIMARY KEY (chapter_id, page_index)
+);
+
+-- masks.npz lives in blob storage; locator on chapter:
+ALTER TABLE chapters
+    ADD COLUMN masks_backend TEXT,
+    ADD COLUMN masks_locator TEXT;
+```
+
+### 4.5 Draft (Layer 2 — lang + glossary level, cross-user)
+
+```sql
+CREATE TABLE translation_drafts (
+    id                 BIGSERIAL PRIMARY KEY,
+    chapter_id         BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    source_lang        TEXT NOT NULL,
+    target_lang        TEXT NOT NULL,
+    glossary_fp        TEXT NOT NULL,    -- hash of applied glossary terms
+
+    llm_model          TEXT NOT NULL,
+    created_by         BIGINT NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+
+    -- Auto-share opt-out gate.
+    visibility         TEXT NOT NULL DEFAULT 'guild'
+                          CHECK (visibility IN ('private','guild','all_guilds')),
+    -- For visibility='guild', which guild this draft is scoped to.
+    -- Captured from the user's current activity instance at spawn time.
+    scope_guild_id     TEXT,
+
+    -- DMCA marker. Set when an admin takes down; cascades to dependent
+    -- translations.
+    takedown_at        TIMESTAMPTZ,
+    takedown_reason    TEXT,
+
+    state              TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (state IN ('pending','running','done','error')),
+    progress_stage     TEXT,
+    progress_index     INTEGER,
+    progress_total     INTEGER,
+
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- One draft per cache key. Visibility-private drafts skip the unique
+-- constraint (each user gets their own).
+CREATE UNIQUE INDEX uniq_drafts_cache
+    ON translation_drafts (chapter_id, source_lang, target_lang, glossary_fp)
+    WHERE visibility != 'private' AND takedown_at IS NULL;
+
+CREATE INDEX idx_drafts_creator   ON translation_drafts(created_by);
+CREATE INDEX idx_drafts_chapter   ON translation_drafts(chapter_id);
+
+CREATE TABLE translation_draft_bubbles (
+    draft_id        BIGINT NOT NULL REFERENCES translation_drafts(id) ON DELETE CASCADE,
+    page_index      INTEGER NOT NULL,
+    bubble_idx      INTEGER NOT NULL,
+    translated_text TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('dialogue','sfx','skip')),
+    translated_text_tsv tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', translated_text)) STORED,
+    PRIMARY KEY (draft_id, page_index, bubble_idx)
+);
+CREATE INDEX idx_draft_bubbles_text_tsv
+    ON translation_draft_bubbles USING GIN (translated_text_tsv);
+
+-- Per-draft LLM context brief (replaces old chapter_briefs keyed by
+-- chapter_id).
+CREATE TABLE draft_briefs (
+    draft_id    BIGINT PRIMARY KEY REFERENCES translation_drafts(id) ON DELETE CASCADE,
+    brief_json  JSONB NOT NULL,
+    summary     TEXT,
+    terms_text  TEXT,
+    facts_text  TEXT,
+    rules_text  TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    search_tsv  tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('simple', coalesce(summary,    '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(terms_text, '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(facts_text, '')), 'C') ||
+        setweight(to_tsvector('simple', coalesce(rules_text, '')), 'D')
+    ) STORED
+);
+CREATE INDEX idx_draft_briefs_search_tsv ON draft_briefs USING GIN (search_tsv);
+```
+
+### 4.6 Translation (Layer 3 — per-user wrapper)
+
+```sql
 CREATE TABLE translations (
-    id              BIGSERIAL PRIMARY KEY,
-    chapter_id      BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-    owner_id        BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    target_lang     TEXT NOT NULL,
+    id                 BIGSERIAL PRIMARY KEY,
+    chapter_id         BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    owner_id           BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_lang        TEXT NOT NULL,
+    -- Pointer to the cached LLM output. NULL if owner is force-spawning
+    -- (private) and the draft hasn't been created yet. After pipeline
+    -- finishes, always non-null.
+    draft_id           BIGINT REFERENCES translation_drafts(id) ON DELETE SET NULL,
 
-    state           TEXT NOT NULL DEFAULT 'idle'
-                       CHECK (state IN ('idle','pending','running','error','done')),
-    stage           TEXT,                 -- current pipeline stage if running
+    -- Render archive. If owner has zero edits, shares the draft's
+    -- default archive (archive_locator may be NULL — read draft's
+    -- default at serve time). If edits exist, archive is rendered
+    -- per-translation.
+    archive_backend    TEXT,
+    archive_locator    TEXT,
+    rendered_at        TIMESTAMPTZ,
 
-    archive_backend TEXT,
-    archive_locator TEXT,
-    rendered_at     TIMESTAMPTZ,
-    progress_stage  TEXT,
-    progress_index  INTEGER,
-    progress_total  INTEGER,
+    -- Hội Mê Truyện feed inclusion. Independent from draft.visibility:
+    -- draft can be 'guild'-cached without translation being in the
+    -- feed; conversely a private draft can have an in-feed translation
+    -- if the owner shares the rendered output explicitly.
+    in_feed            BOOLEAN NOT NULL DEFAULT TRUE,
+    feed_guild_id      TEXT,            -- which guild's feed
 
-    shared          BOOLEAN NOT NULL DEFAULT FALSE,
-    settings        JSONB,                 -- inherit-from-defaults override
+    takedown_at        TIMESTAMPTZ,
+    takedown_reason    TEXT,
 
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (chapter_id, owner_id, target_lang)
 );
-CREATE INDEX idx_translations_chapter      ON translations (chapter_id);
-CREATE INDEX idx_translations_owner        ON translations (owner_id);
-CREATE INDEX idx_translations_shared_chapter
-    ON translations (chapter_id) WHERE shared = TRUE;
-```
+CREATE INDEX idx_translations_owner    ON translations(owner_id);
+CREATE INDEX idx_translations_feed
+    ON translations(feed_guild_id, created_at DESC)
+    WHERE in_feed = TRUE AND takedown_at IS NULL;
 
-### 4.2 Migrated tables (re-keyed from chapter_id → translation_id)
-
-The pipeline output graph today hangs off `chapter_id`. Each owner +
-target_lang gets its own copy after the refactor, so the FK shifts.
-
-```sql
--- bubbles, bubble_geometry, page_geometry, translations (text),
--- chapter_briefs, tasks, chapter_consumes — all change their FK from
--- chapter_id to translation_id. Schema is otherwise unchanged.
---
--- Naming collision: today's `translations` table stores per-bubble
--- translated text. Rename to `translation_bubbles` to free the noun.
-
-ALTER TABLE translations RENAME TO translation_bubbles;
--- (then create the new translations table per §4.1)
-
-ALTER TABLE bubbles            RENAME COLUMN chapter_id TO translation_id;
-ALTER TABLE bubble_geometry    RENAME COLUMN chapter_id TO translation_id;
-ALTER TABLE page_geometry      RENAME COLUMN chapter_id TO translation_id;
-ALTER TABLE translation_bubbles RENAME COLUMN chapter_id TO translation_id;
-ALTER TABLE chapter_briefs     RENAME COLUMN chapter_id TO translation_id;
--- (chapter_briefs name stays — it's still a brief, scoped to one
---  translation's run)
-```
-
-In practice this is a **schema rebuild** (DDL-only DB per
-`schema.sql:6`), not an in-place migration. See §8.
-
-### 4.3 Bookmark + library
-
-Today: `project_pins` keyed by `(user_id, project_id)`.
-
-After: `material_pins` keyed by `(user_id, material_id)`. Bookmark
-attaches to the material (the manga as a whole), not to a particular
-translation — same as Phase A library on the frontend.
-
-```sql
-CREATE TABLE material_pins (
-    user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    material_id BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
-    pinned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, material_id)
+-- Sparse edits over the shared draft. Only edited bubbles get rows.
+-- Reader does: load draft bubbles → overlay edits.
+CREATE TABLE translation_edits (
+    translation_id  BIGINT NOT NULL REFERENCES translations(id) ON DELETE CASCADE,
+    page_index      INTEGER NOT NULL,
+    bubble_idx      INTEGER NOT NULL,
+    edited_text     TEXT NOT NULL,
+    edited_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (translation_id, page_index, bubble_idx)
 );
 ```
 
-### 4.4 Glossary
-
-Glossary today is per-project. After the refactor, glossary is
-**per-user-per-source-lang** (a user dicts terms once, every
-translation they own uses it). This collapses a per-project N×
-duplication into one row set per (user, source_lang).
+### 4.7 Glossary
 
 ```sql
-CREATE TABLE glossary (
+-- Per-user glossary (replaces old per-project).
+CREATE TABLE user_glossary (
     id           BIGSERIAL PRIMARY KEY,
     owner_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     source_lang  TEXT NOT NULL,
@@ -260,385 +384,513 @@ CREATE TABLE glossary (
     source_term  TEXT NOT NULL,
     target_term  TEXT NOT NULL,
     notes        TEXT,
+    source_term_tsv tsvector GENERATED ALWAYS AS
+        (to_tsvector('simple', source_term)) STORED,
     UNIQUE (owner_id, source_lang, target_lang, source_term)
+);
+CREATE INDEX idx_user_glossary_text ON user_glossary USING GIN (source_term_tsv);
+
+-- Community glossary scaffold. Phase 1: schema only, seeded by admin.
+-- Phase 2: vote + contribution UI.
+CREATE TABLE community_glossary (
+    id           BIGSERIAL PRIMARY KEY,
+    source_lang  TEXT NOT NULL,
+    target_lang  TEXT NOT NULL,
+    source_term  TEXT NOT NULL,
+    target_term  TEXT NOT NULL,
+    -- NULL = global term; non-null = scoped to a material.
+    material_id  BIGINT REFERENCES materials(id) ON DELETE CASCADE,
+    vote_score   INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source_lang, target_lang, source_term, material_id)
 );
 ```
 
-Per-translation override is possible but not in scope for the
-initial cut.
+Effective glossary for a user/material:
 
-### 4.5 Quota
+```
+community (scoped to material)  ←  base
+  + community (global, same lang pair)
+  + user_glossary (overrides)
+```
 
-`chapter_consumes` shifts to consume a **translation_id** rather than
-a chapter_id. Counter logic unchanged.
+`glossary_fp` for cache key:
+
+```python
+def glossary_fingerprint(user_id, source_lang, target_lang, material_id):
+    rows = effective_glossary(user_id, source_lang, target_lang, material_id)
+    sig = "|".join(sorted(f"{r.source_term}={r.target_term}" for r in rows))
+    return sha256(sig.encode()).hexdigest()[:16]
+```
+
+Default user with no overrides → community-only fingerprint → high
+cache hit rate across users.
+
+### 4.8 Library + bookmark
+
+```sql
+CREATE TABLE library_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    user_id             BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title               TEXT NOT NULL,
+    cover_url           TEXT,
+    primary_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
+    bookmarked          BOOLEAN NOT NULL DEFAULT FALSE,
+    bookmarked_at       TIMESTAMPTZ,
+    last_read_at        TIMESTAMPTZ,
+    last_chapter_ref    JSONB,  -- {material_id, chapter_id, label}
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_library_user ON library_entries(user_id);
+
+CREATE TABLE library_materials (
+    entry_id     BIGINT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+    material_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    link_origin  TEXT NOT NULL CHECK (link_origin IN ('primary','auto','manual')),
+    linked_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (entry_id, material_id)
+);
+CREATE UNIQUE INDEX uniq_library_material_per_user
+    ON library_materials (material_id);
+-- Combined with the FK chain, a material appears in at most one
+-- library_entry per user.
+```
+
+Bookmark moves to `library_entries.bookmarked` — no separate
+`material_pins` table.
+
+### 4.9 Pipeline coordination
+
+```sql
+-- Re-keyed. Prepare and scan key by chapter_id (chapter-level work).
+-- Translate keys by draft_id. Render keys by translation_id (or
+-- draft_id for the default shared render).
+CREATE TABLE tasks (
+    target_kind   TEXT NOT NULL CHECK (target_kind IN ('chapter','draft','translation')),
+    target_id     BIGINT NOT NULL,
+    stage         TEXT NOT NULL CHECK (stage IN ('prepare','scan','translate','render')),
+    claimed_by    TEXT,
+    claimed_at    TIMESTAMPTZ,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    PRIMARY KEY (target_kind, target_id, stage)
+);
+CREATE INDEX idx_tasks_claim ON tasks(stage, claimed_by, claimed_at);
+
+-- (LISTEN/NOTIFY trigger same as before, payload now
+-- '<target_kind>:<target_id>'.)
+```
+
+### 4.10 Quota + DMCA
+
+```sql
+-- One row per LLM-costing event (cache miss draft spawn or fresh render).
+-- Cache HITS do NOT insert. Quota counts what the user actually paid for.
+CREATE TABLE chapter_consumes (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    translation_id  BIGINT REFERENCES translations(id) ON DELETE SET NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('draft_create','render_create')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_chapter_consumes_user_time
+    ON chapter_consumes(user_id, created_at DESC);
+
+CREATE TABLE dmca_takedowns (
+    id              BIGSERIAL PRIMARY KEY,
+    target_kind     TEXT NOT NULL CHECK (target_kind IN
+                       ('material','chapter','draft','translation')),
+    target_id       BIGINT NOT NULL,
+    scope_guild_id  TEXT,
+    reason          TEXT NOT NULL,
+    reporter        TEXT NOT NULL,
+    taken_down_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    restored_at     TIMESTAMPTZ
+);
+```
 
 ## 5. Storage layout
 
-`archive_token(project_id, chapter_id)` becomes
-`archive_token(translation_id)`. Archive paths:
-
 ```
-Old:
-  p/{project_id}/c/{chapter_id}/prepared.bnl   (pipeline blob)
-  p/{project_id}/c/{chapter_id}/masks.npz      (pipeline blob)
-  render/{hmac(project_id, chapter_id)}.bnl    (public)
-
-New:
-  c/{chapter_id}/prepared.bnl                  (pipeline blob, per chapter)
-  t/{translation_id}/masks.npz                 (pipeline blob, per translation)
-  render/{hmac(translation_id)}.bnl            (public, per translation)
+c/{chapter_id}/prepared.bnl              Chapter-level, deduped via CAS hash
+c/{chapter_id}/masks.npz                 Chapter-level
+d/{draft_id}/render.bnl                  Default render archive (shared across
+                                         translations that reference this draft
+                                         and have no edits)
+t/{translation_id}/render.bnl            Per-translation when sparse edits exist
+                                         (forks the draft render)
 ```
 
-`prepared.bnl` stays per-chapter — the prepared pages are the raw
-content, shared across every translation that runs on the chapter.
-`masks.npz` becomes per-translation because masks evolve with the
-geometry detection pass which each translation re-runs.
-
-Render archive HMAC takes only `translation_id` + salt. The CDN
-cache key changes for every chapter — this **invalidates the
-existing CDN cache** entirely. Plan for that: section §8.4.
-
-## 6. Pipeline / worker
-
-`tasks` re-keys from `(chapter_id, stage)` to `(translation_id, stage)`.
-The trigger that wakes workers via `pg_notify` carries
-`translation_id` in payload. Worker dispatch logic shrinks because
-the worker no longer needs to look up the owning project — every
-piece of state it needs (target_lang, glossary scope, owner_id) is
-on the translation row.
-
-### 6.1 Sharing prepared pages
-
-`stages/prepare.py` runs once per chapter and writes
-`prepared.bnl`. Subsequent translations on the same chapter skip
-prepare. Trigger:
+Public URL pattern unchanged:
 
 ```
-on POST /translate/chapter:
-  ensure translation row (chapter, owner, target_lang)
-  if chapter.prepared_locator IS NULL:
-      enqueue task (translation, 'prepare')   -- writes chapter.prepared_locator
-      after prepare done → enqueue 'scan'
-  else:
-      enqueue task (translation, 'scan')
+https://{da-host}/cdn/t/render/{HMAC(target_kind:target_id, salt)}.bnl?v={updated_at}
 ```
 
-`prepare` is the only stage that mutates the **chapter** row.
-Every later stage writes to **translation**. This means N
-translations on the same chapter share the cost of prepare exactly
-once.
+`HMAC` input is `"draft:42"` or `"translation:42"`. Knowledge of URL
+implies capability — auth gate is the frontend, which only emits URLs
+for entities the user has permission to read.
 
-### 6.2 Concurrency
+CDN edge cache (Discord proxy) handles repeat reads of hot archives
+for free.
 
-Two users translating the same chapter to the same lang? Disallow at
-DB level (`UNIQUE (chapter_id, owner_id, target_lang)` already does
-this for same owner). Two users different lang? Both run, both pay
-their own quota, both write their own pipeline output to
-`t/{translation_id}/...`. No coordination needed.
+## 6. Pipeline — translation flow detail
+
+### 6.1 Spawn endpoint contract
+
+```
+POST /api/translate
+Body:  { chapter_id, target_lang, force_private?: bool }
+Auth:  Discord JWT
+       (frontend has resolved chapter_id via /api/material/{...} flow)
+
+Behavior:
+  1. Resolve user_id, current scope_guild_id (from JWT claims).
+  2. Resolve effective glossary → glossary_fp.
+  3. Lookup draft (chapter_id, source_lang, target_lang, glossary_fp,
+     visibility != 'private', NOT taken_down).
+  4. If hit AND user can_use_draft(draft):
+       Reuse draft.
+       Create translation row (chapter_id, user, target_lang, draft_id).
+       Return 200 { translation_id, state, cache_hit: true }.
+       Quota: 0 (no chapter_consumes row).
+  5. Else (miss OR private OR not authorized):
+       Create draft (visibility=force_private ? 'private' : 'guild',
+                     scope_guild_id=current_guild,
+                     creator=user).
+       Create translation row (draft_id=new draft).
+       Enqueue tasks: ensure prepare done → scan → translate → render.
+       Insert chapter_consumes (kind='draft_create').
+       Return 200 { translation_id, draft_id, state: 'pending',
+                    cache_hit: false }.
+```
+
+### 6.2 Stage execution
+
+```
+Stage 1: prepare
+  Target: chapter_id
+  Skip if chapter.prepared_hash IS NOT NULL.
+  Otherwise: pack pages → hash → write c/{id}/prepared.bnl.
+  Update chapter.prepared_hash, prepared_locator.
+  Next: enqueue scan if any draft pending on this chapter.
+
+Stage 2: scan
+  Target: chapter_id
+  Skip if bubbles rows exist for chapter.
+  Otherwise: OCR + geometry → write bubbles, bubble_geometry,
+             page_geometry, masks.npz.
+  Next: enqueue translate for every pending draft on this chapter.
+
+Stage 3: translate
+  Target: draft_id
+  Input: bubbles + briefs + effective glossary.
+  Call LLM with target_lang.
+  Write translation_draft_bubbles + draft_briefs.
+  Update draft.state='done'.
+  Next: enqueue render for every translation linked to this draft.
+
+Stage 4: render
+  Target: translation_id (default) OR draft_id (shared-archive case).
+  If translation has no edits:
+    Render once per draft (target_kind='draft'); skip if
+    d/{draft_id}/render.bnl exists. All translations reference this.
+  If translation has edits:
+    Render per translation (target_kind='translation') → t/{id}/render.bnl.
+  Update archive_* on translation row.
+```
+
+### 6.3 SSE events
+
+```
+GET /api/translate/{translation_id}/events     SSE
+
+Events emitted:
+  draft.progress     { stage, index, total }
+  draft.done         { draft_id }
+  render.progress    { index, total }
+  render.done        { archive_url }
+  error              { stage, message }
+```
+
+When the translation reuses a cached draft (cache_hit), the SSE
+stream emits `draft.done` immediately followed by render flow (or
+`render.done` immediately if the draft's default render is already
+available).
+
+### 6.4 Failure cases
+
+| Case | Behavior |
+|---|---|
+| Draft hits cache but takedown_at set | Treat as miss; spawn new draft (different glossary_fp won't help since takedown is per-draft, not per-key; user spawns a fresh private draft) |
+| User force_private but cache exists | Always honor `force_private` — spawn fresh private draft, no reuse |
+| Glossary mismatch (user has overrides) | New glossary_fp → cache miss → spawn fresh draft. Cost is on the user with overrides, not the community |
+| NSFW material | force_private auto-set; draft.visibility='private' regardless of opt-out |
+| User leaves guild between spawn and read | Visibility check at read time uses current guild memberships. User may lose access to a draft they linked to; system falls back to spawning a private draft on next read |
 
 ## 7. API surface
 
-### 7.1 Material discovery & import
+### 7.1 Auth
 
 ```
-GET  /api/material/{source}/{upstream_ref_b64}    lookup or 404
-POST /api/material/import                         create from manifest+ref
-POST /api/material/upload-init                    user-uploaded zip → init
-POST /api/material/upload-finalize                ... → finalize, create chapters
+POST /api/auth/discord/exchange    Exchange Discord OAuth code → JWT
+GET  /api/me                       Current user + guilds
+                                   Refreshes user_guilds cache
 ```
 
-Source-backed import (`/import`) is idempotent — second call with
-the same (source, upstream_ref) returns the existing row. This is
-what makes the manga-card click flow "open detail" rather than
-"create".
+No password, no email, no API token for users (extension still uses
+API tokens — see RFC-009).
 
-### 7.2 Chapter read
+### 7.2 Material
 
 ```
-GET  /api/material/{id}                           material detail
-GET  /api/material/{id}/chapters                  list (+ overlay per-chapter
-                                                  translation summary)
-GET  /api/chapter/{id}/pages                      page URLs for raw read
-                                                  (manifest dispatch for source-
-                                                   backed; storage for local)
+POST /api/material/import          { source, upstream_ref } → ensure row,
+                                   returns material_id. Idempotent per
+                                   (owner, source, upstream_ref).
+POST /api/material/upload-init     Multipart upload init (unchanged shape)
+POST /api/material/upload-finalize Multipart upload finalize → material_id
+GET  /api/material/{id}            Material + chapters with translation overlay
+PATCH /api/material/{id}           title, cover, nsfw (owner only)
+DELETE /api/material/{id}          Cascades to chapters, translations, blobs
 ```
 
-The chapter list endpoint embeds a small array per chapter:
+Chapter list overlay:
 
-```json
+```jsonc
 {
   "id": 4711,
-  "number": "1100",
+  "number": "1099",
   "translations": [
-    {"id": 9001, "owner": "@me",       "lang": "vi", "state": "done", "shared": false},
-    {"id": 9002, "owner": "@nghyane",  "lang": "vi", "state": "done", "shared": true},
-    {"id": 9003, "owner": "@user2",    "lang": "en", "state": "running", "shared": true}
+    { "id": 9001, "creator": "@nghyane", "lang": "vi",
+      "state": "done", "from_cache": true, "in_feed": true },
+    { "id": 9003, "creator": "@user2",  "lang": "en",
+      "state": "running", "from_cache": false, "in_feed": true }
   ]
 }
 ```
 
-Frontend can render the chapter row directly — "raw" link + one button
-per translation. No second round-trip.
+Frontend can render the chapter row directly. No second round-trip.
 
 ### 7.3 Translate
 
 ```
-POST /api/translate                               body: {chapter_id, target_lang}
-                                                  returns translation_id
-GET  /api/translate/{id}                          state, progress, archive URL
-POST /api/translate/{id}/redo                     re-run pipeline
-PATCH /api/translate/{id}                         shared, settings
-DELETE /api/translate/{id}                        cascades archive cleanup
-SSE  /api/translate/{id}/events                   per-translation event stream
+POST  /api/translate                       see §6.1
+GET   /api/translate/{id}                  detail
+POST  /api/translate/{id}/redo             re-run (force fresh draft)
+PATCH /api/translate/{id}                  in_feed, force_private
+DELETE /api/translate/{id}                 cascades archive cleanup
+SSE   /api/translate/{id}/events           §6.3
 ```
-
-Project-level routes go away. There's no "create translation
-collection" — the user spawns translations per chapter; the user's
-collection is implicit (`SELECT * FROM translations WHERE owner_id = ?`).
 
 ### 7.4 Library
 
 ```
-GET  /api/library                                 materials user has touched
-                                                  (bookmark + history union;
-                                                  history lives client-side
-                                                  but bookmark moves server-side)
-PUT  /api/material/{id}/bookmark                  toggle
+GET  /api/library                          entries (with linked materials)
+POST /api/library/entry                    create entry (from a material)
+PATCH /api/library/entry/{id}              bookmark, title override
+DELETE /api/library/entry/{id}             also unlinks materials
+POST /api/library/entry/{id}/link          link material
+POST /api/library/entry/{id}/unlink        unlink material (if 0 left, drop entry)
+GET  /api/library/suggest?material_id=...  fuzzy match suggestion
 ```
 
-The local-first library store from Phase A stays — but bookmark
-becomes a server write (mirror'd back to local cache) because it's
-the only state that needs cross-device sync in this phase. Reading
-history remains local-only.
+### 7.5 Feed (Hội Mê Truyện, guild-scoped)
+
+```
+GET /api/feed/guild/{guild_id}            Latest translations in_feed=TRUE
+                                          scoped to guild. User must be member.
+```
+
+No `/api/feed/public`. No global feed. Member-only.
+
+### 7.6 DMCA
+
+```
+POST /api/dmca/report                     User-facing report form
+GET  /api/admin/dmca                      Admin list (admin scope only)
+POST /api/admin/dmca/{id}/takedown        Mark target taken_down_at
+POST /api/admin/dmca/{id}/restore         Reverse
+```
 
 ## 8. Migration plan
 
-### 8.1 Branching strategy
+### 8.1 Branching
 
 ```
-main (today)
-  ├─ checkpoint f8977dd                ← rollback point, this commit
-  └─ feat/material-architect           ← new branch
-       ├─ feat/material-schema         ← schema.sql + postgres adapter rewrite
-       ├─ feat/material-api            ← routes, pydantic models, deps
-       ├─ feat/material-pipeline       ← worker re-keying, prepare/scan/render
-       ├─ feat/material-storage        ← archive key shape, CDN purge
-       ├─ feat/material-web            ← /manga/$source/$ref, ChapterRow,
-       │                                   library re-targeting
-       └─ feat/material-ext            ← ext rewrite: /api/translate flow
+main
+  └─ checkpoint f8977dd                ← rollback point
+       └─ feat/material-architect      ← integration branch
+            ├─ feat/material-schema
+            ├─ feat/material-api
+            ├─ feat/material-pipeline
+            ├─ feat/material-storage
+            ├─ feat/material-web
+            └─ feat/material-ext
 ```
 
-Each sub-branch merges into `feat/material-architect`, never into
-`main`. The full branch lands as **one merge commit** after E2E
-parity passes. Rollback = `git revert <merge-sha>` OR
-`git reset --hard f8977dd`.
+Sub-branches merge into `feat/material-architect`. Integration
+branch merges to `main` as one commit. Rollback = `git revert <merge>`
+or `git reset --hard f8977dd`.
 
 ### 8.2 Data migration
 
-Per `schema.sql:6` the convention is **DDL-only, no in-place
-migration**: `dropdb && createdb`. That's tenable for Phase 1 because
-the existing prod DB is a beta with a small user base.
-
-If we need to preserve current projects (decision needed):
+**Decision: drop & recreate**. Beta user count is small; preserving
+state isn't worth the migration tooling cost. Operator runs:
 
 ```
-For each project p:
-  insert material (
-    origin = 'source' if p.source_url matches a known manifest
-            else      'upload',
-    source/upstream_ref = derived from p.source_url when source,
-    title/cover/desc = p's fields,
-    imported_by = p.owner_id
-  )
-  For each chapter ch in p:
-    insert chapter (material_id = …, position, number, …,
-                    pages_origin='local',
-                    prepared_locator = old prepared_key())
-    insert translation (chapter_id = …, owner_id = p.owner_id,
-                        target_lang = p.target_lang, state = ch.state
-                        archive_backend/locator = ch.archive_*)
-    move bubbles/geometry/translation_bubbles/briefs/tasks rows
-      from chapter_id to translation_id
+dropdb typoon
+createdb -O typoon typoon
+psql typoon < typoon/storage/schema.sql
 ```
 
-Decision needed before implementation:
-
-- **Drop & recreate** (clean, fast, loses everything) — viable if beta
-  user count is low and pre-announce a wipe.
-- **In-place migrate** (preserves data, ~200 LOC of one-shot SQL +
-  blob renames in R2/HF, painful) — only if user count justifies.
-
-Recommendation: **drop & recreate** for the beta; revisit when there's
-a real user base. AGENTS.md hard rule "delete dead legacy code" backs
-this — leaving migration scripts around invites confusion.
-
-### 8.3 Backward URL compat
-
-Old routes:
-
-```
-/projects/$projectId            → drop. No redirect.
-/projects/$projectId/chapters/* → drop. No redirect.
-/browse/$source/manga/$mangaId  → 301 → /manga/$source/$mangaId
-```
-
-The browse → manga redirect is cheap (TanStack Router static map);
-adding it costs nothing and preserves bookmarks during the beta.
-Project URL redirect is impossible (the mapping project_id →
-material_id only exists post-migration); we don't try.
-
-### 8.4 CDN cache invalidation
-
-The `archive_token` HMAC changes for every chapter (input went from
-`(project_id, chapter_id)` to `(translation_id)`). Every render URL
-the browser has cached, every `?v=` token in `chapters.rendered_at`,
-becomes a 404.
-
-Mitigations:
-
-- **Rotate the salt** (already supported per `archive_token` doc).
-  This forces all clients to discard cached URLs on next manga page
-  open. Cost: zero — `?v=` tokens already exist as the cache-bust
-  affordance.
-- **Pre-warm** popular materials' renders into the new key space
-  before flipping the SPA. Not worth the complexity for a beta.
-
-### 8.5 Extension migration
-
-Extension today: project picker → upload chapter zip to selected
-project. After: extension calls `/api/material/import` with
-`(source = host of current tab, upstream_ref = page URL)`, gets
-back a material_id, then `/api/translate { chapter_id, target_lang }`
-per chapter the user captured.
-
-For non-manifest sites the extension uploads pages to
-`/api/material/upload-finalize` with `pages_origin = 'local'` and a
-synthesized `material` row (origin='extension'). Chapters get
-created on the way in.
-
-Ship the ext rewrite **in the same PR** as the web rewrite. AGENTS.md
-forbids parallel old/new paths.
-
-### 8.6 Order of operations on the merge day
-
-1. Code-freeze the rollback branch.
-2. `wrangler pages deploy` an SPA build that points at the OLD API
-   (= current production, no change).
-3. Apply schema migration (drop + recreate, or one-shot migration
-   script) on the production DB.
-4. Restart `com.typoon.api` + `com.typoon.worker` LaunchAgents on
-   the new code.
-5. Rotate `BLOB_SALT` (CDN cache invalidation §8.4).
-6. `wrangler pages deploy` the new SPA build.
-7. Smoke-test (deploy-beta.md §7 probe list, plus new probes:
-   `GET /api/material/.../chapters`, `POST /api/translate`).
-8. Tag the merge SHA. Document in this RFC: "shipped at <SHA>".
-
-Rollback procedure if step 7 fails:
-
-```
-git reset --hard f8977dd
-launchctl kickstart -k gui/$UID/com.typoon.api
-launchctl kickstart -k gui/$UID/com.typoon.worker
-wrangler pages deploy web/dist --project-name=mangalocal-web --branch=main
-# (using web/dist built from f8977dd)
-psql typoon -f checkpoint-schema.sql   # the dump taken in step 0
-```
-
-Take the schema + data dump in step 0 (above step 1) so the rollback
-actually works:
+Pre-flag-day, take a snapshot for emergency rollback:
 
 ```
 pg_dump --format=custom typoon > checkpoint-$(date +%s).dump
+```
+
+### 8.3 URL compatibility
+
+```
+Old → New:
+  /projects/$id                            → no redirect (URLs were behind auth, not bookmarked externally)
+  /projects/$id/chapters/$cid              → no redirect
+  /browse/$source/manga/$id                → 301 → /manga/$source/$id
+  /browse/$source/manga/$id/chapter/$cid   → 301 → /manga/$source/$id/chapter/$cid
+```
+
+The `/browse/...` redirects are cheap (TanStack Router static map);
+preserve in-app bookmarks during the beta. Project URLs were never
+bookmarked outside DA, so we don't redirect them.
+
+### 8.4 CDN cache
+
+`archive_token` input changes from `(project_id, chapter_id)` to
+`(target_kind, target_id)`. Every cached URL is stale. Rotate
+`BLOB_SALT` on flag day — all existing tokens become invalid;
+clients receive 404 on next fetch, frontend re-resolves URL via API,
+get new token, archive re-served.
+
+### 8.5 Extension migration
+
+Extension currently uses project-based flow. Rewrite to:
+
+```
+1. User on a manga page → ext detects source + manga URL.
+2. POST /api/material/import { source, upstream_ref } → material_id.
+3. Ext capture chapter pages.
+4. POST /api/material/upload-init|finalize attached to material_id +
+   new chapter row.
+5. Optionally POST /api/translate (auto-spawn with user's default
+   target_lang).
+```
+
+The "create project" picker disappears. Materials auto-resolve.
+Ships **in the same PR** as the web rewrite — no parallel paths.
+
+### 8.6 Flag day
+
+1. Code-freeze `feat/material-architect`.
+2. `pg_dump` production DB (rollback insurance).
+3. Stop `com.typoon.api` + `com.typoon.worker`.
+4. `dropdb && createdb && psql < schema.sql` on production DB.
+5. Deploy new backend (git fetch + restart LaunchAgents).
+6. Rotate `BLOB_SALT` in `.env`.
+7. `wrangler pages deploy` new SPA.
+8. Smoke test (see deploy-beta.md §7 + new probes).
+9. Tag merge SHA in this RFC: "shipped at `<sha>`".
+
+Rollback procedure:
+
+```
+launchctl unload ~/Library/LaunchAgents/com.typoon.{api,worker}.plist
+git reset --hard f8977dd
+dropdb typoon && createdb -O typoon typoon
+pg_restore -d typoon checkpoint-<ts>.dump
+launchctl load ~/Library/LaunchAgents/com.typoon.{api,worker}.plist
+wrangler pages deploy web/dist  # using web/dist built from f8977dd
 ```
 
 ## 9. Risk register
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Pipeline regression on prepared.bnl sharing | M | H | Single-translation case (the only one today) is identical to old behavior; multi-translation is new and gets E2E tests before merge |
-| User data loss on drop & recreate | M | M | Take pg_dump + R2 inventory before flip; revert restores both |
-| CDN cache stale → 404 storm on first hour after flip | H | L | Salt rotation kills cached URLs cleanly; old archives still exist at new keys after re-render — users hit a fresh render once |
-| ext rewrite shipped late | M | H | Ext is in `ext/` repo subtree; not blocking — if behind, disable ext button in popup until it lands |
-| Glossary collapse from per-project to per-user-per-lang surprises owners | L | M | Phase 1 migrate: every project's glossary becomes the owner's glossary for that lang pair (UNION). Owners with multiple projects on same pair get a merged glossary; document in CHANGELOG |
-| `UNIQUE (chapter, owner, target_lang)` blocks re-translate flow | L | M | UI uses `POST /translate/.../redo` (idempotent on the same row); never a second INSERT |
-| Worker queue confusion during transition | M | M | Flag day deploy (§8.6) keeps old and new schemas from ever coexisting |
-| Reading-history merge with bookmark on backend | L | L | History stays client-only this phase; only bookmark moves server-side |
+| Pipeline regression sharing prepare/scan | M | H | E2E test: 2 users spawn same chapter, both succeed, second is cache_hit=true |
+| Visibility bypass leaks private draft | L | H | Authorization check at READ time, not just spawn; covered by integration tests |
+| User loses guild between spawn and read | M | M | Visibility falls back to private clone draft; doesn't break, just re-spawns |
+| CDN cache stale → 404 storm | M | L | Salt rotation kills cleanly; first fetch after flip re-resolves URL |
+| Extension behind on rewrite | M | M | Ext is in `ext/` subtree; can disable popup button until ext ships; document in CHANGELOG |
+| Glossary collapse merges divergent project glossaries | L | M | One-shot SQL UNION at migration; document; owners with multiple projects on same lang pair get merged glossary they can prune |
+| DMCA takedown notice while admin offline | L | H | Disable in_feed for reported translation pending admin review (15-min auto-mute on report); proper takedown when admin handles |
+| Guild ID expires (Discord guild deleted) | L | L | scope_guild_id becomes orphan; drafts still readable by creator; feed entries 404 cleanly |
+| LLM cost spike from bug spawning duplicate drafts | M | H | Unique index on (chapter, src, tgt, glossary_fp) where not private + not takedown prevents duplicate non-private drafts |
 
 ## 10. What stays the same
 
-- Discord auth, JWT minting, API tokens, RFC-008 / RFC-009.
-- Render archive format (Bunle / `.bnl`).
-- Worker LISTEN/NOTIFY pattern; only payload keys change.
-- Frontend manifest runtime (`features/browse/manifest/*`) — Material
-  source-backed import calls the runtime exactly as today.
-- Browse hub, source picker, shelves, search, infinite scroll —
-  unchanged.
-- Library (`features/library/store.ts`) — local-first, store shape
-  expands to track material_id alongside (source, ref) but writes
-  through to `/api/material/.../bookmark` for the bookmark flag only.
-- DA setup, deploy topology, CORS, TRUSTED_HOSTS — unchanged.
+- Discord OAuth, JWT minting, API tokens (RFC-008/009).
+- Render archive Bunle format (`.bnl`).
+- Worker LISTEN/NOTIFY pattern; payload format changes.
+- Frontend manifest runtime (`features/browse/manifest/*`) —
+  material `import` calls the runtime exactly as today.
+- Browse hub, source picker, shelves, search, infinite scroll.
+- Library local-first store (Phase A) — store shape expands to
+  track material_id alongside (source, ref); bookmark writes
+  through to `/api/library/entry/{id}`.
+- DA setup, deploy topology, CORS, TRUSTED_HOSTS.
 
 ## 11. What gets deleted
 
-After merge, the following disappear (AGENTS.md doctrine):
-
 ```
-typoon/api/routes/projects.py        → split into material.py +
-                                       chapter.py + translate.py
-typoon/api/routes/project_events.py  → translate_events.py
-typoon/adapters/projects.py          → split into material.py +
-                                       translate.py
-web/src/features/project-detail/     → merged into features/manga/
-web/src/routes/projects.*.tsx        → deleted, replaced by
-                                       /manga/$source/$ref
-typoon/storage/schema.sql            → rewritten in place
+typoon/api/routes/projects.py             → split into material.py
+                                            + chapter.py + translate.py
+typoon/api/routes/project_events.py       → translate_events.py
+typoon/adapters/projects.py               → split: material.py + translate.py
+
+web/src/features/project-detail/          → merged into features/manga/
+web/src/routes/projects.*.tsx             → deleted; replaced by /manga/$source/$ref
+web/src/features/library/internal.ts*     → no longer needed (no community source)
 ```
 
-Wiki pages to update:
+Wiki pages updated:
 
 ```
-docs/wiki/architecture.md           — package layout reflects
-                                      material/ + translate/
-docs/wiki/browse-mode.md            — §1, §5, §11 (Material is the
-                                      unit; Hội Mê Truyện is a filter
-                                      not a source)
-docs/wiki/render-archive-storage.md — key path layout, salt rotation
-docs/wiki/deploy-beta.md            — probe list, flag day playbook
-docs/wiki/hard-rules.md             — strike "project pipeline";
-                                      add "translation is the unit"
+docs/wiki/architecture.md                 — package layout
+docs/wiki/browse-mode.md                  — §1/§5/§10/§11 (material model)
+docs/wiki/render-archive-storage.md       — key layout, salt rotation
+docs/wiki/deploy-beta.md                  — probe list, flag-day playbook
+docs/wiki/hard-rules.md                   — strike project pipeline
+docs/wiki/material-architecture.md        — promoted to canonical (no longer draft)
 ```
 
 ## 12. Out of scope (Phase C+)
 
-- Chapter reader unification — internal vs external readers still
-  fetch differently (.bnl vs raw images via manifest). Same hero,
-  different page loader. Phase C tackles it.
-- Translation rating / claim flow ("I want to translate this").
-- Per-chapter glossary override.
-- Watch Party (DA-only shared reading session).
+- Chapter reader unification (internal `.bnl` reader vs external raw
+  reader). Same hero, different page loader. Phase C.
+- Translation rating / claim ("I want to translate this").
+- Per-chapter glossary override (translation-level glossary).
+- Watch Party shared-scroll session.
 - Discord rich presence ("Reading X · chapter Y").
 - Background new-chapter refresh worker.
-- Cross-device history sync.
+- Cross-device history sync (currently local-only).
+- External ID matching (MangaDex universal ID).
+- Per-page CAS (page-pixel hash for cross-chapter dedup).
+- Fine-grained glossary fingerprint (applied-terms intersection).
 
-## 13. Open questions
+## 13. Decisions (confirmed)
 
-1. **Drop-or-migrate data?** §8.2 recommends drop; need decision.
-2. **Translation share visibility** — is it per-translation
-   (each owner gates their own) or per-material (owner aggregate)?
-   Default: per-translation. The owner of an unshared material can
-   still have a shared translation on its chapter.
-3. **Material identity for upload** — if two users upload the same
-   doujin separately, we currently get two materials. Should we
-   dedup by content hash? Default: no; user expectation is that
-   their upload is private to them until explicitly shared.
-4. **Auto-spawn translation on chapter capture** — should ext
-   automatically `POST /translate` after capture, using the user's
-   default target_lang? Default: yes for ext (one-tap UX); no for
-   `/api/material/upload` (user might be uploading a re-read).
-5. **`source = 'community'` synthetic value** — does it still exist?
-   Default: no. "Hội Mê Truyện" is a filter
-   (`WHERE translation.shared = TRUE`) over the unified material
-   table, not a synthetic source row.
+| Question | Decision |
+|---|---|
+| Drop or migrate data | Drop & recreate (§8.2) |
+| Translation share visibility | Per-translation `in_feed` flag, decoupled from draft visibility |
+| Material identity for upload | Per-user, no content-hash cross-user dedup |
+| Auto-spawn translation on ext capture | Yes — ext POSTs `/translate` with user's default target_lang |
+| Synthetic `source='community'` | Gone — Hội Mê Truyện is a feed query, not a source |
+| Auto-share opt-out | Default checked at spawn modal; uncheck → `force_private=true` |
+| Cache key shape | `(chapter_id, source_lang, target_lang, glossary_fp)` for non-private drafts |
+| CAS for prepared.bnl | Yes — `chapter.prepared_hash` SHA256 |
+| Sharing scope | Guild-scoped (`visibility ∈ {private,guild,all_guilds}`) |
+| Public web access | Removed — DA-only deployment |
+| Default guild for new users | "Hội Mê Truyện Official" Discord guild — bot auto-invites on first login |
 
-Answer the five before §8.6 flag day.
+Shipped at: _<pending merge SHA>_

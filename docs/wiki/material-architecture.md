@@ -1,136 +1,178 @@
 # Material architecture — at a glance
 
-> **Status**: planning. See [`docs/rfc/material-architecture.md`](../rfc/material-architecture.md) for the full RFC.
-> Current implementation still uses the `projects` schema this page
-> supersedes; do not write new code against this layout yet.
+> **Status**: planning, final design. See [`docs/rfc/material-architecture.md`](../rfc/material-architecture.md)
+> for the full RFC. Implementation begins from `f8977dd`.
+>
+> This card is what you grep when writing code on `feat/material-architect`.
 
-This page is the **shipping target** for the Phase B re-architect.
-Keep it short — the RFC carries the design rationale. This page is
-the reference card you grep for when writing code on the
-`feat/material-architect` branch.
-
-## Entities
+## Entities (3-layer cache + per-user wrapper)
 
 ```
-Material      one row per "manga" (any origin)
-  Chapter     pages of the material; pages live remote or local
-    Translation  one owner's run of pipeline against a chapter
-                 for a target_lang; carries its own render archive
+Material         Per-user manga identity (any origin)
+  Chapter        Pages, CAS-deduped via prepared_hash
+    Bubbles, Geometry, Masks   ← chapter-level (Layer 1, shared)
+    
+    TranslationDraft           ← (chapter, src, tgt, glossary_fp) cache key
+                                 visibility ∈ {private, guild, all_guilds}
+      DraftBubbles (text)      ← Layer 2 (shared by visibility scope)
+      DraftBrief (LLM context)
+      
+      Translation              ← per-user wrapper
+        in_feed flag           ← Layer 3 (per user)
+        sparse Edits override
+        render archive (shared with draft if no edits)
+
+LibraryEntry     Per-user grouping of Materials representing same manga
 ```
 
-Identity rules:
+## Sharing scope
 
-- A **source-backed Material** is unique on `(source, upstream_ref)`.
-  Two users importing the same HappyMH manga share the row.
-- An **ext-captured** or **uploaded** Material is per-import.
-  No cross-user dedup.
-- A **Translation** is unique on `(chapter_id, owner_id, target_lang)`.
-  Re-translate uses `POST /translate/{id}/redo`, never a second
-  INSERT.
-
-## Pipeline ownership
-
-| Artifact | Keyed by | Why |
-|---|---|---|
-| Raw pages | Chapter (`pages_origin`, `prepared_locator`) | Shared across all translations of that chapter |
-| `prepared.bnl` | Chapter | Same — prepare runs once |
-| Bubbles, geometry, briefs, `translation_bubbles` | Translation | Each translation re-runs scan + LLM with its own glossary |
-| `masks.npz` | Translation | Geometry detection is per-translation |
-| `render.bnl` (public) | Translation | The user-facing archive |
-
-## Routes
+DA-only: no public web. Sharing is **guild-scoped**.
 
 ```
-Discovery / consumption:
-  /browse                                    sources hub
-  /browse/$source                            source landing
-  /manga/$source/$ref                        material detail (any origin)
-  /manga/$source/$ref/chapter/$id            reader (Phase C)
-
-User's library:
-  /library                                   cross-source, chip filter
-
-User's translations (advanced):
-  /translate                                 list of user's translations
-  /translate/$id                             single-translation editor
-                                             (rich chapter list,
-                                              selection bar, settings)
+visibility = 'private'      — owner only
+visibility = 'guild'        — members of scope_guild_id
+visibility = 'all_guilds'   — members of any guild creator is in
 ```
 
-`/projects/*` does not exist after the refactor.
+Hội Mê Truyện = `GET /api/feed/guild/{guild_id}` filter
+`in_feed=TRUE AND takedown_at IS NULL`. No global feed.
 
-## API surface
-
-```
-POST  /api/material/import                   source-backed lookup or create
-POST  /api/material/upload-init|finalize     user-uploaded material
-GET   /api/material/{id}                     detail + chapters + per-chapter
-                                             translation overlay
-PUT   /api/material/{id}/bookmark            toggle
-
-GET   /api/chapter/{id}/pages                page URLs for raw read
-
-POST  /api/translate                         body {chapter_id, target_lang}
-GET   /api/translate/{id}                    state + archive URL
-POST  /api/translate/{id}/redo               re-run
-PATCH /api/translate/{id}                    shared, settings
-DELETE /api/translate/{id}
-SSE   /api/translate/{id}/events             per-translation live events
-```
-
-## Capabilities (UI-derived)
-
-For each `/manga/$source/$ref` view, the capabilities the user has
-on this material:
+## Cache flow (one diagram)
 
 ```
-read              always
-bookmark          always (server-side toggle)
-auto_translate    when source language != user target language
-spawn_translation always (creates a translation owned by the user)
-edit_material     when imported_by = user (uploads / ext captures only)
-delete_material   when imported_by = user
-share_translation when user owns ≥1 translation on this material
+User clicks "Dịch chỉn chu" on chapter row
+                 ↓
+        POST /api/translate
+                 ↓
+   ┌───────────────────────────────────────┐
+   │ Lookup draft by                        │
+   │   (chapter_id, src, tgt, glossary_fp)  │
+   │   WHERE visibility != 'private'        │
+   │   AND can_use(user, draft)             │
+   └────────────┬──────────────────────────┘
+                ↓                
+        ┌───────┴───────┐
+        ↓               ↓
+    CACHE HIT       CACHE MISS
+   create translation     create draft (visibility=guild,
+   row → draft_id           scope=user's current guild)
+   archive=draft default  create translation row
+   quota = 0              enqueue prepare → scan → translate → render
+   ~30ms                  quota = 1 (chapter_consumes)
+                           ~2 minutes
 ```
 
-There are no per-material owner/share toggles for source-backed
-materials — sharing is a property of translations.
+## Pipeline stages + ownership
 
-## Worker
-
-`tasks` table re-keys `(chapter_id, stage)` → `(translation_id, stage)`
-except for the `prepare` stage which still keys by `chapter_id`
-(prepare writes the chapter row, not the translation).
-
-LISTEN channel payload changes from `<chapter_id>` to either
-`<chapter_id>` (prepare) or `<translation_id>` (scan / translate /
-render).
+| Stage | Keyed by | Skips if | Cost |
+|---|---|---|---|
+| prepare | `chapter_id` | `chapter.prepared_hash IS NOT NULL` | CPU 5s |
+| scan | `chapter_id` | bubbles exist for chapter | GPU 1-3 min |
+| translate | `draft_id` | draft_bubbles exist for draft | LLM $0.03-0.08 |
+| render | `draft_id` or `translation_id` | archive exists (with/without edits) | CPU 30s |
 
 ## Storage keys
 
 ```
-c/{chapter_id}/prepared.bnl                  pipeline blob, per chapter
-t/{translation_id}/masks.npz                 pipeline blob, per translation
-render/{hmac(translation_id, salt)}.bnl      public, per translation
+c/{chapter_id}/prepared.bnl       chapter-level, CAS-deduped
+c/{chapter_id}/masks.npz          chapter-level
+d/{draft_id}/render.bnl           default render (no-edits case)
+t/{translation_id}/render.bnl     per-translation when edits exist
 ```
 
-CDN cache busts on salt rotation.
+Public URL = `https://{da-host}/cdn/t/render/{HMAC(target_kind:id, salt)}.bnl?v=...`
+
+## Routes (final)
+
+```
+Discovery & reading:
+  /browse                              source hub
+  /browse/$source                      source landing
+  /browse/community                    list of user's guilds with activity
+  /browse/community/$guild_id          Hội Mê Truyện feed for one guild
+  /manga/$source/$ref                  material detail (any origin)
+  /manga/$source/$ref/chapter/$id      reader (Phase C unifies)
+
+Personal:
+  /library                             cross-source library
+  /translate                           my translations list
+  /translate/$id                       editor view
+```
+
+No `/projects/*`. Ever.
+
+## API (final)
+
+```
+Auth:
+  POST  /api/auth/discord/exchange       Discord OAuth code → JWT
+  GET   /api/me                          User + guilds
+
+Material:
+  POST  /api/material/import             {source, upstream_ref} → row
+  POST  /api/material/upload-init|finalize
+  GET   /api/material/{id}               + chapters + translations overlay
+  PATCH /api/material/{id}
+  DELETE /api/material/{id}
+
+Translate:
+  POST  /api/translate                   {chapter_id, target_lang, force_private?}
+  GET   /api/translate/{id}
+  POST  /api/translate/{id}/redo
+  PATCH /api/translate/{id}              in_feed, force_private
+  DELETE /api/translate/{id}
+  SSE   /api/translate/{id}/events
+
+Library:
+  GET   /api/library                     entries + linked materials
+  POST  /api/library/entry
+  PATCH /api/library/entry/{id}          bookmark, title override
+  DELETE /api/library/entry/{id}
+  POST  /api/library/entry/{id}/link|unlink
+  GET   /api/library/suggest?material_id=
+
+Feed:
+  GET   /api/feed/guild/{guild_id}       member-only
+
+DMCA:
+  POST  /api/dmca/report
+  GET   /api/admin/dmca
+  POST  /api/admin/dmca/{id}/takedown|restore
+```
+
+## Capabilities (UI-derived)
+
+```
+read              always (gated by visibility)
+bookmark          always (toggles library entry)
+spawn_translation always
+edit_translation  owner only
+mark_in_feed      owner only (default true)
+edit_material     imported_by = user (ext/upload only)
+delete_material   imported_by = user
+admin_takedown    user has admin role in scope guild
+```
 
 ## Hard rules
 
-- Translation is the unit of work. The user spawns translations, not
-  projects.
-- Material is the unit of reading. Library and bookmark attach here.
-- `pages_origin = 'remote'` means the manifest runtime fetches at
-  read-time; no local copy. We never archive raw pages from manifest
-  sources to our blob store.
-- Sharing belongs to translations. A user can mark their translation
-  shared without sharing the entire material.
-- "Hội Mê Truyện" is a UI filter (`translation.shared = TRUE`), not a
-  Material origin.
+- Translation is the work unit. Spawned from chapter rows.
+- Material is the reading unit. Library + bookmark attach here.
+- Sharing is guild-scoped. No public feed. No SEO.
+- Material is per-user. No cross-user dedup at identity level. CAS
+  handles compute dedup separately (`prepared_hash`).
+- Draft visibility gates cache hit eligibility. Read-time
+  authorization, not just spawn-time.
+- "Hội Mê Truyện" is a feed query, not a source row.
+- Public web access is permanently removed.
+- All artifact paths use `{target_kind}:{target_id}` HMAC tokens.
 
 ## Migration
 
-See [`docs/rfc/material-architecture.md`](../rfc/material-architecture.md) §8.
-Branch from `f8977dd`, single merge commit, drop & recreate DB on
-flag day, salt rotation invalidates CDN cache.
+- Branch from `f8977dd`.
+- Drop & recreate Postgres (beta acceptable wipe).
+- Rotate `BLOB_SALT` to invalidate CDN cache.
+- Single merge commit. `git revert` or `git reset --hard f8977dd` to
+  roll back.
+- See [`docs/rfc/material-architecture.md`](../rfc/material-architecture.md) §8.6
+  for flag-day playbook.
