@@ -1,21 +1,31 @@
--- Postgres 17 schema for Typoon.
+-- Postgres 17 schema for Typoon — v5 Material + Translation architecture.
 --
--- Single source of truth, applied idempotently at PostgresStore.open().
--- No migrations in Phase 1: drop the database and re-create it when the
--- schema changes during development:
---   dropdb typoon && createdb -O typoon typoon
+-- See docs/rfc/material-architecture.md for the design rationale. This
+-- file is the source of truth; bump SCHEMA_VERSION in postgres.py and
+-- drop-recreate the DB whenever shape changes. No migration tooling.
+--
+-- Layering (top-down):
+--   Identity                users, identities, user_guilds, api_tokens
+--   Reading entity          materials, chapters, material_link_votes
+--   Pipeline (chapter)      bubbles, bubble_geometry, page_geometry
+--   Pipeline (lang+gloss)   translation_drafts, translation_draft_bubbles,
+--                           draft_briefs
+--   Pipeline (user)         translations, translation_edits
+--   Library (per-user)      library_entries, library_materials
+--   Glossary                user_glossary, community_glossary
+--   Queue                   tasks
+--   Quota / DMCA            chapter_consumes, dmca_takedowns
+--   Inbox (browser upload)  material_inbox
 --
 -- Conventions:
---   - BIGSERIAL primary keys.
+--   - BIGSERIAL primary keys; foreign keys ON DELETE CASCADE when the
+--     row is meaningless without its parent, SET NULL when the row is
+--     audit-bearing (history kept).
 --   - TIMESTAMPTZ NOT NULL DEFAULT NOW() for created_at / updated_at.
---   - JSONB for object/array payloads.
---   - tsvector generated columns for FTS — replaces FTS5 virtual tables
---     and their triggers. Tokenizer is `simple` (no stemming) because
---     stemming is meaningless for Vietnamese and harms proper-noun
---     precision.
---
---   - tasks.claim is one statement (FOR UPDATE SKIP LOCKED) — no
---     two-step pattern needed.
+--   - JSONB for object payloads; TEXT[] for short tag-like lists.
+--   - tsvector generated columns for FTS, tokenizer 'simple' (no
+--     stemming — Vietnamese + proper nouns).
+--   - tasks.claim is one statement (FOR UPDATE SKIP LOCKED). No two-step.
 
 -- ── Schema version sentinel ─────────────────────────────────────────
 -- Bump SCHEMA_VERSION in postgres.py when the DDL below changes shape.
@@ -48,85 +58,21 @@ CREATE TABLE IF NOT EXISTS identities (
 );
 CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
 
--- ── Projects ────────────────────────────────────────────────────────
+-- Cached Discord guild memberships. Refreshed at login + lazily on
+-- spawn/feed access. Drives the `scope_guild_id` resolution for
+-- translation drafts and the `/api/feed/guild/{id}` membership check.
 
-CREATE TABLE IF NOT EXISTS projects (
-    id           BIGSERIAL PRIMARY KEY,
-    slug         TEXT NOT NULL UNIQUE,
-    title        TEXT NOT NULL,
-    description  TEXT,
-    cover_path   TEXT,
-    source_url   TEXT,
-    source_lang  TEXT NOT NULL,
-    target_lang  TEXT NOT NULL,
-    owner_id     BIGINT REFERENCES users(id),
-    shared       BOOLEAN NOT NULL DEFAULT FALSE,
-    settings     JSONB,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS user_guilds (
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    guild_id     TEXT NOT NULL,                 -- Discord snowflake
+    guild_name   TEXT,
+    guild_icon   TEXT,                          -- discord cdn url
+    refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, guild_id)
 );
-CREATE INDEX IF NOT EXISTS idx_projects_owner_shared
-    ON projects (owner_id) WHERE shared = TRUE;
+CREATE INDEX IF NOT EXISTS idx_user_guilds_guild ON user_guilds(guild_id);
 
-CREATE TABLE IF NOT EXISTS chapters (
-    id              BIGSERIAL PRIMARY KEY,
-    project_id      BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    -- Sort key. Server-managed dense-ish ranking with siblings spaced
-    -- INITIAL_GAP apart on append; midpoint bisect on insert; full
-    -- rebalance only when adjacent gap drops below 2. Internal — never
-    -- shown in UI, never used as stable reference (chapter_id is the
-    -- only stable id the API/CLI accept).
-    position        INTEGER NOT NULL,
-    -- Display string. Free-form: "4", "4.5", "Extra", "Oneshot",
-    -- "v2 ch.1", "". Not unique — multi-group translations of the same
-    -- chapter share a number, distinguished by `title`.
-    number          TEXT NOT NULL,
-    title           TEXT,
-    source_url      TEXT,
-    rendered        BOOLEAN NOT NULL DEFAULT FALSE,
-    page_count      INTEGER NOT NULL DEFAULT 0,
-    -- Where the rendered archive lives (NULL until first render done).
-    -- archive_backend is the artifact_store.backend_name; archive_locator
-    -- is the opaque locator that store returned at upload time. URL build
-    -- in the API dispatches by backend so multi-backend coexists without
-    -- migration.
-    archive_backend TEXT,
-    archive_locator TEXT,
-    -- Cache-bust token for the public render URL. Bumped exclusively
-    -- when a render archive is actually written (set_archive); ordinary
-    -- task UPDATEs and progress writes do NOT touch this. The reader
-    -- embeds it as ?v=<rendered_at> so a stable archive serves a stable
-    -- URL — without this, the trigger that bumps `updated_at` on every
-    -- task lifecycle / progress write would change ?v= and force the
-    -- browser to discard the open Bunle and re-fetch every page. NULL
-    -- until first render done; reset to NULL by redo so the next render
-    -- replaces the cached entry.
-    rendered_at     TIMESTAMPTZ,
-    -- Per-chapter pipeline progress, updated by the worker after each
-    -- page completes a stage. UI reads this directly to draw the
-    -- progress bar; we don't keep a separate event log just to compute
-    -- "where's the running render at right now".
-    progress_stage  TEXT,
-    progress_index  INTEGER,
-    progress_total  INTEGER,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(project_id, position)
-);
-CREATE INDEX IF NOT EXISTS idx_chapters_project_position
-    ON chapters(project_id, position);
-
--- ── Project pins (per-user bookmarks) ───────────────────────────────
-
-CREATE TABLE IF NOT EXISTS project_pins (
-    user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    pinned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, project_id)
-);
-CREATE INDEX IF NOT EXISTS idx_project_pins_user ON project_pins(user_id);
-
--- ── API tokens (long-lived auth for tools/extensions/CLI) ───────────
+-- API tokens (CLI / extension / worker). Web SPA uses Discord JWT, not tokens.
 
 CREATE TABLE IF NOT EXISTS api_tokens (
     id          BIGSERIAL PRIMARY KEY,
@@ -134,10 +80,8 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     name        TEXT NOT NULL,                  -- user-visible label
     token_hash  TEXT NOT NULL UNIQUE,           -- bcrypt(plaintext)
     prefix      TEXT NOT NULL,                  -- first 8 chars, shown in UI
-    -- Coarse capability marker; default empty array = ordinary client
-    -- token (read-only access to the user's projects). Tokens with
-    -- 'worker' grant access to /api/blobs/* for inter-worker pipeline
-    -- traffic; mint these only for trusted infrastructure.
+    -- Empty = ordinary client token (read-only on user's own data).
+    -- 'worker' grants /api/blobs/* for pipeline traffic.
     scopes      TEXT[] NOT NULL DEFAULT '{}',
     last_used   TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -148,61 +92,163 @@ CREATE INDEX IF NOT EXISTS idx_api_tokens_user_active
 CREATE INDEX IF NOT EXISTS idx_api_tokens_prefix_active
     ON api_tokens(prefix) WHERE revoked_at IS NULL;
 
--- ── Worker coordination ─────────────────────────────────────────────
+-- ── Material ────────────────────────────────────────────────────────
+-- A manga identity. Source-backed materials are cross-user (unique on
+-- (source, upstream_ref)); two users importing the same HappyMH manga
+-- share this row. Extension / upload materials are per-row (source IS
+-- NULL → no dedup).
+--
+-- `imported_by` is audit only — the first user who triggered the row
+-- creation. It is NOT an ownership boundary; subsequent users have
+-- the same read/spawn capabilities.
 
-CREATE TABLE IF NOT EXISTS tasks (
-    chapter_id   BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-    stage        TEXT NOT NULL CHECK(stage IN ('prepare','scan','translate','render')),
-    claimed_by   TEXT,
-    claimed_at   TIMESTAMPTZ,
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    last_error   TEXT,
-    PRIMARY KEY (chapter_id, stage)
+CREATE TABLE IF NOT EXISTS materials (
+    id            BIGSERIAL PRIMARY KEY,
+    imported_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    origin        TEXT NOT NULL CHECK (origin IN ('source','extension','upload')),
+
+    -- Source-backed identity. NULL for ext + upload.
+    source        TEXT,
+    upstream_ref  TEXT,
+
+    -- Display snapshot. First-write wins; later refreshes happen out of
+    -- band when the manifest reports a change.
+    title         TEXT NOT NULL,
+    cover_url     TEXT,
+    description   TEXT,
+    author        TEXT,
+    status        TEXT,
+    languages     TEXT[] NOT NULL DEFAULT '{}',
+
+    -- Identity hints used by the community-voted suggestion ranker.
+    -- Manifest populates what the source exposes; left NULL otherwise.
+    -- See features/browse/manifest/types.ts for the selector slots.
+    title_native  TEXT,
+    title_alt     TEXT[],
+    cross_refs    JSONB,           -- {"mdex_uuid":"…","anilist":12345}
+
+    -- NSFW gate. Set by manifest.nsfw, by ext UI, or by user during
+    -- upload. Forces draft visibility='private' regardless of opt-out.
+    nsfw          BOOLEAN NOT NULL DEFAULT FALSE,
+
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(stage, claimed_by, claimed_at);
 
--- Wake LISTEN'ing workers the instant a task becomes claimable: either
--- a fresh INSERT (new work), or an UPDATE that released a claim
--- (fail_task, release_claims_by_prefix). The payload carries the stage
--- so each worker only handles its own channel.
+-- Source-backed dedup. Constraint applies only when source IS NOT NULL
+-- so ext / upload materials remain per-row.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_materials_source_ref
+    ON materials (source, upstream_ref)
+    WHERE source IS NOT NULL;
 
-CREATE OR REPLACE FUNCTION notify_task_ready() RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        PERFORM pg_notify('typoon_task_' || NEW.stage, NEW.chapter_id::text);
-    ELSIF TG_OP = 'UPDATE'
-          AND OLD.claimed_by IS NOT NULL
-          AND NEW.claimed_by IS NULL THEN
-        PERFORM pg_notify('typoon_task_' || NEW.stage, NEW.chapter_id::text);
-    END IF;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
+CREATE INDEX IF NOT EXISTS idx_materials_imported_by ON materials(imported_by);
+CREATE INDEX IF NOT EXISTS idx_materials_title_native
+    ON materials(title_native) WHERE title_native IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_materials_cross_refs
+    ON materials USING GIN (cross_refs)
+    WHERE cross_refs IS NOT NULL;
 
-DROP TRIGGER IF EXISTS tasks_notify_ready ON tasks;
-CREATE TRIGGER tasks_notify_ready
-    AFTER INSERT OR UPDATE ON tasks
-    FOR EACH ROW
-    EXECUTE FUNCTION notify_task_ready();
+-- ── Material link votes (cross-source identity, community-driven) ──
+-- One row per (user, pair). Canonical ordering on the pair
+-- (material_a_id < material_b_id) avoids storing A↔B twice. Aggregated
+-- via the materialized view below; refresh nightly is enough — vote
+-- changes propagate to suggestions lazily, which is fine for UX.
+
+CREATE TABLE IF NOT EXISTS material_link_votes (
+    material_a_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    material_b_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    voter_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote           SMALLINT NOT NULL CHECK (vote IN (-1, 1)),
+    voted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (material_a_id, material_b_id, voter_id),
+    CHECK (material_a_id < material_b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_link_votes_a ON material_link_votes(material_a_id);
+CREATE INDEX IF NOT EXISTS idx_link_votes_b ON material_link_votes(material_b_id);
+
+-- Aggregate score view. Refreshed by a cron / on-demand from the
+-- suggestion endpoint — staleness is acceptable.
+CREATE MATERIALIZED VIEW IF NOT EXISTS material_links AS
+SELECT material_a_id,
+       material_b_id,
+       SUM(vote)::INTEGER  AS score,
+       COUNT(*)::INTEGER   AS total_votes
+FROM material_link_votes
+GROUP BY material_a_id, material_b_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_material_links
+    ON material_links(material_a_id, material_b_id);
+CREATE INDEX IF NOT EXISTS idx_links_a ON material_links(material_a_id);
+CREATE INDEX IF NOT EXISTS idx_links_b ON material_links(material_b_id);
+
+-- ── Chapter ─────────────────────────────────────────────────────────
+-- A unit of pages inside a Material. `pages_origin = 'remote'` defers
+-- page fetch to read-time via the manifest runtime (no local copy).
+-- `pages_origin = 'local'` keeps prepared.bnl in our blob store.
+--
+-- `prepared_hash` is the content-addressable cache key. Two chapter
+-- rows with identical pixel content (same upload zip, identical
+-- source content) share the same prepared.bnl blob via this hash.
+-- Downstream caches (bubbles, drafts) key off chapter_id which is
+-- still per-row, but the expensive scan/translate runs that follow
+-- a hash collision can be reused — see translation_drafts.
+
+CREATE TABLE IF NOT EXISTS chapters (
+    id                BIGSERIAL PRIMARY KEY,
+    material_id       BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+
+    -- Sparse server-managed sort key (see _resolve_chapter_position in
+    -- postgres.py). Same INITIAL_GAP / REBALANCE_MIN_GAP policy as the
+    -- old projects schema.
+    position          INTEGER NOT NULL,
+
+    -- Display string. Free-form: "4", "4.5", "Extra", "Oneshot",
+    -- "v2 ch.1", "". Not unique within a material.
+    number            TEXT NOT NULL,
+    label             TEXT,                 -- full label as the source presents
+    upstream_url      TEXT,                 -- chapter URL on source; NULL for upload
+
+    pages_origin      TEXT NOT NULL CHECK (pages_origin IN ('remote','local')),
+
+    -- CAS for prepared.bnl. SHA256 hex string; NULL until prepare runs.
+    prepared_hash     TEXT,
+    prepared_backend  TEXT,
+    prepared_locator  TEXT,
+
+    -- Masks output of the scan stage. Per-chapter (geometry only
+    -- depends on pixel content, not lang/glossary).
+    masks_backend     TEXT,
+    masks_locator     TEXT,
+
+    page_count        INTEGER NOT NULL DEFAULT 0,
+
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (material_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_chapters_material
+    ON chapters(material_id, position);
+CREATE INDEX IF NOT EXISTS idx_chapters_prepared_hash
+    ON chapters(prepared_hash) WHERE prepared_hash IS NOT NULL;
 
 -- ── Chapter inbox (browser-direct upload handle) ────────────────────
--- Persists the multipart upload coordinates between `/upload-finalize`
--- (which returns 202 immediately) and the prepare worker (which calls
--- inbox.complete_multipart + fetch). One row per chapter; deleted by
--- the worker after prepare succeeds + the inbox key is removed from R2.
---
--- `parts` is a sorted JSON array `[{"number": 1, "etag": "..."}, ...]`.
+-- Persists multipart upload coordinates between `/upload-finalize`
+-- (returns 202 immediately) and the prepare worker. One row per
+-- chapter; deleted by the worker after prepare succeeds + the inbox
+-- key is removed from R2.
 
-CREATE TABLE IF NOT EXISTS chapter_inbox (
+CREATE TABLE IF NOT EXISTS material_inbox (
     chapter_id   BIGINT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
     tmp_id       TEXT NOT NULL,
     upload_id    TEXT NOT NULL,
-    parts        JSONB NOT NULL,
+    parts        JSONB NOT NULL,           -- [{"number": 1, "etag": "..."}]
     title        TEXT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Bubbles + geometry ──────────────────────────────────────────────
+-- ── Scan output — chapter level (Layer 1) ───────────────────────────
+-- Bubbles, geometry, and masks bind to chapter_id, not translation.
+-- They depend only on pixel content, so every translation on this
+-- chapter (any lang, any glossary) reads the same data.
 
 CREATE TABLE IF NOT EXISTS bubbles (
     chapter_id   BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -238,86 +284,288 @@ CREATE TABLE IF NOT EXISTS page_geometry (
     PRIMARY KEY (chapter_id, page_index)
 );
 
--- ── Translations ────────────────────────────────────────────────────
+-- ── Translation drafts — lang + glossary level (Layer 2) ────────────
+-- LLM output keyed on (chapter, source_lang, target_lang, glossary_fp).
+-- Visibility controls who can reuse the draft as cache. The unique
+-- index excludes 'private' drafts so the same user/key can spawn a
+-- fresh private draft alongside a guild-shared one.
+--
+-- DMCA: when `takedown_at` is set, the draft is invisible to readers
+-- and cache lookup; any translation referencing it shows a takedown
+-- placeholder until owner re-spawns.
 
-CREATE TABLE IF NOT EXISTS translations (
-    chapter_id      BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS translation_drafts (
+    id                 BIGSERIAL PRIMARY KEY,
+    chapter_id         BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    source_lang        TEXT NOT NULL,
+    target_lang        TEXT NOT NULL,
+    glossary_fp        TEXT NOT NULL,           -- 16-hex SHA256 of applied glossary
+
+    llm_model          TEXT NOT NULL,
+    created_by         BIGINT REFERENCES users(id) ON DELETE SET NULL,
+
+    visibility         TEXT NOT NULL DEFAULT 'guild'
+        CHECK (visibility IN ('private','guild','all_guilds')),
+    -- The guild this draft was spawned from. NULL when visibility is
+    -- 'all_guilds' (creator publishes across every guild they belong
+    -- to) or 'private' (no guild scope).
+    scope_guild_id     TEXT,
+
+    -- DMCA. Set by admin takedown; cascades visibility off.
+    takedown_at        TIMESTAMPTZ,
+    takedown_reason    TEXT,
+
+    state              TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','running','done','error')),
+    error_message      TEXT,
+    progress_stage     TEXT,
+    progress_index     INTEGER,
+    progress_total     INTEGER,
+
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Cache key uniqueness. Excludes private + taken-down drafts so a
+-- private spawn can coexist and a takedown can be replaced.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_drafts_cache
+    ON translation_drafts (chapter_id, source_lang, target_lang, glossary_fp)
+    WHERE visibility != 'private' AND takedown_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drafts_creator ON translation_drafts(created_by);
+CREATE INDEX IF NOT EXISTS idx_drafts_chapter ON translation_drafts(chapter_id);
+
+CREATE TABLE IF NOT EXISTS translation_draft_bubbles (
+    draft_id        BIGINT NOT NULL REFERENCES translation_drafts(id) ON DELETE CASCADE,
     page_index      INTEGER NOT NULL,
     bubble_idx      INTEGER NOT NULL,
     translated_text TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK(kind IN ('dialogue','sfx','skip')),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    kind            TEXT NOT NULL CHECK (kind IN ('dialogue','sfx','skip')),
     translated_text_tsv tsvector
         GENERATED ALWAYS AS (to_tsvector('simple', translated_text)) STORED,
-    PRIMARY KEY (chapter_id, page_index, bubble_idx),
-    FOREIGN KEY (chapter_id, page_index, bubble_idx)
-        REFERENCES bubbles(chapter_id, page_index, bubble_idx) ON DELETE CASCADE
+    PRIMARY KEY (draft_id, page_index, bubble_idx)
 );
-CREATE INDEX IF NOT EXISTS idx_translations_text_tsv
-    ON translations USING GIN (translated_text_tsv);
+CREATE INDEX IF NOT EXISTS idx_draft_bubbles_text_tsv
+    ON translation_draft_bubbles USING GIN (translated_text_tsv);
 
--- ── Chapter context briefs ──────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS chapter_briefs (
-    chapter_id   BIGINT PRIMARY KEY REFERENCES chapters(id) ON DELETE CASCADE,
-    brief_json   JSONB NOT NULL,
-    summary      TEXT,
-    terms_text   TEXT,
-    facts_text   TEXT,
-    rules_text   TEXT,
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    search_tsv   tsvector GENERATED ALWAYS AS (
+-- LLM context brief — per draft (each run has its own glossary +
+-- target lang context, so briefs don't reuse across drafts).
+CREATE TABLE IF NOT EXISTS draft_briefs (
+    draft_id    BIGINT PRIMARY KEY REFERENCES translation_drafts(id) ON DELETE CASCADE,
+    brief_json  JSONB NOT NULL,
+    summary     TEXT,
+    terms_text  TEXT,
+    facts_text  TEXT,
+    rules_text  TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    search_tsv  tsvector GENERATED ALWAYS AS (
         setweight(to_tsvector('simple', coalesce(summary,    '')), 'A') ||
         setweight(to_tsvector('simple', coalesce(terms_text, '')), 'B') ||
         setweight(to_tsvector('simple', coalesce(facts_text, '')), 'C') ||
         setweight(to_tsvector('simple', coalesce(rules_text, '')), 'D')
     ) STORED
 );
-CREATE INDEX IF NOT EXISTS idx_chapter_briefs_search_tsv
-    ON chapter_briefs USING GIN (search_tsv);
+CREATE INDEX IF NOT EXISTS idx_draft_briefs_search_tsv
+    ON draft_briefs USING GIN (search_tsv);
 
--- ── Project glossary ────────────────────────────────────────────────
+-- ── Translation — per-user wrapper (Layer 3) ────────────────────────
+-- One row per (chapter, owner, target_lang). Points at a draft (Layer
+-- 2) and optionally carries sparse edits + a per-user render archive
+-- (when the user's edits diverge from the draft's default render).
+--
+-- `in_feed` controls Hội Mê Truyện feed inclusion — independent from
+-- draft visibility: a private draft can yield a non-feed translation;
+-- a guild-shared draft can be excluded from feed by its owner.
 
-CREATE TABLE IF NOT EXISTS glossary (
+CREATE TABLE IF NOT EXISTS translations (
+    id                 BIGSERIAL PRIMARY KEY,
+    chapter_id         BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    owner_id           BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_lang        TEXT NOT NULL,
+    draft_id           BIGINT REFERENCES translation_drafts(id) ON DELETE SET NULL,
+
+    -- Render archive. NULL means "fall back to draft's default render"
+    -- — used when the user has no edits and shares the draft's archive.
+    archive_backend    TEXT,
+    archive_locator    TEXT,
+    rendered_at        TIMESTAMPTZ,
+
+    -- Feed flag — guild-scoped via feed_guild_id. NULL feed_guild_id
+    -- with in_feed=TRUE means "publish in every guild owner belongs to".
+    in_feed            BOOLEAN NOT NULL DEFAULT TRUE,
+    feed_guild_id      TEXT,
+
+    takedown_at        TIMESTAMPTZ,
+    takedown_reason    TEXT,
+
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (chapter_id, owner_id, target_lang)
+);
+CREATE INDEX IF NOT EXISTS idx_translations_owner ON translations(owner_id);
+CREATE INDEX IF NOT EXISTS idx_translations_chapter ON translations(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_translations_feed
+    ON translations(feed_guild_id, created_at DESC)
+    WHERE in_feed = TRUE AND takedown_at IS NULL;
+
+-- Sparse edits over the shared draft. Reader loads draft bubbles +
+-- overlays edits at render-time. Only edited bubbles get rows.
+CREATE TABLE IF NOT EXISTS translation_edits (
+    translation_id  BIGINT NOT NULL REFERENCES translations(id) ON DELETE CASCADE,
+    page_index      INTEGER NOT NULL,
+    bubble_idx      INTEGER NOT NULL,
+    edited_text     TEXT NOT NULL,
+    edited_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (translation_id, page_index, bubble_idx)
+);
+
+-- ── Library (per-user grouping of materials) ────────────────────────
+-- A library_entry is the user's "this is the manga I'm tracking" —
+-- bookmark, last-read position, "Continue reading" hang here. Each
+-- entry links one or more materials (cross-source).
+
+CREATE TABLE IF NOT EXISTS library_entries (
+    id                  BIGSERIAL PRIMARY KEY,
+    user_id             BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title               TEXT NOT NULL,
+    cover_url           TEXT,
+    primary_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
+    bookmarked          BOOLEAN NOT NULL DEFAULT FALSE,
+    bookmarked_at       TIMESTAMPTZ,
+    last_read_at        TIMESTAMPTZ,
+    last_chapter_ref    JSONB,    -- {material_id, chapter_id, label, position}
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_library_user ON library_entries(user_id);
+CREATE INDEX IF NOT EXISTS idx_library_user_bookmarked
+    ON library_entries(user_id) WHERE bookmarked = TRUE;
+
+CREATE TABLE IF NOT EXISTS library_materials (
+    entry_id     BIGINT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+    material_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    link_origin  TEXT NOT NULL CHECK (link_origin IN ('primary','auto','manual')),
+    linked_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (entry_id, material_id)
+);
+-- A material appears in at most one library_entry per user. Combined
+-- with the FK chain (entry → user), a user cannot have the same
+-- material linked into two different entries.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_material
+    ON library_materials (material_id);
+
+-- ── Glossary ────────────────────────────────────────────────────────
+-- Per-user glossary: replaces the old per-project glossary. User
+-- entries cover their own customizations; community_glossary is the
+-- default body. The two are merged at glossary_fp computation time.
+
+CREATE TABLE IF NOT EXISTS user_glossary (
     id           BIGSERIAL PRIMARY KEY,
-    project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    owner_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_lang  TEXT NOT NULL,
+    target_lang  TEXT NOT NULL,
     source_term  TEXT NOT NULL,
     target_term  TEXT NOT NULL,
     notes        TEXT,
     source_term_tsv tsvector
         GENERATED ALWAYS AS (to_tsvector('simple', source_term)) STORED,
-    UNIQUE(project_id, source_term)
+    UNIQUE (owner_id, source_lang, target_lang, source_term)
 );
-CREATE INDEX IF NOT EXISTS idx_glossary_source_term_tsv
-    ON glossary USING GIN (source_term_tsv);
+CREATE INDEX IF NOT EXISTS idx_user_glossary_text
+    ON user_glossary USING GIN (source_term_tsv);
 
--- ── Quota usage log (per-user chapter consumption) ─────────────────
--- One row inserted whenever a user spends a "chapter slot" — i.e. starts
--- a render that will consume LLM cost: upload+start, manual /start,
--- /redo. Never inserted for free actions (idle upload, listing, reads).
---
--- The row stays after the chapter finishes/fails: counters are time-
--- windowed (last hour, last day). chapter_id/project_id are FK SET NULL
--- so deletes don't lose history; user_id is the only key counters need.
--- A single index on (user_id, created_at DESC) covers all queries.
+-- Community glossary scaffold. Phase 1: schema-only, admin-seeded.
+-- Phase 2: voting UI exposed to users. `material_id` NULL = global
+-- term; non-null = scoped to one material (e.g. character name).
+CREATE TABLE IF NOT EXISTS community_glossary (
+    id           BIGSERIAL PRIMARY KEY,
+    source_lang  TEXT NOT NULL,
+    target_lang  TEXT NOT NULL,
+    source_term  TEXT NOT NULL,
+    target_term  TEXT NOT NULL,
+    material_id  BIGINT REFERENCES materials(id) ON DELETE CASCADE,
+    vote_score   INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (source_lang, target_lang, source_term, material_id)
+);
+CREATE INDEX IF NOT EXISTS idx_community_glossary_lookup
+    ON community_glossary(source_lang, target_lang, material_id);
+
+-- ── Worker coordination ─────────────────────────────────────────────
+-- One queue table for the pipeline. `target_kind` is the discriminator:
+--   'chapter'     → prepare, scan (chapter-level work)
+--   'draft'       → translate, render-default (lang/glossary-level)
+--   'translation' → render-edits (per-user when edits exist)
+-- Stage transitions live in worker code; the queue itself is dumb.
+
+CREATE TABLE IF NOT EXISTS tasks (
+    target_kind  TEXT NOT NULL CHECK (target_kind IN ('chapter','draft','translation')),
+    target_id    BIGINT NOT NULL,
+    stage        TEXT NOT NULL CHECK (stage IN ('prepare','scan','translate','render')),
+    claimed_by   TEXT,
+    claimed_at   TIMESTAMPTZ,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    PRIMARY KEY (target_kind, target_id, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_claim ON tasks(stage, claimed_by, claimed_at);
+
+-- Wake LISTEN'ing workers when a task becomes claimable. Payload
+-- format: '<target_kind>:<target_id>' so each worker can filter to
+-- its own (kind, stage).
+CREATE OR REPLACE FUNCTION notify_task_ready() RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        PERFORM pg_notify('typoon_task_' || NEW.stage,
+                          NEW.target_kind || ':' || NEW.target_id::text);
+    ELSIF TG_OP = 'UPDATE'
+          AND OLD.claimed_by IS NOT NULL
+          AND NEW.claimed_by IS NULL THEN
+        PERFORM pg_notify('typoon_task_' || NEW.stage,
+                          NEW.target_kind || ':' || NEW.target_id::text);
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS tasks_notify_ready ON tasks;
+CREATE TRIGGER tasks_notify_ready
+    AFTER INSERT OR UPDATE ON tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_task_ready();
+
+-- ── Quota usage log ─────────────────────────────────────────────────
+-- One row per LLM-costing event. Cache HITS do not insert; quota
+-- counts only what the user actually paid for. Time-windowed counters
+-- power the quota chip in the UI.
 
 CREATE TABLE IF NOT EXISTS chapter_consumes (
-    id          BIGSERIAL PRIMARY KEY,
-    user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    chapter_id  BIGINT REFERENCES chapters(id) ON DELETE SET NULL,
-    project_id  BIGINT REFERENCES projects(id) ON DELETE SET NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    translation_id  BIGINT REFERENCES translations(id) ON DELETE SET NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('draft_create','render_create')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_chapter_consumes_user_time
     ON chapter_consumes(user_id, created_at DESC);
 
--- Real-time updates use Postgres LISTEN/NOTIFY directly (no buffer
--- table). See typoon/adapters/channel_bus.py — events are transient,
--- not persisted. Per-chapter progress that survives restart lives on
--- the chapters row (progress_stage / progress_index / progress_total).
+-- ── DMCA takedowns ──────────────────────────────────────────────────
+-- Admin-driven log. Receiving a notice writes a row + flips
+-- takedown_at on the target row. Restore reverses both.
+
+CREATE TABLE IF NOT EXISTS dmca_takedowns (
+    id              BIGSERIAL PRIMARY KEY,
+    target_kind     TEXT NOT NULL
+        CHECK (target_kind IN ('material','chapter','draft','translation')),
+    target_id       BIGINT NOT NULL,
+    scope_guild_id  TEXT,
+    reason          TEXT NOT NULL,
+    reporter        TEXT NOT NULL,
+    taken_down_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    restored_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_dmca_target ON dmca_takedowns(target_kind, target_id);
 
 -- ── updated_at maintenance ──────────────────────────────────────────
--- Postgres has no "ON UPDATE" trigger sugar — keep the explicit triggers.
+-- Postgres has no "ON UPDATE" trigger sugar — keep them explicit.
 
 CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS TRIGGER AS $$
 BEGIN
@@ -326,6 +574,13 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS materials_touch_updated_at ON materials;
+CREATE TRIGGER materials_touch_updated_at
+    BEFORE UPDATE ON materials
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
+
 DROP TRIGGER IF EXISTS chapters_touch_updated_at ON chapters;
 CREATE TRIGGER chapters_touch_updated_at
     BEFORE UPDATE ON chapters
@@ -333,41 +588,63 @@ CREATE TRIGGER chapters_touch_updated_at
     WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
     EXECUTE FUNCTION touch_updated_at();
 
-DROP TRIGGER IF EXISTS projects_touch_updated_at ON projects;
-CREATE TRIGGER projects_touch_updated_at
-    BEFORE UPDATE ON projects
+DROP TRIGGER IF EXISTS drafts_touch_updated_at ON translation_drafts;
+CREATE TRIGGER drafts_touch_updated_at
+    BEFORE UPDATE ON translation_drafts
     FOR EACH ROW
     WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
     EXECUTE FUNCTION touch_updated_at();
 
--- Cascade chapter writes to project.updated_at.
+DROP TRIGGER IF EXISTS translations_touch_updated_at ON translations;
+CREATE TRIGGER translations_touch_updated_at
+    BEFORE UPDATE ON translations
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
 
-CREATE OR REPLACE FUNCTION touch_project_via_chapter() RETURNS TRIGGER AS $$
+DROP TRIGGER IF EXISTS library_entries_touch_updated_at ON library_entries;
+CREATE TRIGGER library_entries_touch_updated_at
+    BEFORE UPDATE ON library_entries
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
+
+-- Cascade chapter writes to material.updated_at — drives "Cập nhật N
+-- ngày trước" badge on library cards.
+CREATE OR REPLACE FUNCTION touch_material_via_chapter() RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE projects SET updated_at = NOW()
-        WHERE id = COALESCE(NEW.project_id, OLD.project_id);
+    UPDATE materials SET updated_at = NOW()
+        WHERE id = COALESCE(NEW.material_id, OLD.material_id);
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS chapters_touch_project ON chapters;
-CREATE TRIGGER chapters_touch_project
+DROP TRIGGER IF EXISTS chapters_touch_material ON chapters;
+CREATE TRIGGER chapters_touch_material
     AFTER INSERT OR UPDATE OR DELETE ON chapters
     FOR EACH ROW
-    EXECUTE FUNCTION touch_project_via_chapter();
+    EXECUTE FUNCTION touch_material_via_chapter();
 
--- Task lifecycle bumps chapter.updated_at — UI uses that as freshness.
-
-CREATE OR REPLACE FUNCTION touch_chapter_via_task() RETURNS TRIGGER AS $$
+-- Task lifecycle bumps the draft / translation it targets — UI uses
+-- updated_at for freshness on the progress chip.
+CREATE OR REPLACE FUNCTION touch_target_via_task() RETURNS TRIGGER AS $$
+DECLARE
+    tk TEXT := COALESCE(NEW.target_kind, OLD.target_kind);
+    ti BIGINT := COALESCE(NEW.target_id, OLD.target_id);
 BEGIN
-    UPDATE chapters SET updated_at = NOW()
-        WHERE id = COALESCE(NEW.chapter_id, OLD.chapter_id);
+    IF tk = 'chapter' THEN
+        UPDATE chapters SET updated_at = NOW() WHERE id = ti;
+    ELSIF tk = 'draft' THEN
+        UPDATE translation_drafts SET updated_at = NOW() WHERE id = ti;
+    ELSIF tk = 'translation' THEN
+        UPDATE translations SET updated_at = NOW() WHERE id = ti;
+    END IF;
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS tasks_touch_chapter ON tasks;
-CREATE TRIGGER tasks_touch_chapter
+DROP TRIGGER IF EXISTS tasks_touch_target ON tasks;
+CREATE TRIGGER tasks_touch_target
     AFTER INSERT OR UPDATE OR DELETE ON tasks
     FOR EACH ROW
-    EXECUTE FUNCTION touch_chapter_via_task();
+    EXECUTE FUNCTION touch_target_via_task();
