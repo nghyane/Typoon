@@ -243,6 +243,14 @@ class Store(Protocol):
         and skip work."""
         ...
 
+    async def find_chapter_by_upstream(
+        self, material_id: int, upstream_url: str,
+    ) -> dict | None:
+        """Lookup a chapter row by its manifest upstream URL. Used by
+        spawn-translate to avoid creating duplicate rows when several
+        users translate the same source-backed chapter."""
+        ...
+
     # ── Scan output (chapter-level) ──────────────────────────────
     async def save_bubbles(
         self, chapter_id: int, bubbles: list[dict],

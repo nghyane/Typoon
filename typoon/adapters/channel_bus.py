@@ -245,9 +245,15 @@ class ChannelBus:
 # ── Channel naming ────────────────────────────────────────────────────
 
 
-def project_channel(project_id: int) -> str:
-    """Channel name for project-scoped events."""
-    return f"typoon:project:{project_id}"
+def draft_channel(draft_id: int) -> str:
+    """Channel name for draft-scoped events (translate/render progress)."""
+    return f"typoon:draft:{draft_id}"
+
+
+def translation_channel(translation_id: int) -> str:
+    """Channel name for translation-scoped events (per-user edit
+    renders)."""
+    return f"typoon:translation:{translation_id}"
 
 
 # ── Hook bridge — thread-safe ─────────────────────────────────────────
@@ -286,13 +292,15 @@ def event_to_dict(event: Event) -> dict:
 class ChannelHook(Hook):
     """Bridge sync Hook.on(event) → async ChannelBus.publish(channel, dict).
 
-    Routes events to per-project channels by reading event.project_id.
-    Events without a project_id are silently dropped (e.g. ToolCallStart
-    from inside an LLM agent that isn't bound to any project context).
+    Routes events by target id present on the event:
+      - draft_id present       → typoon:draft:<id>
+      - translation_id present → typoon:translation:<id>
+    Events without either id are silently dropped (LLM-internal events
+    that aren't bound to a pipeline target).
 
-    Thread-safe: stages may emit from worker threads (asyncio.to_thread).
-    We capture the loop at construction and schedule publishes onto it
-    via run_coroutine_threadsafe.
+    Thread-safe: stages emit from worker threads via asyncio.to_thread.
+    We capture the loop at construction and schedule publishes via
+    run_coroutine_threadsafe.
     """
 
     def __init__(self, bus: ChannelBus, loop: asyncio.AbstractEventLoop) -> None:
@@ -300,15 +308,21 @@ class ChannelHook(Hook):
         self._loop = loop
 
     def on(self, event: Event) -> None:
-        project_id = getattr(event, "project_id", None)
-        if not isinstance(project_id, int) or project_id <= 0:
+        draft_id = getattr(event, "draft_id", None)
+        translation_id = getattr(event, "translation_id", None)
+        channels: list[str] = []
+        if isinstance(draft_id, int) and draft_id > 0:
+            channels.append(draft_channel(draft_id))
+        if isinstance(translation_id, int) and translation_id > 0:
+            channels.append(translation_channel(translation_id))
+        if not channels:
             return
-        channel = project_channel(project_id)
         data = event_to_dict(event)
-        try:
-            asyncio.run_coroutine_threadsafe(
-                self._bus.publish(channel, data), self._loop,
-            )
-        except RuntimeError:
-            # Loop closed during shutdown.
-            logger.debug("channel bus closed; dropped %s", data.get("type"))
+        for channel in channels:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._bus.publish(channel, data), self._loop,
+                )
+            except RuntimeError:
+                # Loop closed during shutdown.
+                logger.debug("channel bus closed; dropped %s", data.get("type"))

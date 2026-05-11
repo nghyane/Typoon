@@ -212,13 +212,23 @@ export interface ApiQueueStats {
 // ── Translate spawn ──────────────────────────────────────────────────
 
 export interface SpawnTranslateBody {
-  chapter_id:     number
+  /** Internal chapter row id. Use when the row already exists
+   *  (ext / upload after finalize, redo). */
+  chapter_id?:    number
+  /** Manifest coords — backend materializes the row on first use.
+   *  Use when spawning from a source-backed manga detail page where
+   *  no local chapter row exists yet. */
+  chapter_ref?:   {
+    material_id:  number
+    upstream_url: string
+    number:       string
+    label?:       string | null
+  }
   target_lang:    string
   force_private?: boolean
   /** Visibility scope when not private. Defaults server-side to 'guild'. */
   visibility?:    DraftVisibility
-  /** Required when visibility='guild'. SDK supplies it from
-   *  `instanceId`'s `getInstanceConnectedParticipants` flow. */
+  /** Required when visibility='guild'. */
   scope_guild_id?: string | null
 }
 
@@ -227,6 +237,7 @@ export interface SpawnTranslateResult {
   draft_id:       number
   state:          DraftState
   cache_hit:      boolean
+  chapter_id:     number
 }
 
 // ── Transport ────────────────────────────────────────────────────────

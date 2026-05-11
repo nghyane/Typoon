@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Languages, Bookmark } from 'lucide-react'
+import {
+  BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Languages,
+  Bookmark, Sparkles,
+} from 'lucide-react'
 import { useHeaderStore } from '../../../store/header'
 import { useAutoTranslate, shouldTranslate } from '../autoTranslate'
 import { useTranslated, useTranslatedBatch } from '../useTranslated'
@@ -14,6 +17,9 @@ import { fetchMangaDetail } from '../manifest/runtime'
 import { proxify } from '../proxy'
 import { api } from '@shared/api/api'
 import { useLibrary } from '@features/library/store'
+import { useDefaultGuildId } from '@features/auth/useMe'
+import { SpawnDialog } from '@features/translate/SpawnDialog'
+import { useTranslateProgress } from '@features/translate/useTranslateProgress'
 import type { InstalledSource, MangaChapterRef, MangaDetail } from '../manifest/types'
 
 interface Props {
@@ -121,6 +127,30 @@ function MangaContent({
   const autoEnabled = useAutoTranslate((s) => s.enabled)
   const autoTarget  = useAutoTranslate((s) => s.target)
   const setAuto     = useAutoTranslate((s) => s.setEnabled)
+
+  // Eagerly import the material into the backend so the chapter rows
+  // know their materialId for spawn (translate). The same query is
+  // consumed by SaveButton further down — React Query dedupes.
+  const { data: material } = useQuery({
+    queryKey: ['material', 'import', manifest.id, manga.url],
+    queryFn:  () => api.importMaterial({
+      source:       manifest.id,
+      upstream_ref: manga.url,
+      title:        manga.title,
+      cover_url:    manga.cover,
+      description:  manga.description,
+      author:       manga.author,
+      status:       manga.status,
+      languages:    manifest.languages,
+      nsfw:         !!manifest.nsfw,
+    }),
+    staleTime: 5 * 60_000,
+  })
+  const materialId = material?.id ?? null
+
+  // Active guild for translation visibility scope. Picked from
+  // /api/me's guild list; DA SDK could refine this later.
+  const scopeGuildId = useDefaultGuildId()
 
   // Translate only when user wants it AND the source is not already
   // in the user's target language.
@@ -254,8 +284,12 @@ function MangaContent({
                 key={c.id}
                 manifestId={manifest.id}
                 mangaId={manga.url}
+                materialId={materialId}
                 chapter={c}
                 translatedLabel={useTr ? trLabels[i] : null}
+                targetLang={autoTarget}
+                scopeGuildId={scopeGuildId}
+                manga={manga}
               />
             ))}
           </ul>
@@ -286,45 +320,163 @@ function LangPicker({
 }
 
 function ChapterRow({
-  manifestId, mangaId, chapter, translatedLabel,
+  manifestId, mangaId, materialId, chapter, translatedLabel, targetLang,
+  scopeGuildId, manga,
 }: {
   manifestId:       string
   mangaId:          string
+  /** Server material row id (resolved upstream via importMaterial).
+   *  When null, the row only shows "Đọc raw" — spawn is disabled until
+   *  the import settles. */
+  materialId:       number | null
   chapter:          MangaChapterRef
   translatedLabel?: string | null
+  targetLang:       string
+  scopeGuildId:     string | null
+  manga:            MangaDetail
 }) {
   const showTr = translatedLabel && translatedLabel !== chapter.label
+  const [spawnOpen, setSpawnOpen] = useState(false)
+  const [pendingId, setPendingId] = useState<number | null>(null)
+  const progress = useTranslateProgress(pendingId, pendingId !== null)
+  const qc = useQueryClient()
+
+  if (progress?.state === 'done' && pendingId !== null) {
+    // Refresh /api/material so subsequent renders see the new
+    // translation overlay; clear the local pending state so the
+    // chip flips to a [Đọc] button on next render.
+    qc.invalidateQueries({ queryKey: ['material'] })
+  }
+
+  const spawn = useMutation({
+    mutationFn: () =>
+      api.spawnTranslate({
+        chapter_ref: {
+          material_id:  materialId!,
+          upstream_url: chapter.url,
+          number:       chapter.number,
+          label:        chapter.label,
+        },
+        target_lang:    targetLang,
+        visibility:     scopeGuildId ? 'guild' : 'private',
+        scope_guild_id: scopeGuildId,
+      }),
+    onSuccess: (result) => {
+      setPendingId(result.translation_id)
+      if (result.cache_hit) {
+        // Cache hit → translation done immediately; flip the chip to
+        // "Đọc" by clearing pending after a beat.
+        qc.invalidateQueries({ queryKey: ['material'] })
+      }
+    },
+  })
+
   return (
-    <li>
-      <Link
-        to="/browse/$source/manga/$mangaId/chapter/$chapterId"
-        params={{
-          source:    manifestId,
-          mangaId:   encodeURIComponent(mangaId),
-          chapterId: encodeURIComponent(chapter.url),
-        }}
-        className={cn(
-          'flex items-center gap-3 px-3 py-2.5 hover:bg-hover transition-colors cursor-pointer',
-        )}
-      >
-        <span className="flex-1 min-w-0 text-sm text-text truncate">
+    <li className="flex items-center gap-3 px-3 py-2.5 hover:bg-hover transition-colors">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-text truncate">
           {showTr ? translatedLabel : chapter.label}
           {showTr && (
             <span className="text-text-subtle font-normal ml-2 text-[11px] italic">
               {chapter.label}
             </span>
           )}
-        </span>
-        {chapter.language && (
-          <span className="text-[10px] uppercase font-semibold text-text-subtle bg-surface-2 px-1.5 py-0.5 rounded-xs shrink-0">
-            {chapter.language}
-          </span>
+        </p>
+        <div className="flex items-center gap-2 text-[10px] text-text-subtle mt-0.5">
+          {chapter.language && (
+            <span className="uppercase font-semibold bg-surface-2 px-1 py-0.5 rounded-xs">
+              {chapter.language}
+            </span>
+          )}
+          {chapter.date && (
+            <span className="tabular">{chapter.date}</span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 shrink-0">
+        {pendingId !== null && progress ? (
+          <ProgressChip progress={progress} />
+        ) : (
+          <>
+            <Link
+              to="/browse/$source/manga/$mangaId/chapter/$chapterId"
+              params={{
+                source:    manifestId,
+                mangaId:   encodeURIComponent(mangaId),
+                chapterId: encodeURIComponent(chapter.url),
+              }}
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] text-text-muted hover:bg-surface-2 hover:text-text"
+            >
+              <BookOpen size={11} />
+              Raw
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                if (!materialId) return
+                if (scopeGuildId) {
+                  spawn.mutate()
+                } else {
+                  setSpawnOpen(true)
+                }
+              }}
+              disabled={!materialId || spawn.isPending}
+              className={cn(
+                'inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium cursor-pointer',
+                'bg-accent text-accent-fg hover:bg-accent-hover',
+                (!materialId || spawn.isPending) && 'opacity-60 cursor-wait',
+              )}
+              title="Dịch chương này"
+            >
+              <Sparkles size={11} />
+              Dịch
+            </button>
+          </>
         )}
-        {chapter.date && (
-          <span className="text-xs text-text-subtle tabular shrink-0">{chapter.date}</span>
-        )}
-      </Link>
+      </div>
+
+      <SpawnDialog
+        open={spawnOpen}
+        onClose={() => setSpawnOpen(false)}
+        chapterId={0}   // we'll spawn via chapter_ref; dialog only needs display
+        title={`${manga.title} · Ch ${chapter.number} → ${targetLang.toUpperCase()}`}
+        targetLang={targetLang}
+        scopeGuildId={scopeGuildId}
+        onSpawned={(r) => setPendingId(r.translation_id)}
+      />
     </li>
+  )
+}
+
+
+function ProgressChip({
+  progress,
+}: {
+  progress: ReturnType<typeof useTranslateProgress>
+}) {
+  if (!progress) return null
+  const label = (() => {
+    if (progress.state === 'error')   return `Lỗi: ${progress.error?.slice(0, 40) ?? '?'}`
+    if (progress.state === 'done')    return 'Xong'
+    if (progress.total === 0)         return `${progress.stage || 'pending'}…`
+    const pct = Math.round((progress.index / progress.total) * 100)
+    return `${progress.stage} ${pct}%`
+  })()
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium',
+        progress.state === 'error'
+          ? 'bg-error/15 text-error-text'
+          : progress.state === 'done'
+          ? 'bg-success/15 text-success-text'
+          : 'bg-accent/15 text-accent-text',
+      )}
+    >
+      <Sparkles size={11} className={progress.state === 'done' ? '' : 'animate-pulse'} />
+      {label}
+    </span>
   )
 }
 
@@ -360,10 +512,10 @@ function SaveButton({
     staleTime: 30_000,
   })
 
-  // Look up the material id once we've imported. Cached so subsequent
-  // toggles don't re-import on every render.
+  // Re-use the import query already issued by MangaContent. Same
+  // queryKey so React Query dedupes — `staleTime` keeps it hot.
   const { data: material } = useQuery({
-    queryKey: ['material', manifest.id, manga.url],
+    queryKey: ['material', 'import', manifest.id, manga.url],
     queryFn:  () => api.importMaterial({
       source:       manifest.id,
       upstream_ref: manga.url,

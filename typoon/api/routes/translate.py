@@ -40,15 +40,31 @@ router = APIRouter(
 # ── Spawn ─────────────────────────────────────────────────────────────
 
 
+class ChapterRef(BaseModel):
+    """Manifest-coordinated chapter reference used when the chapter
+    row doesn't exist server-side yet."""
+    material_id:  int
+    upstream_url: str
+    number:       str
+    label:        str | None = None
+
+
 class SpawnBody(BaseModel):
-    chapter_id:    int
+    """Spawn body. Either `chapter_id` (already-known internal row) or
+    `chapter_ref` (manifest coords — auto-create the chapter row on
+    first spawn) must be provided.
+
+    Manifest-coord spawn is the common path for source-backed manga:
+    the SPA has the upstream chapter URL from the manifest runtime
+    and has not yet created any local chapter row. The first user to
+    translate a chapter materializes it; subsequent users hit the
+    cache lookup on (chapter_id, …) directly.
+    """
+    chapter_id:    int | None = None
+    chapter_ref:   ChapterRef | None = None
     target_lang:   str
-    # User unchecks "Cho phép cộng đồng dùng" → force_private=True.
     force_private: bool = False
-    # Visibility scope when not private. Defaults to 'guild' with
-    # scope_guild_id pulled from the activity instance — the SPA
-    # passes it explicitly so we don't trust the DA Origin header.
-    visibility:    str = "guild"            # 'guild' | 'all_guilds'
+    visibility:    str = "guild"
     scope_guild_id: str | None = None
 
 
@@ -57,6 +73,7 @@ class SpawnResult(BaseModel):
     draft_id:       int
     state:          str
     cache_hit:      bool
+    chapter_id:     int
 
 
 @router.post("", response_model=SpawnResult)
@@ -67,10 +84,46 @@ async def spawn_translation(
     cfg:  Config      = Depends(get_config),
     auth: AuthConfig  = Depends(get_auth_cfg),
 ):
-    """Spawn or reuse a translation for a chapter."""
-    chapter = await db.get_chapter(body.chapter_id)
-    if chapter is None:
-        raise HTTPException(404, "Chapter not found")
+    """Spawn or reuse a translation for a chapter.
+
+    Two entry shapes:
+      • `chapter_id` — caller already has the internal row id (ext /
+                       upload after finalize, or a re-translate flow).
+      • `chapter_ref` — manifest coords; we materialize the chapter row
+                        on first use. Common case for source-backed
+                        spawns triggered directly from the manga page.
+    """
+    chapter: dict | None = None
+
+    if body.chapter_id is not None:
+        chapter = await db.get_chapter(body.chapter_id)
+        if chapter is None:
+            raise HTTPException(404, "Chapter not found")
+    elif body.chapter_ref is not None:
+        ref = body.chapter_ref
+        material = await db.get_material(ref.material_id)
+        if material is None:
+            raise HTTPException(404, "Material not found")
+        # Try dedup first — many users translating the same source
+        # chapter share one row.
+        chapter = await db.find_chapter_by_upstream(
+            material["id"], ref.upstream_url,
+        )
+        if chapter is None:
+            chapter_id = await db.create_chapter(
+                material["id"], ref.number,
+                label=ref.label,
+                upstream_url=ref.upstream_url,
+                pages_origin="remote",
+            )
+            chapter = await db.get_chapter(chapter_id)
+        if chapter is None:
+            raise HTTPException(500, "Failed to materialize chapter row")
+    else:
+        raise HTTPException(
+            400,
+            "Provide either chapter_id or chapter_ref",
+        )
 
     material = await db.get_material(chapter["material_id"])
     assert material is not None
@@ -102,7 +155,7 @@ async def spawn_translation(
     draft = None
     if not force_private:
         draft = await db.find_reusable_draft(
-            chapter_id=body.chapter_id,
+            chapter_id=chapter["id"],
             source_lang=source_lang,
             target_lang=target_lang,
             glossary_fp=glossary_fp,
@@ -113,7 +166,7 @@ async def spawn_translation(
     if draft is not None:
         # Cache hit. No quota; no pipeline enqueue.
         translation_id = await db.get_or_create_translation(
-            chapter_id=body.chapter_id,
+            chapter_id=chapter["id"],
             owner_id=user["id"],
             target_lang=target_lang,
             draft_id=draft["id"],
@@ -123,6 +176,7 @@ async def spawn_translation(
             draft_id=draft["id"],
             state=draft.get("state") or "done",
             cache_hit=True,
+            chapter_id=chapter["id"],
         )
 
     # Cache miss — quota check + create draft + enqueue prepare.
@@ -142,7 +196,7 @@ async def spawn_translation(
 
     llm_model = cfg.llm.default_model if hasattr(cfg, "llm") else "claude-3.5"
     draft_id = await db.create_draft(
-        chapter_id=body.chapter_id,
+        chapter_id=chapter["id"],
         source_lang=source_lang,
         target_lang=target_lang,
         glossary_fp=glossary_fp,
@@ -152,7 +206,7 @@ async def spawn_translation(
         scope_guild_id=scope_guild_id,
     )
     translation_id = await db.get_or_create_translation(
-        chapter_id=body.chapter_id,
+        chapter_id=chapter["id"],
         owner_id=user["id"],
         target_lang=target_lang,
         draft_id=draft_id,
@@ -166,12 +220,12 @@ async def spawn_translation(
     # via advance_task with target_kind shifts.
     if chapter.get("prepared_hash") is None:
         await db.enqueue_task(
-            target_kind="chapter", target_id=body.chapter_id,
+            target_kind="chapter", target_id=chapter["id"],
             stage="prepare",
         )
-    elif not await db.has_bubbles(body.chapter_id):
+    elif not await db.has_bubbles(chapter["id"]):
         await db.enqueue_task(
-            target_kind="chapter", target_id=body.chapter_id,
+            target_kind="chapter", target_id=chapter["id"],
             stage="scan",
         )
     else:
@@ -184,6 +238,7 @@ async def spawn_translation(
         draft_id=draft_id,
         state="pending",
         cache_hit=False,
+        chapter_id=chapter["id"],
     )
 
 

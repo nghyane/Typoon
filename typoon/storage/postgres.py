@@ -723,6 +723,16 @@ class PostgresStore:
                 prepared_hash,
             ))
 
+    async def find_chapter_by_upstream(
+        self, material_id: int, upstream_url: str,
+    ) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_CHAPTER} FROM chapters "
+                "WHERE material_id=$1 AND upstream_url=$2 LIMIT 1",
+                material_id, upstream_url,
+            ))
+
     # ── Scan output (chapter-level) ───────────────────────────────
 
     async def save_bubbles(

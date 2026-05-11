@@ -26,7 +26,7 @@ from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
     auth, blobs, dmca, feed, glossary, library, material, me,
-    translate, upload, workers,
+    translate, translate_events, upload, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -133,6 +133,7 @@ if _serve_api:
     app.include_router(upload.router)
     app.include_router(upload.local_router)
     app.include_router(translate.router)
+    app.include_router(translate_events.router)
     app.include_router(library.router)
     app.include_router(feed.router)
     app.include_router(glossary.router)
