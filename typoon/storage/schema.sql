@@ -442,15 +442,17 @@ CREATE INDEX IF NOT EXISTS idx_library_user_bookmarked
 CREATE TABLE IF NOT EXISTS library_materials (
     entry_id     BIGINT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
     material_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    -- Denormalized owner for the per-user uniqueness constraint below.
+    -- Kept in sync with library_entries.user_id at insert time.
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     link_origin  TEXT NOT NULL CHECK (link_origin IN ('primary','auto','manual')),
     linked_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (entry_id, material_id)
 );
--- A material appears in at most one library_entry per user. Combined
--- with the FK chain (entry → user), a user cannot have the same
--- material linked into two different entries.
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_material
-    ON library_materials (material_id);
+-- A material appears in at most one library_entry per user. Different
+-- users may each have their own entry referencing the same material.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_material_per_user
+    ON library_materials (user_id, material_id);
 
 -- ── Glossary ────────────────────────────────────────────────────────
 -- Per-user glossary: replaces the old per-project glossary. User

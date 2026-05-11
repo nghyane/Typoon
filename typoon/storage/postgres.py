@@ -1,12 +1,14 @@
-"""Postgres storage — identity, knowledge, worker coordination.
+"""Postgres storage — material/translation entities + pipeline coordination.
 
 Schema lives in `schema.sql` and is applied idempotently at `open()`;
 there is no migration tooling — bump SCHEMA_VERSION + drop/recreate the
-database during dev when the shape changes.
+database during dev when shape changes.
 
-Datetime handling: asyncpg returns `datetime` objects for TIMESTAMPTZ.
-We convert each timestamp to RFC 3339 in UTC at the SQL layer
+Datetime handling: asyncpg returns `datetime` for TIMESTAMPTZ. We
+convert each timestamp to RFC 3339 in UTC at the SQL layer
 (`to_char(... AT TIME ZONE 'UTC', ... )`) so callers see strings only.
+
+See docs/rfc/material-architecture.md for the design rationale.
 """
 
 from __future__ import annotations
@@ -14,8 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re as _re
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import asyncpg
 
@@ -24,35 +25,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Bump this when schema.sql changes shape. Mismatch on boot ⇒ refuse to
+# Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
 SCHEMA_VERSION = "15"  # v5 material+translation architecture (RFC v5)
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
-# malformed input, persistent OOM) must not loop forever — the worker
-# would otherwise burn CPU on a dead chapter and starve the queue. After
-# this many failures the task is dead-lettered: visible to status views
-# (last_error populated) but never re-claimed until an operator redoes it.
+# malformed input, persistent OOM) must not loop forever — after this
+# many failures the task is dead-lettered: visible to status views
+# (last_error populated) but never re-claimed until an operator redoes.
 MAX_TASK_ATTEMPTS = 3
 
 # How long a claim is considered "live". After this, the task is
-# re-claimable by another worker (see claim_task) AND status views
-# treat it as pending again rather than running. Without this, a worker
-# that crashes hard (OOM, killed) would leave its chapter forever
-# stuck on "running" in the UI even though no one is working on it.
+# re-claimable by another worker AND status views treat it as pending
+# rather than running. Without this, a worker that crashes hard (OOM,
+# killed) would leave its task forever stuck on "running" in the UI.
 STALE_CLAIM_SECONDS = 10 * 60
 
-# ── Chapter position assignment ───────────────────────────────────────
-#
-# `chapters.position` is a per-project sort key, server-managed. New
-# rows land INITIAL_GAP apart on append; midpoint bisect on insert
-# keeps it dense-ish without rewriting siblings. A full project
-# rebalance only fires when adjacent neighbours sit fewer than
-# REBALANCE_MIN_GAP apart — a corner case that real manga insertion
-# patterns (mostly append, occasional Extra/Volume cover) do not
-# usually reach.
+# Sparse server-managed sort key for chapters. New rows land INITIAL_GAP
+# apart on append; midpoint bisect on insert keeps it dense-ish without
+# rewriting siblings. Full rebalance fires only when adjacent neighbours
+# sit fewer than REBALANCE_MIN_GAP apart — a corner case real manga
+# insertion patterns (mostly append, occasional Extra/Volume cover) do
+# not usually reach.
 INITIAL_GAP        = 1024
 REBALANCE_MIN_GAP  = 2
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
 
 
 def _read_schema_sql() -> str:
@@ -60,12 +59,10 @@ def _read_schema_sql() -> str:
     return (Path(__file__).parent / "schema.sql").read_text()
 
 
-# ── Postgres FTS query sanitiser ──────────────────────────────────────
-#
-# The agent passes natural strings (`"phép thuật"`, `magic OR sorcery`,
-# `-cấm`) through search_knowledge. `websearch_to_tsquery` accepts
-# Google-style syntax directly — no escaping needed for the common case.
-# We only strip control chars that asyncpg refuses.
+# Postgres FTS query sanitiser. The agent passes natural strings
+# (`"phép thuật"`, `magic OR sorcery`, `-cấm`) through search endpoints.
+# `websearch_to_tsquery` accepts Google-style syntax directly — no
+# escaping needed. We only strip control chars asyncpg refuses.
 _CTRL = _re.compile(r"[\x00-\x1f]")
 
 
@@ -73,10 +70,9 @@ def _clean_query(q: str) -> str:
     return _CTRL.sub(" ", q).strip()
 
 
-# ── ISO-string timestamp formatting ───────────────────────────────────
-# Convert all timestamps to UTC and format as RFC 3339 with a `Z`
-# suffix — directly parseable by JS `new Date(...)` and avoids local
-# time zone surprises across hosts.
+# ISO-string timestamp formatting. Convert all timestamps to UTC and
+# format as RFC 3339 with `Z` suffix — directly parseable by JS
+# `new Date(...)` and avoids local-time-zone surprises across hosts.
 _ISO_FMT = "YYYY-MM-DD\"T\"HH24:MI:SS\"Z\""
 
 
@@ -84,20 +80,42 @@ def _ts(col: str) -> str:
     return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {col}"
 
 
-_TS_PROJECTS = (
-    "id, slug, title, description, cover_path, source_url, "
-    "source_lang, target_lang, owner_id, shared, settings, "
-    f"{_ts('created_at')}, {_ts('updated_at')}"
-)
-_TS_CHAPTERS = (
-    "id, project_id, position, number, title, source_url, "
-    "rendered, page_count, archive_backend, archive_locator, "
-    f"{_ts('rendered_at')}, "
-    f"{_ts('created_at')}, {_ts('updated_at')}"
-)
 _TS_USERS = (
     "id, display_name, avatar_url, email, "
     f"{_ts('created_at')}, {_ts('last_login_at')}"
+)
+_TS_MATERIAL = (
+    "id, imported_by, origin, source, upstream_ref, title, cover_url, "
+    "description, author, status, languages, title_native, title_alt, "
+    "cross_refs, nsfw, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
+)
+_TS_CHAPTER = (
+    "id, material_id, position, number, label, upstream_url, "
+    "pages_origin, prepared_hash, prepared_backend, prepared_locator, "
+    "masks_backend, masks_locator, page_count, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
+)
+_TS_DRAFT = (
+    "id, chapter_id, source_lang, target_lang, glossary_fp, llm_model, "
+    "created_by, visibility, scope_guild_id, state, error_message, "
+    "progress_stage, progress_index, progress_total, "
+    f"{_ts('takedown_at')}, takedown_reason, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
+)
+_TS_TRANSLATION = (
+    "id, chapter_id, owner_id, target_lang, draft_id, "
+    "archive_backend, archive_locator, "
+    f"{_ts('rendered_at')}, "
+    "in_feed, feed_guild_id, "
+    f"{_ts('takedown_at')}, takedown_reason, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
+)
+_TS_LIBRARY_ENTRY = (
+    "id, user_id, title, cover_url, primary_material_id, "
+    f"bookmarked, {_ts('bookmarked_at')}, "
+    f"{_ts('last_read_at')}, last_chapter_ref, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 
 
@@ -112,12 +130,27 @@ def _try_float(s: str) -> float | None:
         return None
 
 
+# Chapter `progress_stage/index/total` are also columns on
+# translation_drafts. Define progress dict shape once.
+def _progress_or_none(row: dict) -> dict | None:
+    if row.get("progress_stage") is None:
+        return None
+    return {
+        "stage": row["progress_stage"],
+        "index": int(row.get("progress_index") or 0),
+        "total": int(row.get("progress_total") or 0),
+    }
+
+
+# ── Chapter position assignment ───────────────────────────────────────
+
+
 async def _resolve_chapter_position(
-    conn: asyncpg.Connection, project_id: int, number: str,
+    conn: asyncpg.Connection, material_id: int, number: str,
 ) -> int:
     """Compute the `position` for a new chapter being inserted.
 
-    Caller must hold the project's advisory xact lock.
+    Caller must hold the material's advisory xact lock.
 
     Strategy:
       - "Extra"/"Oneshot"/anything not parseable as a float → append at
@@ -126,14 +159,14 @@ async def _resolve_chapter_position(
         parses to ≤ target and the first sibling > target. Equality
         goes to `prev` so a later upload of the same `number` lands
         AFTER the existing one (first-come stays first).
-      - When the chosen gap is below REBALANCE_MIN_GAP, redistribute the
-        whole project to INITIAL_GAP spacing and retry once.
+      - When the chosen gap is below REBALANCE_MIN_GAP, redistribute
+        the whole material to INITIAL_GAP spacing and retry once.
     """
     target = _try_float(number)
     rows = await conn.fetch(
         "SELECT position, number FROM chapters "
-        "WHERE project_id=$1 ORDER BY position",
-        project_id,
+        "WHERE material_id=$1 ORDER BY position",
+        material_id,
     )
     if not rows:
         return INITIAL_GAP
@@ -154,20 +187,21 @@ async def _resolve_chapter_position(
             break
 
     if prev_pos is None and next_pos is None:
-        # Project contains only non-numeric chapters — append.
         return rows[-1]["position"] + INITIAL_GAP
     if prev_pos is None:
-        return next_pos - INITIAL_GAP    # type: ignore[operator]
+        return next_pos - INITIAL_GAP  # type: ignore[operator]
     if next_pos is None:
         return prev_pos + INITIAL_GAP
 
     if next_pos - prev_pos < REBALANCE_MIN_GAP:
-        await _rebalance_positions(conn, project_id)
-        return await _resolve_chapter_position(conn, project_id, number)
+        await _rebalance_positions(conn, material_id)
+        return await _resolve_chapter_position(conn, material_id, number)
     return (prev_pos + next_pos) // 2
 
 
-async def _rebalance_positions(conn: asyncpg.Connection, project_id: int) -> None:
+async def _rebalance_positions(
+    conn: asyncpg.Connection, material_id: int,
+) -> None:
     """Redistribute every chapter's position to INITIAL_GAP spacing.
 
     Called only when bisect runs out of room between two siblings — a
@@ -182,15 +216,46 @@ async def _rebalance_positions(conn: asyncpg.Connection, project_id: int) -> Non
             SELECT id,
                    ROW_NUMBER() OVER (ORDER BY position) * $2 AS new_pos
             FROM   chapters
-            WHERE  project_id = $1
+            WHERE  material_id = $1
         ) AS ranked
         WHERE c.id = ranked.id
         """,
-        project_id, INITIAL_GAP,
+        material_id, INITIAL_GAP,
     )
 
 
+# Canonical ordering for (a, b) pairs in material_link_votes —
+# CHECK constraint enforces a < b, callers should not need to know.
+def _canonical_pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b) if a < b else (b, a)
+
+
+async def _verify_schema_version(conn: asyncpg.Connection) -> None:
+    row = await conn.fetchrow(
+        "SELECT value FROM meta WHERE key='schema_version'",
+    )
+    if row is None:
+        # Fresh DB. Stamp the current version + apply schema.
+        await conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', $1)",
+            SCHEMA_VERSION,
+        )
+        return
+    if row["value"] != SCHEMA_VERSION:
+        raise RuntimeError(
+            f"DB schema version {row['value']!r} != expected "
+            f"{SCHEMA_VERSION!r}. Drop and recreate the DB:\n\n"
+            "    dropdb typoon && createdb -O typoon typoon\n"
+        )
+
+
+# ── PostgresStore ─────────────────────────────────────────────────────
+
+
 class PostgresStore:
+    """Concrete Store backed by Postgres 17. See `typoon/storage/store.py`
+    for the protocol; this class is the only production implementation."""
+
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
@@ -200,19 +265,18 @@ class PostgresStore:
             raise RuntimeError(
                 f"DATABASE_URL must be a postgresql:// DSN, got: {dsn!r}"
             )
-        # statement_cache_size=0 disables asyncpg's per-connection prepared
-        # statement cache. We've seen sporadic "_get_statement" failures
-        # under concurrent first requests; the cache was a small win not
-        # worth the flake. Re-enable later if profiling justifies it.
+        # statement_cache_size=0 disables asyncpg's per-connection
+        # prepared-statement cache. Sporadic "_get_statement" failures
+        # under concurrent first requests — the cache was a small win
+        # not worth the flake. Re-enable later if profiling justifies.
         pool = await asyncpg.create_pool(
             dsn, min_size=2, max_size=10, statement_cache_size=0,
         )
         async with pool.acquire() as conn:
-            # Verify the schema version BEFORE applying schema.sql so a
-            # stale volume fails loud with the dropdb hint instead of
+            # Verify schema version BEFORE applying schema.sql — a stale
+            # volume must fail loud with the dropdb hint instead of
             # crashing on `CREATE INDEX` against a missing column. The
-            # meta table is created on the spot when missing — that's
-            # the only DDL we need before we know what shape to expect.
+            # meta table is the only DDL we need before shape check.
             await conn.execute(
                 "CREATE TABLE IF NOT EXISTS meta ("
                 "  key TEXT PRIMARY KEY, value TEXT NOT NULL"
@@ -225,1000 +289,11 @@ class PostgresStore:
     async def close(self) -> None:
         await self._pool.close()
 
-    # ── Projects ──────────────────────────────────────────────────
-
-    async def get_or_create_project(
-        self,
-        slug: str,
-        title: str,
-        source_lang: str,
-        target_lang: str,
-        source_url: str | None = None,
-        owner_id: int | None = None,
-    ) -> int:
+    async def ping(self) -> None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT id FROM projects WHERE slug=$1", slug)
-            if row:
-                return row["id"]
-            if source_url:
-                row = await conn.fetchrow(
-                    "SELECT id FROM projects WHERE source_url=$1", source_url,
-                )
-                if row:
-                    return row["id"]
-            row = await conn.fetchrow(
-                "INSERT INTO projects (slug, title, source_lang, target_lang, source_url, owner_id) "
-                "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-                slug, title, source_lang, target_lang, source_url, owner_id,
-            )
-            return row["id"]
+            await conn.fetchval("SELECT 1")
 
-    async def get_project(self, project_id: int) -> dict | None:
-        async with self._pool.acquire() as conn:
-            return _row_dict(await conn.fetchrow(
-                f"SELECT {_TS_PROJECTS} FROM projects WHERE id=$1", project_id,
-            ))
-
-    async def get_project_by_slug(self, slug: str) -> dict | None:
-        async with self._pool.acquire() as conn:
-            return _row_dict(await conn.fetchrow(
-                f"SELECT {_TS_PROJECTS} FROM projects WHERE slug=$1", slug,
-            ))
-
-    async def list_projects(
-        self,
-        *,
-        viewer_id: int | None = None,
-        filter: str = "all",
-    ) -> list[dict]:
-        """List projects visible to `viewer_id`.
-
-        filter:
-          all       — owned by viewer + shared (default)
-          mine      — owned by viewer
-          pinned    — pinned by viewer
-          community — shared && owner_id != viewer (others' shared)
-
-        viewer_id=None returns everything (admin / migration use).
-        Each row carries `is_pinned` (bool, false when no viewer).
-        """
-        if viewer_id is None:
-            async with self._pool.acquire() as conn:
-                rows = await conn.fetch(
-                    f"SELECT {_TS_PROJECTS}, FALSE AS is_pinned "
-                    "FROM projects ORDER BY id DESC",
-                )
-            return [dict(r) for r in rows]
-
-        select = (
-            f"SELECT {_TS_PROJECTS}, "
-            "  EXISTS(SELECT 1 FROM project_pins pp "
-            "         WHERE pp.user_id=$1 AND pp.project_id=projects.id) "
-            "  AS is_pinned "
-            "FROM projects "
-        )
-        if filter == "mine":
-            where = "WHERE owner_id = $1"
-            params: list = [viewer_id]
-        elif filter == "pinned":
-            where = (
-                "WHERE id IN (SELECT project_id FROM project_pins WHERE user_id=$1) "
-                "  AND (owner_id = $1 OR shared = TRUE)"
-            )
-            params = [viewer_id]
-        elif filter == "community":
-            where = "WHERE shared = TRUE AND (owner_id IS NULL OR owner_id <> $1)"
-            params = [viewer_id]
-        else:  # all
-            where = "WHERE owner_id = $1 OR shared = TRUE"
-            params = [viewer_id]
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                select + where + " ORDER BY updated_at DESC, id DESC",
-                *params,
-            )
-        return [dict(r) for r in rows]
-
-    async def can_view_project(self, project_id: int, viewer_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM projects "
-                "WHERE id=$1 AND (owner_id=$2 OR shared=TRUE) LIMIT 1",
-                project_id, viewer_id,
-            )
-        return row is not None
-
-    async def is_project_owner(self, project_id: int, user_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 LIMIT 1",
-                project_id, user_id,
-            )
-        return row is not None
-
-    # ── Pins ──────────────────────────────────────────────────────
-
-    async def pin_project(self, user_id: int, project_id: int) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO project_pins (user_id, project_id) VALUES ($1,$2) "
-                "ON CONFLICT DO NOTHING",
-                user_id, project_id,
-            )
-
-    async def unpin_project(self, user_id: int, project_id: int) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM project_pins WHERE user_id=$1 AND project_id=$2",
-                user_id, project_id,
-            )
-
-    async def is_pinned(self, user_id: int, project_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM project_pins WHERE user_id=$1 AND project_id=$2",
-                user_id, project_id,
-            )
-        return row is not None
-
-    async def update_project_metadata(
-        self,
-        project_id: int,
-        *,
-        title: str | None = None,
-        description: str | None = None,
-        cover_path: str | None = None,
-        target_lang: str | None = None,
-        settings: dict | None = None,
-        shared: bool | None = None,
-        owner_id: int | None = None,
-    ) -> None:
-        sets: list[str] = []
-        args: list = []
-        if title is not None:
-            args.append(title); sets.append(f"title=${len(args)}")
-        if description is not None:
-            args.append(description); sets.append(f"description=${len(args)}")
-        if cover_path is not None:
-            args.append(cover_path); sets.append(f"cover_path=${len(args)}")
-        if target_lang is not None:
-            args.append(target_lang); sets.append(f"target_lang=${len(args)}")
-        if settings is not None:
-            args.append(json.dumps(settings, ensure_ascii=False))
-            sets.append(f"settings=${len(args)}::jsonb")
-        if shared is not None:
-            args.append(shared); sets.append(f"shared=${len(args)}")
-        if owner_id is not None:
-            args.append(owner_id); sets.append(f"owner_id=${len(args)}")
-        if not sets:
-            return
-        args.append(project_id)
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                f"UPDATE projects SET {', '.join(sets)} WHERE id=${len(args)}",
-                *args,
-            )
-
-    async def set_project_source_url(self, project_id: int, url: str) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE projects SET source_url=$1 WHERE id=$2", url, project_id,
-            )
-
-    async def get_project_settings(self, project_id: int) -> dict:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT settings FROM projects WHERE id=$1", project_id,
-            )
-        if not row or not row["settings"]:
-            return {}
-        return _to_jsonable_dict(row["settings"])
-
-    # ── Chapters ──────────────────────────────────────────────────
-
-    async def create_chapter(
-        self,
-        project_id: int,
-        number: str,
-        *,
-        title: str | None = None,
-        source_url: str | None = None,
-    ) -> int:
-        """Insert a new chapter, computing its `position` from `number`.
-
-        Position assignment lives in `_resolve_chapter_position`:
-        midpoint bisect for numeric `number`, append for non-numeric
-        labels ("Extra", "Oneshot"), full-project rebalance when an
-        adjacent gap falls below `REBALANCE_MIN_GAP`.
-
-        Concurrency: a `pg_advisory_xact_lock(project_id)` serialises
-        position assignment per project so two parallel uploads cannot
-        race into the same UNIQUE(project_id, position) slot.
-        """
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock($1)", project_id)
-            position = await _resolve_chapter_position(conn, project_id, number)
-            row = await conn.fetchrow(
-                "INSERT INTO chapters (project_id, position, number, title, source_url) "
-                "VALUES ($1,$2,$3,$4,$5) RETURNING id",
-                project_id, position, number, title, source_url,
-            )
-            return row["id"]
-
-    async def get_chapter(self, chapter_id: int) -> dict | None:
-        async with self._pool.acquire() as conn:
-            return _row_dict(await conn.fetchrow(
-                f"SELECT {_TS_CHAPTERS} FROM chapters WHERE id=$1", chapter_id,
-            ))
-
-    async def get_all_chapters(self, project_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"SELECT {_TS_CHAPTERS} FROM chapters "
-                "WHERE project_id=$1 ORDER BY position",
-                project_id,
-            )
-            return [dict(r) for r in rows]
-
-    async def get_chapters_with_status(self, project_id: int) -> list[dict]:
-        chapters = await self.get_all_chapters(project_id)
-        result = []
-        for ch in chapters:
-            tasks = await self.get_tasks(ch["id"])
-            state, stage, error = _derive_state(ch, tasks)
-            result.append({
-                "chapter_id":      ch["id"],
-                "project_id":      ch["project_id"],
-                "position":        ch["position"],
-                "number":          ch["number"],
-                "title":           ch.get("title"),
-                "state":           state,
-                "stage":           stage,
-                "page_count":      int(ch.get("page_count") or 0),
-                "error":           error,
-                "updated_at":      ch.get("updated_at") or ch.get("created_at"),
-                "rendered_at":     ch.get("rendered_at"),
-                "archive_backend": ch.get("archive_backend"),
-                "archive_locator": ch.get("archive_locator"),
-            })
-        return result
-
-    async def get_chapter_with_status(
-        self, chapter_id: int, project_id: int,
-    ) -> dict | None:
-        ch = await self.get_chapter(chapter_id)
-        if ch is None or ch["project_id"] != project_id:
-            return None
-        tasks    = await self.get_tasks(chapter_id)
-        state, stage, error = _derive_state(ch, tasks)
-        progress = await self.get_chapter_progress(chapter_id)
-        return {
-            "chapter_id":      chapter_id,
-            "project_id":      project_id,
-            "position":        ch["position"],
-            "number":          ch["number"],
-            "title":           ch.get("title"),
-            "state":           state,
-            "stage":           stage,
-            "page_count":      int(ch.get("page_count") or 0),
-            "error":           error,
-            "updated_at":      ch.get("updated_at") or ch.get("created_at"),
-            "rendered_at":     ch.get("rendered_at"),
-            "archive_backend": ch.get("archive_backend"),
-            "archive_locator": ch.get("archive_locator"),
-            "progress":        progress and {
-                "stage":      progress["stage"],
-                "page_index": progress["page_index"],
-                "page_total": progress["page_total"],
-            },
-        }
-
-    # ── Tasks ─────────────────────────────────────────────────────
-
-    async def enqueue(self, chapter_id: int, stage: str) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO tasks (chapter_id, stage) VALUES ($1,$2) "
-                "ON CONFLICT (chapter_id, stage) DO NOTHING",
-                chapter_id, stage,
-            )
-
-    async def enqueue_many(self, chapter_id: int, stages: list[str]) -> None:
-        if not stages:
-            return
-        async with self._pool.acquire() as conn:
-            await conn.executemany(
-                "INSERT INTO tasks (chapter_id, stage) VALUES ($1,$2) "
-                "ON CONFLICT (chapter_id, stage) DO NOTHING",
-                [(chapter_id, s) for s in stages],
-            )
-
-    async def claim_task(self, stage: str, worker_id: str) -> int | None:
-        """Atomically claim one pending task. Returns chapter_id or None.
-
-        FOR UPDATE SKIP LOCKED gives us a single-statement claim with no
-        race recheck needed — the row we get back is definitively ours.
-        Tasks that exceeded MAX_TASK_ATTEMPTS are dead-lettered and never
-        re-claimed; an operator must redo or delete them.
-        Stale claims (worker crashed without releasing) older than
-        STALE_CLAIM_SECONDS become re-claimable.
-        """
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"""
-                UPDATE tasks
-                SET    claimed_by = $1, claimed_at = NOW()
-                WHERE  ctid = (
-                    SELECT ctid FROM tasks
-                    WHERE  stage = $2
-                      AND  attempts < $3
-                      AND  (claimed_by IS NULL
-                            OR claimed_at < NOW() - INTERVAL '{STALE_CLAIM_SECONDS} seconds')
-                    ORDER  BY chapter_id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT  1
-                )
-                RETURNING chapter_id
-                """,
-                worker_id, stage, MAX_TASK_ATTEMPTS,
-            )
-        return row["chapter_id"] if row else None
-
-    async def release_claims_by_prefix(self, prefix: str) -> int:
-        """Release every claim whose `claimed_by` starts with `prefix`.
-
-        Called on worker startup with the local hostname to clear ghost
-        claims left by a previous PID that died without graceful exit
-        (SIGKILL, OOM, machine reboot). Returns the row count released
-        so the caller can log it.
-
-        We do not touch `attempts` here: the task was interrupted by an
-        external event, not by an exception in the stage code, so the
-        next claim should run with the same attempt budget. A truly
-        broken stage will still hit MAX_TASK_ATTEMPTS via fail_task on
-        each retry attempt.
-        """
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE tasks SET claimed_by = NULL, claimed_at = NULL "
-                "WHERE claimed_by LIKE $1",
-                f"{prefix}%",
-            )
-        # asyncpg execute() returns "UPDATE <n>"
-        try:
-            return int(result.rsplit(" ", 1)[-1])
-        except ValueError:
-            return 0
-
-    async def complete_task(self, chapter_id: int, stage: str) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM tasks WHERE chapter_id=$1 AND stage=$2",
-                chapter_id, stage,
-            )
-
-    async def advance_task(
-        self, chapter_id: int, completed_stage: str, next_stage: str,
-    ) -> None:
-        """Atomically complete a stage and enqueue the next one.
-
-        Without this, a chapter briefly has zero tasks between
-        complete_task and enqueue, which surfaces as an "idle" flicker
-        in the UI on every stage handoff. One transaction → no gap.
-        """
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "DELETE FROM tasks WHERE chapter_id=$1 AND stage=$2",
-                chapter_id, completed_stage,
-            )
-            await conn.execute(
-                "INSERT INTO tasks (chapter_id, stage) VALUES ($1,$2) "
-                "ON CONFLICT (chapter_id, stage) DO NOTHING",
-                chapter_id, next_stage,
-            )
-
-    async def fail_task(self, chapter_id: int, stage: str, error: str) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE tasks
-                SET    claimed_by = NULL,
-                       claimed_at = NULL,
-                       attempts   = attempts + 1,
-                       last_error = $1
-                WHERE  chapter_id=$2 AND stage=$3
-                """,
-                error, chapter_id, stage,
-            )
-
-    async def requeue_task(self, chapter_id: int, stage: str, error: str) -> None:
-        """Release a claim WITHOUT counting it against MAX_TASK_ATTEMPTS.
-
-        For transient upstream failures (auth pool empty, gateway 5xx)
-        where the operator's recovery action — rotate token, swap
-        provider — should resume the chapter automatically rather than
-        burn one of its three lives.
-        """
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE tasks
-                SET    claimed_by = NULL,
-                       claimed_at = NULL,
-                       last_error = $1
-                WHERE  chapter_id=$2 AND stage=$3
-                """,
-                error, chapter_id, stage,
-            )
-
-    async def get_tasks(self, chapter_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT chapter_id, stage, claimed_by, "
-                f"{_ts('claimed_at')}, "
-                "attempts, last_error "
-                "FROM tasks WHERE chapter_id=$1",
-                chapter_id,
-            )
-            return [dict(r) for r in rows]
-
-    async def delete_tasks_from(self, chapter_id: int, stage: str) -> None:
-        order = ["prepare", "scan", "translate", "render"]
-        if stage not in order:
-            return
-        stages_to_delete = order[order.index(stage):]
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM tasks WHERE chapter_id=$1 AND stage = ANY($2::text[])",
-                chapter_id, stages_to_delete,
-            )
-
-    # ── Chapter inbox (deferred prepare handle) ───────────────────
-    #
-    # The `/upload-finalize` route persists everything the prepare
-    # worker needs (multipart coordinates or a local folder path) into
-    # `chapter_inbox`, then enqueues the prepare task. The worker reads
-    # the row, materialises the chapter zip on disk, and clears the row
-    # once prepare succeeds. One row per chapter.
-
-    async def set_inbox_handle(self, handle: "InboxHandle") -> None:
-        parts_json = json.dumps(
-            [{"number": p.number, "etag": p.etag} for p in handle.parts],
-        )
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO chapter_inbox "
-                "  (chapter_id, tmp_id, upload_id, parts, title) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5) "
-                "ON CONFLICT (chapter_id) DO UPDATE SET "
-                "  tmp_id=EXCLUDED.tmp_id, upload_id=EXCLUDED.upload_id, "
-                "  parts=EXCLUDED.parts, title=EXCLUDED.title",
-                handle.chapter_id, handle.tmp_id, handle.upload_id,
-                parts_json, handle.title,
-            )
-
-    async def get_inbox_handle(self, chapter_id: int) -> "InboxHandle | None":
-        from typoon.adapters.inbox import CompletedPart, InboxHandle
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT tmp_id, upload_id, parts, title "
-                "FROM chapter_inbox WHERE chapter_id=$1",
-                chapter_id,
-            )
-        if row is None:
-            return None
-        raw = row["parts"]
-        if isinstance(raw, str):
-            raw = json.loads(raw)
-        return InboxHandle(
-            chapter_id=chapter_id,
-            tmp_id=row["tmp_id"],
-            upload_id=row["upload_id"],
-            parts=tuple(
-                CompletedPart(number=int(p["number"]), etag=str(p["etag"]))
-                for p in raw
-            ),
-            title=row["title"],
-        )
-
-    async def clear_inbox_handle(self, chapter_id: int) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM chapter_inbox WHERE chapter_id=$1",
-                chapter_id,
-            )
-
-    # ── Quota (per-user chapter consumption) ──────────────────────
-    #
-    # One `chapter_consumes` row per user-initiated render trigger
-    # (upload+start, /start, /redo). Counters sliding-window over the
-    # row timestamps; concurrent count joins through projects.owner_id
-    # so it correctly attributes ongoing tasks to the project owner.
-
-    async def record_chapter_consume(
-        self, user_id: int, chapter_id: int, project_id: int,
-    ) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO chapter_consumes (user_id, chapter_id, project_id) "
-                "VALUES ($1, $2, $3)",
-                user_id, chapter_id, project_id,
-            )
-
-    async def count_user_consumes_since(
-        self, user_id: int, seconds: int,
-    ) -> int:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT COUNT(*) AS n FROM chapter_consumes "
-                "WHERE user_id = $1 "
-                "  AND created_at >= NOW() - make_interval(secs => $2)",
-                user_id, seconds,
-            )
-        return int(row["n"]) if row else 0
-
-    async def count_user_in_flight_chapters(self, user_id: int) -> int:
-        """Distinct chapters owned by `user_id` that still have a live
-        task row (any stage). A chapter with multiple stage rows counts
-        once. STALE_CLAIM_SECONDS-aged claims still count — they'll be
-        re-claimed and finished by the next worker, so they're real
-        in-flight work from the user's perspective.
-        """
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT COUNT(DISTINCT t.chapter_id) AS n
-                FROM   tasks t
-                JOIN   chapters c ON c.id = t.chapter_id
-                JOIN   projects p ON p.id = c.project_id
-                WHERE  p.owner_id = $1
-                """,
-                user_id,
-            )
-        return int(row["n"]) if row else 0
-
-    # ── Bubbles ───────────────────────────────────────────────────
-
-    async def save_bubbles(self, chapter_id: int, bubbles: list[dict]) -> None:
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute("DELETE FROM bubbles WHERE chapter_id=$1", chapter_id)
-            await conn.executemany(
-                "INSERT INTO bubbles (chapter_id, page_index, bubble_idx, "
-                "source_text, confidence, shape_kind) "
-                "VALUES ($1,$2,$3,$4,$5,$6)",
-                [
-                    (chapter_id, b["page_index"], b["bubble_idx"],
-                     b["source_text"], b["confidence"],
-                     b.get("shape_kind", "dialogue"))
-                    for b in bubbles
-                ],
-            )
-
-    async def get_bubbles(self, chapter_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT page_index, bubble_idx, source_text, confidence, shape_kind "
-                "FROM bubbles WHERE chapter_id=$1 "
-                "ORDER BY page_index, bubble_idx",
-                chapter_id,
-            )
-            return [dict(r) for r in rows]
-
-    async def has_bubbles(self, chapter_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM bubbles WHERE chapter_id=$1 LIMIT 1", chapter_id,
-            )
-        return row is not None
-
-    async def delete_chapter_data(self, chapter_id: int) -> None:
-        async with self._pool.acquire() as conn, conn.transaction():
-            for table in (
-                "bubbles", "translations", "chapter_briefs", "tasks",
-                "bubble_geometry", "page_geometry",
-            ):
-                await conn.execute(
-                    f"DELETE FROM {table} WHERE chapter_id=$1", chapter_id,
-                )
-            await conn.execute(
-                "UPDATE chapters SET rendered=FALSE, "
-                "archive_backend=NULL, archive_locator=NULL, "
-                "rendered_at=NULL "
-                "WHERE id=$1", chapter_id,
-            )
-
-    # ── Geometry ──────────────────────────────────────────────────
-
-    async def save_geometry(self, chapter_id: int, pages: list[dict]) -> None:
-        bubble_rows = [
-            (
-                chapter_id, p["page_index"], b["bubble_idx"],
-                json.dumps(b["polygon"]),
-                json.dumps(b["fit_box"]),
-                json.dumps(b["erase_box"]),
-                json.dumps(b["text_box"]),
-            )
-            for p in pages for b in p["bubbles"]
-        ]
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute("DELETE FROM page_geometry WHERE chapter_id=$1", chapter_id)
-            await conn.execute("DELETE FROM bubble_geometry WHERE chapter_id=$1", chapter_id)
-            await conn.executemany(
-                "INSERT INTO page_geometry (chapter_id, page_index, width, height) "
-                "VALUES ($1,$2,$3,$4)",
-                [(chapter_id, p["page_index"], p["width"], p["height"]) for p in pages],
-            )
-            if bubble_rows:
-                await conn.executemany(
-                    "INSERT INTO bubble_geometry "
-                    "(chapter_id, page_index, bubble_idx, polygon, fit_box, erase_box, text_box) "
-                    "VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb)",
-                    bubble_rows,
-                )
-
-    async def get_geometry(self, chapter_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            page_rows = await conn.fetch(
-                "SELECT page_index, width, height FROM page_geometry "
-                "WHERE chapter_id=$1 ORDER BY page_index", chapter_id,
-            )
-            bubble_rows = await conn.fetch(
-                "SELECT page_index, bubble_idx, polygon, fit_box, erase_box, text_box "
-                "FROM bubble_geometry WHERE chapter_id=$1 "
-                "ORDER BY page_index, bubble_idx", chapter_id,
-            )
-        page_bubbles: dict[int, list[dict]] = {}
-        for r in bubble_rows:
-            page_bubbles.setdefault(r["page_index"], []).append({
-                "bubble_idx": r["bubble_idx"],
-                "polygon":   _to_jsonable(r["polygon"]),
-                "fit_box":   _to_jsonable(r["fit_box"]),
-                "erase_box": _to_jsonable(r["erase_box"]),
-                "text_box":  _to_jsonable(r["text_box"]),
-            })
-        return [
-            {
-                "page_index": p["page_index"],
-                "width":      p["width"],
-                "height":     p["height"],
-                "bubbles":    page_bubbles.get(p["page_index"], []),
-            }
-            for p in page_rows
-        ]
-
-    # ── Translations ──────────────────────────────────────────────
-
-    async def save_translations(self, chapter_id: int, records: list[dict]) -> None:
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "DELETE FROM translations WHERE chapter_id=$1", chapter_id,
-            )
-            await conn.executemany(
-                "INSERT INTO translations "
-                "(chapter_id, page_index, bubble_idx, translated_text, kind) "
-                "VALUES ($1,$2,$3,$4,$5)",
-                [
-                    (chapter_id, r["page_index"], r["bubble_idx"],
-                     r["translated_text"], r["kind"])
-                    for r in records
-                ],
-            )
-
-    async def get_translations(self, chapter_id: int) -> dict[tuple[int, int], dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT page_index, bubble_idx, translated_text, kind "
-                "FROM translations WHERE chapter_id=$1 "
-                "ORDER BY page_index, bubble_idx", chapter_id,
-            )
-        return {(r["page_index"], r["bubble_idx"]): dict(r) for r in rows}
-
-    async def has_translations(self, chapter_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM translations WHERE chapter_id=$1 LIMIT 1", chapter_id,
-            )
-        return row is not None
-
-    async def update_translation(
-        self,
-        chapter_id: int,
-        page_index: int,
-        bubble_idx: int,
-        translated_text: str,
-        kind: str | None = None,
-    ) -> bool:
-        sets = ["translated_text=$1"]
-        args: list = [translated_text]
-        if kind is not None:
-            args.append(kind); sets.append(f"kind=${len(args)}")
-        args.extend([chapter_id, page_index, bubble_idx])
-        n = len(args)
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                f"UPDATE translations SET {', '.join(sets)} "
-                f"WHERE chapter_id=${n-2} AND page_index=${n-1} AND bubble_idx=${n}",
-                *args,
-            )
-        # asyncpg returns "UPDATE N"
-        return result.startswith("UPDATE ") and not result.endswith("0")
-
-    # ── Glossary ──────────────────────────────────────────────────
-
-    async def get_glossary(self, project_id: int) -> dict[str, str]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT source_term, target_term FROM glossary WHERE project_id=$1",
-                project_id,
-            )
-        return {r["source_term"]: r["target_term"] for r in rows}
-
-    async def list_glossary(self, project_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, source_term, target_term, notes "
-                "FROM glossary WHERE project_id=$1 ORDER BY source_term",
-                project_id,
-            )
-        return [dict(r) for r in rows]
-
-    async def upsert_glossary_term(
-        self,
-        project_id: int,
-        source_term: str,
-        target_term: str,
-        notes: str | None = None,
-    ) -> int:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "INSERT INTO glossary (project_id, source_term, target_term, notes) "
-                "VALUES ($1,$2,$3,$4) "
-                "ON CONFLICT(project_id, source_term) DO UPDATE SET "
-                "  target_term=excluded.target_term, notes=excluded.notes "
-                "RETURNING id",
-                project_id, source_term, target_term, notes,
-            )
-        return row["id"] if row else 0
-
-    async def delete_glossary_term(self, project_id: int, term_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM glossary WHERE id=$1 AND project_id=$2",
-                term_id, project_id,
-            )
-        return result.startswith("DELETE ") and not result.endswith("0")
-
-    async def glossary_search(self, project_id: int, query: str) -> list[dict]:
-        clean = _clean_query(query)
-        if not clean:
-            return []
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT source_term, target_term, notes "
-                "FROM glossary "
-                "WHERE project_id=$1 "
-                "  AND source_term_tsv @@ websearch_to_tsquery('simple', $2) "
-                "ORDER BY ts_rank(source_term_tsv, websearch_to_tsquery('simple', $2)) DESC "
-                "LIMIT 10",
-                project_id, clean,
-            )
-        return [dict(r) for r in rows]
-
-    async def upsert_glossary_terms(self, project_id: int, terms: dict[str, str]) -> None:
-        if not terms:
-            return
-        async with self._pool.acquire() as conn:
-            await conn.executemany(
-                "INSERT INTO glossary (project_id, source_term, target_term) "
-                "VALUES ($1,$2,$3) "
-                "ON CONFLICT(project_id, source_term) DO UPDATE SET "
-                "  target_term=excluded.target_term",
-                [(project_id, src, tgt) for src, tgt in terms.items()],
-            )
-
-    # ── Chapter briefs ────────────────────────────────────────────
-
-    async def save_chapter_brief(self, chapter_id: int, brief: dict) -> None:
-        terms   = brief.get("glossary", {}) or {}
-        style   = brief.get("style_notes", brief.get("rules", [])) or []
-        address = brief.get("address", []) or []
-        address_text = "\n".join(
-            f"{a.get('speaker','')} → {a.get('listener','')}: "
-            f"{a.get('self_ref','')}/{a.get('other_ref','')}"
-            for a in address
-        )
-        payload = (
-            chapter_id,
-            json.dumps(brief, ensure_ascii=False),
-            str(brief.get("summary", "")),
-            "\n".join(f"{k} -> {v}" for k, v in terms.items()),
-            "\n".join(str(x) for x in brief.get("facts", []) or []),
-            address_text + "\n" + "\n".join(str(x) for x in style),
-        )
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO chapter_briefs "
-                "(chapter_id, brief_json, summary, terms_text, facts_text, rules_text, updated_at) "
-                "VALUES ($1, $2::jsonb, $3, $4, $5, $6, NOW()) "
-                "ON CONFLICT (chapter_id) DO UPDATE SET "
-                "  brief_json=excluded.brief_json, summary=excluded.summary, "
-                "  terms_text=excluded.terms_text, facts_text=excluded.facts_text, "
-                "  rules_text=excluded.rules_text, updated_at=NOW()",
-                *payload,
-            )
-            if terms:
-                row = await conn.fetchrow(
-                    "SELECT project_id FROM chapters WHERE id=$1", chapter_id,
-                )
-                if row:
-                    await conn.executemany(
-                        "INSERT INTO glossary (project_id, source_term, target_term) "
-                        "VALUES ($1,$2,$3) "
-                        "ON CONFLICT(project_id, source_term) DO UPDATE SET "
-                        "  target_term=excluded.target_term",
-                        [(row["project_id"], src, tgt) for src, tgt in terms.items()],
-                    )
-
-    async def get_chapter_brief(self, chapter_id: int) -> dict | None:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT brief_json, summary, terms_text, facts_text, rules_text "
-                "FROM chapter_briefs WHERE chapter_id=$1", chapter_id,
-            )
-        if not row:
-            return None
-        out = dict(row)
-        out["brief"] = _to_jsonable_dict(out.pop("brief_json"))
-        return out
-
-    async def get_recent_chapter_briefs(
-        self,
-        project_id: int,
-        before_position: int,
-        limit: int = 3,
-    ) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT c.number, cb.brief_json, cb.summary, cb.terms_text, "
-                "       cb.facts_text, cb.rules_text "
-                "FROM chapter_briefs cb "
-                "JOIN chapters c ON c.id = cb.chapter_id "
-                "WHERE c.project_id=$1 AND c.position<$2 "
-                "ORDER BY c.position DESC LIMIT $3",
-                project_id, before_position, limit,
-            )
-        result = []
-        for row in rows:
-            out = dict(row)
-            out["chapter"] = out.pop("number")
-            out["brief"] = _to_jsonable_dict(out.pop("brief_json"))
-            result.append(out)
-        return result
-
-    async def search_briefs(
-        self,
-        project_id: int,
-        queries: list[str],
-        limit: int = 10,
-        *,
-        before_position: int | None = None,
-    ) -> list[str]:
-        results: list[str] = []
-        seen: set[str] = set()
-        async with self._pool.acquire() as conn:
-            for query in queries:
-                clean = _clean_query(query)
-                if not clean:
-                    continue
-                if before_position is not None:
-                    rows = await conn.fetch(
-                        "SELECT c.number, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
-                        "FROM chapter_briefs cb "
-                        "JOIN chapters c ON c.id = cb.chapter_id "
-                        "WHERE c.project_id=$1 AND c.position<$2 "
-                        "  AND cb.search_tsv @@ websearch_to_tsquery('simple', $3) "
-                        "ORDER BY ts_rank(cb.search_tsv, websearch_to_tsquery('simple', $3)) DESC "
-                        "LIMIT $4",
-                        project_id, before_position, clean, limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        "SELECT c.number, cb.summary, cb.terms_text, cb.facts_text, cb.rules_text "
-                        "FROM chapter_briefs cb "
-                        "JOIN chapters c ON c.id = cb.chapter_id "
-                        "WHERE c.project_id=$1 "
-                        "  AND cb.search_tsv @@ websearch_to_tsquery('simple', $2) "
-                        "ORDER BY ts_rank(cb.search_tsv, websearch_to_tsquery('simple', $2)) DESC "
-                        "LIMIT $3",
-                        project_id, clean, limit,
-                    )
-                for r in rows:
-                    text = "\n".join(
-                        str(r[k] or "") for k in
-                        ("summary", "terms_text", "facts_text", "rules_text")
-                    ).strip()
-                    hit = f"[Ch{r['number']} brief] {text}"
-                    if text and hit not in seen:
-                        seen.add(hit)
-                        results.append(hit)
-        return results[:limit]
-
-    async def search_context(
-        self,
-        project_id: int,
-        queries: list[str],
-        scope: str = "all",
-        limit: int = 12,
-    ) -> list[str]:
-        results: list[str] = []
-        seen: set[str] = set()
-        if scope not in ("all", "translations"):
-            return results
-        async with self._pool.acquire() as conn:
-            for query in queries:
-                clean = _clean_query(query)
-                if not clean:
-                    continue
-                rows = await conn.fetch(
-                    "SELECT b.source_text, t.translated_text, c.number, t.page_index "
-                    "FROM translations t "
-                    "JOIN bubbles b "
-                    "  ON b.chapter_id=t.chapter_id "
-                    " AND b.page_index=t.page_index "
-                    " AND b.bubble_idx=t.bubble_idx "
-                    "JOIN chapters c ON c.id = t.chapter_id "
-                    "WHERE c.project_id=$1 "
-                    "  AND t.translated_text_tsv @@ websearch_to_tsquery('simple', $2) "
-                    "ORDER BY ts_rank(t.translated_text_tsv, websearch_to_tsquery('simple', $2)) DESC "
-                    "LIMIT $3",
-                    project_id, clean, limit,
-                )
-                for r in rows:
-                    h = f"[Ch{r['number']} p{r['page_index']}] {r['source_text']} → {r['translated_text']}"
-                    if h not in seen:
-                        seen.add(h)
-                        results.append(h)
-        return results[:limit]
-
-    async def delete_project(self, project_id: int) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute("DELETE FROM projects WHERE id=$1", project_id)
-
-    async def delete_chapter(self, chapter_id: int) -> bool:
-        async with self._pool.acquire() as conn:
-            result = await conn.execute("DELETE FROM chapters WHERE id=$1", chapter_id)
-        return result.startswith("DELETE ") and not result.endswith("0")
-
-    # ── Queue stats ───────────────────────────────────────────────
-
-    async def queue_stats(self) -> dict:
-        async with self._pool.acquire() as conn:
-            stage_rows = await conn.fetch(
-                "SELECT stage, "
-                "  SUM(CASE WHEN claimed_by IS NULL THEN 1 ELSE 0 END) AS pending, "
-                "  SUM(CASE WHEN claimed_by IS NOT NULL "
-                "       AND claimed_at >= NOW() - INTERVAL '10 minutes' THEN 1 ELSE 0 END) AS running, "
-                "  SUM(CASE WHEN claimed_by IS NOT NULL "
-                "       AND claimed_at <  NOW() - INTERVAL '10 minutes' THEN 1 ELSE 0 END) AS stale "
-                "FROM tasks GROUP BY stage"
-            )
-            active_rows = await conn.fetch(
-                "SELECT DISTINCT claimed_by FROM tasks "
-                "WHERE claimed_by IS NOT NULL "
-                "  AND claimed_at >= NOW() - INTERVAL '10 minutes'"
-            )
-        stages: dict[str, dict[str, int]] = {
-            r["stage"]: {
-                "pending": int(r["pending"] or 0),
-                "running": int(r["running"] or 0),
-                "stale":   int(r["stale"] or 0),
-            }
-            for r in stage_rows
-        }
-        active = [r["claimed_by"] for r in active_rows]
-        return {"stages": stages, "active_workers": active}
-
-    # ── Users / identities ────────────────────────────────────────
+    # ── Identity ──────────────────────────────────────────────────
 
     async def upsert_user_from_identity(
         self,
@@ -1230,14 +305,10 @@ class PostgresStore:
         email:       str | None = None,
         metadata:    dict | None = None,
     ) -> dict:
-        """Find-or-create user from a (provider, external_id) tuple.
-
-        Admin status is derived from the user's Discord role at OAuth
-        time (carried in the JWT), not a DB column.
-        """
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "SELECT user_id FROM identities WHERE provider=$1 AND external_id=$2",
+                "SELECT user_id FROM identities "
+                "WHERE provider=$1 AND external_id=$2",
                 provider, external_id,
             )
             if row:
@@ -1292,7 +363,6 @@ class PostgresStore:
     async def get_external_id(
         self, user_id: int, provider: str = "discord",
     ) -> str | None:
-        """Return the external_id for a user under the given provider."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT external_id FROM identities "
@@ -1300,6 +370,49 @@ class PostgresStore:
                 user_id, provider,
             )
         return row["external_id"] if row else None
+
+    # ── Guild memberships ─────────────────────────────────────────
+
+    async def upsert_user_guilds(
+        self, user_id: int, guilds: list[dict],
+    ) -> None:
+        """Replace cached guilds for this user. Items: `{id, name?, icon_url?}`.
+        Replace strategy keeps user_guilds in sync with the current
+        Discord state — if user leaves a guild, the row goes away on
+        next login."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM user_guilds WHERE user_id=$1", user_id,
+            )
+            if not guilds:
+                return
+            await conn.executemany(
+                "INSERT INTO user_guilds (user_id, guild_id, guild_name, guild_icon) "
+                "VALUES ($1, $2, $3, $4)",
+                [
+                    (user_id, g["id"], g.get("name"), g.get("icon_url"))
+                    for g in guilds
+                ],
+            )
+
+    async def get_user_guilds(self, user_id: int) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT guild_id AS id, guild_name AS name, "
+                "       guild_icon AS icon_url "
+                "FROM user_guilds WHERE user_id=$1 "
+                "ORDER BY refreshed_at DESC",
+                user_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def user_in_guild(self, user_id: int, guild_id: str) -> bool:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM user_guilds WHERE user_id=$1 AND guild_id=$2",
+                user_id, guild_id,
+            )
+        return row is not None
 
     # ── API tokens ────────────────────────────────────────────────
 
@@ -1316,7 +429,6 @@ class PostgresStore:
         return row["id"]
 
     async def list_api_tokens(self, user_id: int) -> list[dict]:
-        """Active tokens for a user, newest first. No hash, no plaintext."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, name, prefix, scopes, "
@@ -1329,13 +441,6 @@ class PostgresStore:
         return [dict(r) for r in rows]
 
     async def candidates_by_prefix(self, prefix: str) -> list[dict]:
-        """Return active tokens whose prefix matches.
-
-        Lookup in two steps (prefix narrow + bcrypt verify) — see
-        `user_by_api_token` in api/auth_token.py. Prefix is 8 chars
-        from a 62-char alphabet → ~218 trillion possibilities, so the
-        list is almost always 0 or 1 row.
-        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, user_id, token_hash, scopes "
@@ -1346,7 +451,6 @@ class PostgresStore:
         return [dict(r) for r in rows]
 
     async def touch_api_token(self, token_id: int) -> None:
-        """Bump last_used. Called from auth path; fire-and-forget."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE api_tokens SET last_used=NOW() WHERE id=$1",
@@ -1362,209 +466,1560 @@ class PostgresStore:
             )
         return result.startswith("UPDATE ") and not result.endswith("0")
 
-    # ── Chapter progress ─────────────────────────────────────────
+    # ── Material ──────────────────────────────────────────────────
 
-    async def set_chapter_progress(
-        self, chapter_id: int, *, stage: str, index: int, total: int,
-    ) -> None:
-        """Persist the latest pipeline progress for a chapter.
-
-        Called by the worker after each PageDone. UI reads via
-        get_chapter_progress to draw the running progress bar; the
-        value survives an API restart because it lives on the row,
-        not in a transient event buffer.
-        """
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE chapters SET "
-                "  progress_stage=$1, progress_index=$2, progress_total=$3 "
-                "WHERE id=$4",
-                stage, index, total, chapter_id,
-            )
-
-    async def get_chapter_progress(self, chapter_id: int) -> dict | None:
+    async def get_or_create_source_material(
+        self,
+        *,
+        source:       str,
+        upstream_ref: str,
+        title:        str,
+        cover_url:    str | None = None,
+        description:  str | None = None,
+        author:       str | None = None,
+        status:       str | None = None,
+        languages:    list[str] | None = None,
+        title_native: str | None = None,
+        title_alt:    list[str] | None = None,
+        cross_refs:   dict | None = None,
+        nsfw:         bool = False,
+        imported_by:  int | None = None,
+    ) -> int:
+        """Cross-user dedup on (source, upstream_ref). Display snapshot
+        is first-write-wins; ON CONFLICT DO NOTHING leaves existing
+        rows untouched. A later background job may refresh metadata."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT progress_stage AS stage, "
-                "       progress_index AS page_index, "
-                "       progress_total AS page_total "
-                "FROM chapters WHERE id=$1",
-                chapter_id,
+                "INSERT INTO materials ("
+                "  imported_by, origin, source, upstream_ref, "
+                "  title, cover_url, description, author, status, "
+                "  languages, title_native, title_alt, cross_refs, nsfw"
+                ") VALUES ($1, 'source', $2, $3, $4, $5, $6, $7, $8, "
+                "          $9, $10, $11, $12::jsonb, $13) "
+                "ON CONFLICT (source, upstream_ref) "
+                "  WHERE source IS NOT NULL DO UPDATE "
+                "  SET source = EXCLUDED.source "  # no-op, just to return id
+                "RETURNING id",
+                imported_by, source, upstream_ref, title, cover_url,
+                description, author, status,
+                list(languages or []), title_native, list(title_alt or []),
+                json.dumps(cross_refs) if cross_refs else None, nsfw,
             )
-        if row is None or row["stage"] is None:
-            return None
-        return dict(row)
+        return row["id"]
 
-    # ── Chapter archive state ─────────────────────────────────────
-
-    async def set_prepared_done(self, chapter_id: int, page_count: int) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE chapters SET page_count=$1, rendered=FALSE WHERE id=$2",
-                page_count, chapter_id,
-            )
-
-    async def set_rendered(
+    async def create_local_material(
         self,
-        chapter_id: int,
-        rendered: bool,
         *,
-        page_count: int | None = None,
-    ) -> None:
+        origin:       str,  # 'extension' | 'upload'
+        title:        str,
+        cover_url:    str | None = None,
+        description:  str | None = None,
+        author:       str | None = None,
+        nsfw:         bool = False,
+        imported_by:  int | None = None,
+    ) -> int:
+        if origin not in ("extension", "upload"):
+            raise ValueError(f"create_local_material origin invalid: {origin!r}")
         async with self._pool.acquire() as conn:
-            if page_count is None:
-                await conn.execute(
-                    "UPDATE chapters SET rendered=$1 WHERE id=$2",
-                    rendered, chapter_id,
-                )
-            else:
-                await conn.execute(
-                    "UPDATE chapters SET rendered=$1, page_count=$2 WHERE id=$3",
-                    rendered, page_count, chapter_id,
-                )
+            row = await conn.fetchrow(
+                "INSERT INTO materials ("
+                "  imported_by, origin, title, cover_url, description, "
+                "  author, nsfw"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                imported_by, origin, title, cover_url, description, author, nsfw,
+            )
+        return row["id"]
 
-    async def set_archive(
-        self, chapter_id: int, backend: str, locator: str,
+    async def get_material(self, material_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_MATERIAL} FROM materials WHERE id=$1",
+                material_id,
+            ))
+
+    async def update_material_metadata(
+        self, material_id: int,
+        *,
+        title:        str | None = None,
+        cover_url:    str | None = None,
+        description:  str | None = None,
+        nsfw:         bool | None = None,
     ) -> None:
-        """Persist where this chapter's render archive lives.
-
-        Called by the render worker right before set_rendered(True). The
-        API uses these to dispatch URL build through the right backend.
-        """
+        sets: list[str] = []
+        args: list = []
+        if title is not None:
+            args.append(title);       sets.append(f"title=${len(args)}")
+        if cover_url is not None:
+            args.append(cover_url);   sets.append(f"cover_url=${len(args)}")
+        if description is not None:
+            args.append(description); sets.append(f"description=${len(args)}")
+        if nsfw is not None:
+            args.append(nsfw);        sets.append(f"nsfw=${len(args)}")
+        if not sets:
+            return
+        args.append(material_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE chapters SET archive_backend=$1, archive_locator=$2, "
-                "rendered_at=NOW() WHERE id=$3",
-                backend, locator, chapter_id,
+                f"UPDATE materials SET {', '.join(sets)} WHERE id=${len(args)}",
+                *args,
             )
 
-    async def list_prunable_chapters(self, older_than_days: int) -> list[dict]:
-        """Chapters whose intermediate cache (prepared.bnl + masks.npz) can
-        be deleted to free disk.
+    async def delete_material(self, material_id: int) -> None:
+        """Cascades through chapters → drafts/translations → bubbles
+        etc. via FK ON DELETE CASCADE. Blob cleanup is the caller's
+        job (route layer queries chapter locators before delete)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM materials WHERE id=$1", material_id,
+            )
 
-        Criteria: rendered=TRUE and not touched in `older_than_days`.
-        The render archive itself is not touched — only the cache files
-        used to skip re-prepare/re-mask on a redo.
-        """
+    # ── Cross-source linking (community-voted) ────────────────────
+
+    async def cast_material_link_vote(
+        self, voter_id: int, material_a_id: int, material_b_id: int,
+        vote: int,
+    ) -> None:
+        if vote not in (-1, 1):
+            raise ValueError(f"vote must be ±1, got {vote}")
+        a, b = _canonical_pair(material_a_id, material_b_id)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO material_link_votes "
+                "  (material_a_id, material_b_id, voter_id, vote) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (material_a_id, material_b_id, voter_id) DO UPDATE "
+                "  SET vote=EXCLUDED.vote, voted_at=NOW()",
+                a, b, voter_id, vote,
+            )
+
+    async def remove_material_link_vote(
+        self, voter_id: int, material_a_id: int, material_b_id: int,
+    ) -> None:
+        a, b = _canonical_pair(material_a_id, material_b_id)
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM material_link_votes "
+                "WHERE material_a_id=$1 AND material_b_id=$2 AND voter_id=$3",
+                a, b, voter_id,
+            )
+
+    async def get_material_link_score(
+        self, material_a_id: int, material_b_id: int,
+    ) -> tuple[int, int]:
+        a, b = _canonical_pair(material_a_id, material_b_id)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                # Live aggregation — materialized view may lag.
+                "SELECT COALESCE(SUM(vote), 0)::INTEGER AS score, "
+                "       COUNT(*)::INTEGER AS total "
+                "FROM material_link_votes "
+                "WHERE material_a_id=$1 AND material_b_id=$2",
+                a, b,
+            )
+        return (int(row["score"] or 0), int(row["total"] or 0))
+
+    async def refresh_material_links(self) -> None:
+        async with self._pool.acquire() as conn:
+            # CONCURRENTLY requires the unique index we created;
+            # falls back to non-concurrent if it's the first refresh.
+            try:
+                await conn.execute(
+                    "REFRESH MATERIALIZED VIEW CONCURRENTLY material_links"
+                )
+            except asyncpg.exceptions.FeatureNotSupportedError:
+                await conn.execute("REFRESH MATERIALIZED VIEW material_links")
+
+    # ── Chapter ───────────────────────────────────────────────────
+
+    async def create_chapter(
+        self,
+        material_id:  int,
+        number:       str,
+        *,
+        label:        str | None = None,
+        upstream_url: str | None = None,
+        pages_origin: str = "remote",
+    ) -> int:
+        if pages_origin not in ("remote", "local"):
+            raise ValueError(
+                f"pages_origin must be remote|local, got {pages_origin!r}"
+            )
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Advisory xact lock on material to serialize position
+            # assignment within a single material's chapters.
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", material_id,
+            )
+            pos = await _resolve_chapter_position(conn, material_id, number)
+            row = await conn.fetchrow(
+                "INSERT INTO chapters ("
+                "  material_id, position, number, label, upstream_url, pages_origin"
+                ") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                material_id, pos, number, label, upstream_url, pages_origin,
+            )
+        return row["id"]
+
+    async def get_chapter(self, chapter_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_CHAPTER} FROM chapters WHERE id=$1",
+                chapter_id,
+            ))
+
+    async def list_chapters(self, material_id: int) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id AS chapter_id, project_id "
-                "FROM chapters "
-                "WHERE rendered = TRUE "
-                "  AND updated_at < NOW() - make_interval(days => $1) "
-                "ORDER BY updated_at",
-                older_than_days,
+                f"SELECT {_TS_CHAPTER} FROM chapters "
+                "WHERE material_id=$1 ORDER BY position",
+                material_id,
             )
         return [dict(r) for r in rows]
 
-    async def get_chapter_render_state(self, chapter_id: int) -> dict | None:
+    async def delete_chapter(self, chapter_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM chapters WHERE id=$1", chapter_id,
+            )
+        return result.startswith("DELETE ") and not result.endswith("0")
+
+    async def set_chapter_prepared(
+        self,
+        chapter_id: int,
+        *,
+        prepared_hash: str,
+        prepared_backend: str,
+        prepared_locator: str,
+        page_count: int,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chapters SET "
+                "  prepared_hash=$1, prepared_backend=$2, prepared_locator=$3, "
+                "  page_count=$4 "
+                "WHERE id=$5",
+                prepared_hash, prepared_backend, prepared_locator,
+                page_count, chapter_id,
+            )
+
+    async def set_chapter_masks(
+        self, chapter_id: int,
+        *, masks_backend: str, masks_locator: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chapters SET masks_backend=$1, masks_locator=$2 "
+                "WHERE id=$3",
+                masks_backend, masks_locator, chapter_id,
+            )
+
+    async def find_chapter_by_prepared_hash(
+        self, prepared_hash: str,
+    ) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_CHAPTER} FROM chapters "
+                "WHERE prepared_hash=$1 AND prepared_locator IS NOT NULL "
+                "LIMIT 1",
+                prepared_hash,
+            ))
+
+    # ── Scan output (chapter-level) ───────────────────────────────
+
+    async def save_bubbles(
+        self, chapter_id: int, bubbles: list[dict],
+    ) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM bubbles WHERE chapter_id=$1", chapter_id,
+            )
+            if not bubbles:
+                return
+            await conn.executemany(
+                "INSERT INTO bubbles "
+                "  (chapter_id, page_index, bubble_idx, source_text, "
+                "   confidence, shape_kind) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                [
+                    (chapter_id, b["page_index"], b["bubble_idx"],
+                     b["source_text"], b["confidence"],
+                     b.get("shape_kind", "dialogue"))
+                    for b in bubbles
+                ],
+            )
+
+    async def get_bubbles(self, chapter_id: int) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT page_index, bubble_idx, source_text, confidence, shape_kind "
+                "FROM bubbles WHERE chapter_id=$1 "
+                "ORDER BY page_index, bubble_idx",
+                chapter_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def has_bubbles(self, chapter_id: int) -> bool:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT rendered, page_count FROM chapters WHERE id=$1",
+                "SELECT 1 FROM bubbles WHERE chapter_id=$1 LIMIT 1",
+                chapter_id,
+            )
+        return row is not None
+
+    async def save_geometry(
+        self, chapter_id: int, pages: list[dict],
+    ) -> None:
+        """`pages` items: { page_index, width, height, bubbles: [...] }
+        where each bubble has page_index, bubble_idx, polygon, fit_box,
+        erase_box, text_box. Atomic replace per chapter."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM bubble_geometry WHERE chapter_id=$1", chapter_id,
+            )
+            await conn.execute(
+                "DELETE FROM page_geometry WHERE chapter_id=$1", chapter_id,
+            )
+            for page in pages:
+                await conn.execute(
+                    "INSERT INTO page_geometry "
+                    "  (chapter_id, page_index, width, height) "
+                    "VALUES ($1, $2, $3, $4)",
+                    chapter_id, page["page_index"],
+                    page["width"], page["height"],
+                )
+                bubbles = page.get("bubbles", [])
+                if bubbles:
+                    await conn.executemany(
+                        "INSERT INTO bubble_geometry "
+                        "  (chapter_id, page_index, bubble_idx, "
+                        "   polygon, fit_box, erase_box, text_box) "
+                        "VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, "
+                        "        $6::jsonb, $7::jsonb)",
+                        [
+                            (chapter_id, b["page_index"], b["bubble_idx"],
+                             json.dumps(b["polygon"]),
+                             json.dumps(b["fit_box"]),
+                             json.dumps(b["erase_box"]),
+                             json.dumps(b["text_box"]))
+                            for b in bubbles
+                        ],
+                    )
+
+    async def get_geometry(self, chapter_id: int) -> list[dict]:
+        """Returns one entry per page: { page_index, width, height,
+        bubbles: [...] }. Stable order for deterministic render."""
+        async with self._pool.acquire() as conn:
+            pages = await conn.fetch(
+                "SELECT page_index, width, height "
+                "FROM page_geometry WHERE chapter_id=$1 "
+                "ORDER BY page_index",
+                chapter_id,
+            )
+            bubbles = await conn.fetch(
+                "SELECT page_index, bubble_idx, polygon, fit_box, "
+                "       erase_box, text_box "
+                "FROM bubble_geometry WHERE chapter_id=$1 "
+                "ORDER BY page_index, bubble_idx",
+                chapter_id,
+            )
+        by_page: dict[int, list[dict]] = {}
+        for b in bubbles:
+            d = dict(b)
+            for k in ("polygon", "fit_box", "erase_box", "text_box"):
+                if isinstance(d[k], str):
+                    d[k] = json.loads(d[k])
+            by_page.setdefault(d["page_index"], []).append(d)
+        return [
+            {
+                "page_index": p["page_index"],
+                "width":      p["width"],
+                "height":     p["height"],
+                "bubbles":    by_page.get(p["page_index"], []),
+            }
+            for p in pages
+        ]
+
+    # ── Translation drafts (Layer 2) ──────────────────────────────
+
+    async def find_reusable_draft(
+        self,
+        *,
+        chapter_id:    int,
+        source_lang:   str,
+        target_lang:   str,
+        glossary_fp:   str,
+        viewer_id:     int,
+        viewer_guilds: list[str],
+    ) -> dict | None:
+        """Cache lookup with visibility gate. Returns None if no draft
+        matches the key, or if all matches are private/taken-down/
+        out-of-scope for the viewer.
+
+        Visibility rules:
+          - 'guild':      scope_guild_id in viewer_guilds
+          - 'all_guilds': creator shares ≥1 guild with viewer
+          - 'private':    excluded by unique-cache index
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                SELECT {_TS_DRAFT}
+                FROM   translation_drafts d
+                WHERE  d.chapter_id=$1
+                  AND  d.source_lang=$2
+                  AND  d.target_lang=$3
+                  AND  d.glossary_fp=$4
+                  AND  d.visibility != 'private'
+                  AND  d.takedown_at IS NULL
+                  AND  (
+                      -- viewer is creator
+                      d.created_by = $5
+                      -- guild scope matches viewer's guilds
+                      OR (d.visibility = 'guild'
+                          AND d.scope_guild_id = ANY($6::text[]))
+                      -- all_guilds: creator shares a guild with viewer
+                      OR (d.visibility = 'all_guilds' AND EXISTS (
+                          SELECT 1 FROM user_guilds ug
+                          WHERE ug.user_id = d.created_by
+                            AND ug.guild_id = ANY($6::text[])
+                      ))
+                  )
+                ORDER BY d.state = 'done' DESC, d.created_at DESC
+                LIMIT 1
+                """,
+                chapter_id, source_lang, target_lang, glossary_fp,
+                viewer_id, viewer_guilds,
+            )
+        return _row_dict(row)
+
+    async def create_draft(
+        self,
+        *,
+        chapter_id:     int,
+        source_lang:    str,
+        target_lang:    str,
+        glossary_fp:    str,
+        llm_model:      str,
+        created_by:     int,
+        visibility:     str,
+        scope_guild_id: str | None,
+    ) -> int:
+        if visibility not in ("private", "guild", "all_guilds"):
+            raise ValueError(f"invalid visibility: {visibility!r}")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO translation_drafts ("
+                "  chapter_id, source_lang, target_lang, glossary_fp, "
+                "  llm_model, created_by, visibility, scope_guild_id, state"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') "
+                "RETURNING id",
+                chapter_id, source_lang, target_lang, glossary_fp,
+                llm_model, created_by, visibility, scope_guild_id,
+            )
+        return row["id"]
+
+    async def get_draft(self, draft_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_DRAFT} FROM translation_drafts WHERE id=$1",
+                draft_id,
+            ))
+
+    async def update_draft_state(
+        self,
+        draft_id: int,
+        *,
+        state:    str,
+        error:    str | None = None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translation_drafts "
+                "SET state=$1, error_message=$2 "
+                "WHERE id=$3",
+                state, error, draft_id,
+            )
+
+    async def set_draft_progress(
+        self, draft_id: int, *, stage: str, index: int, total: int,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translation_drafts SET "
+                "  progress_stage=$1, progress_index=$2, progress_total=$3 "
+                "WHERE id=$4",
+                stage, index, total, draft_id,
+            )
+
+    async def save_draft_bubbles(
+        self, draft_id: int, bubbles: list[dict],
+    ) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM translation_draft_bubbles WHERE draft_id=$1",
+                draft_id,
+            )
+            if not bubbles:
+                return
+            await conn.executemany(
+                "INSERT INTO translation_draft_bubbles "
+                "  (draft_id, page_index, bubble_idx, translated_text, kind) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                [
+                    (draft_id, b["page_index"], b["bubble_idx"],
+                     b["translated_text"], b.get("kind", "dialogue"))
+                    for b in bubbles
+                ],
+            )
+
+    async def get_draft_bubbles(self, draft_id: int) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT page_index, bubble_idx, translated_text, kind "
+                "FROM translation_draft_bubbles WHERE draft_id=$1 "
+                "ORDER BY page_index, bubble_idx",
+                draft_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def save_draft_brief(
+        self, draft_id: int, brief: dict,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO draft_briefs ("
+                "  draft_id, brief_json, summary, terms_text, "
+                "  facts_text, rules_text, updated_at"
+                ") VALUES ($1, $2::jsonb, $3, $4, $5, $6, NOW()) "
+                "ON CONFLICT (draft_id) DO UPDATE SET "
+                "  brief_json=EXCLUDED.brief_json, "
+                "  summary=EXCLUDED.summary, "
+                "  terms_text=EXCLUDED.terms_text, "
+                "  facts_text=EXCLUDED.facts_text, "
+                "  rules_text=EXCLUDED.rules_text, "
+                "  updated_at=NOW()",
+                draft_id, json.dumps(brief, ensure_ascii=False),
+                brief.get("summary"), brief.get("terms_text"),
+                brief.get("facts_text"), brief.get("rules_text"),
+            )
+
+    async def get_draft_brief(self, draft_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT brief_json FROM draft_briefs WHERE draft_id=$1",
+                draft_id,
+            )
+        if row is None:
+            return None
+        raw = row["brief_json"]
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    async def takedown_draft(
+        self, draft_id: int, reason: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translation_drafts "
+                "SET takedown_at=NOW(), takedown_reason=$2 "
+                "WHERE id=$1",
+                draft_id, reason,
+            )
+
+    # ── Translations (Layer 3, per-user) ──────────────────────────
+
+    async def get_or_create_translation(
+        self,
+        *,
+        chapter_id:  int,
+        owner_id:    int,
+        target_lang: str,
+        draft_id:    int | None,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO translations "
+                "  (chapter_id, owner_id, target_lang, draft_id) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (chapter_id, owner_id, target_lang) DO UPDATE "
+                "  SET draft_id=COALESCE(EXCLUDED.draft_id, translations.draft_id) "
+                "RETURNING id",
+                chapter_id, owner_id, target_lang, draft_id,
+            )
+        return row["id"]
+
+    async def get_translation(self, translation_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                f"SELECT {_TS_TRANSLATION} FROM translations WHERE id=$1",
+                translation_id,
+            ))
+
+    async def list_translations_for_chapters(
+        self,
+        chapter_ids:   list[int],
+        viewer_id:     int,
+        viewer_guilds: list[str],
+    ) -> dict[int, list[dict]]:
+        """Bulk overlay for chapter list views.
+
+        Visibility filter mirrors `find_reusable_draft` but for whole
+        translations: viewer sees their own + guild-shared via the
+        draft pointer + drafts with all_guilds visibility whose creator
+        shares a guild with the viewer.
+        """
+        if not chapter_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    t.id, t.chapter_id, t.owner_id, t.target_lang,
+                    t.draft_id, t.in_feed, t.feed_guild_id,
+                    COALESCE(d.state, 'done') AS state,
+                    u.display_name AS creator_name,
+                    (t.archive_locator IS NULL AND t.draft_id IS NOT NULL) AS uses_default_render
+                FROM translations t
+                LEFT JOIN translation_drafts d ON d.id = t.draft_id
+                LEFT JOIN users u ON u.id = t.owner_id
+                WHERE t.chapter_id = ANY($1::bigint[])
+                  AND t.takedown_at IS NULL
+                  AND (
+                      t.owner_id = $2
+                      OR d.visibility = 'guild' AND d.scope_guild_id = ANY($3::text[])
+                      OR d.visibility = 'all_guilds' AND EXISTS (
+                          SELECT 1 FROM user_guilds ug
+                          WHERE ug.user_id = d.created_by
+                            AND ug.guild_id = ANY($3::text[])
+                      )
+                  )
+                ORDER BY t.chapter_id, t.created_at DESC
+                """,
+                chapter_ids, viewer_id, viewer_guilds,
+            )
+        out: dict[int, list[dict]] = {cid: [] for cid in chapter_ids}
+        for r in rows:
+            out[r["chapter_id"]].append(dict(r))
+        return out
+
+    async def update_translation_archive(
+        self,
+        translation_id: int,
+        *,
+        archive_backend: str,
+        archive_locator: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translations "
+                "SET archive_backend=$1, archive_locator=$2, rendered_at=NOW() "
+                "WHERE id=$3",
+                archive_backend, archive_locator, translation_id,
+            )
+
+    async def update_translation_feed(
+        self,
+        translation_id: int,
+        *,
+        in_feed:        bool,
+        feed_guild_id:  str | None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translations "
+                "SET in_feed=$1, feed_guild_id=$2 "
+                "WHERE id=$3",
+                in_feed, feed_guild_id, translation_id,
+            )
+
+    async def takedown_translation(
+        self, translation_id: int, reason: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translations "
+                "SET takedown_at=NOW(), takedown_reason=$2 "
+                "WHERE id=$1",
+                translation_id, reason,
+            )
+
+    async def upsert_translation_edit(
+        self, translation_id: int,
+        page_index: int, bubble_idx: int, edited_text: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO translation_edits "
+                "  (translation_id, page_index, bubble_idx, edited_text) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (translation_id, page_index, bubble_idx) DO UPDATE "
+                "  SET edited_text=EXCLUDED.edited_text, edited_at=NOW()",
+                translation_id, page_index, bubble_idx, edited_text,
+            )
+
+    async def get_translation_edits(
+        self, translation_id: int,
+    ) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT page_index, bubble_idx, edited_text "
+                "FROM translation_edits WHERE translation_id=$1 "
+                "ORDER BY page_index, bubble_idx",
+                translation_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def delete_translation_edit(
+        self, translation_id: int, page_index: int, bubble_idx: int,
+    ) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM translation_edits "
+                "WHERE translation_id=$1 AND page_index=$2 AND bubble_idx=$3",
+                translation_id, page_index, bubble_idx,
+            )
+        return result.startswith("DELETE ") and not result.endswith("0")
+
+    # ── Library entries ───────────────────────────────────────────
+
+    async def list_library_entries(self, user_id: int) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            entries = await conn.fetch(
+                f"SELECT {_TS_LIBRARY_ENTRY} FROM library_entries "
+                "WHERE user_id=$1 "
+                "ORDER BY COALESCE(last_read_at, bookmarked_at, created_at) DESC",
+                user_id,
+            )
+            if not entries:
+                return []
+            ids = [e["id"] for e in entries]
+            links = await conn.fetch(
+                "SELECT entry_id, material_id, link_origin, "
+                f"  {_ts('linked_at')} "
+                "FROM library_materials WHERE entry_id = ANY($1::bigint[])",
+                ids,
+            )
+        by_entry: dict[int, list[dict]] = {i: [] for i in ids}
+        for l in links:
+            d = dict(l)
+            eid = d.pop("entry_id")
+            by_entry.setdefault(eid, []).append(d)
+        out: list[dict] = []
+        for e in entries:
+            d = dict(e)
+            raw = d.get("last_chapter_ref")
+            if isinstance(raw, str):
+                d["last_chapter_ref"] = json.loads(raw)
+            d["materials"] = by_entry.get(d["id"], [])
+            out.append(d)
+        return out
+
+    async def get_library_entry(
+        self, entry_id: int, user_id: int,
+    ) -> dict | None:
+        async with self._pool.acquire() as conn:
+            entry = await conn.fetchrow(
+                f"SELECT {_TS_LIBRARY_ENTRY} FROM library_entries "
+                "WHERE id=$1 AND user_id=$2",
+                entry_id, user_id,
+            )
+            if entry is None:
+                return None
+            links = await conn.fetch(
+                "SELECT material_id, link_origin, "
+                f"  {_ts('linked_at')} "
+                "FROM library_materials WHERE entry_id=$1",
+                entry_id,
+            )
+        d = dict(entry)
+        raw = d.get("last_chapter_ref")
+        if isinstance(raw, str):
+            d["last_chapter_ref"] = json.loads(raw)
+        d["materials"] = [dict(l) for l in links]
+        return d
+
+    async def create_library_entry(
+        self,
+        *,
+        user_id:             int,
+        title:               str,
+        cover_url:           str | None,
+        primary_material_id: int,
+    ) -> int:
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO library_entries "
+                "  (user_id, title, cover_url, primary_material_id) "
+                "VALUES ($1, $2, $3, $4) RETURNING id",
+                user_id, title, cover_url, primary_material_id,
+            )
+            entry_id = row["id"]
+            await conn.execute(
+                "INSERT INTO library_materials "
+                "  (entry_id, material_id, user_id, link_origin) "
+                "VALUES ($1, $2, $3, 'primary')",
+                entry_id, primary_material_id, user_id,
+            )
+        return entry_id
+
+    async def update_library_entry(
+        self,
+        entry_id: int, user_id: int,
+        *,
+        title:            str | None = None,
+        bookmarked:       bool | None = None,
+        last_read_at:     str | None = None,
+        last_chapter_ref: dict | None = None,
+    ) -> None:
+        sets: list[str] = []
+        args: list = []
+        if title is not None:
+            args.append(title); sets.append(f"title=${len(args)}")
+        if bookmarked is not None:
+            args.append(bookmarked); sets.append(f"bookmarked=${len(args)}")
+            if bookmarked:
+                sets.append("bookmarked_at=NOW()")
+            else:
+                sets.append("bookmarked_at=NULL")
+        if last_read_at is not None:
+            args.append(last_read_at)
+            sets.append(f"last_read_at=${len(args)}::timestamptz")
+        if last_chapter_ref is not None:
+            args.append(json.dumps(last_chapter_ref))
+            sets.append(f"last_chapter_ref=${len(args)}::jsonb")
+        if not sets:
+            return
+        args.extend([entry_id, user_id])
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE library_entries SET {', '.join(sets)} "
+                f"WHERE id=${len(args)-1} AND user_id=${len(args)}",
+                *args,
+            )
+
+    async def delete_library_entry(
+        self, entry_id: int, user_id: int,
+    ) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM library_entries WHERE id=$1 AND user_id=$2",
+                entry_id, user_id,
+            )
+        return result.startswith("DELETE ") and not result.endswith("0")
+
+    async def link_material_to_entry(
+        self,
+        *,
+        entry_id:    int,
+        material_id: int,
+        link_origin: str,
+        voter_id:    int,
+    ) -> None:
+        """Link the material + cast +1 votes on every (existing, new)
+        pair already in the entry. Multi-link → multiple vote rows."""
+        if link_origin not in ("primary", "auto", "manual"):
+            raise ValueError(f"invalid link_origin: {link_origin!r}")
+        async with self._pool.acquire() as conn, conn.transaction():
+            owner_row = await conn.fetchrow(
+                "SELECT user_id FROM library_entries WHERE id=$1", entry_id,
+            )
+            if owner_row is None:
+                raise ValueError(f"entry {entry_id} not found")
+            entry_owner = owner_row["user_id"]
+            existing = await conn.fetch(
+                "SELECT material_id FROM library_materials WHERE entry_id=$1",
+                entry_id,
+            )
+            await conn.execute(
+                "INSERT INTO library_materials "
+                "  (entry_id, material_id, user_id, link_origin) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (entry_id, material_id) DO NOTHING",
+                entry_id, material_id, entry_owner, link_origin,
+            )
+            for r in existing:
+                other = r["material_id"]
+                if other == material_id:
+                    continue
+                a, b = _canonical_pair(other, material_id)
+                await conn.execute(
+                    "INSERT INTO material_link_votes "
+                    "  (material_a_id, material_b_id, voter_id, vote) "
+                    "VALUES ($1, $2, $3, 1) "
+                    "ON CONFLICT (material_a_id, material_b_id, voter_id) "
+                    "  DO UPDATE SET vote=1, voted_at=NOW()",
+                    a, b, voter_id,
+                )
+
+    async def unlink_material_from_entry(
+        self,
+        *,
+        entry_id:    int,
+        material_id: int,
+        voter_id:    int,
+    ) -> None:
+        async with self._pool.acquire() as conn, conn.transaction():
+            siblings = await conn.fetch(
+                "SELECT material_id FROM library_materials "
+                "WHERE entry_id=$1 AND material_id != $2",
+                entry_id, material_id,
+            )
+            await conn.execute(
+                "DELETE FROM library_materials "
+                "WHERE entry_id=$1 AND material_id=$2",
+                entry_id, material_id,
+            )
+            for r in siblings:
+                a, b = _canonical_pair(r["material_id"], material_id)
+                await conn.execute(
+                    "DELETE FROM material_link_votes "
+                    "WHERE material_a_id=$1 AND material_b_id=$2 AND voter_id=$3",
+                    a, b, voter_id,
+                )
+
+    async def find_library_suggestion(
+        self,
+        *,
+        user_id:     int,
+        material_id: int,
+    ) -> dict | None:
+        """Suggestion ranking per RFC §7.4.1. Returns a dict
+        compatible with `LibrarySuggestionOut` or None."""
+        async with self._pool.acquire() as conn:
+            m = await conn.fetchrow(
+                "SELECT id, title, title_native, cross_refs "
+                "FROM materials WHERE id=$1",
+                material_id,
+            )
+            if m is None:
+                return None
+            in_lib = await conn.fetchrow(
+                "SELECT 1 FROM library_materials WHERE material_id=$1 "
+                "  AND entry_id IN ("
+                "    SELECT id FROM library_entries WHERE user_id=$2"
+                "  ) LIMIT 1",
+                material_id, user_id,
+            )
+            if in_lib is not None:
+                return None  # already linked, nothing to suggest
+
+            # Signal 1: cross_refs intersect
+            if m["cross_refs"]:
+                refs = m["cross_refs"]
+                if isinstance(refs, str):
+                    refs = json.loads(refs)
+                if isinstance(refs, dict) and refs:
+                    row = await conn.fetchrow(
+                        "SELECT le.id AS entry_id, le.title AS entry_title "
+                        "FROM library_entries le "
+                        "JOIN library_materials lm ON lm.entry_id=le.id "
+                        "JOIN materials m2 ON m2.id=lm.material_id "
+                        "WHERE le.user_id=$1 "
+                        "  AND m2.cross_refs IS NOT NULL "
+                        "  AND m2.cross_refs @> $2::jsonb "
+                        "LIMIT 1",
+                        user_id, json.dumps(refs),
+                    )
+                    if row:
+                        return {
+                            "entry_id":    row["entry_id"],
+                            "entry_title": row["entry_title"],
+                            "confidence":  "high",
+                            "signal":      "cross_refs",
+                            "score":       None,
+                        }
+
+            # Signal 2/4: community vote score (high if ≥3, low if 1-2).
+            # Reads live `material_link_votes` so a fresh vote (e.g. by
+            # link_material_to_entry within the same session) is visible
+            # without needing REFRESH MATERIALIZED VIEW.
+            row = await conn.fetchrow(
+                """
+                SELECT le.id AS entry_id, le.title AS entry_title,
+                       agg.score AS score
+                FROM library_entries le
+                JOIN library_materials lm ON lm.entry_id=le.id
+                JOIN LATERAL (
+                    SELECT SUM(vote)::INTEGER AS score
+                    FROM material_link_votes
+                    WHERE (material_a_id = lm.material_id AND material_b_id = $2)
+                       OR (material_b_id = lm.material_id AND material_a_id = $2)
+                ) agg ON agg.score >= 1
+                WHERE le.user_id=$1
+                ORDER BY agg.score DESC
+                LIMIT 1
+                """,
+                user_id, material_id,
+            )
+            if row:
+                s = int(row["score"])
+                if s >= 3:
+                    return {
+                        "entry_id":    row["entry_id"],
+                        "entry_title": row["entry_title"],
+                        "confidence":  "high",
+                        "signal":      "vote_high",
+                        "score":       s,
+                    }
+                # Defer the low-score answer below in case signal 3 wins.
+
+            # Signal 3: title_native case-fold match
+            if m["title_native"]:
+                row3 = await conn.fetchrow(
+                    "SELECT le.id AS entry_id, le.title AS entry_title "
+                    "FROM library_entries le "
+                    "JOIN library_materials lm ON lm.entry_id=le.id "
+                    "JOIN materials m2 ON m2.id=lm.material_id "
+                    "WHERE le.user_id=$1 "
+                    "  AND m2.id != $2 "
+                    "  AND lower(m2.title_native) = lower($3) "
+                    "LIMIT 1",
+                    user_id, material_id, m["title_native"],
+                )
+                if row3:
+                    return {
+                        "entry_id":    row3["entry_id"],
+                        "entry_title": row3["entry_title"],
+                        "confidence":  "medium",
+                        "signal":      "title_native",
+                        "score":       None,
+                    }
+
+            # Signal 4: low-confidence vote (deferred from above)
+            if row:
+                s = int(row["score"])
+                if 1 <= s <= 2:
+                    return {
+                        "entry_id":    row["entry_id"],
+                        "entry_title": row["entry_title"],
+                        "confidence":  "low",
+                        "signal":      "vote_low",
+                        "score":       s,
+                    }
+        return None
+
+    async def reject_library_suggestion(
+        self,
+        *,
+        voter_id:    int,
+        material_id: int,
+        candidate_material_id: int,
+    ) -> None:
+        """User said "không phải cùng manga" → -1 vote on the pair."""
+        await self.cast_material_link_vote(
+            voter_id, material_id, candidate_material_id, vote=-1,
+        )
+
+    # ── Feed (Hội Mê Truyện, guild-scoped) ───────────────────────
+
+    async def list_feed_entries(
+        self,
+        *,
+        guild_id:  str,
+        viewer_id: int,
+        limit:     int = 50,
+        before:    str | None = None,
+    ) -> list[dict]:
+        """Translations with in_feed=TRUE scoped to the guild. Caller
+        already enforced viewer is a member of guild_id.
+
+        Two visibility paths feed the result:
+          - feed_guild_id = guild_id (explicit publish to this guild)
+          - feed_guild_id IS NULL  AND the translation's draft has
+            visibility='all_guilds' AND the creator belongs to guild_id
+            (publish to every guild creator is in).
+        """
+        cond_before = ""
+        args: list = [guild_id, limit]
+        if before is not None:
+            args.append(before)
+            cond_before = f"AND t.created_at < ${len(args)}::timestamptz"
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    t.id              AS translation_id,
+                    t.chapter_id,
+                    c.number          AS chapter_number,
+                    c.label           AS chapter_label,
+                    m.id              AS material_id,
+                    m.title           AS material_title,
+                    m.cover_url       AS material_cover,
+                    t.target_lang,
+                    t.owner_id        AS creator_id,
+                    u.display_name    AS creator_name,
+                    {_ts('t.created_at')}
+                FROM translations t
+                JOIN chapters  c ON c.id = t.chapter_id
+                JOIN materials m ON m.id = c.material_id
+                LEFT JOIN users u ON u.id = t.owner_id
+                LEFT JOIN translation_drafts d ON d.id = t.draft_id
+                WHERE t.in_feed = TRUE
+                  AND t.takedown_at IS NULL
+                  AND (
+                    t.feed_guild_id = $1
+                    OR (
+                      t.feed_guild_id IS NULL
+                      AND d.visibility = 'all_guilds'
+                      AND EXISTS (
+                        SELECT 1 FROM user_guilds ug
+                        WHERE ug.user_id = t.owner_id AND ug.guild_id = $1
+                      )
+                    )
+                  )
+                {cond_before}
+                ORDER BY t.created_at DESC
+                LIMIT $2
+                """,
+                *args,
+            )
+        return [dict(r) for r in rows]
+
+    # ── Glossary ─────────────────────────────────────────────────
+
+    async def list_user_glossary(
+        self,
+        user_id: int,
+        source_lang: str | None = None,
+        target_lang: str | None = None,
+    ) -> list[dict]:
+        clauses = ["owner_id=$1"]
+        args: list = [user_id]
+        if source_lang is not None:
+            args.append(source_lang); clauses.append(f"source_lang=${len(args)}")
+        if target_lang is not None:
+            args.append(target_lang); clauses.append(f"target_lang=${len(args)}")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, source_lang, target_lang, source_term, "
+                "       target_term, notes "
+                f"FROM user_glossary WHERE {' AND '.join(clauses)} "
+                "ORDER BY source_term",
+                *args,
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_user_glossary_term(
+        self,
+        user_id: int,
+        source_lang: str, target_lang: str,
+        source_term: str, target_term: str,
+        notes: str | None = None,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO user_glossary "
+                "  (owner_id, source_lang, target_lang, source_term, "
+                "   target_term, notes) "
+                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "ON CONFLICT (owner_id, source_lang, target_lang, source_term) "
+                "  DO UPDATE SET target_term=EXCLUDED.target_term, "
+                "                notes=EXCLUDED.notes "
+                "RETURNING id",
+                user_id, source_lang, target_lang,
+                source_term, target_term, notes,
+            )
+        return row["id"]
+
+    async def delete_user_glossary_term(
+        self, user_id: int, term_id: int,
+    ) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM user_glossary WHERE owner_id=$1 AND id=$2",
+                user_id, term_id,
+            )
+        return result.startswith("DELETE ") and not result.endswith("0")
+
+    async def compute_glossary_fingerprint(
+        self,
+        *,
+        user_id: int,
+        source_lang: str,
+        target_lang: str,
+        material_id: int | None,
+    ) -> str:
+        """Build the effective glossary signature for cache keying.
+
+        Composition (in order; user entries override community):
+            community_glossary WHERE material_id IS NULL  (global)
+            community_glossary WHERE material_id = $X     (material-scoped)
+            user_glossary                                  (overrides)
+
+        SHA256 of the deterministic 'src=tgt|src=tgt|...' string,
+        truncated to 16 hex chars. Two users with identical effective
+        glossary collide → cache hit.
+        """
+        import hashlib
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT source_term, target_term FROM (
+                    SELECT source_term, target_term, 1 AS prio
+                    FROM community_glossary
+                    WHERE source_lang=$1 AND target_lang=$2 AND material_id IS NULL
+                    UNION ALL
+                    SELECT source_term, target_term, 2 AS prio
+                    FROM community_glossary
+                    WHERE source_lang=$1 AND target_lang=$2 AND material_id=$3
+                    UNION ALL
+                    SELECT source_term, target_term, 3 AS prio
+                    FROM user_glossary
+                    WHERE source_lang=$1 AND target_lang=$2 AND owner_id=$4
+                ) g
+                ORDER BY source_term, prio DESC
+                """,
+                source_lang, target_lang, material_id, user_id,
+            )
+        # Take last entry per source_term so highest-priority override wins.
+        merged: dict[str, str] = {}
+        for r in rows:
+            merged[r["source_term"]] = r["target_term"]
+        sig = "|".join(f"{k}={v}" for k, v in sorted(merged.items()))
+        return hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+
+    # ── Quota ────────────────────────────────────────────────────
+
+    async def record_chapter_consume(
+        self,
+        *,
+        user_id: int,
+        translation_id: int,
+        kind: str,
+    ) -> None:
+        if kind not in ("draft_create", "render_create"):
+            raise ValueError(f"invalid consume kind: {kind!r}")
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO chapter_consumes "
+                "  (user_id, translation_id, kind) "
+                "VALUES ($1, $2, $3)",
+                user_id, translation_id, kind,
+            )
+
+    async def count_user_consumes_since(
+        self, user_id: int, seconds: int,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM chapter_consumes "
+                "WHERE user_id = $1 "
+                "  AND created_at >= NOW() - make_interval(secs => $2)",
+                user_id, seconds,
+            )
+        return int(row["n"]) if row else 0
+
+    # ── Tasks queue ──────────────────────────────────────────────
+
+    async def enqueue_task(
+        self,
+        *,
+        target_kind: str,
+        target_id:   int,
+        stage:       str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO tasks (target_kind, target_id, stage) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (target_kind, target_id, stage) DO NOTHING",
+                target_kind, target_id, stage,
+            )
+
+    async def claim_task(
+        self,
+        stage:     str,
+        worker_id: str,
+    ) -> tuple[str, int] | None:
+        """Atomically claim one pending task. Returns (target_kind,
+        target_id) or None.
+
+        FOR UPDATE SKIP LOCKED gives us a single-statement claim with
+        no race recheck. Tasks past MAX_TASK_ATTEMPTS are dead-lettered
+        and never re-claimed. Stale claims older than STALE_CLAIM_SECONDS
+        become re-claimable.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE tasks
+                SET    claimed_by = $1, claimed_at = NOW()
+                WHERE  ctid = (
+                    SELECT ctid FROM tasks
+                    WHERE  stage = $2
+                      AND  attempts < $3
+                      AND  (claimed_by IS NULL
+                            OR claimed_at < NOW() - INTERVAL '{STALE_CLAIM_SECONDS} seconds')
+                    ORDER  BY target_id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT  1
+                )
+                RETURNING target_kind, target_id
+                """,
+                worker_id, stage, MAX_TASK_ATTEMPTS,
+            )
+        if row is None:
+            return None
+        return (row["target_kind"], row["target_id"])
+
+    async def complete_task(
+        self,
+        target_kind: str, target_id: int,
+        stage: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM tasks "
+                "WHERE target_kind=$1 AND target_id=$2 AND stage=$3",
+                target_kind, target_id, stage,
+            )
+
+    async def advance_task(
+        self,
+        target_kind: str, target_id: int,
+        completed_stage: str, next_stage: str,
+        *,
+        next_target_kind: str | None = None,
+        next_target_id:   int | None = None,
+    ) -> None:
+        """Complete current stage + enqueue next in one txn.
+
+        The next stage may target a different kind (e.g. chapter scan
+        finishes → enqueue draft translate). Caller passes
+        next_target_* when the target shifts.
+        """
+        nk = next_target_kind if next_target_kind is not None else target_kind
+        ni = next_target_id   if next_target_id   is not None else target_id
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM tasks "
+                "WHERE target_kind=$1 AND target_id=$2 AND stage=$3",
+                target_kind, target_id, completed_stage,
+            )
+            await conn.execute(
+                "INSERT INTO tasks (target_kind, target_id, stage) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (target_kind, target_id, stage) DO NOTHING",
+                nk, ni, next_stage,
+            )
+
+    async def fail_task(
+        self,
+        target_kind: str, target_id: int,
+        stage: str, error: str,
+    ) -> None:
+        """Mark a task failed terminally — bump attempts to the cap so
+        it's never re-claimed. Operator must redo or delete."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET claimed_by=NULL, claimed_at=NULL, "
+                "  attempts=$1, last_error=$2 "
+                "WHERE target_kind=$3 AND target_id=$4 AND stage=$5",
+                MAX_TASK_ATTEMPTS, error, target_kind, target_id, stage,
+            )
+
+    async def requeue_task(
+        self,
+        target_kind: str, target_id: int,
+        stage: str, error: str,
+    ) -> None:
+        """Mark a task as transient-failed; bump attempts but release
+        the claim so the next worker can retry. Hitting MAX_TASK_ATTEMPTS
+        leaves the row dead-lettered (claimed_by stays NULL, attempts
+        won't decrease back to claimable)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE tasks SET claimed_by=NULL, claimed_at=NULL, "
+                "  attempts=attempts+1, last_error=$1 "
+                "WHERE target_kind=$2 AND target_id=$3 AND stage=$4",
+                error, target_kind, target_id, stage,
+            )
+
+    async def release_claims_by_prefix(self, prefix: str) -> int:
+        """Release every claim whose `claimed_by` starts with `prefix`.
+
+        Called on worker startup with the local hostname to clear ghost
+        claims left by a previous PID that died without graceful exit.
+        Returns the count released. Does not touch `attempts` — the
+        task was interrupted externally, not by stage-code exception.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE tasks SET claimed_by=NULL, claimed_at=NULL "
+                "WHERE claimed_by LIKE $1",
+                f"{prefix}%",
+            )
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except ValueError:
+            return 0
+
+    async def queue_stats(self) -> dict:
+        async with self._pool.acquire() as conn:
+            stage_rows = await conn.fetch(
+                "SELECT stage, "
+                "  SUM(CASE WHEN claimed_by IS NULL THEN 1 ELSE 0 END) AS pending, "
+                "  SUM(CASE WHEN claimed_by IS NOT NULL "
+                "       AND claimed_at >= NOW() - INTERVAL '10 minutes' THEN 1 ELSE 0 END) AS running, "
+                "  SUM(CASE WHEN claimed_by IS NOT NULL "
+                "       AND claimed_at <  NOW() - INTERVAL '10 minutes' THEN 1 ELSE 0 END) AS stale "
+                "FROM tasks GROUP BY stage"
+            )
+            active_rows = await conn.fetch(
+                "SELECT DISTINCT claimed_by FROM tasks "
+                "WHERE claimed_by IS NOT NULL "
+                "  AND claimed_at >= NOW() - INTERVAL '10 minutes'"
+            )
+        stages: dict[str, dict[str, int]] = {
+            r["stage"]: {
+                "pending": int(r["pending"] or 0),
+                "running": int(r["running"] or 0),
+                "stale":   int(r["stale"] or 0),
+            }
+            for r in stage_rows
+        }
+        active = [r["claimed_by"] for r in active_rows]
+        return {"stages": stages, "active_workers": active}
+
+    # ── Chapter inbox (deferred prepare handle) ───────────────────
+
+    async def set_inbox_handle(self, handle: "InboxHandle") -> None:
+        parts_json = json.dumps(
+            [{"number": p.number, "etag": p.etag} for p in handle.parts],
+        )
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO material_inbox "
+                "  (chapter_id, tmp_id, upload_id, parts, title) "
+                "VALUES ($1, $2, $3, $4::jsonb, $5) "
+                "ON CONFLICT (chapter_id) DO UPDATE SET "
+                "  tmp_id=EXCLUDED.tmp_id, upload_id=EXCLUDED.upload_id, "
+                "  parts=EXCLUDED.parts, title=EXCLUDED.title",
+                handle.chapter_id, handle.tmp_id, handle.upload_id,
+                parts_json, handle.title,
+            )
+
+    async def get_inbox_handle(
+        self, chapter_id: int,
+    ) -> "InboxHandle | None":
+        from typoon.adapters.inbox import CompletedPart, InboxHandle
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tmp_id, upload_id, parts, title "
+                "FROM material_inbox WHERE chapter_id=$1",
                 chapter_id,
             )
         if row is None:
             return None
-        return {"rendered": bool(row["rendered"]), "page_count": row["page_count"]}
+        raw = row["parts"]
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return InboxHandle(
+            chapter_id=chapter_id,
+            tmp_id=row["tmp_id"],
+            upload_id=row["upload_id"],
+            parts=tuple(
+                CompletedPart(number=int(p["number"]), etag=str(p["etag"]))
+                for p in raw
+            ),
+            title=row["title"],
+        )
 
-    # ── Health ────────────────────────────────────────────────────
-
-    async def ping(self) -> None:
+    async def clear_inbox_handle(self, chapter_id: int) -> None:
         async with self._pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+            await conn.execute(
+                "DELETE FROM material_inbox WHERE chapter_id=$1",
+                chapter_id,
+            )
 
+    # ── DMCA ─────────────────────────────────────────────────────
 
-# ── Helpers ───────────────────────────────────────────────────────────
+    async def record_dmca_takedown(
+        self,
+        *,
+        target_kind:    str,
+        target_id:      int,
+        scope_guild_id: str | None,
+        reason:         str,
+        reporter:       str,
+    ) -> int:
+        """Log + flip takedown_at on the target. Transactional so the
+        log and the takedown either both succeed or both fail."""
+        if target_kind not in ("material", "chapter", "draft", "translation"):
+            raise ValueError(f"invalid target_kind: {target_kind!r}")
+        table = {
+            "material":    None,   # no takedown_at column; row deleted
+            "chapter":     None,   # ditto
+            "draft":       "translation_drafts",
+            "translation": "translations",
+        }[target_kind]
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO dmca_takedowns "
+                "  (target_kind, target_id, scope_guild_id, reason, reporter) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                target_kind, target_id, scope_guild_id, reason, reporter,
+            )
+            if table is not None:
+                await conn.execute(
+                    f"UPDATE {table} SET takedown_at=NOW(), takedown_reason=$2 "
+                    "WHERE id=$1",
+                    target_id, reason,
+                )
+            else:
+                # material / chapter: hard delete (no takedown_at marker)
+                if target_kind == "material":
+                    await conn.execute(
+                        "DELETE FROM materials WHERE id=$1", target_id,
+                    )
+                else:
+                    await conn.execute(
+                        "DELETE FROM chapters WHERE id=$1", target_id,
+                    )
+        return row["id"]
 
+    async def restore_dmca_takedown(self, takedown_id: int) -> bool:
+        """Clear takedown markers. For materials/chapters that were
+        hard-deleted, restoration is not possible — caller gets
+        False and must re-import."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT target_kind, target_id FROM dmca_takedowns "
+                "WHERE id=$1 AND restored_at IS NULL",
+                takedown_id,
+            )
+            if row is None:
+                return False
+            tk = row["target_kind"]
+            ti = row["target_id"]
+            table = {
+                "draft":       "translation_drafts",
+                "translation": "translations",
+            }.get(tk)
+            if table is None:
+                # material / chapter: already deleted; cannot restore.
+                return False
+            await conn.execute(
+                f"UPDATE {table} SET takedown_at=NULL, takedown_reason=NULL "
+                "WHERE id=$1",
+                ti,
+            )
+            await conn.execute(
+                "UPDATE dmca_takedowns SET restored_at=NOW() WHERE id=$1",
+                takedown_id,
+            )
+        return True
 
-async def _verify_schema_version(conn: asyncpg.Connection) -> None:
-    """Refuse to start if the schema version doesn't match.
-
-    The events table is BIGSERIAL — restarting against a stale volume
-    would keep the sequence going, but other shape changes (column
-    drops, type changes) would silently break. Cheaper to fail loud.
-    """
-    row = await conn.fetchrow(
-        "SELECT value FROM meta WHERE key='schema_version'",
-    )
-    if row is None:
-        await conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', $1)",
-            SCHEMA_VERSION,
-        )
-        return
-    if row["value"] != SCHEMA_VERSION:
-        raise RuntimeError(
-            f"schema version mismatch: db has {row['value']!r}, code expects "
-            f"{SCHEMA_VERSION!r}. Phase 1 has no migrations — drop and "
-            f"recreate the database:  dropdb typoon && createdb -O typoon typoon"
-        )
-
-
-def _to_jsonable(value):
-    """asyncpg returns JSONB as `str` in Phase 1 (no codec installed) but
-    can return dicts/lists if a codec is set. Normalize both shapes."""
-    if isinstance(value, (dict, list)):
-        return value
-    if value is None:
-        return None
-    return json.loads(value)
-
-
-def _to_jsonable_dict(value) -> dict:
-    out = _to_jsonable(value)
-    return out if isinstance(out, dict) else {}
-
-
-def _derive_state(chapter_row: dict, tasks: list[dict]) -> tuple[str, str, str]:
-    """Derive (state, stage, error) from chapter row + tasks list.
-
-    Priority:
-      live claim                            → running
-      task with attempts ≥ MAX_TASK_ATTEMPTS → error
-      stale claim or unclaimed               → pending
-      chapters.rendered                      → done
-      otherwise                              → idle
-
-    A claim older than STALE_CLAIM_SECONDS is treated as the worker
-    having died — the task will be re-claimed by claim_task on the next
-    poll, so the UI should show "pending" rather than a misleading
-    "running" with no progress.
-    """
-    now = datetime.now(timezone.utc)
-
-    def is_live_claim(t: dict) -> bool:
-        if not t["claimed_by"]:
-            return False
-        claimed_at = _parse_iso(t.get("claimed_at"))
-        if claimed_at is None:
-            return True  # unparseable → treat as live, fail safe
-        return (now - claimed_at).total_seconds() < STALE_CLAIM_SECONDS
-
-    running = [t for t in tasks if is_live_claim(t)]
-    if running:
-        return "running", running[0]["stage"], ""
-    failed = [t for t in tasks if t["last_error"] and t["attempts"] >= MAX_TASK_ATTEMPTS]
-    if failed:
-        return "error", failed[0]["stage"], failed[0]["last_error"] or ""
-    pending = [t for t in tasks]  # everything left = unclaimed or stale-claim
-    if pending:
-        return "pending", pending[0]["stage"], ""
-    if chapter_row.get("rendered"):
-        return "done", "", ""
-    return "idle", "", ""
-
-
-def _parse_iso(value) -> datetime | None:
-    """Parse the API's RFC 3339 string back to an aware datetime."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if not isinstance(value, str):
-        return None
-    text = value.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
+    async def list_dmca_takedowns(
+        self, *, active_only: bool = True, limit: int = 100,
+    ) -> list[dict]:
+        cond = "WHERE restored_at IS NULL" if active_only else ""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, target_kind, target_id, scope_guild_id, "
+                "       reason, reporter, "
+                f"       {_ts('taken_down_at')}, {_ts('restored_at')} "
+                f"FROM dmca_takedowns {cond} "
+                "ORDER BY taken_down_at DESC LIMIT $1",
+                limit,
+            )
+        return [dict(r) for r in rows]
