@@ -48,7 +48,7 @@ function CallbackPage() {
     exchangeCode(code)
       .then((token) => {
         setToken(token)
-        nav({ to: '/projects' })
+        nav({ to: '/library' })
       })
       .catch((e: Error) => fail(e.message))
   }, [nav])

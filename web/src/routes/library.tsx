@@ -10,21 +10,16 @@ import { useUnifiedLibrary } from '@features/library/unified'
 import { LibraryItemCard } from '@features/library/views/LibraryCard'
 
 // =============================================================================
-// /library — single unified surface.
+// /library — unified backend-backed surface.
 //
-// Pattern lifted from Letterboxd / AniList / Apple Music Library:
-//   • One grid, all entries (external + internal).
-//   • Filter chips, NOT tabs. Chips are a filter on the same list —
-//     route doesn't change, scroll position survives.
-//   • "Có chương mới" is a chip too, BUT entries with hasNew also
-//     float to the top of every other filter via default sort, so
-//     the chip is just a focus mode, not the only way to see them.
+// One grid, all entries. Filter chips, NOT tabs — scroll position
+// survives switching filters. "Có chương mới" chip auto-hides when
+// count is 0 to keep the row tidy.
 //
-// State sources:
-//   • External entries → local zustand store (typoon.library.v1)
-//   • Internal projects → /api/projects (React Query, 60s stale)
-//
-// Adapter merges both into a uniform LibraryItem (see unified.ts).
+// Source of truth: /api/library (per-user library_entries +
+// linked materials). Per-source reading history (Tiếp tục đọc rails)
+// still lives in the local zustand store; the grid card uses it to
+// supply the "Mới" badge + chapter overlay client-side.
 // =============================================================================
 
 interface SearchParams { filter?: LibraryFilter }
@@ -43,7 +38,7 @@ const CHIPS: Array<{
 const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
   all: {
     title: 'Thư viện đang trống',
-    sub:   'Mở một truyện ở Duyệt nguồn, hoặc tạo dự án để bắt đầu',
+    sub:   'Mở một truyện ở Duyệt nguồn hoặc tải truyện riêng để bắt đầu',
   },
   reading: {
     title: 'Chưa có truyện đang đọc',

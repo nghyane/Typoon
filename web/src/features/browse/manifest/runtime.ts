@@ -11,14 +11,19 @@ import { pfetch } from '../proxy'
 import {
   queryHtmlOne, queryHtmlAll, queryJsonOne, queryJsonAll,
 } from './selectors'
-import {
-  isInternal, fetchInternalBrowse, internalShelves, type InternalShelf,
-} from './internal'
 import type {
   BrowseEndpoint, ChapterListSpec, ChaptersApiEndpoint,
   ChapterFields, ChapterPages, HttpRequest, MangaChapterRef, MangaDetail,
   MangaSummary, SourceManifest, Shelf as ShelfManifestEntry,
 } from './types'
+
+// The 'internal' source concept (Community) was removed in the v5
+// architecture — Hội Mê Truyện is a guild-scoped feed, not a manifest
+// source. This kept-around helper lets call sites stay short-circuit
+// safe in case a stale persisted source slips through.
+function isInternal(manifest: SourceManifest): boolean {
+  return manifest.kind === 'internal'
+}
 
 // ─── template + URL helpers ───────────────────────────────────────
 
@@ -172,14 +177,7 @@ export interface ShelfDescriptor {
 
 /** Enumerate shelves regardless of source kind. */
 export function getShelves(manifest: SourceManifest): ShelfDescriptor[] {
-  if (isInternal(manifest)) {
-    return internalShelves(manifest).map((s: InternalShelf) => ({
-      id:        s.id,
-      label:     s.label,
-      hint:      s.hint,
-      paginated: true,
-    }))
-  }
+  if (isInternal(manifest)) return []
   return (manifest.endpoints?.shelves ?? []).map((s: ShelfManifestEntry) => ({
     id:        s.id,
     label:     s.label,
@@ -230,10 +228,7 @@ export async function fetchBrowse(
   shelfId: string | { search: true },
   args: BrowseArgs = {},
 ): Promise<MangaSummary[]> {
-  if (isInternal(manifest)) {
-    if (typeof shelfId !== 'string') return []
-    return fetchInternalBrowse(shelfId, { page: args.page })
-  }
+  if (isInternal(manifest)) return []
   const endpoint =
     typeof shelfId === 'string'
       ? manifest.endpoints?.shelves.find((s) => s.id === shelfId)?.endpoint

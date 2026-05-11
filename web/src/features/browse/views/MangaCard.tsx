@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { Cover } from '@shared/ui/Cover'
 import { proxify } from '../proxy'
-import { isInternal } from '../manifest/internal'
 import type { MangaSummary, SourceManifest } from '../manifest/types'
 
 // =============================================================================
@@ -14,24 +13,32 @@ import type { MangaSummary, SourceManifest } from '../manifest/types'
 // the original is shown small below for context. While the
 // translation is pending the original title stays — no flicker.
 //
-// Navigation matches ShelfCard:
-//   • External source → /browse/$source/manga/$mangaId
-//   • Internal (community) → follows `manga.url` verbatim (project route)
+// Navigation: every card opens /browse/$source/manga/$mangaId. The
+// detail page (BrowseMangaPage) is the gateway into the material
+// flow; if the user wants their library entry's primary material,
+// they click through from /library.
 // =============================================================================
 
 interface Props {
   source:           string
+  // Reserved for callers that want a per-source visual treatment
+  // (NSFW chip, lang flag); kept on Props so existing rails don't
+  // need to be touched in this slice.
   manifest:         SourceManifest
   manga:            MangaSummary
   translatedTitle?: string | null
 }
 
-export function MangaCard({ source, manifest, manga, translatedTitle }: Props) {
+export function MangaCard({ source, manga, translatedTitle }: Props) {
   const showTr = translatedTitle && translatedTitle !== manga.title
   const display = showTr ? translatedTitle! : manga.title
 
-  const body = (
-    <>
+  return (
+    <Link
+      to="/browse/$source/manga/$mangaId"
+      params={{ source, mangaId: encodeURIComponent(manga.id) }}
+      className="group block"
+    >
       <Cover
         src={manga.cover ? proxify(manga.cover) : null}
         title={display}
@@ -45,23 +52,6 @@ export function MangaCard({ source, manifest, manga, translatedTitle }: Props) {
           {manga.title}
         </p>
       )}
-    </>
-  )
-
-  if (isInternal(manifest)) {
-    return (
-      <Link to={manga.url as never} className="group block">
-        {body}
-      </Link>
-    )
-  }
-  return (
-    <Link
-      to="/browse/$source/manga/$mangaId"
-      params={{ source, mangaId: encodeURIComponent(manga.id) }}
-      className="group block"
-    >
-      {body}
     </Link>
   )
 }

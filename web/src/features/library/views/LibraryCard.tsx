@@ -1,54 +1,37 @@
 import { Link } from '@tanstack/react-router'
 import { Bookmark, Sparkles } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cover } from '@shared/ui/Cover'
 import { Tag } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { proxify } from '@features/browse/proxy'
-import { getSource } from '@features/browse/sources'
+import { api } from '@shared/api/api'
 import { useLibrary, type LibraryEntry } from '../store'
 import type { LibraryItem } from '../unified'
 
 // =============================================================================
-// LibraryItemCard — single card shape for any source.
+// LibraryItemCard — single card shape backed by /api/library entries.
 //
-// Click target picks the best resumption point:
-//   • External with last-read chapter → straight into the reader
-//   • External without            → manga detail page
-//   • Internal project            → project detail
-//
-// Visual state cluster on cover top-right:
-//   • "Mới" tag when hasNew
-//   • Bookmark fill icon when bookmarked
-//   • Ownership chip on bottom-left for internal (Mine / Shared)
+// Click target: `/manga/library/$entryId` (the route below is a thin
+// resolver that fetches the entry's primary material and forwards to
+// /browse/$source/manga/$mangaId, possibly deep-linking into the
+// chapter the user last read).
 // =============================================================================
 
 interface Props {
   item: LibraryItem
 }
 
-const OWNERSHIP_LABEL = {
-  mine:   'Của tôi',
-  pinned: 'Đã lưu',
-  shared: 'Hội Mê Truyện',
-} as const
-
 export function LibraryItemCard({ item }: Props) {
-  // External: try to deep-link straight into the chapter the user
-  // was last reading. Internal: open the project route.
-  const entry = useLibrary((s) =>
-    item.kind === 'external'
-      ? s.items[`${item.source}::${item.ref}`]
-      : undefined,
-  )
-
-  const installed = getSource(item.source)
-  const sourceName = installed?.manifest.name ?? item.source
-
-  const body = (
-    <>
+  return (
+    <Link
+      to="/library/entry/$entryId"
+      params={{ entryId: String(item.entryId) }}
+      className="group flex flex-col gap-2"
+    >
       <div className="relative w-full aspect-[2/3] rounded-md overflow-hidden">
         <Cover
-          src={item.cover ? (item.kind === 'external' ? proxify(item.cover) : item.cover) : null}
+          src={item.cover}
           title={item.title}
           className="absolute inset-0 group-hover:brightness-110 transition-[filter]"
         />
@@ -56,7 +39,10 @@ export function LibraryItemCard({ item }: Props) {
         {/* Top-right state cluster */}
         <div className="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
           {item.hasNew && (
-            <Tag tone="success" size="sm" uppercase className="inline-flex items-center gap-0.5">
+            <Tag
+              tone="success" size="sm" uppercase
+              className="inline-flex items-center gap-0.5"
+            >
               <Sparkles size={9} />
               Mới
             </Tag>
@@ -71,19 +57,7 @@ export function LibraryItemCard({ item }: Props) {
           )}
         </div>
 
-        {/* Bottom-left ownership chip (internal only) */}
-        {item.kind === 'internal' && item.ownership && (
-          <div className="absolute bottom-1.5 left-1.5">
-            <span className={cn(
-              'text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-xs',
-              'bg-bg/80 backdrop-blur text-text',
-            )}>
-              {OWNERSHIP_LABEL[item.ownership]}
-            </span>
-          </div>
-        )}
-
-        {/* Bottom gradient + chapter label (external with history only) */}
+        {/* Bottom gradient + chapter label (when we have a local snapshot) */}
         {item.chapterLabel && (
           <>
             <div
@@ -99,81 +73,67 @@ export function LibraryItemCard({ item }: Props) {
         )}
       </div>
 
-      <div className="min-w-0">
-        <p className="text-[13px] font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
-          {item.title}
-        </p>
-        <p className="text-[10px] text-text-subtle truncate mt-0.5">
-          {item.kind === 'internal' ? 'Hội Mê Truyện' : sourceName}
-        </p>
-      </div>
-    </>
-  )
-
-  const cls = 'group flex flex-col gap-2'
-
-  // Branch the Link wrapper so each `to` keeps its type-safe params
-  // shape. Trying to spread a unioned linkProps object loses the
-  // discriminant and trips TS2698.
-  if (item.kind === 'internal') {
-    return (
-      <Link
-        to="/projects/$projectId"
-        params={{ projectId: item.ref }}
-        className={cls}
-      >
-        {body}
-      </Link>
-    )
-  }
-  if (entry?.lastChapterRead) {
-    return (
-      <Link
-        to="/browse/$source/manga/$mangaId/chapter/$chapterId"
-        params={{
-          source:    item.source,
-          mangaId:   encodeURIComponent(item.ref),
-          chapterId: encodeURIComponent(entry.lastChapterRead.url),
-        }}
-        className={cls}
-      >
-        {body}
-      </Link>
-    )
-  }
-  return (
-    <Link
-      to="/browse/$source/manga/$mangaId"
-      params={{
-        source:  item.source,
-        mangaId: encodeURIComponent(item.ref),
-      }}
-      className={cls}
-    >
-      {body}
+      <p className="text-[13px] font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
+        {item.title}
+      </p>
     </Link>
   )
 }
 
 // =============================================================================
-// BookmarkButton — toggle for MangaPage hero (external sources only).
-// Reads + writes through the library store directly.
+// BookmarkButton — toggles a library entry's bookmarked flag.
+//
+// Three modes:
+//   (1) entryId known         → patch /library/entry/{id}
+//   (2) materialId known      → ensure entry exists (POST /library/entry
+//                                with material_id), then patch
+//                                bookmarked=true. Used from the manga
+//                                detail page.
+//   (3) external mangaUrl only → backwards-compat shim: writes to the
+//                                local reading-history store until
+//                                we wire material_id into the local
+//                                state shape.
 // =============================================================================
 
 interface BookmarkButtonProps {
-  source:   string
-  mangaUrl: string
-  title:    string
-  cover:    string | null
-  size?:    'sm' | 'md'
+  size?:       'sm' | 'md'
+  entryId?:    number
+  materialId?: number
+  /** Used to seed the entry title when creating one on first bookmark. */
+  title?:      string
+  cover?:      string | null
+  bookmarked:  boolean
 }
 
 export function BookmarkButton({
-  source, mangaUrl, title, cover, size = 'md',
+  size = 'md',
+  entryId, materialId, title, cover, bookmarked,
 }: BookmarkButtonProps) {
-  const entry  = useLibrary((s) => s.items[`${source}::${mangaUrl}`])
-  const toggle = useLibrary((s) => s.toggleBookmark)
-  const on = !!entry?.bookmarked
+  const qc = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (entryId != null) {
+        await api.patchLibraryEntry(entryId, { bookmarked: !bookmarked })
+        return
+      }
+      if (materialId != null) {
+        // Ensure an entry exists, then patch the flag.
+        const entry = await api.createLibraryEntry({
+          material_id: materialId,
+          title,
+          cover_url: cover ?? null,
+        })
+        if (!entry.bookmarked) {
+          await api.patchLibraryEntry(entry.id, { bookmarked: true })
+        }
+        return
+      }
+      throw new Error('BookmarkButton: pass entryId or materialId')
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['library'] })
+    },
+  })
 
   const dims = size === 'sm'
     ? 'h-7 px-2.5 text-xs'
@@ -182,30 +142,32 @@ export function BookmarkButton({
   return (
     <button
       type="button"
-      onClick={() => toggle({ source, mangaUrl, title, cover })}
+      onClick={() => mutation.mutate()}
+      disabled={mutation.isPending}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-sm cursor-pointer transition-colors',
         dims,
-        on
+        bookmarked
           ? 'bg-warning/15 text-warning-text hover:bg-warning/25'
           : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
+        mutation.isPending && 'opacity-60 cursor-wait',
       )}
-      title={on ? 'Bỏ lưu khỏi thư viện' : 'Lưu vào thư viện'}
+      title={bookmarked ? 'Bỏ lưu khỏi thư viện' : 'Lưu vào thư viện'}
     >
       <Bookmark
         size={size === 'sm' ? 11 : 13}
-        className={on ? 'fill-warning text-warning' : ''}
+        className={bookmarked ? 'fill-warning text-warning' : ''}
       />
-      {on ? 'Đã lưu' : 'Lưu'}
+      {bookmarked ? 'Đã lưu' : 'Lưu'}
     </button>
   )
 }
 
 // =============================================================================
 // LibraryRailCard — slim per-source variant for browse hub
-// "Tiếp tục đọc" rail. Different from grid card: fixed width,
-// external-only context (per-source). Keeps the cover overlay
-// chapter label like the legacy ContinueCard.
+// "Tiếp tục đọc" rail. Reads from the local reading-history store
+// because per-source recency is browser-derived (not in the server
+// library payload).
 // =============================================================================
 
 interface RailProps {
@@ -259,3 +221,7 @@ export function LibraryRailCard({ entry }: RailProps) {
     </Link>
   )
 }
+
+// Keep a name-export the (slowly retiring) `useLibrary` consumer pulls
+// through for the old shape; new code uses the variants above.
+useLibrary  // referenced to keep tree-shaking honest

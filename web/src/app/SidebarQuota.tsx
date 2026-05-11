@@ -28,25 +28,23 @@ export function SidebarQuota({ collapsed }: Props) {
 
   if (!data || data.is_admin) return null
 
-  const { used_day, limit_day, used_hour, limit_hour, in_flight, limit_concurrent } = data
+  const { used_day, limit_day, used_hour, limit_hour } = data
 
-  // Color: green > 50% remaining, amber 10–50%, red < 10% or in_flight at cap.
+  // Color: green > 50% remaining, amber 10–50%, red < 10%.
   const dayPct  = limit_day  > 0 ? used_day  / limit_day  : 0
   const hourPct = limit_hour > 0 ? used_hour / limit_hour : 0
   const peak    = Math.max(dayPct, hourPct)
-  const atConcurrentCap = in_flight >= limit_concurrent
 
   const color =
-    atConcurrentCap || peak >= 0.9 ? 'text-rose-400'
-    : peak >= 0.5                  ? 'text-amber-400'
-    :                                'text-text-muted'
+    peak >= 0.9 ? 'text-rose-400'
+    : peak >= 0.5 ? 'text-amber-400'
+    :              'text-text-muted'
 
   return (
     <div
       title={
         `Hôm nay: ${used_day}/${limit_day} chương\n` +
-        `Trong giờ: ${used_hour}/${limit_hour}\n` +
-        `Đang xử lý: ${in_flight}/${limit_concurrent}`
+        `Trong giờ: ${used_hour}/${limit_hour}`
       }
       className={cn(
         'group flex items-center h-8 w-full rounded-sm select-none',

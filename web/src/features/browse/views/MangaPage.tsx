@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Languages } from 'lucide-react'
+import { BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Languages, Bookmark } from 'lucide-react'
 import { useHeaderStore } from '../../../store/header'
 import { useAutoTranslate, shouldTranslate } from '../autoTranslate'
 import { useTranslated, useTranslatedBatch } from '../useTranslated'
@@ -12,8 +12,8 @@ import { EmptyState } from '@shared/ui/EmptyState'
 import { cn } from '@shared/lib/cn'
 import { fetchMangaDetail } from '../manifest/runtime'
 import { proxify } from '../proxy'
+import { api } from '@shared/api/api'
 import { useLibrary } from '@features/library/store'
-import { BookmarkButton } from '@features/library/views/LibraryCard'
 import type { InstalledSource, MangaChapterRef, MangaDetail } from '../manifest/types'
 
 interface Props {
@@ -185,12 +185,7 @@ function MangaContent({
           </p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <BookmarkButton
-              source={manifest.id}
-              mangaUrl={manga.url}
-              title={manga.title}
-              cover={manga.cover}
-            />
+            <SaveButton source={source} manga={manga} />
             {firstChapter && (
               <Link
                 to="/browse/$source/manga/$mangaId/chapter/$chapterId"
@@ -330,5 +325,112 @@ function ChapterRow({
         )}
       </Link>
     </li>
+  )
+}
+
+
+// =============================================================================
+// SaveButton — "Lưu vào thư viện" for the manga detail hero.
+//
+// Source-backed manga need a material row before we can attach a
+// library_entry. The first click does an idempotent
+// /api/material/import with whatever the manifest gave us; subsequent
+// clicks toggle the bookmark flag on the existing entry.
+//
+// Mirroring state from /api/library means N entries on this manga
+// (same user) collapse to one — the library list is the source of
+// truth, not local guesses.
+// =============================================================================
+
+function SaveButton({
+  source, manga,
+}: {
+  source: InstalledSource
+  manga:  MangaDetail
+}) {
+  const qc = useQueryClient()
+  const { manifest } = source
+
+  // We pull the user's library to see whether this material already
+  // has an entry — needed for the bookmark icon state and to know
+  // which entry id to PATCH on toggle.
+  const { data: entries = [] } = useQuery({
+    queryKey: ['library'],
+    queryFn:  () => api.listLibrary(),
+    staleTime: 30_000,
+  })
+
+  // Look up the material id once we've imported. Cached so subsequent
+  // toggles don't re-import on every render.
+  const { data: material } = useQuery({
+    queryKey: ['material', manifest.id, manga.url],
+    queryFn:  () => api.importMaterial({
+      source:       manifest.id,
+      upstream_ref: manga.url,
+      title:        manga.title,
+      cover_url:    manga.cover,
+      description:  manga.description,
+      author:       manga.author,
+      status:       manga.status,
+      languages:    manifest.languages,
+      nsfw:         !!manifest.nsfw,
+    }),
+    staleTime: 5 * 60_000,
+  })
+
+  const entry = useMemo(
+    () => entries.find((e) =>
+      material != null
+      && e.materials.some((m) => m.material_id === material.id)
+    ),
+    [entries, material],
+  )
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!material) return
+      if (entry) {
+        await api.patchLibraryEntry(entry.id, {
+          bookmarked: !entry.bookmarked,
+        })
+      } else {
+        const created = await api.createLibraryEntry({
+          material_id: material.id,
+          title:       manga.title,
+          cover_url:   manga.cover,
+        })
+        if (!created.bookmarked) {
+          await api.patchLibraryEntry(created.id, { bookmarked: true })
+        }
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['library'] })
+    },
+  })
+
+  const on = !!entry?.bookmarked
+  const disabled = mutation.isPending || material == null
+
+  return (
+    <button
+      type="button"
+      onClick={() => mutation.mutate()}
+      disabled={disabled}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-sm cursor-pointer transition-colors h-8 px-3 text-[13px]',
+        on
+          ? 'bg-warning/15 text-warning-text hover:bg-warning/25'
+          : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
+        disabled && 'opacity-60 cursor-wait',
+      )}
+      title={on ? 'Bỏ lưu khỏi thư viện' : 'Lưu vào thư viện'}
+    >
+      <Bookmark
+        size={13}
+        className={on ? 'fill-warning text-warning' : ''}
+      />
+      {on ? 'Đã lưu' : 'Lưu'}
+    </button>
   )
 }

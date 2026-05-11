@@ -17,12 +17,12 @@ function LoginPage() {
   const doDALogin = (clientId: string) => {
     setBusy(true)
     discordActivityLogin(clientId)
-      .then((token) => { setToken(token); nav({ to: '/projects' }) })
+      .then((token) => { setToken(token); nav({ to: '/library' }) })
       .catch((e: Error) => { setError(e.message); setBusy(false) })
   }
 
   useEffect(() => {
-    if (getToken()) { nav({ to: '/projects' }); return }
+    if (getToken()) { nav({ to: '/library' }); return }
     setError(takeLoginError())
     fetchAuthConfig()
       .then((c) => {

@@ -126,10 +126,9 @@ function QuotaSection() {
       title="Quota"
       description="Mỗi lần dịch một chương (upload + start, start, redo) tốn 1 lượt. Reset theo cửa sổ trượt."
     >
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <QuotaMeter label="Hôm nay"     used={data.used_day}  limit={data.limit_day} />
-        <QuotaMeter label="Trong giờ"   used={data.used_hour} limit={data.limit_hour} />
-        <QuotaMeter label="Đang xử lý"  used={data.in_flight} limit={data.limit_concurrent} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <QuotaMeter label="Hôm nay"   used={data.used_day}  limit={data.limit_day} />
+        <QuotaMeter label="Trong giờ" used={data.used_hour} limit={data.limit_hour} />
       </div>
     </SettingsSection>
   )

@@ -10,20 +10,16 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as BrowseRouteImport } from './routes/browse'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ProjectsIndexRouteImport } from './routes/projects.index'
 import { Route as BrowseIndexRouteImport } from './routes/browse.index'
-import { Route as ProjectsProjectIdRouteImport } from './routes/projects.$projectId'
 import { Route as BrowseSourceRouteImport } from './routes/browse.$source'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
-import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects.$projectId.index'
 import { Route as BrowseSourceIndexRouteImport } from './routes/browse.$source.index'
+import { Route as LibraryEntryEntryIdRouteImport } from './routes/library.entry.$entryId'
 import { Route as BrowseSourceSearchRouteImport } from './routes/browse.$source.search'
-import { Route as ProjectsProjectIdChaptersChapterIdRouteImport } from './routes/projects.$projectId.chapters.$chapterId'
 import { Route as BrowseSourceShelfShelfIdRouteImport } from './routes/browse.$source.shelf.$shelfId'
 import { Route as BrowseSourceMangaMangaIdRouteImport } from './routes/browse.$source.manga.$mangaId'
 import { Route as BrowseSourceMangaMangaIdIndexRouteImport } from './routes/browse.$source.manga.$mangaId.index'
@@ -32,11 +28,6 @@ import { Route as BrowseSourceMangaMangaIdChapterChapterIdRouteImport } from './
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ProjectsRoute = ProjectsRouteImport.update({
-  id: '/projects',
-  path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -59,20 +50,10 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProjectsIndexRoute = ProjectsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => ProjectsRoute,
-} as any)
 const BrowseIndexRoute = BrowseIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => BrowseRoute,
-} as any)
-const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
-  id: '/$projectId',
-  path: '/$projectId',
-  getParentRoute: () => ProjectsRoute,
 } as any)
 const BrowseSourceRoute = BrowseSourceRouteImport.update({
   id: '/$source',
@@ -84,27 +65,21 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => ProjectsProjectIdRoute,
-} as any)
 const BrowseSourceIndexRoute = BrowseSourceIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => BrowseSourceRoute,
+} as any)
+const LibraryEntryEntryIdRoute = LibraryEntryEntryIdRouteImport.update({
+  id: '/entry/$entryId',
+  path: '/entry/$entryId',
+  getParentRoute: () => LibraryRoute,
 } as any)
 const BrowseSourceSearchRoute = BrowseSourceSearchRouteImport.update({
   id: '/search',
   path: '/search',
   getParentRoute: () => BrowseSourceRoute,
 } as any)
-const ProjectsProjectIdChaptersChapterIdRoute =
-  ProjectsProjectIdChaptersChapterIdRouteImport.update({
-    id: '/chapters/$chapterId',
-    path: '/chapters/$chapterId',
-    getParentRoute: () => ProjectsProjectIdRoute,
-  } as any)
 const BrowseSourceShelfShelfIdRoute =
   BrowseSourceShelfShelfIdRouteImport.update({
     id: '/shelf/$shelfId',
@@ -133,37 +108,31 @@ const BrowseSourceMangaMangaIdChapterChapterIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/browse': typeof BrowseRouteWithChildren
-  '/library': typeof LibraryRoute
+  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
-  '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/browse/$source': typeof BrowseSourceRouteWithChildren
-  '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/browse/': typeof BrowseIndexRoute
-  '/projects/': typeof ProjectsIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
+  '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source/': typeof BrowseSourceIndexRoute
-  '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/browse/$source/manga/$mangaId': typeof BrowseSourceMangaMangaIdRouteWithChildren
   '/browse/$source/shelf/$shelfId': typeof BrowseSourceShelfShelfIdRoute
-  '/projects/$projectId/chapters/$chapterId': typeof ProjectsProjectIdChaptersChapterIdRoute
   '/browse/$source/manga/$mangaId/': typeof BrowseSourceMangaMangaIdIndexRoute
   '/browse/$source/manga/$mangaId/chapter/$chapterId': typeof BrowseSourceMangaMangaIdChapterChapterIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/library': typeof LibraryRoute
+  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/browse': typeof BrowseIndexRoute
-  '/projects': typeof ProjectsIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
+  '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source': typeof BrowseSourceIndexRoute
-  '/projects/$projectId': typeof ProjectsProjectIdIndexRoute
   '/browse/$source/shelf/$shelfId': typeof BrowseSourceShelfShelfIdRoute
-  '/projects/$projectId/chapters/$chapterId': typeof ProjectsProjectIdChaptersChapterIdRoute
   '/browse/$source/manga/$mangaId': typeof BrowseSourceMangaMangaIdIndexRoute
   '/browse/$source/manga/$mangaId/chapter/$chapterId': typeof BrowseSourceMangaMangaIdChapterChapterIdRoute
 }
@@ -171,21 +140,17 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/browse': typeof BrowseRouteWithChildren
-  '/library': typeof LibraryRoute
+  '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
-  '/projects': typeof ProjectsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/browse/$source': typeof BrowseSourceRouteWithChildren
-  '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/browse/': typeof BrowseIndexRoute
-  '/projects/': typeof ProjectsIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
+  '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source/': typeof BrowseSourceIndexRoute
-  '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/browse/$source/manga/$mangaId': typeof BrowseSourceMangaMangaIdRouteWithChildren
   '/browse/$source/shelf/$shelfId': typeof BrowseSourceShelfShelfIdRoute
-  '/projects/$projectId/chapters/$chapterId': typeof ProjectsProjectIdChaptersChapterIdRoute
   '/browse/$source/manga/$mangaId/': typeof BrowseSourceMangaMangaIdIndexRoute
   '/browse/$source/manga/$mangaId/chapter/$chapterId': typeof BrowseSourceMangaMangaIdChapterChapterIdRoute
 }
@@ -196,19 +161,15 @@ export interface FileRouteTypes {
     | '/browse'
     | '/library'
     | '/login'
-    | '/projects'
     | '/settings'
     | '/auth/callback'
     | '/browse/$source'
-    | '/projects/$projectId'
     | '/browse/'
-    | '/projects/'
     | '/browse/$source/search'
+    | '/library/entry/$entryId'
     | '/browse/$source/'
-    | '/projects/$projectId/'
     | '/browse/$source/manga/$mangaId'
     | '/browse/$source/shelf/$shelfId'
-    | '/projects/$projectId/chapters/$chapterId'
     | '/browse/$source/manga/$mangaId/'
     | '/browse/$source/manga/$mangaId/chapter/$chapterId'
   fileRoutesByTo: FileRoutesByTo
@@ -219,12 +180,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/auth/callback'
     | '/browse'
-    | '/projects'
     | '/browse/$source/search'
+    | '/library/entry/$entryId'
     | '/browse/$source'
-    | '/projects/$projectId'
     | '/browse/$source/shelf/$shelfId'
-    | '/projects/$projectId/chapters/$chapterId'
     | '/browse/$source/manga/$mangaId'
     | '/browse/$source/manga/$mangaId/chapter/$chapterId'
   id:
@@ -233,19 +192,15 @@ export interface FileRouteTypes {
     | '/browse'
     | '/library'
     | '/login'
-    | '/projects'
     | '/settings'
     | '/auth/callback'
     | '/browse/$source'
-    | '/projects/$projectId'
     | '/browse/'
-    | '/projects/'
     | '/browse/$source/search'
+    | '/library/entry/$entryId'
     | '/browse/$source/'
-    | '/projects/$projectId/'
     | '/browse/$source/manga/$mangaId'
     | '/browse/$source/shelf/$shelfId'
-    | '/projects/$projectId/chapters/$chapterId'
     | '/browse/$source/manga/$mangaId/'
     | '/browse/$source/manga/$mangaId/chapter/$chapterId'
   fileRoutesById: FileRoutesById
@@ -253,9 +208,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BrowseRoute: typeof BrowseRouteWithChildren
-  LibraryRoute: typeof LibraryRoute
+  LibraryRoute: typeof LibraryRouteWithChildren
   LoginRoute: typeof LoginRoute
-  ProjectsRoute: typeof ProjectsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
 }
@@ -267,13 +221,6 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/projects': {
-      id: '/projects'
-      path: '/projects'
-      fullPath: '/projects'
-      preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -304,26 +251,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/projects/': {
-      id: '/projects/'
-      path: '/'
-      fullPath: '/projects/'
-      preLoaderRoute: typeof ProjectsIndexRouteImport
-      parentRoute: typeof ProjectsRoute
-    }
     '/browse/': {
       id: '/browse/'
       path: '/'
       fullPath: '/browse/'
       preLoaderRoute: typeof BrowseIndexRouteImport
       parentRoute: typeof BrowseRoute
-    }
-    '/projects/$projectId': {
-      id: '/projects/$projectId'
-      path: '/$projectId'
-      fullPath: '/projects/$projectId'
-      preLoaderRoute: typeof ProjectsProjectIdRouteImport
-      parentRoute: typeof ProjectsRoute
     }
     '/browse/$source': {
       id: '/browse/$source'
@@ -339,13 +272,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/projects/$projectId/': {
-      id: '/projects/$projectId/'
-      path: '/'
-      fullPath: '/projects/$projectId/'
-      preLoaderRoute: typeof ProjectsProjectIdIndexRouteImport
-      parentRoute: typeof ProjectsProjectIdRoute
-    }
     '/browse/$source/': {
       id: '/browse/$source/'
       path: '/'
@@ -353,19 +279,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BrowseSourceIndexRouteImport
       parentRoute: typeof BrowseSourceRoute
     }
+    '/library/entry/$entryId': {
+      id: '/library/entry/$entryId'
+      path: '/entry/$entryId'
+      fullPath: '/library/entry/$entryId'
+      preLoaderRoute: typeof LibraryEntryEntryIdRouteImport
+      parentRoute: typeof LibraryRoute
+    }
     '/browse/$source/search': {
       id: '/browse/$source/search'
       path: '/search'
       fullPath: '/browse/$source/search'
       preLoaderRoute: typeof BrowseSourceSearchRouteImport
       parentRoute: typeof BrowseSourceRoute
-    }
-    '/projects/$projectId/chapters/$chapterId': {
-      id: '/projects/$projectId/chapters/$chapterId'
-      path: '/chapters/$chapterId'
-      fullPath: '/projects/$projectId/chapters/$chapterId'
-      preLoaderRoute: typeof ProjectsProjectIdChaptersChapterIdRouteImport
-      parentRoute: typeof ProjectsProjectIdRoute
     }
     '/browse/$source/shelf/$shelfId': {
       id: '/browse/$source/shelf/$shelfId'
@@ -446,40 +372,22 @@ const BrowseRouteChildren: BrowseRouteChildren = {
 const BrowseRouteWithChildren =
   BrowseRoute._addFileChildren(BrowseRouteChildren)
 
-interface ProjectsProjectIdRouteChildren {
-  ProjectsProjectIdIndexRoute: typeof ProjectsProjectIdIndexRoute
-  ProjectsProjectIdChaptersChapterIdRoute: typeof ProjectsProjectIdChaptersChapterIdRoute
+interface LibraryRouteChildren {
+  LibraryEntryEntryIdRoute: typeof LibraryEntryEntryIdRoute
 }
 
-const ProjectsProjectIdRouteChildren: ProjectsProjectIdRouteChildren = {
-  ProjectsProjectIdIndexRoute: ProjectsProjectIdIndexRoute,
-  ProjectsProjectIdChaptersChapterIdRoute:
-    ProjectsProjectIdChaptersChapterIdRoute,
+const LibraryRouteChildren: LibraryRouteChildren = {
+  LibraryEntryEntryIdRoute: LibraryEntryEntryIdRoute,
 }
 
-const ProjectsProjectIdRouteWithChildren =
-  ProjectsProjectIdRoute._addFileChildren(ProjectsProjectIdRouteChildren)
-
-interface ProjectsRouteChildren {
-  ProjectsProjectIdRoute: typeof ProjectsProjectIdRouteWithChildren
-  ProjectsIndexRoute: typeof ProjectsIndexRoute
-}
-
-const ProjectsRouteChildren: ProjectsRouteChildren = {
-  ProjectsProjectIdRoute: ProjectsProjectIdRouteWithChildren,
-  ProjectsIndexRoute: ProjectsIndexRoute,
-}
-
-const ProjectsRouteWithChildren = ProjectsRoute._addFileChildren(
-  ProjectsRouteChildren,
-)
+const LibraryRouteWithChildren =
+  LibraryRoute._addFileChildren(LibraryRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BrowseRoute: BrowseRouteWithChildren,
-  LibraryRoute: LibraryRoute,
+  LibraryRoute: LibraryRouteWithChildren,
   LoginRoute: LoginRoute,
-  ProjectsRoute: ProjectsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   AuthCallbackRoute: AuthCallbackRoute,
 }

@@ -5,9 +5,8 @@ import { FolderOpen, Compass, Settings, ChevronLeft, ChevronRight, Library } fro
 import { SidebarQuota } from './SidebarQuota'
 
 const NAV = [
-  { to: '/projects', label: 'Của tôi',     icon: FolderOpen, search: { filter: 'mine'   } },
-  { to: '/library',  label: 'Thư viện',    icon: Library,    search: undefined          },
-  { to: '/browse',   label: 'Duyệt nguồn', icon: Compass,    search: undefined          },
+  { to: '/library',  label: 'Thư viện',    icon: Library,    search: undefined },
+  { to: '/browse',   label: 'Duyệt nguồn', icon: Compass,    search: undefined },
 ] as const
 
 const NAV_FOOT = [
@@ -28,17 +27,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
-  const isActive = (to: string, filter?: string) => {
-    if (to !== '/projects') return location.pathname.startsWith(to)
-    // /projects is the active link only when we're on a /projects/*
-    // route. /browse and other top-level routes have their own entry
-    // and must not double-match here.
-    const onProjects =
-      location.pathname === '/projects' || location.pathname.startsWith('/projects/')
-    if (!onProjects) return false
-    const current = (location.search as { filter?: string })?.filter ?? 'mine'
-    return current === (filter ?? 'mine')
-  }
+  const isActive = (to: string) => location.pathname.startsWith(to)
 
   // Active item: surface-2 fill only. No floating bar — that pattern was
   // fragile (absolute positioning depending on container padding) and
@@ -58,7 +47,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
     Icon: typeof FolderOpen,
     search?: Record<string, string>,
   ) => {
-    const active = isActive(to, search?.filter)
+    const active = isActive(to)
     return (
       <Link
         key={`${to}:${search?.filter ?? ''}:${label}`}
