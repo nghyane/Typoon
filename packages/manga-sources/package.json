@@ -1,0 +1,9 @@
+{
+  "name": "@typoon/manga-sources",
+  "version": "0.1.0",
+  "description": "Declarative manga source manifests for the Typoon browse mode. Each *.json file describes one site (HappyMH, MangaDex, ...) — endpoints + selectors only, no executable code.",
+  "private": true,
+  "type": "module",
+  "main": "./index.json",
+  "files": ["*.json", "schema/*.json", "README.md"]
+}

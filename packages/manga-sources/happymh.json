@@ -1,0 +1,113 @@
+{
+  "id":        "happymh",
+  "name":      "HappyMH",
+  "host":      "m.happymh.com",
+  "homepage":  "https://m.happymh.com",
+  "languages": ["zh"],
+  "version":   "2.0",
+  "accent":    "rose",
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://m.happymh.com/apis/c/index?pn={page}",
+          "parse":   "json",
+          "pagination": { "type": "page", "pageSize": 24 },
+          "headers": { "Referer": "https://m.happymh.com/latest" },
+          "list":    "$.data.items[*]",
+          "extras":  { "code": "@manga_code" },
+          "fields": {
+            "title": "@name",
+            "cover": "@cover",
+            "url":   "=https://m.happymh.com/manga/{code}"
+          }
+        }
+      },
+      {
+        "id":    "popular-day",
+        "label": "Phổ biến hôm nay",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://m.happymh.com/rank/day",
+          "parse":  "html",
+          "list":   ".manga-rank",
+          "fields": {
+            "url":   "a@href",
+            "title": ".manga-title",
+            "cover": "mip-img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular-week",
+        "label": "Top tuần",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://m.happymh.com/rank/week",
+          "parse":  "html",
+          "list":   ".manga-rank",
+          "fields": {
+            "url":   "a@href",
+            "title": ".manga-title",
+            "cover": "mip-img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular-month",
+        "label": "Top tháng",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://m.happymh.com/rank/month",
+          "parse":  "html",
+          "list":   ".manga-rank",
+          "fields": {
+            "url":   "a@href",
+            "title": ".manga-title",
+            "cover": "mip-img@src"
+          }
+        }
+      }
+    ],
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "html",
+      "extract": "/manga/(?<code>[^/?#]+)",
+      "fields": {
+        "title":       ".mg-title",
+        "cover":       ".mg-cover mip-img@src",
+        "description": ".mg-sub-title"
+      }
+    },
+
+    "chaptersApi": {
+      "method":  "GET",
+      "url":     "https://m.happymh.com/v2.0/apis/manga/chapterByPage?code={code}&page=1&order=desc",
+      "parse":   "json",
+      "headers": { "X-Requested-With": "XMLHttpRequest" },
+      "list":    "$.data.items[*]",
+      "fields": {
+        "id":     "@id",
+        "number": "@order",
+        "label":  "@chapterName",
+        "url":    "=https://m.happymh.com/mangaread/{code}/{id}"
+      }
+    },
+
+    "chapter": {
+      "method":  "GET",
+      "url":     "https://m.happymh.com/v2.0/apis/manga/reading?code={code}&cid={cid}&v=v4.203411",
+      "extract": "/mangaread/(?<code>[^/?#]+)/(?<cid>[^/?#]+)",
+      "parse":   "json",
+      "headers": { "X-Requested-With": "XMLHttpRequest" },
+      "list":    "$.data.scans[*]",
+      "fields":  { "url": "@url" }
+    }
+  }
+}

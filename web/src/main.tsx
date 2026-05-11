@@ -10,6 +10,18 @@ if (new URLSearchParams(window.location.search).get('frame_id') != null) {
   sessionStorage.setItem('discord_activity', '1')
 }
 
+// Tag the document root when running inside Discord Activity so CSS
+// can switch safe-area sources: DA uses `--discord-safe-area-inset-*`
+// (set by the SDK on the iframe), plain browsers use `env(safe-area-
+// inset-*)`. Detection is host-based — `.discordsays.com` only ever
+// serves the DA iframe, the SDK isn't required.
+if (
+  window.location.hostname.endsWith('.discordsays.com') ||
+  sessionStorage.getItem('discord_activity') === '1'
+) {
+  document.documentElement.classList.add('da-host')
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -36,6 +48,12 @@ const router = createRouter({
 
 declare module '@tanstack/react-router' {
   interface Register { router: typeof router }
+  // Per-route shell + auth metadata. Read by AppLayout via useMatches().
+  // Defaults: chrome='app', auth='required'.
+  interface StaticDataRouteOption {
+    chrome?: 'app' | 'bare'
+    auth?:   'public' | 'required'
+  }
 }
 
 createRoot(document.getElementById('root')!).render(

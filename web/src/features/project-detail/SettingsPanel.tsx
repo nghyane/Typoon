@@ -9,7 +9,7 @@ import { cn } from '@shared/lib/cn'
 import { input, Spinner } from '@shared/ui/primitives'
 import { LangPicker, type LangOption } from '@shared/ui/LangPicker'
 import {
-  SettingsSection, SettingsRow, SettingsValue, SettingsToggle, SettingsAction,
+  SettingsSection, SettingsField, SettingsValue, SettingsToggle, SettingsAction,
   SettingsDivider, Textarea,
 } from '@shared/ui/SettingsForm'
 import { toast } from '@shared/ui/Toaster'
@@ -130,25 +130,25 @@ export function SettingsPanel({ project }: Props) {
         title="Thông tin chung"
         description="Hiển thị tên, mô tả và ngôn ngữ đích của bản dịch."
       >
-        <SettingsRow label="Tên dự án">
+        <SettingsField label="Tên dự án">
           <input
             value={draft.title}
             onChange={(e) => setDraft({ ...draft, title: e.target.value })}
             disabled={!isOwner}
             className={input}
           />
-        </SettingsRow>
+        </SettingsField>
 
-        <SettingsRow label="Mô tả" hint="Hiển thị trong danh sách dự án và mục Cộng đồng.">
+        <SettingsField label="Mô tả" hint="Hiển thị trong danh sách truyện của bạn và Hội Mê Truyện.">
           <Textarea
             value={draft.description}
             onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             disabled={!isOwner}
             rows={3}
           />
-        </SettingsRow>
+        </SettingsField>
 
-        <SettingsRow
+        <SettingsField
           label="Ngôn ngữ đích"
           hint="Render và bản dịch sẽ tạo bằng ngôn ngữ này."
         >
@@ -158,9 +158,9 @@ export function SettingsPanel({ project }: Props) {
             options={TARGET_LANGS}
             disabled={!isOwner}
           />
-        </SettingsRow>
+        </SettingsField>
 
-        <SettingsRow
+        <SettingsField
           label="Ảnh bìa"
           hint="Hiển thị trong danh sách dự án và trang chi tiết. Khuyến nghị tỷ lệ 2:3, JPG/PNG."
         >
@@ -170,7 +170,7 @@ export function SettingsPanel({ project }: Props) {
             uploading={uploadCover.isPending}
             onPick={onPickCover}
           />
-        </SettingsRow>
+        </SettingsField>
       </SettingsSection>
 
       <SettingsDivider />
@@ -182,7 +182,7 @@ export function SettingsPanel({ project }: Props) {
             title="Nguồn"
             description="Thông tin bản gốc — không thể chỉnh sửa."
           >
-            <SettingsRow label="URL">
+            <SettingsField label="URL">
               <SettingsValue>
                 <a
                   href={project.source_url}
@@ -193,10 +193,10 @@ export function SettingsPanel({ project }: Props) {
                   {project.source_url}
                 </a>
               </SettingsValue>
-            </SettingsRow>
-            <SettingsRow label="Ngôn ngữ nguồn">
+            </SettingsField>
+            <SettingsField label="Ngôn ngữ nguồn">
               <SettingsValue>{project.source_lang.toUpperCase()}</SettingsValue>
-            </SettingsRow>
+            </SettingsField>
           </SettingsSection>
           <SettingsDivider />
         </>
@@ -207,18 +207,18 @@ export function SettingsPanel({ project }: Props) {
         <>
           <SettingsSection
             title="Chia sẻ"
-            description="Cho phép thành viên khác trong cộng đồng xem dự án này."
+            description="Cho phép thành viên Hội Mê Truyện xem truyện này."
           >
-            <SettingsRow
-              label="Chia sẻ với cộng đồng"
-              hint="Bật để dự án xuất hiện trong mục Cộng đồng. Chỉ chủ dự án có quyền sửa."
+            <SettingsField
+              label="Chia sẻ vào Hội Mê Truyện"
+              hint="Bật để truyện xuất hiện trong Hội Mê Truyện. Chỉ chủ dự án có quyền sửa."
             >
               <SettingsToggle
                 checked={project.shared}
                 disabled={toggleShare.isPending}
                 onChange={(v) => toggleShare.mutate(v)}
               />
-            </SettingsRow>
+            </SettingsField>
           </SettingsSection>
           <SettingsDivider />
         </>
@@ -258,7 +258,7 @@ export function SettingsPanel({ project }: Props) {
 
       {/* Sticky save bar — only when form is dirty */}
       {dirty && isOwner && (
-        <div className="fixed bottom-[calc(3.5rem+0.75rem)] sm:bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface rounded-md pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]">
+        <div className="fixed bottom-[calc(3.5rem+0.75rem+var(--saib))] sm:bottom-[calc(1.25rem+var(--saib))] left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface rounded-md pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]">
           <span className="text-sm text-text-muted">Có thay đổi chưa lưu</span>
           <Button onClick={reset} disabled={save.isPending}>
             Huỷ

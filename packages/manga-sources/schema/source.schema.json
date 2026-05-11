@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title":   "Typoon manga source manifest",
+  "type":    "object",
+  "required": ["id", "name", "host", "version", "endpoints"],
+  "additionalProperties": false,
+  "properties": {
+    "id":       { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "name":     { "type": "string", "minLength": 1, "maxLength": 64 },
+    "host":     { "type": "string", "minLength": 3 },
+    "language": { "type": "string", "minLength": 2, "maxLength": 8 },
+    "version":  { "type": "string" },
+    "icon":     { "type": "string" },
+    "nsfw":     { "type": "boolean" },
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "popular": { "$ref": "#/definitions/listEndpoint" },
+        "latest":  { "$ref": "#/definitions/listEndpoint" },
+        "search":  { "$ref": "#/definitions/listEndpoint" },
+        "manga":   { "$ref": "#/definitions/mangaEndpoint" },
+        "chapter": { "$ref": "#/definitions/listEndpoint" }
+      }
+    }
+  },
+
+  "definitions": {
+    "httpRequest": {
+      "type": "object",
+      "required": ["url"],
+      "properties": {
+        "method":  { "enum": ["GET", "POST"] },
+        "url":     { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body":    { "type": "string" },
+        "parse":   { "enum": ["html", "json"] }
+      }
+    },
+
+    "listEndpoint": {
+      "allOf": [
+        { "$ref": "#/definitions/httpRequest" },
+        {
+          "type": "object",
+          "required": ["list"],
+          "properties": {
+            "list":   { "type": "string" },
+            "fields": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+
+    "mangaEndpoint": {
+      "allOf": [
+        { "$ref": "#/definitions/httpRequest" },
+        {
+          "type": "object",
+          "properties": {
+            "fields": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "chapters": {
+              "type": "object",
+              "required": ["list", "url"],
+              "additionalProperties": false,
+              "properties": {
+                "list":   { "type": "string" },
+                "url":    { "type": "string" },
+                "number": { "type": "string" },
+                "title":  { "type": "string" },
+                "date":   { "type": "string" }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

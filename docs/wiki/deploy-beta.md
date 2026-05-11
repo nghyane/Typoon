@@ -1,16 +1,19 @@
 # Beta Deploy — macOS + Cloudflare Tunnel + Pages
 
 Single-host Mac deploy. FastAPI + workers run locally; Cloudflare
-Tunnel exposes the API; Cloudflare Pages serves the SPA. Chapter
-uploads go browser → R2 inbox direct, never through the home upstream
-or the tunnel.
+Tunnel exposes the API; Cloudflare Pages serves the SPA. In production
+every browser-facing path (`/`, `/api`, `/r2`, `/cdn`, `/t`) is fronted
+by the same Discord Activity host — Discord URL Mappings forward each
+prefix to the matching upstream. Browser → R2 chapter uploads still
+PUT directly to the inbox (via the `/r2` mapping), never through the
+home upstream.
 
 ```
-                    ┌─► CF Pages (mangalocal.com, static SPA)
-browser ─HTTPS──► CF edge
-                    └─► tunnel ─► localhost:8000  (FastAPI + workers)
-        │
-        └─PUT(zip) ──► R2 inbox  ◄─GET──  worker (after upload-finalize)
+                                ┌─► CF Pages (mangalocal.com, static SPA)
+browser ─HTTPS──► DA proxy ─────┤
+        (single public origin)  ├─► tunnel ─► localhost:8000  (FastAPI + workers)
+                                ├─► bunle CDN  /cdn/t/...     (render archives)
+                                └─► R2        /r2/...         (chapter inbox)
 ```
 
 ---
@@ -46,9 +49,9 @@ DISCORD_CLIENT_SECRET=<secret>
 DISCORD_GUILD_ID=<snowflake>
 DISCORD_BOOTSTRAP_ID=<user-snowflake>   # first admin
 
-PUBLIC_API_URL=https://api.mangalocal.com
-PUBLIC_WEB_URL=https://mangalocal.com
-TRUSTED_HOSTS=api.mangalocal.com,mangalocal.com,localhost,127.0.0.1
+PUBLIC_BASE_URL=https://927251094806098001.discordsays.com
+EXTRA_WEB_ORIGINS=https://mangalocal.com,https://www.mangalocal.com
+TRUSTED_HOSTS=api.mangalocal.com,mangalocal.com,localhost,127.0.0.1,*.discordsays.com
 
 JWT_SECRET=<86-char urlsafe token>
 
@@ -163,7 +166,7 @@ wrangler login
 ```bash
 cd web
 # .env.production must exist:
-echo "VITE_API_URL=https://api.mangalocal.com" > .env.production
+echo "VITE_PUBLIC_BASE_URL=https://927251094806098001.discordsays.com" > .env.production
 bun install --frozen-lockfile
 bun run build          # outputs web/dist/
 ```
@@ -308,9 +311,10 @@ tail -f ~/Library/Logs/cloudflared-typoon.log
 ## 5. Storage
 
 Render archives live on HuggingFace (`HF_REPO`), served via the bunle
-CDN through the Discord Activity proxy (`HF_CDN_PREFIX`). The SPA runs
-cross-origin (CF Pages at `mangalocal.com` ≠ API at
-`api.mangalocal.com`), so a public CDN is required.
+CDN through the Discord Activity proxy (`HF_CDN_PREFIX`). Every public
+path — including chapter readers — flows through the DA host
+(`/cdn/t/...` URL Mapping → bunle CDN), so the SPA can ship the same
+absolute URLs whether the user is inside or outside the DA iframe.
 
 Render URL pattern:
 
@@ -357,9 +361,13 @@ R2 bucket → Settings → CORS Policy:
 ]
 ```
 
-The DA origin (`*.discordsays.com`) is required because users running
-the SPA inside the Discord Activity iframe PUT from that origin, not
-from `mangalocal.com`.
+The DA origin (`*.discordsays.com`) is the primary one — every
+production browser-direct PUT goes through the DA `/r2` URL Mapping,
+so the request the bucket sees has `Origin: https://<da-host>` even
+when the user opened the SPA on `mangalocal.com`. `mangalocal.com` is
+listed for completeness (preview builds and CORS preflight from the
+SPA itself), and `chrome-extension://...` for the browser importer
+which talks to R2 directly without DA.
 
 ### Lifecycle — sweep aborted uploads
 
@@ -441,8 +449,18 @@ These were added during beta setup and are active in the codebase:
 | SSE `Cache-Control: no-cache, no-transform` | Prevent CF buffering event stream |
 | `LocalArtifactStore(api_origin=...)` | Absolute URLs for cross-origin SPA |
 
-`TRUSTED_HOSTS` env var overrides the auto-derived list from
-`PUBLIC_API_URL` + `PUBLIC_WEB_URL`.
+`TRUSTED_HOSTS` env var lists the hostnames the engine accepts on the
+Host header. Auto-derived from `PUBLIC_BASE_URL` in dev, but in
+production the tunnel ingress hostname differs from the public origin
+and `TRUSTED_HOSTS` MUST be set explicitly.
+
+`EXTRA_WEB_ORIGINS` extends the CORS allow-list past `PUBLIC_BASE_URL`.
+Required whenever the SPA is served from a host different than the
+public origin — typically `mangalocal.com` (CF Pages) cross-origins
+to the DA host `discordsays.com` to reach the API. Without it every
+plain-web fetch fails with "Disallowed CORS origin" (the page loads
+but every API call 400s, so `/projects` crashes). DA origins are
+always allowed via a built-in `*.discordsays.com` regex.
 
 ---
 
@@ -456,24 +474,41 @@ App ID = `927251094806098001` (same as `DISCORD_CLIENT_ID`).
 2. **Activities → Settings** — enable the activity, enable Web/iOS/Android as needed.
 3. **URL Mappings** (under Activities → Settings):
 
-   | Prefix  | Target                        |
-   |---------|-------------------------------|
-   | `/`     | `mangalocal.com`              |
-   | `/api`  | `api.mangalocal.com/api`      |
-   | `/files`| `api.mangalocal.com/files`    |
+   | Prefix  | Target                                                |
+   |---------|-------------------------------------------------------|
+   | `/`     | `mangalocal.com`                                      |
+   | `/api`  | `api.mangalocal.com/api`                              |
+   | `/files`| `api.mangalocal.com/files`                            |
+   | `/cdn`  | `bunle-cdn-16g.pages.dev`                             |
+   | `/lens` | `lensfrontend-pa.googleapis.com`                      |
+   | `/t`    | `huggingface.co/datasets/nghyane/mcz-cdn/resolve/main`|
+   | `/r2`   | `<account>.r2.cloudflarestorage.com`                  |
 
    > Target must include the path prefix so Discord does not strip it on forward.
+   > The `/r2` mapping is what makes browser-direct chapter uploads work
+   > inside the DA iframe — the SPA receives presigned URLs already
+   > rewritten to `<da-host>/r2/<bucket>/<key>?...` and the proxy forwards
+   > to the R2 host while preserving the Host header SigV4 signed.
 
 4. **OAuth2 → Redirects** — add `https://127.0.0.1` (SDK placeholder URI).
 
 ### How it works
 
-- SPA detects DA via `window.location.hostname.endsWith('.discordsays.com')`.
-- In DA, `API_BASE = ''` — all fetch calls use relative paths (`/api/...`).
-- Discord proxy forwards `/api/*` → `https://api.mangalocal.com/api/*` per URL Mapping.
-- Login is automatic: SDK `authorize` command triggers Discord's native consent UI,
-  code is exchanged via `/api/auth/discord/exchange` with `redirect_uri = https://127.0.0.1`.
-- `TRUSTED_HOSTS` includes `*.discordsays.com` to allow Host header from Discord proxy.
+- One public origin everywhere: `https://<app_id>.discordsays.com`.
+  - Inside DA: same-origin (`API_BASE = ''`); Discord proxy is the
+    only network exit and forwards each prefix to its target.
+  - Outside DA (plain browser on `mangalocal.com`): the SPA cross-
+    origins to the same DA host. CORS allows it via the
+    `*.discordsays.com` regex; R2 CORS exposes `ETag` for both.
+- The engine emits R2 presigned URLs already pointed at
+  `<da-host>/r2/...` (see `_rewrite_presigned_for_public` in
+  `routes/upload.py`). The SDK PUTs whatever URL it gets — no
+  client-side branching.
+- Login: SDK `authorize` triggers Discord's native consent UI, the
+  code is exchanged via `/api/auth/discord/exchange` with
+  `redirect_uri = https://127.0.0.1`.
+- `TRUSTED_HOSTS` includes the tunnel ingress hostname AND the DA
+  host so uvicorn accepts both Host headers.
 
 ### `.env` additions required
 

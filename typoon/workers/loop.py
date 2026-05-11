@@ -57,6 +57,7 @@ from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.config import Config
+from typoon.llm import TransientCredentialError, UpstreamUnavailable
 from typoon.paths import Paths
 from typoon.runs.events import (
     CompositeHook, Event, Hook, LoggingHook, PageDone, StageDone,
@@ -135,6 +136,13 @@ class Role(StrEnum):
     api     = "api"
     storage = "storage"
     full    = "full"
+
+
+# Sleep this long before letting the pump re-claim after a transient
+# upstream failure. Long enough to ride out a brief credential rotation
+# and avoid hot-looping the broken endpoint; short enough that a fixed
+# config reaches the next claim within a chapter's editing window.
+_REQUEUE_BACKOFF_SECONDS = 60.0
 
 
 _STAGES_BY_ROLE: dict[Role, tuple[str, ...]] = {
@@ -365,6 +373,21 @@ async def _run_one(
     try:
         await _HANDLERS[stage](ctx, chapter_id, project_id)
         ctx.hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage=stage))
+    except (TransientCredentialError, UpstreamUnavailable) as e:
+        # Provider is sick (token revoked, credential pool empty,
+        # gateway 5xx). Don't burn an attempt — release the claim and
+        # let the next pump cycle pick the chapter up. Sleep first so
+        # we don't immediately re-claim and hammer the same broken
+        # endpoint while the operator is still rotating credentials.
+        logger.warning(
+            "%s requeue chapter_id=%d (%s): %s",
+            stage, chapter_id, type(e).__name__, e,
+        )
+        await ctx.db.requeue_task(chapter_id, stage, str(e))
+        ctx.hook.on(StageFailed(
+            chapter_id=chapter_id, project_id=project_id, stage=stage, error=e,
+        ))
+        await asyncio.sleep(_REQUEUE_BACKOFF_SECONDS)
     except Exception as e:
         logger.exception("%s failed chapter_id=%d", stage, chapter_id)
         await ctx.db.fail_task(chapter_id, stage, str(e))
@@ -497,7 +520,7 @@ async def run_workers(
     inbox = build_inbox(
         config.storage,
         paths_root=paths.artifacts,
-        base_url=config.server.public_api_url,
+        base_url=config.server.public_base_url,
     )
 
     ctx = StageContext(

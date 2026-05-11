@@ -1,0 +1,135 @@
+{
+  "id":        "otruyen",
+  "name":      "OTruyen",
+  "host":      "otruyenapi.com",
+  "homepage":  "https://otruyen.cc",
+  "languages": ["vi"],
+  "version":   "2.0",
+  "accent":    "emerald",
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://otruyenapi.com/v1/api/danh-sach/truyen-moi?page={page}",
+          "parse":  "json",
+          "pagination": { "type": "page", "pageSize": 24 },
+          "list":   "$.data.items[*]",
+          "extras": {
+            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
+            "thumb": "@thumb_url",
+            "slug":  "@slug"
+          },
+          "fields": {
+            "title": "@name",
+            "url":   "=https://otruyenapi.com/v1/api/truyen-tranh/{slug}",
+            "cover": "={cdn}/uploads/comics/{thumb}"
+          }
+        }
+      },
+      {
+        "id":    "ongoing",
+        "label": "Đang ra",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://otruyenapi.com/v1/api/danh-sach/dang-phat-hanh?page={page}",
+          "parse":  "json",
+          "pagination": { "type": "page", "pageSize": 24 },
+          "list":   "$.data.items[*]",
+          "extras": {
+            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
+            "thumb": "@thumb_url",
+            "slug":  "@slug"
+          },
+          "fields": {
+            "title": "@name",
+            "url":   "=https://otruyenapi.com/v1/api/truyen-tranh/{slug}",
+            "cover": "={cdn}/uploads/comics/{thumb}"
+          }
+        }
+      },
+      {
+        "id":    "completed",
+        "label": "Đã hoàn thành",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://otruyenapi.com/v1/api/danh-sach/hoan-thanh?page={page}",
+          "parse":  "json",
+          "pagination": { "type": "page", "pageSize": 24 },
+          "list":   "$.data.items[*]",
+          "extras": {
+            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
+            "thumb": "@thumb_url",
+            "slug":  "@slug"
+          },
+          "fields": {
+            "title": "@name",
+            "url":   "=https://otruyenapi.com/v1/api/truyen-tranh/{slug}",
+            "cover": "={cdn}/uploads/comics/{thumb}"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://otruyenapi.com/v1/api/tim-kiem?keyword={q:q}",
+      "parse":  "json",
+      "list":   "$.data.items[*]",
+      "extras": {
+        "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
+        "thumb": "@thumb_url",
+        "slug":  "@slug"
+      },
+      "fields": {
+        "title": "@name",
+        "url":   "=https://otruyenapi.com/v1/api/truyen-tranh/{slug}",
+        "cover": "={cdn}/uploads/comics/{thumb}"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "json",
+      "extract": "/truyen-tranh/(?<slug>[^/?#]+)",
+      "extras": {
+        "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
+        "thumb": "$.data.item.thumb_url"
+      },
+      "fields": {
+        "title":       "$.data.item.name",
+        "description": "$.data.item.content",
+        "author":      "$.data.item.author[0]",
+        "status":      "$.data.item.status",
+        "cover":       "={cdn}/uploads/comics/{thumb}"
+      },
+      "chapters": {
+        "list":   "$.data.item.chapters[0].server_data[*]",
+        "fields": {
+          "number": "@chapter_name",
+          "title":  "@chapter_title",
+          "url":    "@chapter_api_data"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "json",
+      "pages": {
+        "extras": {
+          "cdn":   "$.data.domain_cdn",
+          "path":  "$.data.item.chapter_path",
+          "files": "$.data.item.chapter_image[*]@image_file"
+        },
+        "iterate":  "files",
+        "template": "{cdn}/{path}/{file}"
+      }
+    }
+  }
+}

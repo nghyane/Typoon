@@ -6,10 +6,11 @@ const TOKEN_KEY  = 'typoon_token'
 const ERROR_KEY  = 'typoon_login_error'
 const STATE_KEY  = 'typoon_oauth_state'
 
-// In DA, Discord proxy handles relative /api/* paths via URL Mappings on the portal.
-// Outside DA, VITE_API_URL is set for cross-origin (CF Pages → API).
+// One public origin in production: the DA host fronts /api too.
+// Inside the DA iframe we use same-origin paths; outside (plain
+// browser hitting the SPA) we cross-origin to the same DA host.
 const isDA = window.location.hostname.endsWith('.discordsays.com')
-const API_BASE = isDA ? '' : (import.meta.env.VITE_API_URL ?? '')
+const API_BASE = isDA ? '' : (import.meta.env.VITE_PUBLIC_BASE_URL ?? '')
 
 export interface AuthUser {
   id:            number
@@ -136,7 +137,7 @@ export async function discordActivityLogin(clientId: string): Promise<string> {
     response_type: 'code',
     state:         '',
     prompt:        'none',
-    scope:         ['identify', 'email', 'guilds', 'guilds.members.read'],
+    scope:         ['identify', 'email', 'guilds', 'guilds.members.read', 'rpc.activities.write'],
   })
   // DA redirect_uri placeholder — must be registered in Discord Developer Portal → OAuth2 → Redirects
   return exchangeCode(code, 'https://127.0.0.1')

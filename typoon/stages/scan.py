@@ -17,6 +17,17 @@ from typoon.runs.events import Hook, PageDone
 from typoon.vision.grouping import ScanState, export_groups
 
 
+# PaddleOCR DBNet (CoreML) input has a RangeDim of 128..2048 on both
+# axes — a tile shorter than 128px on either side will fault deep in
+# the model with "Size (32) of dimension (2) is not in allowed range".
+# `prepare` slices webtoon strips into ~4k-tall chunks plus a tail
+# that holds the leftover pixels; when the strip length divides
+# evenly the tail can collapse to a few px (we've seen 8 and 15px).
+# Those slivers never carry text, so we skip them with an empty
+# bubble list rather than fail the whole chapter.
+_MIN_PAGE_DIM = 128
+
+
 @dataclass(frozen=True)
 class ScanOutput:
     """Output of scan_chapter — pure data, no persistence logic."""
@@ -84,8 +95,23 @@ def scan_chapter(
 
     for index in range(total):
         image = reader.read_rgb(index)
-        state = runtime.scan_page_state(image, source_lang=source_lang)
         h, w  = image.shape[:2]
+
+        if min(h, w) < _MIN_PAGE_DIM:
+            # Skip slivers — no text to find, and the detector would
+            # reject the input anyway.
+            pages.append(scan.Page(index=index, width=w, height=h, bubbles=()))
+            geometry.append(PageGeometry(
+                page_index=index, width=w, height=h, bubbles=(),
+            ))
+            if hook is not None:
+                hook.on(PageDone(
+                    chapter_id=chapter_id, project_id=project_id,
+                    stage="scan", page_index=index, page_total=total,
+                ))
+            continue
+
+        state = runtime.scan_page_state(image, source_lang=source_lang)
 
         bubbles, page_geom, page_masks = _extract_page(index, state, w, h)
 

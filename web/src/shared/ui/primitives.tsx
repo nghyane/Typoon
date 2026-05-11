@@ -69,6 +69,54 @@ export function Badge({
   )
 }
 
+// ── tag — labels / metadata chips ───────────────────────────────────────────
+// Used for language codes ("EN", "ZH"), source kind ("Chính thức",
+// "Cộng đồng"), NSFW marker, etc. Unlike Badge (status with dot),
+// Tag is for static metadata.
+
+export type TagTone = 'neutral' | 'accent' | 'info' | 'success' | 'warning' | 'error' | 'outline'
+
+const TAG_TONE: Record<TagTone, string> = {
+  neutral: 'bg-surface-2 text-text-muted',
+  accent:  'bg-accent-bg text-accent-text',
+  info:    'bg-info-bg text-info-text',
+  success: 'bg-success-bg text-success-text',
+  warning: 'bg-warning-bg text-warning-text',
+  error:   'bg-error-bg text-error-text',
+  outline: 'bg-transparent text-text-subtle ring-1 ring-inset ring-border-soft',
+}
+
+const TAG_SIZE = {
+  sm: 'h-5 px-1.5 text-[10px] gap-1',
+  md: 'h-6 px-2 text-[11px] gap-1.5',
+} as const
+
+export function Tag({
+  tone = 'neutral',
+  size = 'md',
+  uppercase = false,
+  children,
+  className,
+}: {
+  tone?:    TagTone
+  size?:    keyof typeof TAG_SIZE
+  uppercase?: boolean
+  children: React.ReactNode
+  className?: string
+}) {
+  return (
+    <span className={cn(
+      'inline-flex items-center rounded-xs font-semibold tracking-tight whitespace-nowrap',
+      TAG_TONE[tone],
+      TAG_SIZE[size],
+      uppercase && 'uppercase tracking-wider',
+      className,
+    )}>
+      {children}
+    </span>
+  )
+}
+
 // ── card / list shells ─────────────────────────────────────────────────────
 
 export const card = 'bg-surface rounded-md'

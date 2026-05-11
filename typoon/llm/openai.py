@@ -9,6 +9,7 @@ from __future__ import annotations
 import openai
 
 from ._retry import parse_retry_after_header, with_retry
+from .errors import TransientCredentialError, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -19,6 +20,44 @@ from .ir import (
 )
 
 _TIMEOUT = 300
+
+# Substrings the proxy emits when its credential pool is empty / a key
+# was revoked. Distinct from a model's own auth pushback (e.g. plain
+# "unauthorized") so we don't reclassify legit user-config errors as
+# transient. Bifrost: `no available credential for provider`. Upstream
+# Codex/LunchDock: `token_invalidated`, `Your authentication token has
+# been invalidated`.
+_CREDENTIAL_HINTS = (
+    "token_invalidated",
+    "no available credential",
+    "credential has been invalidated",
+    "authentication token has been invalidated",
+)
+
+
+def _looks_like_credential_failure(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(hint.lower() in msg for hint in _CREDENTIAL_HINTS)
+
+
+def _classify_status_error(exc: openai.APIStatusError) -> Exception | None:
+    """Translate a non-retryable APIStatusError into our taxonomy.
+
+    Returns the wrapped exception to raise, or None to let the original
+    propagate untouched (caller path: bugs / 4xx user errors).
+    """
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return TransientCredentialError(str(exc))
+    if status is not None and 500 <= status < 600:
+        # 5xx that survived `with_retry` (budget exhausted). Treat as
+        # upstream-down so the chapter requeues instead of dying.
+        return UpstreamUnavailable(str(exc))
+    if _looks_like_credential_failure(exc):
+        # Some proxies surface credential issues as 200/4xx with a JSON
+        # error body — catch that path too.
+        return TransientCredentialError(str(exc))
+    return None
 
 
 def _parse_retry_after(exc: BaseException) -> float | None:
@@ -82,12 +121,18 @@ class OpenAIProvider:
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
 
-        resp = await with_retry(
-            lambda: self._client.chat.completions.create(**kwargs),
-            is_retryable=_is_retryable,
-            parse_retry_after=_parse_retry_after,
-            provider="openai",
-        )
+        try:
+            resp = await with_retry(
+                lambda: self._client.chat.completions.create(**kwargs),
+                is_retryable=_is_retryable,
+                parse_retry_after=_parse_retry_after,
+                provider="openai",
+            )
+        except openai.APIStatusError as exc:
+            wrapped = _classify_status_error(exc)
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
 
         if not resp.choices:
             raise RuntimeError(

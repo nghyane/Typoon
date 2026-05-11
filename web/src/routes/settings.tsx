@@ -1,56 +1,95 @@
+// =============================================================================
+// /settings — 2-column layout with URL-bound section nav.
+//
+//   ┌───────────────┬──────────────────────────────────────┐
+//   │  Rail nav     │  Section content                     │
+//   │  • Tài khoản  │  (account / sources / tokens)        │
+//   │  • Nguồn      │                                       │
+//   │  • Tokens     │                                       │
+//   └───────────────┴──────────────────────────────────────┘
+//
+// Visual rules:
+//   - Solid `bg-surface` lists, `border-soft` dividers, no card chrome.
+//   - Section header inline with primary action.
+//   - Empty / loaded / list states swap *inside* the same list shell.
+//   - No emoji; status uses `Badge` (with dot) and `Tag` (labels).
+// =============================================================================
+
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Copy, Check, Trash2, Key, ShieldAlert, Zap } from 'lucide-react'
+import {
+  Plus, Copy, Check, Trash2, Key, ShieldAlert, Zap,
+  UserCircle2, Compass, Power, PowerOff, ExternalLink,
+} from 'lucide-react'
 import { api, type ApiTokenInfo } from '@shared/api/api'
 import { Button } from '@shared/ui/Button'
-import { input as inputCls, label as labelCls, Spinner } from '@shared/ui/primitives'
-import { SettingsSection, SettingsDivider } from '@shared/ui/SettingsForm'
+import {
+  Spinner, Tag, input as inputCls, label as labelCls,
+} from '@shared/ui/primitives'
+import {
+  SettingsRail, SettingsSection, SettingsList, SettingsListRow,
+  useSettingsTab,
+  type SettingsTab,
+} from '@shared/ui/SettingsForm'
 import { DataTable, Th } from '@shared/ui/DataTable'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { toast } from '@shared/ui/Toaster'
 import { Modal } from '@shared/ui/Modal'
 import { confirm } from '@shared/ui/Confirm'
 import { timeAgo } from '@shared/lib/time'
+import { languageSummary, MULTI_LANG } from '@shared/lib/lang'
 import { cn } from '@shared/lib/cn'
+import {
+  useSources, useEnabledSources, bundledManifests,
+} from '@features/browse/sources'
+import type { InstalledSource } from '@features/browse/manifest/types'
+
+// ── tab registry ────────────────────────────────────────────────────────────
+
+const TABS: SettingsTab[] = [
+  { id: 'account', label: 'Tài khoản',   icon: UserCircle2, hint: 'Quota và profile' },
+  { id: 'sources', label: 'Nguồn truyện', icon: Compass,     hint: 'Quản lý nguồn duyệt manga' },
+  { id: 'tokens',  label: 'API tokens',  icon: Key,         hint: 'Cho extension Typoon' },
+]
 
 const TOKEN_NAME_MIN = 2
 const TOKEN_NAME_MAX = 40
 
-// =============================================================================
-// Account-level settings page. One section (API tokens) — but laid out so a
-// future second section drops in without restructuring: page header on top,
-// `SettingsSection` blocks below with `SettingsDivider` between them.
-//
-// Visual rules:
-//   - No decorative icon-box at the page header (sidebar item is the context).
-//   - Section primary action stays in the header row, visible in every state
-//     so it doesn't jump between empty / list.
-//   - Single bordered container; inner state (loading / empty / list) swaps
-//     without changing the outer frame.
-//   - Solid `bg-surface` (no alpha). Matches project-detail cards.
-// =============================================================================
+// ── page shell ──────────────────────────────────────────────────────────────
 
 function SettingsPage() {
+  const [active, setActive] = useSettingsTab('account')
+
   return (
-    <div className="px-6 pt-8 pb-20 max-w-3xl">
-      <header>
+    <div className="max-w-screen-xl mx-auto px-4 sm:px-6 pt-8 pb-20">
+      <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-text">Cài đặt</h1>
-        <p className="text-sm text-text-subtle mt-1">Quản lý tài khoản và quyền truy cập của bạn.</p>
+        <p className="text-sm text-text-subtle mt-1">
+          Quản lý tài khoản, nguồn duyệt manga và quyền truy cập.
+        </p>
       </header>
 
-      <QuotaSection />
-      <SettingsDivider />
-      <TokensSection />
+      <div className="flex flex-col sm:flex-row gap-6 sm:gap-10">
+        <SettingsRail tabs={TABS} active={active} onChange={setActive} />
+
+        <main className="flex-1 min-w-0 max-w-3xl">
+          {active === 'account' && <AccountTab />}
+          {active === 'sources' && <SourcesTab />}
+          {active === 'tokens'  && <TokensTab />}
+        </main>
+      </div>
     </div>
   )
 }
 
-// ── Quota ───────────────────────────────────────────────────────────────────
-//
-// Read-only summary of the per-user chapter quota that the API enforces on
-// upload+start, /start, /redo. Three meters: today / this hour / concurrent.
-// Hidden for admins (their quota is uncapped — showing 0/0 would mislead).
+// ════════════════════════════════════════════════════════════════════════════
+// 1. Account tab — quota only for now
+// ════════════════════════════════════════════════════════════════════════════
+
+function AccountTab() {
+  return <QuotaSection />
+}
 
 function QuotaSection() {
   const { data, isLoading } = useQuery({
@@ -75,7 +114,7 @@ function QuotaSection() {
         description="Tài khoản admin không bị giới hạn chương dịch."
       >
         <div className="flex items-center gap-2 text-[13px] text-text-muted">
-          <Zap size={14} className="text-emerald-400" />
+          <Zap size={14} className="text-success-text" />
           <span>Không giới hạn</span>
         </div>
       </SettingsSection>
@@ -85,24 +124,12 @@ function QuotaSection() {
   return (
     <SettingsSection
       title="Quota"
-      description="Mỗi lần dịch một chương (upload + start, start, redo) sẽ tốn 1 lượt. Quota reset theo cửa sổ trượt."
+      description="Mỗi lần dịch một chương (upload + start, start, redo) tốn 1 lượt. Reset theo cửa sổ trượt."
     >
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <QuotaMeter
-          label="Hôm nay"
-          used={data.used_day}
-          limit={data.limit_day}
-        />
-        <QuotaMeter
-          label="Trong giờ"
-          used={data.used_hour}
-          limit={data.limit_hour}
-        />
-        <QuotaMeter
-          label="Đang xử lý"
-          used={data.in_flight}
-          limit={data.limit_concurrent}
-        />
+        <QuotaMeter label="Hôm nay"     used={data.used_day}  limit={data.limit_day} />
+        <QuotaMeter label="Trong giờ"   used={data.used_hour} limit={data.limit_hour} />
+        <QuotaMeter label="Đang xử lý"  used={data.in_flight} limit={data.limit_concurrent} />
       </div>
     </SettingsSection>
   )
@@ -111,19 +138,19 @@ function QuotaSection() {
 function QuotaMeter({ label, used, limit }: { label: string; used: number; limit: number }) {
   const pct  = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
   const tone =
-    pct >= 90 ? 'bg-rose-500'
-    : pct >= 50 ? 'bg-amber-500'
-    : 'bg-emerald-500'
+    pct >= 90 ? 'bg-error'
+    : pct >= 50 ? 'bg-warning'
+    : 'bg-success'
   return (
-    <div className="rounded-md border border-border-soft bg-surface px-3 py-3">
+    <div className="rounded-md bg-surface px-3 py-3">
       <div className="flex items-baseline justify-between">
         <span className="text-[12px] text-text-subtle">{label}</span>
-        <span className="text-[13px] tabular-nums">
+        <span className="text-[13px] tabular">
           <span className="text-text font-medium">{used}</span>
           <span className="text-text-subtle">/{limit}</span>
         </span>
       </div>
-      <div className="mt-2 h-1.5 rounded-full bg-surface-2 overflow-hidden">
+      <div className="mt-2 h-1 rounded-full bg-surface-2 overflow-hidden">
         <div
           className={cn('h-full rounded-full transition-all', tone)}
           style={{ width: `${pct}%` }}
@@ -133,9 +160,158 @@ function QuotaMeter({ label, used, limit }: { label: string; used: number; limit
   )
 }
 
-// ── API tokens ──────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// 2. Sources tab — installed sources + (placeholder) install action
+// ════════════════════════════════════════════════════════════════════════════
 
-function TokensSection() {
+function SourcesTab() {
+  // Hydrate bundled manifests on first mount so the list isn't empty
+  // for a fresh user.
+  const ensureBundled = useSources((s) => s.ensureBundled)
+  useEffect(() => { ensureBundled() }, [ensureBundled])
+
+  const sources = useEnabledSources()
+  const allInstalled = bundledManifests.length
+
+  return (
+    <SettingsSection
+      title="Nguồn truyện"
+      description="Nguồn cung cấp manga cho mục Duyệt. Tắt nguồn không dùng đến để giảm nhiễu khi tìm kiếm. Tính năng cài thêm từ repo cộng đồng đang được phát triển."
+      action={
+        <Button disabled title="Sắp ra mắt — cài từ repo URL / JSON file">
+          <Plus size={13} />
+          Thêm nguồn
+        </Button>
+      }
+    >
+      {sources.length === 0 && allInstalled === 0 ? (
+        <EmptyState
+          icon={Compass}
+          title="Chưa có nguồn nào"
+          hint="Nguồn chính thức sẽ tự động cài khi bạn mở mục Duyệt lần đầu."
+        />
+      ) : (
+        <SettingsList>
+          {Object.values(useSources.getState().sources).map((s) => (
+            <SourceRow key={s.manifest.id} source={s} />
+          ))}
+        </SettingsList>
+      )}
+    </SettingsSection>
+  )
+}
+
+const ORIGIN_LABEL: Record<InstalledSource['origin'], string> = {
+  bundled: 'Chính thức',
+  repo:    'Từ repo',
+  file:    'Tự cài',
+}
+
+function SourceRow({ source }: { source: InstalledSource }) {
+  const { manifest, enabled, origin, author } = source
+  const setEnabled = useSources((s) => s.setEnabled)
+  const remove     = useSources((s) => s.remove)
+
+  const langs = manifest.languages
+  const isMulti = langs.length > 1 || langs.includes(MULTI_LANG)
+  const langTag = isMulti ? 'MULTI' : (langs[0] ?? '').toUpperCase()
+
+  const askRemove = async () => {
+    const ok = await confirm({
+      title:       `Gỡ "${manifest.name}"?`,
+      description: 'Nguồn không còn xuất hiện trong Duyệt. Bạn có thể cài lại từ kho.',
+      confirmText: 'Gỡ',
+      tone:        'danger',
+    })
+    if (ok) remove(manifest.id)
+  }
+
+  return (
+    <SettingsListRow className="gap-4">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className={cn(
+            'text-sm font-medium truncate',
+            enabled ? 'text-text' : 'text-text-subtle',
+          )}>
+            {manifest.name}
+          </span>
+          {langTag && (
+            <Tag tone={isMulti ? 'info' : 'outline'} size="sm" uppercase>
+              {langTag}
+            </Tag>
+          )}
+          {manifest.nsfw && (
+            <Tag tone="error" size="sm" uppercase>NSFW</Tag>
+          )}
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-text-subtle">
+          <span className="truncate">{manifest.host}</span>
+          <span aria-hidden>·</span>
+          <span>v{manifest.version}</span>
+          <span aria-hidden>·</span>
+          <Tag tone="neutral" size="sm">{ORIGIN_LABEL[origin]}</Tag>
+          {author && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="truncate">{author}</span>
+            </>
+          )}
+        </div>
+      </div>
+
+      {manifest.homepage && (
+        <a
+          href={manifest.homepage}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(
+            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-xs',
+            'text-text-subtle hover:text-text hover:bg-hover transition-colors cursor-pointer',
+          )}
+          title="Mở trang gốc"
+        >
+          <ExternalLink size={12} />
+          <span className="hidden sm:inline">Trang gốc</span>
+        </a>
+      )}
+
+      <button
+        onClick={() => setEnabled(manifest.id, !enabled)}
+        title={enabled ? 'Tắt' : 'Bật'}
+        aria-label={enabled ? 'Tắt nguồn' : 'Bật nguồn'}
+        className={cn(
+          'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-xs cursor-pointer transition-colors',
+          enabled
+            ? 'text-accent-text bg-accent-bg hover:brightness-110'
+            : 'text-text-subtle bg-surface-2 hover:bg-hover hover:text-text',
+        )}
+      >
+        {enabled ? <Power size={12} /> : <PowerOff size={12} />}
+        <span className="hidden sm:inline">{enabled ? 'Đang bật' : 'Đã tắt'}</span>
+      </button>
+
+      {origin !== 'bundled' && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon
+          onClick={askRemove}
+          title="Gỡ nguồn"
+          className="text-text-subtle hover:text-error-text hover:bg-error/10"
+        >
+          <Trash2 size={13} />
+        </Button>
+      )}
+    </SettingsListRow>
+  )
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3. Tokens tab
+// ════════════════════════════════════════════════════════════════════════════
+
+function TokensTab() {
   const qc = useQueryClient()
   const [wizardOpen, setWizardOpen] = useState(false)
 
@@ -158,7 +334,7 @@ function TokensSection() {
       title:       `Thu hồi token "${t.name}"?`,
       description: (
         <>
-          Tool đang dùng token này sẽ <strong className="text-text">ngừng hoạt động</strong> ngay lập tức.
+          Tool đang dùng token này sẽ <strong className="text-text">ngừng hoạt động</strong> ngay.
           Hành động không thể hoàn tác.
         </>
       ),
@@ -172,7 +348,7 @@ function TokensSection() {
     <>
       <SettingsSection
         title="API tokens"
-        description="Token cho extension Typoon trên Chrome/Firefox truy cập tài khoản của bạn. Mỗi thiết bị dùng một token riêng và có thể thu hồi bất kỳ lúc nào."
+        description="Token cho extension Typoon trên Chrome / Firefox truy cập tài khoản. Mỗi thiết bị nên dùng một token riêng để dễ thu hồi khi mất."
         action={
           <Button variant="primary" onClick={() => setWizardOpen(true)}>
             <Plus size={13} />
@@ -206,7 +382,7 @@ function TokensSection() {
                   <EmptyState
                     icon={Key}
                     title="Chưa có token nào"
-                    hint="Tạo token để dùng với extension Typoon. Token sẽ hiện ở đây sau khi tạo."
+                    hint="Tạo token để dùng với extension Typoon. Token chỉ hiện 1 lần sau khi tạo."
                     action={
                       <Button variant="primary" onClick={() => setWizardOpen(true)}>
                         <Plus size={13} />
@@ -285,14 +461,7 @@ function TokenRow({
   )
 }
 
-// ── create wizard ──────────────────────────────────────────────────────────
-//
-// Single Modal with two steps so the user keeps spatial context: name → reveal.
-// Step 1 validates client-side (length + duplicate name) so we don't pay a
-// server round-trip for trivially bad input. Step 2 auto-selects + auto-copies
-// the token (best-effort, falls back to manual Copy button), and asks for an
-// explicit "Đã lưu" confirmation before allowing dismiss — avoids the user
-// closing by mistake before storing the secret.
+// ── create token wizard (carried over verbatim — UX is correct) ─────────────
 
 function CreateTokenWizard({
   open, onClose, existing,
@@ -306,8 +475,6 @@ function CreateTokenWizard({
   const [created, setCreated] = useState<{ token: string; name: string } | null>(null)
   const [confirmedSaved, setConfirmedSaved] = useState(false)
 
-  // Reset wizard whenever it (re)opens. Keeps the next session clean even if
-  // the previous one ended with a partially filled name or revealed token.
   useEffect(() => {
     if (open) {
       setName('')
@@ -326,22 +493,18 @@ function CreateTokenWizard({
   })
 
   const trimmed = name.trim()
-  const tooShort   = trimmed.length > 0 && trimmed.length < TOKEN_NAME_MIN
-  const tooLong    = trimmed.length > TOKEN_NAME_MAX
-  const duplicate  = !!trimmed && existing.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())
+  const tooShort  = trimmed.length > 0 && trimmed.length < TOKEN_NAME_MIN
+  const tooLong   = trimmed.length > TOKEN_NAME_MAX
+  const duplicate = !!trimmed && existing.some((t) => t.name.toLowerCase() === trimmed.toLowerCase())
   const validation =
-    tooShort  ? `Tên cần ít nhất ${TOKEN_NAME_MIN} ký tự`
-    : tooLong ? `Tên không quá ${TOKEN_NAME_MAX} ký tự`
+    tooShort   ? `Tên cần ít nhất ${TOKEN_NAME_MIN} ký tự`
+    : tooLong  ? `Tên không quá ${TOKEN_NAME_MAX} ký tự`
     : duplicate ? 'Đã có token với tên này'
     : null
   const canSubmit = !!trimmed && !validation && !create.isPending
-
   const submit = () => { if (canSubmit) create.mutate(trimmed) }
 
   const tryClose = async () => {
-    // After reveal: require explicit "đã lưu" confirmation before close.
-    // The user isn't trapped — they can still cancel — but an accidental
-    // Esc / backdrop click won't lose a non-recoverable secret.
     if (created && !confirmedSaved) {
       const ok = await confirm({
         title:       'Đóng mà chưa lưu token?',
@@ -397,10 +560,6 @@ function CreateStep({
 }) {
   const trimmed   = name.trim()
   const remaining = TOKEN_NAME_MAX - trimmed.length
-
-  // 4 ready-made suggestions cover the common shapes so the user doesn't have
-  // to invent a name. Click fills the field; a fresh field still gets focus
-  // so they can edit immediately.
   const SUGGESTIONS = ['Chrome extension', 'Firefox extension', 'MacBook', 'Tampermonkey']
 
   return (
@@ -425,11 +584,9 @@ function CreateStep({
           <p className={`text-xs leading-relaxed ${validation ? 'text-error-text' : 'text-text-subtle'}`}>
             {validation ?? 'Đặt tên để biết token này dùng cho công cụ nào. Chỉ bạn nhìn thấy.'}
           </p>
-          <span
-            className={`text-[11px] font-mono shrink-0 tabular-nums ${
-              remaining < 0 ? 'text-error-text' : 'text-text-subtle/60'
-            }`}
-          >
+          <span className={`text-[11px] font-mono shrink-0 tabular-nums ${
+            remaining < 0 ? 'text-error-text' : 'text-text-subtle/60'
+          }`}>
             {trimmed.length}/{TOKEN_NAME_MAX}
           </span>
         </div>
@@ -476,16 +633,12 @@ function RevealStep({
   const [copied, setCopied] = useState(false)
   const tokenRef = useRef<HTMLInputElement>(null)
 
-  // On reveal: best-effort auto-copy + auto-select. Auto-copy may fail in
-  // some browsers without an explicit user gesture in scope; the visible
-  // Copy button covers that path. Auto-select (focus + select all) always
-  // works and lets the user Cmd/Ctrl+C immediately.
   useEffect(() => {
     tokenRef.current?.focus()
     tokenRef.current?.select()
     void navigator.clipboard.writeText(token).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1800) },
-      () => { /* ignore — manual button still works */ },
+      () => { /* ignore */ },
     )
   }, [token])
 
@@ -500,6 +653,10 @@ function RevealStep({
     }
   }
 
+  // Plain meta — `_ = name` silences unused warning while keeping
+  // the prop for future caller flexibility.
+  void name
+
   return (
     <div className="space-y-4 p-5">
       <div className="flex items-start gap-2.5 p-3 rounded-sm bg-warning-bg">
@@ -512,7 +669,7 @@ function RevealStep({
       </div>
 
       <div>
-        <label className={labelCls}>{name}</label>
+        <label className={labelCls}>Token</label>
         <div className="flex items-stretch gap-2">
           <input
             ref={tokenRef}
@@ -549,6 +706,19 @@ function RevealStep({
   )
 }
 
+// ── route ────────────────────────────────────────────────────────────────────
+
+interface SearchParams {
+  section?: string
+}
+
 export const Route = createFileRoute('/settings')({
+  validateSearch: (s: Record<string, unknown>): SearchParams => ({
+    section: typeof s.section === 'string' ? s.section : undefined,
+  }),
   component: SettingsPage,
 })
+
+// Silence unused `languageSummary` import — currently helps describe
+// multi-language sources; reserved for the source-detail panel.
+void languageSummary

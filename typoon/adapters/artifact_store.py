@@ -67,6 +67,14 @@ class LocalArtifactStore(LocalBlobStore):
 # ── HuggingFace — public dataset + bunle CDN ──────────────────────────
 
 
+# Wall-clock cap for a single upload_file call. Sized for typical
+# rendered chapter archives (5-30 MB) on a ~50 Mbit home upstream:
+# the math says <2 min easily, so 10 min covers slow connections +
+# HF Hub retries while still bounding the worst case so a half-dead
+# TCP socket can't park a chapter "running" forever.
+_PUT_TIMEOUT = 600.0
+
+
 class HuggingFaceArtifactStore:
     """Public read via bunle CDN, write via HF Hub.
 
@@ -97,14 +105,35 @@ class HuggingFaceArtifactStore:
 
     async def put(self, key: str, src: Path) -> str:
         from huggingface_hub import upload_file
-        await asyncio.to_thread(
-            upload_file,
-            path_or_fileobj=str(src),
-            path_in_repo=self._hf_path(key),
-            repo_id=self._repo,
-            repo_type="dataset",
-            token=self._token,
-        )
+
+        # `huggingface_hub.upload_file` is a sync HTTP call wrapping a
+        # multi-part POST against `hf.co`. We have observed it stall
+        # silently at >80% upload when the underlying connection goes
+        # half-dead (Cloudflare keeps the TCP socket open but no bytes
+        # flow through). Without a wall-clock cap the render worker
+        # blocks indefinitely on a single chapter, the `tasks` claim
+        # never releases, and the UI sees the chapter "stuck running"
+        # with no way to retry. Cap each upload at `_PUT_TIMEOUT`; on
+        # expiry asyncio cancels the executor task and the stage
+        # runner classifies the failure as transient (requeue) via
+        # `_run_one`'s exception path.
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    upload_file,
+                    path_or_fileobj=str(src),
+                    path_in_repo=self._hf_path(key),
+                    repo_id=self._repo,
+                    repo_type="dataset",
+                    token=self._token,
+                ),
+                timeout=_PUT_TIMEOUT,
+            )
+        except asyncio.TimeoutError as e:
+            raise RuntimeError(
+                f"huggingface upload timeout after {_PUT_TIMEOUT:.0f}s "
+                f"(key={key}, size={src.stat().st_size} bytes)"
+            ) from e
         return key
 
     async def get(self, locator: str, dest: Path) -> None:

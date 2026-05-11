@@ -10,6 +10,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from ._retry import parse_retry_after_header, with_retry
+from .errors import TransientCredentialError, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -65,16 +66,24 @@ class GeminiProvider:
         if tools:
             config["tools"] = [_build_tools(tools)]
 
-        resp = await with_retry(
-            lambda: self._client.aio.models.generate_content(
-                model=self._model,
-                contents=contents,
-                config=types.GenerateContentConfig(**config),
-            ),
-            is_retryable=_is_retryable,
-            parse_retry_after=_parse_retry_after,
-            provider="gemini",
-        )
+        try:
+            resp = await with_retry(
+                lambda: self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(**config),
+                ),
+                is_retryable=_is_retryable,
+                parse_retry_after=_parse_retry_after,
+                provider="gemini",
+            )
+        except genai_errors.ClientError as exc:
+            code = getattr(exc, "code", None)
+            if code in (401, 403):
+                raise TransientCredentialError(str(exc)) from exc
+            raise
+        except genai_errors.ServerError as exc:
+            raise UpstreamUnavailable(str(exc)) from exc
 
         tool_calls: list[ToolCallMsg] = []
         text_parts: list[str] = []

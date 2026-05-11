@@ -78,8 +78,15 @@ _paths.ensure()
 # not the actual auth surface. Token revocation in /api/me/tokens is
 # the real lever.
 _origins = [
-    _config.server.public_web_url,
+    _config.server.public_base_url,
+    *_config.server.extra_web_origins,
     "https://discord.com",
+    # Local dev — Vite serves the SPA at this origin and pfetch()
+    # / api.ts hit the engine cross-origin. Cookie auth is not used,
+    # only Bearer tokens, so allowing localhost here does not widen
+    # the CSRF surface.
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 _extension_origin_re = (
     # Chrome / Edge: 32-char a-p ID.

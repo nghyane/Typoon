@@ -19,7 +19,8 @@ interface Props {
 export function SelectionBar({ count, onClear, onStart, pending }: Props) {
   return (
     <div className={cn(
-      'fixed bottom-[calc(3.5rem+0.75rem)] sm:bottom-5 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3',
+      'fixed left-1/2 -translate-x-1/2 z-50 flex items-center gap-3',
+      'bottom-[calc(3.5rem+0.75rem+var(--saib))] sm:bottom-[calc(1.25rem+var(--saib))]',
       card,
       'pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]',
     )}>

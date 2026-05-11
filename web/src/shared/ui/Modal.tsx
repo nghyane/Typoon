@@ -81,7 +81,10 @@ export function Modal({
   return (
     <div
       className={cn(
-        'fixed inset-0 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm',
+        'fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm',
+        'p-4',
+        'pt-[max(1rem,var(--sait))] pb-[max(1rem,var(--saib))]',
+        'pl-[max(1rem,var(--sail))] pr-[max(1rem,var(--sair))]',
         LAYER[layer],
       )}
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}

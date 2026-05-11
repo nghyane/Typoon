@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { api, type ApiChapter } from '@shared/api/api'
 import { Spinner } from '@shared/ui/primitives'
 import { Button } from '@shared/ui/Button'
@@ -8,6 +8,9 @@ import { ReaderToolbar, type ViewMode } from '@features/chapter-reader/ReaderToo
 import { PageImage } from '@features/chapter-reader/PageImage'
 import { useChapterArchive } from '@features/chapter-reader/useChapterArchive'
 import { useProjectEvents } from '@shared/lib/events'
+import {
+  clearReadingPresence, lockPortrait, setReadingPresence, unlockOrientation,
+} from '@shared/discord/presence'
 
 interface SearchParams {
   page?: number
@@ -56,9 +59,34 @@ function ChapterReaderPage() {
   const prev: ApiChapter | null = posInList > 0 ? sorted[posInList - 1]! : null
   const next: ApiChapter | null = posInList >= 0 && posInList < sorted.length - 1 ? sorted[posInList + 1]! : null
 
-  // Archive — opens once per chapter. The URL embeds an updated_at
-  // version so a re-render busts the CDN cache automatically.
-  const { bunle, loading: aLoading, error: aError } = useChapterArchive(current?.archive_url)
+  // Archive — opens once per chapter, then streams every page in a single
+  // HTTP request. `urls[i]` becomes available the moment page i's last
+  // byte arrives. The URL embeds an updated_at version so a re-render
+  // busts the CDN cache automatically.
+  const { bunle, urls, loading: aLoading, error: aError } = useChapterArchive(current?.archive_url)
+
+  // Discord Activity integration — Rich Presence + portrait lock.
+  //
+  // Presence fires whenever the displayed chapter (number/title) or
+  // project title change, so navigating prev/next within the reader
+  // updates the user's Discord status without a route remount.
+  // Portrait lock fires once on mount (idempotent); the unlock on
+  // unmount restores the activity-level default so the user can
+  // rotate again when they leave the reader.
+  const projectTitle  = project?.title ?? ''
+  const chapterNumber = current?.number ?? ''
+  const chapterTitle  = current?.title ?? null
+  useEffect(() => {
+    if (!projectTitle || !chapterNumber) return
+    setReadingPresence({ projectTitle, chapterNumber, chapterTitle })
+  }, [projectTitle, chapterNumber, chapterTitle])
+  useEffect(() => {
+    lockPortrait()
+    return () => {
+      unlockOrientation()
+      clearReadingPresence()
+    }
+  }, [])
 
   if (!current) {
     return (
@@ -115,9 +143,9 @@ function ChapterReaderPage() {
       )}
 
       {bunle && mode === 'continuous' && (
-        <div className="max-w-3xl mx-auto py-4 space-y-1.5">
+        <div className="max-w-3xl mx-auto">
           {bunle.pages.map((info) => (
-            <PageImage key={info.index} bunle={bunle} info={info} />
+            <PageImage key={info.index} info={info} src={urls[info.index] ?? null} />
           ))}
         </div>
       )}
@@ -125,6 +153,7 @@ function ChapterReaderPage() {
       {bunle && mode === 'single' && (
         <SinglePageView
           bunle={bunle}
+          urls={urls}
           page={page}
           onChange={setPage}
         />
@@ -134,9 +163,10 @@ function ChapterReaderPage() {
 }
 
 function SinglePageView({
-  bunle, page, onChange,
+  bunle, urls, page, onChange,
 }: {
   bunle:    NonNullable<ReturnType<typeof useChapterArchive>['bunle']>
+  urls:     ReturnType<typeof useChapterArchive>['urls']
   page:     number
   onChange: (p: number) => void
 }) {
@@ -146,7 +176,7 @@ function SinglePageView({
 
   return (
     <div className="max-w-3xl mx-auto py-4">
-      <PageImage bunle={bunle} info={info} lazy={false} />
+      <PageImage info={info} src={urls[info.index] ?? null} />
       <div className="flex items-center justify-between mt-4 px-2">
         <Button onClick={() => onChange(safe - 1)} disabled={safe <= 0}>
           ← Trang trước
@@ -170,4 +200,7 @@ export const Route = createFileRoute('/projects/$projectId/chapters/$chapterId')
     mode: s.mode === 'single' ? 'single' : undefined,
   }),
   component: ChapterReaderPage,
+  // Reader runs in bare shell — only ReaderToolbar at the top, document
+  // scrolls so the toolbar's auto-hide-on-scroll works.
+  staticData: { chrome: 'bare' },
 })

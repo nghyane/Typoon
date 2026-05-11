@@ -11,6 +11,7 @@ import json
 import anthropic
 
 from ._retry import parse_retry_after_header, with_retry
+from .errors import TransientCredentialError, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -83,12 +84,22 @@ class AnthropicProvider:
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         import json
         kwargs = self._build_kwargs(messages, tools)
-        response = await with_retry(
-            lambda: self._client.messages.create(**kwargs),
-            is_retryable=_is_retryable,
-            parse_retry_after=_parse_retry_after,
-            provider="anthropic",
-        )
+        try:
+            response = await with_retry(
+                lambda: self._client.messages.create(**kwargs),
+                is_retryable=_is_retryable,
+                parse_retry_after=_parse_retry_after,
+                provider="anthropic",
+            )
+        except anthropic.AuthenticationError as exc:
+            raise TransientCredentialError(str(exc)) from exc
+        except anthropic.PermissionDeniedError as exc:
+            raise TransientCredentialError(str(exc)) from exc
+        except anthropic.APIStatusError as exc:
+            status = getattr(exc, "status_code", None)
+            if status is not None and 500 <= status < 600:
+                raise UpstreamUnavailable(str(exc)) from exc
+            raise
 
         tool_calls: list[ToolCallMsg] = []
         text_parts: list[str] = []

@@ -1,13 +1,13 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../shared/lib/cn'
-import { FolderOpen, Star, Globe, Settings, ChevronLeft, ChevronRight } from 'lucide-react'
+import { FolderOpen, Compass, Settings, ChevronLeft, ChevronRight, Library } from 'lucide-react'
 import { SidebarQuota } from './SidebarQuota'
 
 const NAV = [
-  { to: '/projects', label: 'Của tôi',   icon: FolderOpen, search: { filter: 'mine'      } },
-  { to: '/projects', label: 'Đã lưu',    icon: Star,       search: { filter: 'pinned'    } },
-  { to: '/projects', label: 'Cộng đồng', icon: Globe,      search: { filter: 'community' } },
+  { to: '/projects', label: 'Của tôi',     icon: FolderOpen, search: { filter: 'mine'   } },
+  { to: '/library',  label: 'Thư viện',    icon: Library,    search: undefined          },
+  { to: '/browse',   label: 'Duyệt nguồn', icon: Compass,    search: undefined          },
 ] as const
 
 const NAV_FOOT = [
@@ -30,6 +30,9 @@ export function Sidebar({ brandName, brandIcon }: Props) {
 
   const isActive = (to: string, filter?: string) => {
     if (to !== '/projects') return location.pathname.startsWith(to)
+    // /projects is the active link only when we're on a /projects/*
+    // route. /browse and other top-level routes have their own entry
+    // and must not double-match here.
     const onProjects =
       location.pathname === '/projects' || location.pathname.startsWith('/projects/')
     if (!onProjects) return false

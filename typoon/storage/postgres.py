@@ -631,6 +631,26 @@ class PostgresStore:
                 error, chapter_id, stage,
             )
 
+    async def requeue_task(self, chapter_id: int, stage: str, error: str) -> None:
+        """Release a claim WITHOUT counting it against MAX_TASK_ATTEMPTS.
+
+        For transient upstream failures (auth pool empty, gateway 5xx)
+        where the operator's recovery action — rotate token, swap
+        provider — should resume the chapter automatically rather than
+        burn one of its three lives.
+        """
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE tasks
+                SET    claimed_by = NULL,
+                       claimed_at = NULL,
+                       last_error = $1
+                WHERE  chapter_id=$2 AND stage=$3
+                """,
+                error, chapter_id, stage,
+            )
+
     async def get_tasks(self, chapter_id: int) -> list[dict]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(

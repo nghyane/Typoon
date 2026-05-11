@@ -61,11 +61,18 @@ export function ReaderToolbar({
     <header
       className={cn(
         'sticky top-0 z-20 bg-bg/85 backdrop-blur-md border-b border-border-soft',
+        'pt-[var(--sait)]',
         'transition-transform duration-200',
-        hidden && '-translate-y-full',
+        hidden && '-translate-y-[calc(100%+var(--sait))]',
       )}
     >
-      <div className="flex items-center gap-3 px-5 h-bar">
+      <div
+        className={cn(
+          'flex items-center gap-3 h-bar',
+          'pl-[max(1.25rem,var(--sail))]',
+          'pr-[max(1.25rem,var(--sair))]',
+        )}
+      >
         {/* breadcrumb */}
         <div className="flex items-center gap-2 text-[13px] min-w-0 flex-1">
           <Link

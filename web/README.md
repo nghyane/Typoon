@@ -22,8 +22,8 @@ scope including `read:packages`) is required for `bun install`.
 | `bun lint`    | ESLint |
 | `bun preview` | Serve the built `dist/` |
 
-Override the API target with `VITE_API_URL=...` (e.g. for cross-origin
-preview deploys).
+Override the public origin with `VITE_PUBLIC_BASE_URL=...` (e.g. for
+cross-origin preview deploys or pointing at a staging DA host).
 
 ## Layout
 

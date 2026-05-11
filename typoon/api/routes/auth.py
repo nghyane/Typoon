@@ -189,8 +189,8 @@ async def _resolve_guild_invite(guild_id: str) -> tuple[str | None, str | None]:
     """Read (name, invite) from the public widget endpoint.
 
     Returns (None, None) when gating is disabled OR the guild has not
-    enabled 'Server Widget'. Cached via lru_cache on the underlying
-    fetch by Discord (their CDN), so we don't add our own.
+    enabled 'Server Widget'. Cached for 5 minutes in `fetch_guild_widget`
+    so /api/auth/me doesn't pay a Discord round-trip on every request.
     """
     if not guild_id:
         return None, None

@@ -73,6 +73,37 @@ router = APIRouter(
 # 200-page lossy-WebP webtoon plus headroom.
 _MAX_UPLOAD_BYTES = 1500 * 1024 * 1024
 
+
+# Browser-direct PUTs always flow through the public origin's `/r2`
+# URL Mapping. In production the public origin IS the DA origin
+# (`https://<app_id>.discordsays.com`) — every public path (`/`,
+# `/api`, `/r2`, `/cdn`, `/t`) is fronted by the Discord proxy,
+# regardless of whether the client is the DA iframe or a plain
+# browser. In dev `public_base_url` points at the local API directly,
+# the LocalInbox URLs are not R2 hosts, and this rewrite is a no-op.
+#
+# SigV4 signs Host only, and the mapping target is the original R2
+# host — the proxy forwards with that Host preserved, so the
+# signature stays valid regardless of which origin made the PUT.
+_R2_HOST_RE = re.compile(r"^[a-z0-9-]+\.r2\.cloudflarestorage\.com$", re.I)
+
+
+def _rewrite_presigned_for_public(url: str, public_origin: str) -> str:
+    """Rewrite an R2 presigned URL to flow through `<public_origin>/r2/`.
+
+    Empty origin or non-R2 URLs (LocalInbox dev backend pointed at
+    the API itself) pass through unchanged.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    if not public_origin:
+        return url
+    parts = urlsplit(url)
+    if not parts.hostname or not _R2_HOST_RE.match(parts.hostname):
+        return url
+    base = urlsplit(public_origin)
+    return urlunsplit((base.scheme, base.netloc, f"/r2{parts.path}", parts.query, ""))
+
 # Part-count ceiling. R2 / S3 allow up to 10000; we cap lower so a
 # misbehaving client can't tie up presigning CPU. With 8 MiB parts
 # this still permits 8 GiB total — well above _MAX_UPLOAD_BYTES.
@@ -158,10 +189,19 @@ async def upload_init(
         tmp_id=tmp_id, part_count=part_count, part_size=DEFAULT_PART_SIZE,
     )
 
+    base_origin = cfg.server.public_base_url
+    parts_out = [
+        InitPart(
+            number=p.number,
+            url=_rewrite_presigned_for_public(p.url, base_origin),
+        )
+        for p in urls
+    ]
+
     return UploadInitOut(
         tmp_id=tmp_id,
         upload_id=upload_id,
-        parts=[InitPart(number=p.number, url=p.url) for p in urls],
+        parts=parts_out,
         part_size=DEFAULT_PART_SIZE,
         expires_in=3600,  # PRESIGN_TTL_SECONDS — keep clients in sync
     )
@@ -262,7 +302,7 @@ async def upload_abort(
 # ── Local inbox PUT route (dev only) ──────────────────────────────
 #
 # When `storage.inbox.type == 'local'`, `LocalInbox.create_multipart`
-# returns `${public_api_url}/api/_inbox/...` URLs. This sibling
+# returns `${public_base_url}/api/_inbox/...` URLs. This sibling
 # router accepts those PUTs so the SDK code path is identical in dev
 # and prod. In prod (`s3`), this route never receives traffic — the
 # presigned URLs point at the storage provider directly.

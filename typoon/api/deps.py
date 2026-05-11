@@ -85,7 +85,7 @@ def get_inbox() -> ChapterInbox:
         _inbox = build_inbox(
             cfg.storage,
             paths_root=paths.artifacts,
-            base_url=cfg.server.public_api_url,
+            base_url=cfg.server.public_base_url,
         )
     return _inbox
 

@@ -1,0 +1,10 @@
+{
+  "id":        "community",
+  "name":      "Hội Mê Truyện",
+  "host":      "mangalocal.com",
+  "homepage":  "https://mangalocal.com",
+  "languages": ["vi"],
+  "version":   "1.0",
+  "kind":      "internal",
+  "accent":    "indigo"
+}

@@ -69,4 +69,5 @@ function CallbackPage() {
 
 export const Route = createFileRoute('/auth/callback')({
   component: CallbackPage,
+  staticData: { chrome: 'bare', auth: 'public' },
 })

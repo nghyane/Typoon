@@ -137,4 +137,5 @@ function DiscordIcon() {
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
+  staticData: { chrome: 'bare', auth: 'public' },
 })

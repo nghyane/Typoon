@@ -1,0 +1,180 @@
+{
+  "id":        "mangadex",
+  "name":      "MangaDex",
+  "host":      "api.mangadex.org",
+  "homepage":  "https://mangadex.org",
+  "languages": ["en", "vi", "ja", "ko", "zh", "pt-br", "id", "th", "fr", "es"],
+  "version":   "2.0",
+  "accent":    "orange",
+  "icon":      "https://mangadex.org/pwa/icons/icon-180.png",
+
+  "defaults": {
+    "rating":  ["safe", "suggestive"],
+    "language": ["en"]
+  },
+
+  "filters": [
+    {
+      "id":    "rating",
+      "label": "Nội dung",
+      "type":  "multi",
+      "options": [
+        { "id": "safe",         "label": "Lành mạnh",    "param": "contentRating[]=safe" },
+        { "id": "suggestive",   "label": "Gợi cảm",      "param": "contentRating[]=suggestive" },
+        { "id": "erotica",      "label": "Erotica",      "param": "contentRating[]=erotica" }
+      ]
+    },
+    {
+      "id":    "language",
+      "label": "Có bản dịch",
+      "type":  "multi",
+      "options": [
+        { "id": "en",    "label": "English",     "param": "availableTranslatedLanguage[]=en" },
+        { "id": "vi",    "label": "Tiếng Việt",  "param": "availableTranslatedLanguage[]=vi" },
+        { "id": "ja",    "label": "日本語",       "param": "availableTranslatedLanguage[]=ja" },
+        { "id": "ko",    "label": "한국어",       "param": "availableTranslatedLanguage[]=ko" },
+        { "id": "zh",    "label": "中文",        "param": "availableTranslatedLanguage[]=zh" },
+        { "id": "pt-br", "label": "Português",   "param": "availableTranslatedLanguage[]=pt-br" },
+        { "id": "es",    "label": "Español",     "param": "availableTranslatedLanguage[]=es" },
+        { "id": "fr",    "label": "Français",    "param": "availableTranslatedLanguage[]=fr" },
+        { "id": "id",    "label": "Indonesia",   "param": "availableTranslatedLanguage[]=id" },
+        { "id": "th",    "label": "ภาษาไทย",     "param": "availableTranslatedLanguage[]=th" }
+      ]
+    }
+  ],
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[followedCount]=desc{filterParams}",
+          "parse":  "json",
+          "pagination": { "type": "offset", "pageSize": 24 },
+          "list":   "$.data[*]",
+          "extras": {
+            "id":       "@id",
+            "fileName": "@relationships[*]@attributes.fileName"
+          },
+          "fields": {
+            "title": "@attributes.title.en || @attributes.title.* || @attributes.altTitles[*]@en || @attributes.altTitles[*]@vi || @attributes.altTitles[*]@*",
+            "url":   "=https://mangadex.org/title/{id}",
+            "cover": "=https://uploads.mangadex.org/covers/{id}/{fileName}.512.jpg"
+          }
+        }
+      },
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[latestUploadedChapter]=desc{filterParams}",
+          "parse":  "json",
+          "pagination": { "type": "offset", "pageSize": 24 },
+          "list":   "$.data[*]",
+          "extras": {
+            "id":       "@id",
+            "fileName": "@relationships[*]@attributes.fileName"
+          },
+          "fields": {
+            "title": "@attributes.title.en || @attributes.title.* || @attributes.altTitles[*]@en || @attributes.altTitles[*]@vi || @attributes.altTitles[*]@*",
+            "url":   "=https://mangadex.org/title/{id}",
+            "cover": "=https://uploads.mangadex.org/covers/{id}/{fileName}.512.jpg"
+          }
+        }
+      },
+      {
+        "id":    "new",
+        "label": "Mới ra mắt",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[createdAt]=desc{filterParams}",
+          "parse":  "json",
+          "pagination": { "type": "offset", "pageSize": 24 },
+          "list":   "$.data[*]",
+          "extras": {
+            "id":       "@id",
+            "fileName": "@relationships[*]@attributes.fileName"
+          },
+          "fields": {
+            "title": "@attributes.title.en || @attributes.title.* || @attributes.altTitles[*]@en || @attributes.altTitles[*]@vi || @attributes.altTitles[*]@*",
+            "url":   "=https://mangadex.org/title/{id}",
+            "cover": "=https://uploads.mangadex.org/covers/{id}/{fileName}.512.jpg"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://api.mangadex.org/manga?title={q:q}&limit=24&offset={offset}&includes[]=cover_art{filterParams}",
+      "parse":  "json",
+      "pagination": { "type": "offset", "pageSize": 24 },
+      "list":   "$.data[*]",
+      "extras": {
+        "id":       "@id",
+        "fileName": "@relationships[*]@attributes.fileName"
+      },
+      "fields": {
+        "title": "@attributes.title.en || @attributes.title.* || @attributes.altTitles[*]@en || @attributes.altTitles[*]@vi || @attributes.altTitles[*]@*",
+        "url":   "=https://mangadex.org/title/{id}",
+        "cover": "=https://uploads.mangadex.org/covers/{id}/{fileName}.512.jpg"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "https://api.mangadex.org/manga?ids[]={mangaId}&includes[]=cover_art&includes[]=author",
+      "extract": "/title/(?<mangaId>[0-9a-f-]{36})",
+      "parse":   "json",
+      "extras": {
+        "id":       "$.data[0].id",
+        "fileName": "$.data[0].relationships[*]@attributes.fileName"
+      },
+      "fields": {
+        "title":       "$.data[0].attributes.title.en || $.data[0].attributes.title.* || $.data[0].attributes.altTitles[*]@en || $.data[0].attributes.altTitles[*]@*",
+        "description": "$.data[0].attributes.description.en || $.data[0].attributes.description.vi || $.data[0].attributes.description.*",
+        "author":      "$.data[0].relationships[*]@attributes.name",
+        "status":      "$.data[0].attributes.status",
+        "cover":       "=https://uploads.mangadex.org/covers/{id}/{fileName}.512.jpg",
+        "availableLangs": "$.data[0].attributes.availableTranslatedLanguages"
+      }
+    },
+
+    "chaptersApi": {
+      "method":  "GET",
+      "url":     "https://api.mangadex.org/manga/{mangaId}/feed?translatedLanguage[]={language}&limit=500&order[chapter]=desc&includes[]=scanlation_group",
+      "parse":   "json",
+      "list":    "$.data[*]",
+      "keepIf": {
+        "hasPages": "@attributes.pages"
+      },
+      "fields": {
+        "id":       "@id",
+        "number":   "@attributes.chapter",
+        "title":    "@attributes.title",
+        "date":     "@attributes.publishAt",
+        "language": "@attributes.translatedLanguage",
+        "url":      "=https://mangadex.org/chapter/{id}"
+      }
+    },
+
+    "chapter": {
+      "method":  "GET",
+      "url":     "https://api.mangadex.org/at-home/server/{chapterId}",
+      "extract": "/chapter/(?<chapterId>[0-9a-f-]{36})",
+      "parse":   "json",
+      "pages": {
+        "extras": {
+          "baseUrl": "$.baseUrl",
+          "hash":    "$.chapter.hash",
+          "files":   "$.chapter.data[*]"
+        },
+        "iterate":  "files",
+        "template": "{baseUrl}/data/{hash}/{file}"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "sources": [
+    { "id": "community", "url": "./community.json" },
+    { "id": "happymh",   "url": "./happymh.json" },
+    { "id": "otruyen",   "url": "./otruyen.json" },
+    { "id": "mangadex",  "url": "./mangadex.json" }
+  ]
+}

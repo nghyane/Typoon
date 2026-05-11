@@ -1,11 +1,11 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { FolderOpen, Star, Globe, Settings } from 'lucide-react'
+import { FolderOpen, Library, Compass, Settings } from 'lucide-react'
 import { cn } from '../shared/lib/cn'
 
 const ITEMS = [
   { to: '/projects', label: 'Của tôi',   icon: FolderOpen, filter: 'mine'      },
-  { to: '/projects', label: 'Đã lưu',    icon: Star,       filter: 'pinned'    },
-  { to: '/projects', label: 'Cộng đồng', icon: Globe,      filter: 'community' },
+  { to: '/library',  label: 'Thư viện',  icon: Library,    filter: undefined   },
+  { to: '/browse',   label: 'Duyệt',     icon: Compass,    filter: undefined   },
   { to: '/settings', label: 'Cài đặt',   icon: Settings,   filter: undefined   },
 ] as const
 
@@ -22,7 +22,16 @@ export function BottomNav() {
   }
 
   return (
-    <nav className="sm:hidden flex items-stretch h-14 bg-surface border-t border-border shrink-0">
+    <nav
+      className={cn(
+        'sm:hidden flex items-stretch bg-surface border-t border-border shrink-0',
+        // Bar grows by the iOS home-indicator inset so its surface
+        // color reaches the bottom of the viewport (no `bg-bg` gap
+        // showing through under the bar). Tap targets stay inside
+        // the visible 3.5rem via padding.
+        'h-[calc(3.5rem+var(--saib))] pb-[var(--saib)]',
+      )}
+    >
       {ITEMS.map(({ to, label, icon: Icon, filter }) => {
         const active = isActive(to, filter)
         return (

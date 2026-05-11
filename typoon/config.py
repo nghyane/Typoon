@@ -58,20 +58,32 @@ class VisionAgentConfig(BaseModel):
 class ServerConfig(BaseModel):
     """API + web URLs.
 
-    `public_api_url` is the public origin clients hit. `public_web_url`
-    is where the SPA is served. Both are also used by CORS and by the
-    SPA's OAuth bootstrap (the SPA owns the redirect_uri — engine never
-    sees the web origin in the OAuth call itself).
+    `public_base_url` is the single public origin every client hits in
+    production — both the SPA load and every API/file/CDN/upload path
+    are fronted by it. In a Discord Activity deploy that's the DA host
+    (`https://<app_id>.discordsays.com`) and Discord's URL Mappings
+    forward `/`, `/api`, `/r2`, `/cdn`, `/t` to the matching upstreams.
+    Browser clients running outside DA hit the same origin cross-
+    origin; CORS allows it because the regex below covers DA hosts.
+    Dev simply points at the local API and the SPA dev server proxies.
     """
-    public_api_url: str = "http://localhost:8000"
-    public_web_url: str = "http://localhost:5173"
+    public_base_url: str = "http://localhost:8000"
+    # Extra web origins to allow in CORS, beyond `public_base_url` and
+    # the built-in `*.discordsays.com` regex. Needed when the SPA is
+    # served from a different host than the public origin clients
+    # primarily hit — e.g. CF Pages at `mangalocal.com` cross-origins
+    # to the DA host `discordsays.com` to reach the API. Browsers
+    # outside DA preflight from the SPA's own origin, which must be
+    # whitelisted here or every fetch fails with "Disallowed CORS".
+    extra_web_origins: list[str] = Field(default_factory=list)
     host:           str = "0.0.0.0"
     port:           int = 8000
-    # Hosts allowed in the Host header. In production behind Cloudflare
-    # Tunnel (or any proxy), the app is reachable only via the
-    # configured tunnel hostname; rejecting other Host values stops
-    # cache-poisoning / host-header injection. Empty = derived from
-    # public_api_url + public_web_url at load time. Use ["*"] in dev.
+    # Hosts allowed in the Host header. Behind Cloudflare Tunnel the
+    # uvicorn server sees the tunnel's ingress hostname (e.g.
+    # `api.mangalocal.com`), NOT `public_base_url` — Discord proxy +
+    # tunnel both preserve the upstream's real hostname. Production
+    # must set TRUSTED_HOSTS explicitly to that ingress; dev derives
+    # from `public_base_url` + localhost. `["*"]` disables the check.
     trusted_hosts: list[str] = Field(default_factory=list)
 
 
@@ -278,12 +290,14 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         }
 
     # Server URLs — env wins over toml.
-    config.server.public_api_url = os.environ.get(
-        "PUBLIC_API_URL", config.server.public_api_url,
+    config.server.public_base_url = os.environ.get(
+        "PUBLIC_BASE_URL", config.server.public_base_url,
     ).rstrip("/")
-    config.server.public_web_url = os.environ.get(
-        "PUBLIC_WEB_URL", config.server.public_web_url,
-    ).rstrip("/")
+    env_extra = os.environ.get("EXTRA_WEB_ORIGINS", "").strip()
+    if env_extra:
+        config.server.extra_web_origins = [
+            o.strip().rstrip("/") for o in env_extra.split(",") if o.strip()
+        ]
     if env_port := os.environ.get("TYPOON_PORT"):
         try:
             config.server.port = int(env_port)
@@ -291,19 +305,18 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
             pass
 
     # Trusted hosts for the Host header. Comma-separated env or
-    # auto-derive from public_api_url + public_web_url. "*" disables
-    # the check (dev only). Hosts are matched by exact equality (no
-    # port stripping) by Starlette's TrustedHostMiddleware.
+    # auto-derive from public_base_url. Behind a tunnel/proxy the
+    # ingress hostname differs from public_base_url and TRUSTED_HOSTS
+    # MUST be set explicitly. "*" disables the check (dev only).
     env_hosts = os.environ.get("TRUSTED_HOSTS", "").strip()
     if env_hosts:
         config.server.trusted_hosts = [h.strip() for h in env_hosts.split(",") if h.strip()]
     elif not config.server.trusted_hosts:
         from urllib.parse import urlparse
         derived: list[str] = []
-        for url in (config.server.public_api_url, config.server.public_web_url):
-            host = urlparse(url).hostname
-            if host:
-                derived.append(host)
+        host = urlparse(config.server.public_base_url).hostname
+        if host:
+            derived.append(host)
         # Always allow localhost so health probes / SSH tunnels still
         # work without explicit config.
         derived.extend(["localhost", "127.0.0.1"])

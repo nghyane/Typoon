@@ -3,9 +3,9 @@ import { cn } from '@shared/lib/cn'
 import { api } from '@shared/api/api'
 
 // Resolve relative API URLs (e.g. "/files/<slug>/cover.jpg") against
-// VITE_API_URL when running cross-origin. Same-origin dev/prod hits Vite
-// proxy and the relative URL stays untouched. `version` busts cache when
-// the upstream cover.jpg gets replaced under the same URL.
+// the public base URL when running cross-origin. Same-origin dev/prod
+// hits Vite proxy and the relative URL stays untouched. `version` busts
+// cache when the upstream cover.jpg gets replaced under the same URL.
 export function coverUrl(src: string | null, version?: string | null): string | null {
   if (!src) return null
   const base = /^https?:\/\//i.test(src) ? src : `${api.base}${src}`

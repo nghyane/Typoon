@@ -76,6 +76,40 @@ html { -webkit-font-smoothing: antialiased; }
 
 html, body, #root { height: 100%; }
 
+/* Safe-area insets — depends on the runtime host.
+ *
+ * - Outside Discord Activity (plain mobile browser): rely on the
+ *   browser's `env(safe-area-inset-*)`. iOS Safari fills these from
+ *   the device notch / home-indicator since the page is the topmost
+ *   content on screen.
+ *
+ * - Inside Discord Activity: the SDK injects
+ *   `--discord-safe-area-inset-*` on the iframe with the correct
+ *   values Discord wants us to honor (typically 0 because the
+ *   Discord client already renders its own chrome above/below the
+ *   iframe). We must NOT also use `env(safe-area-inset-*)` because
+ *   that still reports the underlying device notch — but the iframe
+ *   sits beneath Discord's header, so adding it again would push
+ *   our chrome down by the full notch height for nothing. That's
+ *   the "padding hơi cao so với app khác" we saw on iOS.
+ *
+ * The selector is set by `web/src/main.tsx` based on
+ * `window.location.hostname`. Falls back to env() if the class is
+ * missing for any reason. */
+:root {
+  --sait: env(safe-area-inset-top);
+  --saib: env(safe-area-inset-bottom);
+  --sail: env(safe-area-inset-left);
+  --sair: env(safe-area-inset-right);
+}
+
+:root.da-host {
+  --sait: var(--discord-safe-area-inset-top,    0px);
+  --saib: var(--discord-safe-area-inset-bottom, 0px);
+  --sail: var(--discord-safe-area-inset-left,   0px);
+  --sair: var(--discord-safe-area-inset-right,  0px);
+}
+
 /* Disable browser pull-to-refresh / rubber-band reload.
    The reader is a long vertical scroll; on mobile a downward overscroll
    at the top of the page would otherwise trigger a hard reload, killing
@@ -91,10 +125,6 @@ body {
   line-height: 1.5;
   background: var(--color-bg);
   color: var(--color-text);
-  padding-top:    var(--discord-safe-area-inset-top,    env(safe-area-inset-top));
-  padding-bottom: var(--discord-safe-area-inset-bottom, env(safe-area-inset-bottom));
-  padding-left:   var(--discord-safe-area-inset-left,   env(safe-area-inset-left));
-  padding-right:  var(--discord-safe-area-inset-right,  env(safe-area-inset-right));
 }
 
 /* focus ring — coral, used by buttons via .ring-accent helper */

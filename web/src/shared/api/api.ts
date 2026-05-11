@@ -1,8 +1,11 @@
-// In Discord Activity, Discord proxy handles relative /api/* paths via URL Mappings.
-// Outside DA, VITE_API_URL is set for cross-origin deploys (CF Pages → API).
+// One public origin in production: the DA host. The Discord URL
+// Mappings front /api, /r2, /cdn, /t for everyone — DA iframe and
+// plain web alike. Inside the iframe we use same-origin paths
+// (`window.location.hostname` ends in `.discordsays.com`); outside we
+// hit `VITE_PUBLIC_BASE_URL` cross-origin (CORS allows it).
 const API_BASE = window.location.hostname.endsWith('.discordsays.com')
   ? ''
-  : (import.meta.env.VITE_API_URL ?? '')
+  : (import.meta.env.VITE_PUBLIC_BASE_URL ?? '')
 
 import type {
   UploadInitBody, UploadInitOut,

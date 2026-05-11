@@ -51,7 +51,13 @@ export function Toaster() {
   const dismiss = useToastStore((s) => s.dismiss)
 
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
+    <div
+      className={cn(
+        'fixed z-[60] flex flex-col gap-2 pointer-events-none',
+        'right-[max(1rem,var(--sair))]',
+        'bottom-[max(1rem,calc(var(--saib)+3.5rem+0.5rem))] sm:bottom-[max(1rem,var(--saib))]',
+      )}
+    >
       {items.map((t) => {
         const Icon = ICON[t.tone]
         return (

@@ -16,15 +16,15 @@ interface SearchParams { filter?: ProjectFilter }
 const FILTER_LABEL: Record<ProjectFilter, string> = {
   mine:      'Của tôi',
   pinned:    'Đã lưu',
-  community: 'Cộng đồng',
+  community: 'Đã chia sẻ',
   all:       'Tất cả',
 }
 
 const EMPTY_HINT: Record<ProjectFilter, { title: string; sub: string }> = {
-  mine:      { title: 'Chưa có dự án',         sub: 'Tạo dự án đầu tiên để bắt đầu' },
-  pinned:    { title: 'Chưa lưu dự án nào',    sub: 'Bấm sao trên dự án để lưu xem sau' },
-  community: { title: 'Chưa có dự án chia sẻ', sub: 'Đợi thành viên khác chia sẻ dự án' },
-  all:       { title: 'Chưa có dự án',         sub: 'Tạo dự án đầu tiên để bắt đầu' },
+  mine:      { title: 'Chưa có truyện nào',     sub: 'Tạo dự án đầu tiên để bắt đầu' },
+  pinned:    { title: 'Chưa lưu truyện nào',    sub: 'Bấm sao trên truyện để lưu xem sau' },
+  community: { title: 'Hội Mê Truyện đang trống', sub: 'Hãy là người đầu tiên chia sẻ truyện của bạn' },
+  all:       { title: 'Chưa có truyện nào',     sub: 'Tạo dự án đầu tiên để bắt đầu' },
 }
 
 function ProjectsPage() {
@@ -155,11 +155,11 @@ function ProjectsPage() {
 
 function FilterHint({ filter, count }: { filter: ProjectFilter; count: number }) {
   if (count === 0) {
-    if (filter === 'community') return <>Khám phá dự án thành viên khác đã chia sẻ</>
-    if (filter === 'pinned')    return <>Lưu dự án để theo dõi tiến độ</>
-    return <>Quản lý dự án dịch của bạn</>
+    if (filter === 'community') return <>Khám phá truyện thành viên Hội Mê Truyện đã chia sẻ</>
+    if (filter === 'pinned')    return <>Lưu truyện để theo dõi tiến độ</>
+    return <>Quản lý truyện đang dịch của bạn</>
   }
-  return <>{count} dự án</>
+  return <>{count} truyện</>
 }
 
 function ProjectCard({

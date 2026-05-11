@@ -527,3 +527,106 @@ def _print_project(proj) -> None:
             detail = f"[red]{ch.stage}: {ch.error[:60]}[/]"
         t.add_row(icon, f"[dim]#{ch.chapter_id}[/]", f"ch{ch.number}", detail)
     console.print(t)
+
+
+# ── retry-failed ─────────────────────────────────────────────────────
+
+
+@app.command("retry-failed")
+def retry_failed(
+    stage:     str  = typer.Option(None, "--stage", "-s",
+                                    help="Stage to retry (prepare|scan|translate|render). Omit for all."),
+    chapter:   int  = typer.Option(None, "--chapter", "-c",
+                                    help="Limit to a single chapter id."),
+    only_dead: bool = typer.Option(True, "--only-dead/--all",
+                                    help="Only reset tasks at attempts >= MAX_TASK_ATTEMPTS (default)."),
+    dry_run:   bool = typer.Option(False, "--dry-run",
+                                    help="Show what would be reset without writing."),
+):
+    """Reset attempts on failed tasks so the worker pumps re-claim them.
+
+    Use after fixing the cause of a transient outage that pushed
+    chapters into the dead-letter band (e.g. credential rotation,
+    upstream provider swap). Pairs with the requeue path that already
+    handles 401/5xx without burning attempts — this command is the
+    manual remedy for chapters that died BEFORE that path was in place
+    or whose error class isn't yet mapped to a transient.
+
+    \b
+    Examples:
+      typoon retry-failed                              # all dead-letters, all stages
+      typoon retry-failed --stage translate            # all stuck translate tasks
+      typoon retry-failed --stage translate --all      # also tasks at attempts 1..2
+      typoon retry-failed --chapter 67 --stage translate
+      typoon retry-failed --dry-run
+    """
+    asyncio.run(_retry_failed(stage, chapter, only_dead, dry_run))
+
+
+async def _retry_failed(
+    stage:     str | None,
+    chapter:   int | None,
+    only_dead: bool,
+    dry_run:   bool,
+) -> None:
+    from ..config import load_config
+    from ..storage import PostgresStore
+    from ..storage.postgres import MAX_TASK_ATTEMPTS
+
+    config, _ = load_config()
+    db = await PostgresStore.open(config.database_url)
+    try:
+        async with db._pool.acquire() as conn:
+            where = ["last_error IS NOT NULL"]
+            args: list = []
+            if only_dead:
+                args.append(MAX_TASK_ATTEMPTS)
+                where.append(f"attempts >= ${len(args)}")
+            if stage is not None:
+                args.append(stage)
+                where.append(f"stage = ${len(args)}")
+            if chapter is not None:
+                args.append(chapter)
+                where.append(f"chapter_id = ${len(args)}")
+            wsql = " AND ".join(where)
+
+            preview_sql = (
+                f"SELECT chapter_id, stage, attempts, "
+                f"       LEFT(last_error, 120) AS err "
+                f"FROM tasks WHERE {wsql} "
+                f"ORDER BY stage, chapter_id"
+            )
+            rows = await conn.fetch(preview_sql, *args)
+
+            if not rows:
+                console.print("[dim]No tasks match.[/]")
+                return
+
+            t = Table("chapter", "stage", "attempts", "error", show_header=True)
+            for r in rows:
+                t.add_row(
+                    str(r["chapter_id"]), r["stage"], str(r["attempts"]),
+                    (r["err"] or "")[:120],
+                )
+            console.print(t)
+            console.print(f"[bold]{len(rows)}[/] task(s) match.")
+
+            if dry_run:
+                console.print("[yellow]dry-run — no writes[/]")
+                return
+
+            update_sql = (
+                f"UPDATE tasks "
+                f"SET attempts=0, last_error=NULL, "
+                f"    claimed_by=NULL, claimed_at=NULL "
+                f"WHERE {wsql}"
+            )
+            tag = await conn.execute(update_sql, *args)
+            console.print(f"[green]reset[/] {tag}")
+
+            stages = {r["stage"] for r in rows}
+            for s in stages:
+                await conn.execute(f"NOTIFY typoon_task_{s}")
+            console.print(f"[green]notified[/] {', '.join(sorted(stages))}")
+    finally:
+        await db.close()
