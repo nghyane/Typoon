@@ -48,10 +48,45 @@ async def load_translated_with_geometry(
     reader: PreparedReader,
     db: Store,
     chapter_id: int,
+    draft_id: int,
+    *,
+    translation_id: int | None = None,
 ) -> tuple[translate.Chapter, dict[int, PageGeometry]]:
-    page_geoms   = await _load_page_geometry(db, chapter_id)
-    bubbles_db   = await db.get_bubbles(chapter_id)
-    translations = await db.get_translations(chapter_id)
+    """Assemble a translate.Chapter from chapter-level scan output +
+    draft-level translation bubbles, with optional sparse edits
+    overlaid from a per-user translation row.
+
+    Geometry and source bubbles come from the chapter (shared across
+    every translation). Translated text comes from the draft. Edits,
+    when provided, override draft bubbles by (page_index, bubble_idx).
+    """
+    page_geoms = await _load_page_geometry(db, chapter_id)
+    bubbles_db = await db.get_bubbles(chapter_id)
+    draft_bubbles = await db.get_draft_bubbles(draft_id)
+
+    # Index draft text + (optionally) edits by (page, idx) so the
+    # per-page assembly below is a dict lookup, not a scan.
+    text_by_pos: dict[tuple[int, int], dict] = {
+        (b["page_index"], b["bubble_idx"]): b for b in draft_bubbles
+    }
+    if translation_id is not None:
+        for e in await db.get_translation_edits(translation_id):
+            key = (e["page_index"], e["bubble_idx"])
+            if key in text_by_pos:
+                # Override the draft text; keep its kind.
+                text_by_pos[key] = {
+                    **text_by_pos[key],
+                    "translated_text": e["edited_text"],
+                }
+            else:
+                # Edit on a bubble the draft skipped — surface as a
+                # synthetic "dialogue" override.
+                text_by_pos[key] = {
+                    "page_index": e["page_index"],
+                    "bubble_idx": e["bubble_idx"],
+                    "translated_text": e["edited_text"],
+                    "kind": "dialogue",
+                }
 
     scanned = _build_scanned(reader.chapter(), bubbles_db, page_geoms)
 
@@ -62,8 +97,12 @@ async def load_translated_with_geometry(
                 translate.Bubble(
                     source=sb,
                     translation_key=f"p{sb.page_index}_b{sb.idx}",
-                    translated_text=translations.get((sb.page_index, sb.idx), {}).get("translated_text", ""),
-                    kind=translations.get((sb.page_index, sb.idx), {}).get("kind", "skip"),
+                    translated_text=text_by_pos.get(
+                        (sb.page_index, sb.idx), {},
+                    ).get("translated_text", ""),
+                    kind=text_by_pos.get(
+                        (sb.page_index, sb.idx), {},
+                    ).get("kind", "skip"),
                 )
                 for sb in sp.bubbles
             ),

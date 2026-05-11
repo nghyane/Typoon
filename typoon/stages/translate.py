@@ -31,13 +31,13 @@ async def translate_chapter(
     """Translate a ScannedChapter. Returns (translated, brief) — does not persist.
 
     Caller is responsible for:
-        await db.save_chapter_brief(chapter_id, brief.to_dict())
-        await db.save_translations(chapter_id, translated.to_db_records())
+        await db.save_draft_brief(draft_id, brief.to_dict())
+        await db.save_draft_bubbles(draft_id, translated.to_db_records())
     """
     if not scanned.all_bubbles:
         return _empty(scanned), ChapterBrief()
 
-    keyed  = assign_keys(scanned.all_bubbles, project_id=ctx.project_id, chapter_id=ctx.chapter_id)
+    keyed  = assign_keys(scanned.all_bubbles, chapter_id=ctx.chapter_id)
     brief  = await build_chapter_brief(ctx, scanned.prepared, reader, keyed)
 
     # Bubbles flagged as noise by the context agent (site chrome, watermarks,

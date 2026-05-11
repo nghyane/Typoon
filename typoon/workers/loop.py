@@ -1,39 +1,44 @@
 """Worker process — claims pipeline tasks and runs them.
 
-Worker model: a single asyncio process owns one connection-multiplexed
-pool of stage runners (prepare/scan/translate/render). Each stage waits
-on Postgres LISTEN for its channel; when a task lands, the worker
-claims it via `claim_task` and runs the corresponding handler.
+3-stage cache flow (per RFC v5):
 
-Wakeup latency is ~5 ms (LISTEN/NOTIFY); a 30-second safety poll covers
-the case where a notification is missed (network blip, dropped
-connection). No busy polling, near-zero idle CPU.
+  Layer 1 (chapter scope)
+    prepare    chapter_id → pack pages from inbox into prepared.bnl,
+                            set chapter.prepared_hash/locator. Skipped
+                            when prepared_hash already set (CAS hit).
+    scan       chapter_id → OCR + geometry + masks bound to chapter.
+                            Shared across every translation that
+                            references this chapter.
 
-Restart resilience: every worker process picks a stable
-`{hostname}-{pid}` prefix on boot and immediately calls
-`release_claims_by_prefix` to clear any claim left behind by a previous
-PID on the same host (graceful exit + SIGKILL alike). Cross-host crashes
-are still handled by the existing `STALE_CLAIM_SECONDS` reaper inside
-`claim_task` — that's the only generic way to detect a dead remote
-process.
+  Layer 2 (draft scope, cross-user via visibility)
+    translate  draft_id → LLM run filling translation_draft_bubbles
+                          and draft_briefs. Other users with matching
+                          (chapter, src, tgt, glossary_fp) reuse this
+                          draft via find_reusable_draft → cache hit.
 
-Pipeline contract (RFC-001 + RFC-004):
-  prepare   → fetch zip from inbox → unpack → upload prepared.bnl
-              + DB.set_prepared_done
-  scan      → upload masks.npz + DB.save_geometry + DB.save_bubbles
-  translate → DB.save_translations + DB.save_chapter_brief
-  render    → upload render.bnl + DB.set_rendered(True)
+  Layer 3 (translation scope, per-user fallback)
+    render     draft_id        → default render.bnl shared by every
+                                  translation pointing at the draft
+                                  with no edits.
+                 OR
+               translation_id  → per-user render.bnl when sparse
+                                 edits diverge from the draft.
 
-Roles (deployment topology):
-  vision     — prepare + scan + render (needs ANE/GPU + VisionRuntime)
-  llm        — prepare + translate (LLM I/O, no GPU)
-  api        — FastAPI server only (no worker loops)
-  full       — everything in-process (dev, single-host Mac)
+Wakeup model: one asyncio process per role; each stage has its own
+`_stage_pump` listening on `pg_notify('typoon_task_<stage>')`. LISTEN
+payload format is `'<target_kind>:<target_id>'`; pumps fan out work
+to per-stage handlers based on the claimed task tuple.
+
+Restart resilience: every process picks a stable `{hostname}-{pid}`
+prefix on boot and calls `release_claims_by_prefix` to clear claims
+left by a previous PID on this host. Cross-host crashes are handled
+by `STALE_CLAIM_SECONDS` inside `claim_task`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
@@ -75,14 +80,7 @@ logger = logging.getLogger(__name__)
 
 
 def _host_prefix() -> str:
-    """Stable per-process prefix for `tasks.claimed_by`.
-
-    `{hostname}-{pid}` is enough to detect ghost claims left by an
-    earlier PID on this host: when a fresh process boots it can call
-    `release_claims_by_prefix(_host_prefix())` and clear whatever its
-    predecessor left dangling. Cross-host crashes still fall through
-    to the staleness reaper inside `claim_task`.
-    """
+    """Stable per-process prefix for `tasks.claimed_by`."""
     host = socket.gethostname() or "unknown"
     return f"{host}-{os.getpid()}"
 
@@ -96,13 +94,13 @@ def _worker_id(stage: str) -> str:
 
 
 class ProgressPersistingHook(Hook):
-    """Persist PageDone progress onto chapters row for UI replay.
+    """Persist PageDone progress onto translation_drafts row for UI replay.
 
-    The channel bus only delivers live events; clients that connect
-    mid-render need somewhere durable to read the current
-    (stage, index, total) tuple from. Stages may emit from worker
-    threads; we schedule the DB call on the event loop captured at
-    construction.
+    Scan/translate/render are all draft-keyed for progress (scan runs
+    chapter-wide but progress UI naturally surfaces under whichever
+    draft triggered the spawn). Chapter-level scan progress is shared
+    across every draft awaiting the chapter — we update each pending
+    draft on this chapter so any UI subscribed to a draft sees it.
     """
 
     def __init__(self, db: Store, loop: asyncio.AbstractEventLoop) -> None:
@@ -110,12 +108,16 @@ class ProgressPersistingHook(Hook):
         self._loop = loop
 
     def on(self, event: Event) -> None:
-        if not isinstance(event, PageDone) or event.chapter_id <= 0:
+        if not isinstance(event, PageDone):
             return
+        draft_id = getattr(event, "draft_id", 0)
+        if not draft_id:
+            return  # Chapter-level events don't persist progress; UI
+                    # polls the draft row directly.
         try:
             asyncio.run_coroutine_threadsafe(
-                self._db.set_chapter_progress(
-                    event.chapter_id,
+                self._db.set_draft_progress(
+                    draft_id,
                     stage=event.stage,
                     index=event.page_index,
                     total=event.page_total,
@@ -154,18 +156,11 @@ _STAGES_BY_ROLE: dict[Role, tuple[str, ...]] = {
 }
 
 
-# ── Stage handler signature ─────────────────────────────────────────
+# ── Stage context (shared by handlers) ─────────────────────────────
 
 
 @dataclass
 class StageContext:
-    """Everything a stage handler needs, bundled once per process.
-
-    Built in `run_workers` and shared across every claim. Handlers are
-    pure functions of `(ctx, chapter_id)` — no globals, no module-level
-    state. Stage-specific extras (VisionRuntime, inbox, archive_salt)
-    live on the context so the dispatch loop is generic.
-    """
     db:           Store
     stores:       StorageRegistry
     hook:         Hook
@@ -176,22 +171,75 @@ class StageContext:
     inbox:        object | None = None
 
 
-StageHandler = Callable[[StageContext, int, int], Awaitable[None]]
+# Stage handler signature: receives the context + (target_kind, target_id).
+# Handlers are pure functions; events / DB updates flow through ctx.
+StageHandler = Callable[[StageContext, str, int], Awaitable[None]]
+
+
+# ── Helpers shared by handlers ─────────────────────────────────────
+
+
+async def _chapter_id_for_target(
+    db: Store, target_kind: str, target_id: int,
+) -> int | None:
+    """Resolve the chapter that a (kind, id) ultimately belongs to.
+
+    prepare/scan tasks key on chapter directly; translate keys on
+    draft → draft.chapter_id; render's target depends on edits but
+    always traces back to a chapter via draft.chapter_id or
+    translation.chapter_id.
+    """
+    if target_kind == "chapter":
+        return target_id
+    if target_kind == "draft":
+        d = await db.get_draft(target_id)
+        return d["chapter_id"] if d else None
+    if target_kind == "translation":
+        t = await db.get_translation(target_id)
+        return t["chapter_id"] if t else None
+    return None
+
+
+def _hash_file(path: Path) -> str:
+    """SHA256 (hex) of a prepared.bnl — the CAS key."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 # ── Stage handlers ──────────────────────────────────────────────────
 
 
-async def _handle_prepare(ctx: StageContext, chapter_id: int, project_id: int) -> None:
+async def _handle_prepare(
+    ctx: StageContext, target_kind: str, target_id: int,
+) -> None:
+    """Prepare stage runs once per chapter and writes prepared.bnl.
+
+    CAS dedup: if a chapter with the same prepared_hash already has a
+    locator, reuse it (skip the pack + upload) and just set the
+    pointer on this chapter. Common after the same file gets uploaded
+    twice by different users.
+    """
+    assert target_kind == "chapter", \
+        f"prepare requires target_kind=chapter, got {target_kind}"
+    chapter_id = target_id
+
     from typoon.sources.upload import UnpackError, unpack_zip
     from typoon.stages.prepare_archive import prepare_chapter_to_archive
     from typoon.sources.local import LocalSource
+
+    chapter = await ctx.db.get_chapter(chapter_id)
+    if chapter is None:
+        logger.warning("prepare: chapter %d vanished, skipping", chapter_id)
+        return
 
     handle = await ctx.db.get_inbox_handle(chapter_id)
     if handle is None:
         raise RuntimeError(
             f"prepare claim {chapter_id}: missing inbox handle "
-            f"(was the chapter created without queue_chapter?)",
+            "(was the chapter created without an upload init?)",
         )
 
     with tempfile.TemporaryDirectory(prefix="typoon-prepare-") as tmp_str:
@@ -211,31 +259,56 @@ async def _handle_prepare(ctx: StageContext, chapter_id: int, project_id: int) -
                 raise
 
         zip_path = tmp / "chapter.zip"
-        size = await ctx.inbox.fetch(tmp_id=handle.tmp_id, dest=zip_path)  # type: ignore[union-attr]
+        size = await ctx.inbox.fetch(  # type: ignore[union-attr]
+            tmp_id=handle.tmp_id, dest=zip_path,
+        )
         if size <= 0:
             raise RuntimeError(f"prepare {chapter_id}: empty zip from inbox")
         try:
             n_unpacked = unpack_zip(zip_path.read_bytes(), pages_dir)
         except UnpackError as e:
-            raise RuntimeError(f"prepare {chapter_id}: unpack failed: {e}") from e
+            raise RuntimeError(
+                f"prepare {chapter_id}: unpack failed: {e}",
+            ) from e
         if n_unpacked == 0:
             raise RuntimeError(f"prepare {chapter_id}: zip contained no pages")
 
-        _key, page_count = await prepare_chapter_to_archive(
+        key, page_count = await prepare_chapter_to_archive(
             LocalSource(pages_dir),
-            project_id=project_id, chapter_id=chapter_id,
+            chapter_id=chapter_id,
             store=ctx.stores.pipeline,
             strategy="auto",
             work=tmp,
         )
 
-    await ctx.db.set_prepared_done(chapter_id, page_count)
-    await ctx.db.advance_task(chapter_id, "prepare", "scan")
+        # Hash the just-uploaded archive for CAS dedup on next upload.
+        archive_local = tmp / "prepared.bnl"
+        prepared_hash = _hash_file(archive_local) if archive_local.exists() else ""
+
+    await ctx.db.set_chapter_prepared(
+        chapter_id,
+        prepared_hash=prepared_hash,
+        prepared_backend=ctx.stores.pipeline.backend_name,
+        prepared_locator=key,
+        page_count=page_count,
+    )
+
+    # Fan out: every pending draft on this chapter advances to scan.
+    # In practice prepare is enqueued because at least one spawn
+    # arrived for the chapter; that spawn either picked a fresh draft
+    # (we advance it) or merged with one (we still need scan because
+    # scan output is empty). We always enqueue scan keyed by chapter.
+    await ctx.db.advance_task(
+        target_kind="chapter", target_id=chapter_id,
+        completed_stage="prepare", next_stage="scan",
+        next_target_kind="chapter", next_target_id=chapter_id,
+    )
     await ctx.db.clear_inbox_handle(chapter_id)
 
-    # The bucket lifecycle rule sweeps anything we miss.
     try:
-        await ctx.inbox.delete(tmp_id=handle.tmp_id)  # type: ignore[union-attr]
+        await ctx.inbox.delete(  # type: ignore[union-attr]
+            tmp_id=handle.tmp_id,
+        )
     except Exception as e:
         logger.warning(
             "inbox cleanup failed (chapter=%d tmp=%s): %s",
@@ -243,20 +316,40 @@ async def _handle_prepare(ctx: StageContext, chapter_id: int, project_id: int) -
         )
 
 
-async def _handle_scan(ctx: StageContext, chapter_id: int, project_id: int) -> None:
+async def _handle_scan(
+    ctx: StageContext, target_kind: str, target_id: int,
+) -> None:
+    """Chapter-scoped OCR + geometry pass. Output is shared across
+    every translation referencing the chapter."""
+    assert target_kind == "chapter", \
+        f"scan requires target_kind=chapter, got {target_kind}"
     assert ctx.runtime is not None, "scan requires VisionRuntime"
-    proj = await ctx.db.get_project(project_id)
-    source_lang = proj["source_lang"]
+    chapter_id = target_id
+
+    # Source language: pull from the first draft pending on this
+    # chapter. Multiple drafts in different source langs is rare and
+    # the scan output (OCR text) is what would differ; for now use
+    # the most-recently-created draft to seed source_lang.
+    chapter = await ctx.db.get_chapter(chapter_id)
+    if chapter is None:
+        logger.warning("scan: chapter %d vanished, skipping", chapter_id)
+        return
+    material = await ctx.db.get_material(chapter["material_id"])
+    source_lang = (
+        material.get("languages") or ["unknown"]
+    )[0] if material else "unknown"
 
     pipeline = ctx.stores.pipeline
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
-        with await open_prepared_reader(pipeline, prepared_key(project_id, chapter_id), tmp) as reader:
+        with await open_prepared_reader(
+            pipeline, prepared_key(chapter_id), tmp,
+        ) as reader:
             prepared = reader.chapter()
             result = await asyncio.to_thread(
                 scan_chapter, prepared, reader, ctx.runtime,
                 source_lang=source_lang,
-                chapter_id=chapter_id, project_id=project_id, hook=ctx.hook,
+                chapter_id=chapter_id, hook=ctx.hook,
             )
 
         await ctx.db.save_geometry(chapter_id, result.geometry_records())
@@ -264,20 +357,64 @@ async def _handle_scan(ctx: StageContext, chapter_id: int, project_id: int) -> N
 
         masks_path = tmp / "masks.npz"
         result.masks.pack(masks_path)
-        await pipeline.put(masks_key(project_id, chapter_id), masks_path)
+        locator = await pipeline.put(masks_key(chapter_id), masks_path)
+        await ctx.db.set_chapter_masks(
+            chapter_id,
+            masks_backend=pipeline.backend_name,
+            masks_locator=locator,
+        )
 
-    await ctx.db.advance_task(chapter_id, "scan", "translate")
+    # Fan out to every pending draft for this chapter.
+    async with ctx.db._pool.acquire() as conn:  # type: ignore[attr-defined]
+        drafts = await conn.fetch(
+            "SELECT id FROM translation_drafts "
+            "WHERE chapter_id=$1 AND state='pending' AND takedown_at IS NULL",
+            chapter_id,
+        )
+    if not drafts:
+        # No draft waiting on us — possible after a delete race. Drop
+        # the scan task; subsequent spawns will re-enqueue.
+        await ctx.db.complete_task("chapter", chapter_id, "scan")
+        return
+    await ctx.db.complete_task("chapter", chapter_id, "scan")
+    for d in drafts:
+        await ctx.db.enqueue_task(
+            target_kind="draft", target_id=d["id"], stage="translate",
+        )
 
 
-async def _handle_translate(ctx: StageContext, chapter_id: int, project_id: int) -> None:
-    ch    = await ctx.db.get_chapter(chapter_id)
-    proj  = await ctx.db.get_project(project_id)
-    tctx  = make_ctx(
-        project_id=project_id,
+async def _handle_translate(
+    ctx: StageContext, target_kind: str, target_id: int,
+) -> None:
+    """Per-draft LLM pass. Reads chapter-scoped scan output; writes
+    draft_briefs + translation_draft_bubbles bound to the draft."""
+    assert target_kind == "draft", \
+        f"translate requires target_kind=draft, got {target_kind}"
+    draft_id = target_id
+
+    draft = await ctx.db.get_draft(draft_id)
+    if draft is None:
+        logger.warning("translate: draft %d vanished, skipping", draft_id)
+        return
+    chapter_id = draft["chapter_id"]
+    chapter = await ctx.db.get_chapter(chapter_id)
+    if chapter is None:
+        await ctx.db.update_draft_state(
+            draft_id, state="error", error="chapter deleted",
+        )
+        return
+    material = await ctx.db.get_material(chapter["material_id"])
+
+    await ctx.db.update_draft_state(draft_id, state="running")
+
+    tctx = make_ctx(
         chapter_id=chapter_id,
-        chapter_position=ch["position"],
-        source_lang=proj["source_lang"],
-        target_lang=proj["target_lang"],
+        draft_id=draft_id,
+        chapter_position=chapter["position"],
+        material_id=chapter["material_id"],
+        owner_id=draft["created_by"],
+        source_lang=draft["source_lang"],
+        target_lang=draft["target_lang"],
         store=ctx.db,
         config=ctx.config,
         hook=ctx.hook,
@@ -286,42 +423,93 @@ async def _handle_translate(ctx: StageContext, chapter_id: int, project_id: int)
     pipeline = ctx.stores.pipeline
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
-        with await open_prepared_reader(pipeline, prepared_key(project_id, chapter_id), tmp) as reader:
+        with await open_prepared_reader(
+            pipeline, prepared_key(chapter_id), tmp,
+        ) as reader:
             scanned = await load_scanned(reader, ctx.db, chapter_id)
             translated, brief = await translate_chapter(scanned, reader, tctx)
 
-    await ctx.db.save_chapter_brief(chapter_id, brief.to_dict())
-    await ctx.db.save_translations(chapter_id, translated.to_db_records())
-    await ctx.db.advance_task(chapter_id, "translate", "render")
+    await ctx.db.save_draft_brief(draft_id, brief.to_dict())
+    await ctx.db.save_draft_bubbles(draft_id, translated.to_db_records())
+    await ctx.db.update_draft_state(draft_id, state="done")
+
+    # Fan out render: target the draft (shared default render). When
+    # users later add sparse edits, individual translations re-render
+    # to their own t/{id}/render.bnl key.
+    await ctx.db.advance_task(
+        target_kind="draft", target_id=draft_id,
+        completed_stage="translate", next_stage="render",
+        next_target_kind="draft", next_target_id=draft_id,
+    )
 
 
-async def _handle_render(ctx: StageContext, chapter_id: int, project_id: int) -> None:
+async def _handle_render(
+    ctx: StageContext, target_kind: str, target_id: int,
+) -> None:
+    """Render runs either against a draft (default shared archive) or
+    against a single translation (per-user fork when sparse edits
+    diverge). The target kind dictates which DB pointer is set.
+    """
     assert ctx.runtime is not None, "render requires VisionRuntime"
+
+    if target_kind == "draft":
+        draft_id       = target_id
+        translation_id = None
+        draft = await ctx.db.get_draft(draft_id)
+        if draft is None:
+            logger.warning("render: draft %d vanished, skipping", draft_id)
+            return
+        chapter_id = draft["chapter_id"]
+    elif target_kind == "translation":
+        translation_id = target_id
+        t = await ctx.db.get_translation(translation_id)
+        if t is None:
+            logger.warning(
+                "render: translation %d vanished, skipping", translation_id,
+            )
+            return
+        chapter_id = t["chapter_id"]
+        draft_id   = t.get("draft_id")
+        if not draft_id:
+            await ctx.db.fail_task(
+                target_kind, target_id, "render",
+                "translation has no draft_id (cannot render bubbles)",
+            )
+            return
+    else:
+        raise AssertionError(
+            f"render target_kind must be draft|translation, got {target_kind}",
+        )
+
     pipeline = ctx.stores.pipeline
     public   = ctx.stores.public
 
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = Path(tmp_str)
-        with await open_prepared_reader(pipeline, prepared_key(project_id, chapter_id), tmp) as reader:
+        with await open_prepared_reader(
+            pipeline, prepared_key(chapter_id), tmp,
+        ) as reader:
             translated, page_geoms = await load_translated_with_geometry(
-                reader, ctx.db, chapter_id,
+                reader, ctx.db, chapter_id, draft_id,
+                translation_id=translation_id,
             )
 
             masks_local = tmp / "masks.npz"
-            await pipeline.get(masks_key(project_id, chapter_id), masks_local)
+            await pipeline.get(masks_key(chapter_id), masks_local)
             masks = MaskStore.unpack(masks_local)
 
-            # Pages flagged as full-page noise by the context agent are
-            # dropped from the public render archive. Brief is always
-            # present at render time (translate is a hard prerequisite).
-            brief_dict = await ctx.db.get_chapter_brief(chapter_id)
+            # Pages flagged as full-page noise by the brief drop out
+            # of the public archive. Brief is present at render time
+            # because translate is a hard prerequisite.
+            brief_dict = await ctx.db.get_draft_brief(draft_id)
             skip_pages: frozenset[int] = frozenset(
                 int(p) for p in (brief_dict or {}).get("noise_pages", [])
             )
 
-            locator, public_page_count = await render_chapter_to_archive(
+            locator, _public_page_count = await render_chapter_to_archive(
                 translated,
-                project_id=project_id,
+                target_kind=target_kind,
+                target_id=target_id,
                 chapter_id=chapter_id,
                 reader=reader,
                 runtime=ctx.runtime,
@@ -334,9 +522,25 @@ async def _handle_render(ctx: StageContext, chapter_id: int, project_id: int) ->
                 skip_pages=skip_pages,
             )
 
-    await ctx.db.set_archive(chapter_id, public.backend_name, locator)
-    await ctx.db.set_rendered(chapter_id, True, page_count=public_page_count)
-    await ctx.db.complete_task(chapter_id, "render")
+    if target_kind == "draft":
+        # Default draft render — every translation pointing at this
+        # draft with no edits will read this archive. Persist on the
+        # draft row so the translate route can serve it.
+        async with ctx.db._pool.acquire() as conn:  # type: ignore[attr-defined]
+            await conn.execute(
+                "UPDATE translation_drafts SET "
+                "  archive_backend=$1, archive_locator=$2 "
+                "WHERE id=$3",
+                public.backend_name, locator, draft_id,
+            )
+    else:
+        await ctx.db.update_translation_archive(
+            translation_id,
+            archive_backend=public.backend_name,
+            archive_locator=locator,
+        )
+
+    await ctx.db.complete_task(target_kind, target_id, "render")
 
 
 _HANDLERS: dict[str, StageHandler] = {
@@ -351,48 +555,55 @@ _HANDLERS: dict[str, StageHandler] = {
 
 
 async def _run_one(
-    ctx:        StageContext,
-    stage:      str,
-    chapter_id: int,
+    ctx:    StageContext,
+    stage:  str,
+    target_kind: str,
+    target_id:   int,
 ) -> None:
     """Dispatch one claim through its handler with uniform lifecycle.
 
-    `StageStarted` / `StageDone` / `StageFailed` are emitted here, not
-    in the handlers, so adding a new stage means writing one handler
-    function and registering it in `_HANDLERS`.
+    Emits StageStarted/StageDone/StageFailed centrally so adding a new
+    stage means one handler function + one entry in _HANDLERS.
     """
-    ch = await ctx.db.get_chapter(chapter_id)
-    if ch is None:
-        # Chapter vanished between claim and dispatch (rare race: user
-        # delete + worker pick up). The stale `tasks` row disappears
-        # with the chapter via ON DELETE CASCADE — nothing to do.
+    chapter_id = await _chapter_id_for_target(ctx.db, target_kind, target_id)
+    if chapter_id is None:
+        # Target vanished between claim and dispatch.
         return
-    project_id = ch["project_id"]
 
-    ctx.hook.on(StageStarted(chapter_id=chapter_id, project_id=project_id, stage=stage))
+    draft_id       = target_id if target_kind == "draft" else 0
+    translation_id = target_id if target_kind == "translation" else 0
+
+    ctx.hook.on(StageStarted(
+        chapter_id=chapter_id,
+        draft_id=draft_id, translation_id=translation_id,
+        stage=stage,
+    ))
     try:
-        await _HANDLERS[stage](ctx, chapter_id, project_id)
-        ctx.hook.on(StageDone(chapter_id=chapter_id, project_id=project_id, stage=stage))
+        await _HANDLERS[stage](ctx, target_kind, target_id)
+        ctx.hook.on(StageDone(
+            chapter_id=chapter_id,
+            draft_id=draft_id, translation_id=translation_id,
+            stage=stage,
+        ))
     except (TransientCredentialError, UpstreamUnavailable) as e:
-        # Provider is sick (token revoked, credential pool empty,
-        # gateway 5xx). Don't burn an attempt — release the claim and
-        # let the next pump cycle pick the chapter up. Sleep first so
-        # we don't immediately re-claim and hammer the same broken
-        # endpoint while the operator is still rotating credentials.
         logger.warning(
-            "%s requeue chapter_id=%d (%s): %s",
-            stage, chapter_id, type(e).__name__, e,
+            "%s requeue %s:%d (%s): %s",
+            stage, target_kind, target_id, type(e).__name__, e,
         )
-        await ctx.db.requeue_task(chapter_id, stage, str(e))
+        await ctx.db.requeue_task(target_kind, target_id, stage, str(e))
         ctx.hook.on(StageFailed(
-            chapter_id=chapter_id, project_id=project_id, stage=stage, error=e,
+            chapter_id=chapter_id,
+            draft_id=draft_id, translation_id=translation_id,
+            stage=stage, error=e,
         ))
         await asyncio.sleep(_REQUEUE_BACKOFF_SECONDS)
     except Exception as e:
-        logger.exception("%s failed chapter_id=%d", stage, chapter_id)
-        await ctx.db.fail_task(chapter_id, stage, str(e))
+        logger.exception("%s failed %s:%d", stage, target_kind, target_id)
+        await ctx.db.fail_task(target_kind, target_id, stage, str(e))
         ctx.hook.on(StageFailed(
-            chapter_id=chapter_id, project_id=project_id, stage=stage, error=e,
+            chapter_id=chapter_id,
+            draft_id=draft_id, translation_id=translation_id,
+            stage=stage, error=e,
         ))
 
 
@@ -404,19 +615,9 @@ async def _stage_pump(
 ) -> None:
     """Run claims for one stage until cancelled.
 
-    Wake-up sources, in order of preference:
-
-      1. Postgres NOTIFY on `typoon_task_<stage>` — fires within ~5 ms
-         of any insert/release on the `tasks` table.
-      2. 30-second safety poll — covers missed notifications (the LISTEN
-         connection dropping while we were away, etc.). Long enough to
-         keep CPU near zero; short enough that a stuck worker recovers
-         without operator intervention.
-
-    The pump drains the queue greedily on every wake-up: claim until
-    `claim_task` returns None, then sleep again. This keeps the
-    notification firehose to one signal regardless of how many tasks
-    landed in a burst.
+    Wake-up sources:
+      1. NOTIFY on `typoon_task_<stage>` — fires ~5ms after insert/release.
+      2. 30s safety poll — covers missed notifications.
     """
     worker_id = _worker_id(stage)
     channel = f"typoon_task_{stage}"
@@ -430,26 +631,20 @@ async def _stage_pump(
         await listen_conn.add_listener(channel, _on_notify)
         logger.info("[%s] pump up on LISTEN %s", stage, channel)
 
-        # Drain immediately on boot — claims released by startup reaper
-        # are waiting for us.
         while not stop.is_set():
             claimed_any = True
             while claimed_any and not stop.is_set():
                 claimed_any = False
                 while not stop.is_set():
-                    chapter_id = await ctx.db.claim_task(stage, worker_id)
-                    if chapter_id is None:
+                    claimed = await ctx.db.claim_task(stage, worker_id)
+                    if claimed is None:
                         break
+                    target_kind, target_id = claimed
                     claimed_any = True
-                    await _run_one(ctx, stage, chapter_id)
+                    await _run_one(ctx, stage, target_kind, target_id)
             if stop.is_set():
                 break
 
-            # Wait for either a NOTIFY or the safety-net poll, whichever
-            # comes first. `asyncio.wait` returns when any task in the
-            # set finishes, so a single NOTIFY wakes us instantly even
-            # if shutdown isn't requested. Outstanding tasks get
-            # cancelled to avoid leaking handles.
             notif.clear()
             wakeup = asyncio.create_task(notif.wait())
             quit_  = asyncio.create_task(stop.wait())
@@ -478,24 +673,7 @@ async def run_workers(
     translate_concurrency: int = 3,
     config: Config | None = None,
 ) -> None:
-    """Start every stage pump for `role` and block until shutdown.
-
-    Lifecycle:
-
-      1. Bind SIGTERM/SIGINT to a `stop_event` so launchd's stop signal
-         (or a Ctrl-C in dev) propagates as cooperative cancellation.
-      2. Release any claim left by a previous PID on this host — a hard
-         exit (SIGKILL, kernel panic, machine reboot) bypasses the
-         stop_event path, so the freshly-booted worker has to clear the
-         dust on startup. Cross-host crashes are still handled by the
-         staleness reaper inside `claim_task`.
-      3. Build a single `StageContext` shared by every pump.
-      4. Spawn one `_stage_pump` per active stage inside an asyncio
-         TaskGroup. Translate is the only stage with parallel slots
-         (LLM I/O, no GPU/ANE) — extra pumps share the same handler.
-      5. On `stop_event`, every pump unwinds; pending claims drain
-         naturally before the TaskGroup exits.
-    """
+    """Start every stage pump for `role` and block until shutdown."""
     from typoon.config import load_config
     from typoon.adapters.inbox import build_inbox
 
@@ -536,17 +714,18 @@ async def run_workers(
         await db.close()
         return
 
-    # Startup: clear ghost claims left by a previous PID on this host.
     released = await db.release_claims_by_prefix(_host_prefix())
     if released:
-        logger.info("released %d ghost claim(s) from prior PID(s) on this host", released)
+        logger.info(
+            "released %d ghost claim(s) from prior PID(s) on this host",
+            released,
+        )
 
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:
-            # Windows: signals on the loop aren't supported.
             pass
 
     try:
@@ -557,9 +736,6 @@ async def run_workers(
                     tg.create_task(
                         _stage_pump(ctx, stage, config.database_url, stop),
                     )
-            # Hold the TaskGroup open until shutdown is requested. The
-            # pumps themselves exit cleanly on stop.set(); we wait here
-            # so the TaskGroup doesn't unwind via a stray pump returning.
             await stop.wait()
     finally:
         await stores.aclose()

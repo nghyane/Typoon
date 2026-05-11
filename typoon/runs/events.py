@@ -67,37 +67,54 @@ class PipelineError(Event):
 
 
 # ── Pipeline stage events ─────────────────────────────────────────────
+#
+# Three target kinds in the v5 pipeline:
+#   - chapter     for prepare + scan (pixel-level work, shared by every
+#                 translation of the chapter)
+#   - draft       for translate (LLM work scoped to (chapter, lang, glossary))
+#   - translation for render of per-user edits (fallback render uses
+#                 draft as target)
+#
+# `chapter_id` is filled in for every stage so subscribers can group
+# progress by chapter regardless of which sub-target the worker is on.
+# `draft_id` / `translation_id` are populated when the stage's natural
+# target is one of those; UIs that care about a specific draft or
+# translation filter on those.
 
 
 @dataclass
 class StageStarted(Event):
-    chapter_id: int = 0
-    project_id: int = 0
-    stage:      str = ""
+    chapter_id:     int = 0
+    draft_id:       int = 0
+    translation_id: int = 0
+    stage:          str = ""
 
 
 @dataclass
 class StageDone(Event):
-    chapter_id: int = 0
-    project_id: int = 0
-    stage:      str = ""
+    chapter_id:     int = 0
+    draft_id:       int = 0
+    translation_id: int = 0
+    stage:          str = ""
 
 
 @dataclass
 class PageDone(Event):
-    chapter_id: int = 0
-    project_id: int = 0
-    stage:      str = ""
-    page_index: int = 0
-    page_total: int = 0
+    chapter_id:     int = 0
+    draft_id:       int = 0
+    translation_id: int = 0
+    stage:          str = ""
+    page_index:     int = 0
+    page_total:     int = 0
 
 
 @dataclass
 class StageFailed(Event):
-    chapter_id: int = 0
-    project_id: int = 0
-    stage:      str = ""
-    error:      Exception | None = None
+    chapter_id:     int = 0
+    draft_id:       int = 0
+    translation_id: int = 0
+    stage:          str = ""
+    error:          Exception | None = None
 
 
 class Hook:
@@ -113,17 +130,32 @@ class LoggingHook(Hook):
     import logging as _logging
     _log = _logging.getLogger("typoon.pipeline")
 
+    def _tag(self, ev: "Event") -> str:
+        chapter_id     = getattr(ev, "chapter_id", 0)
+        draft_id       = getattr(ev, "draft_id", 0)
+        translation_id = getattr(ev, "translation_id", 0)
+        parts = []
+        if chapter_id:     parts.append(f"ch{chapter_id}")
+        if draft_id:       parts.append(f"d{draft_id}")
+        if translation_id: parts.append(f"t{translation_id}")
+        return "/".join(parts) or "?"
+
     def on(self, event: Event) -> None:
         if isinstance(event, StageStarted):
-            self._log.info("[ch%d] %s started", event.chapter_id, event.stage)
+            self._log.info("[%s] %s started", self._tag(event), event.stage)
         elif isinstance(event, StageDone):
-            self._log.info("[ch%d] %s done", event.chapter_id, event.stage)
+            self._log.info("[%s] %s done", self._tag(event), event.stage)
         elif isinstance(event, StageFailed):
-            self._log.error("[ch%d] %s failed: %s", event.chapter_id, event.stage, event.error)
+            self._log.error(
+                "[%s] %s failed: %s", self._tag(event), event.stage, event.error,
+            )
         elif isinstance(event, LLMCall):
             self._log.info("[llm] %s turn %d", event.agent, event.turn)
         elif isinstance(event, LLMResponse):
-            self._log.info("[llm] %s turn %d → %d ops (%.0fms)", event.agent, event.turn, event.tool_calls, event.ms)
+            self._log.info(
+                "[llm] %s turn %d → %d ops (%.0fms)",
+                event.agent, event.turn, event.tool_calls, event.ms,
+            )
 
 
 class CompositeHook(Hook):

@@ -1,4 +1,12 @@
-"""Opaque translation key generation — pure, no side effects."""
+"""Opaque translation key generation — pure, no side effects.
+
+A key is the single identity for LLM communication. It must be stable
+across runs (so the same bubble in the same chapter always yields the
+same key) but unguessable (so the LLM can't infer schema from indices).
+
+Derived from chapter_id only — bubbles live on the chapter, not on a
+draft / translation, so the key set is shared across translations.
+"""
 
 from __future__ import annotations
 
@@ -14,16 +22,16 @@ _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 def assign_keys(
     bubbles: list[scan.Bubble],
     *,
-    project_id: int,
     chapter_id: int,
 ) -> list[BubbleKey]:
-    """Return stable list of BubbleKey. Key is the single identity for LLM communication."""
+    """Return stable list of BubbleKey. Key is the single identity for
+    LLM communication."""
     out: list[BubbleKey] = []
     used: set[str] = set()
     for b in bubbles:
         salt = 0
         while True:
-            key = _make_key(b, project_id=project_id, chapter_id=chapter_id, salt=salt)
+            key = _make_key(b, chapter_id=chapter_id, salt=salt)
             if key not in used:
                 break
             salt += 1
@@ -32,9 +40,8 @@ def assign_keys(
     return out
 
 
-def _make_key(b: scan.Bubble, *, project_id: int, chapter_id: int, salt: int) -> str:
+def _make_key(b: scan.Bubble, *, chapter_id: int, salt: int) -> str:
     payload = {
-        "project":    project_id,
         "chapter_id": chapter_id,
         "page":       b.page_index,
         "idx":        b.idx,

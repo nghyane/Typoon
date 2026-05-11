@@ -77,15 +77,17 @@ def scan_chapter(
     *,
     source_lang: str | None = None,
     chapter_id: int = 0,
-    project_id: int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
 ) -> ScanOutput:
     """Run vision pipeline on every prepared page. Returns ScanOutput.
 
-    `source_lang` is the project's ISO 639-1 source language code,
+    `source_lang` is the chapter's ISO 639-1 source language code,
     threaded into the OCR recognizer so non-Latin scripts (ja/ko/zh)
     are not silently filtered as noise.
+
+    Scan keys outputs by chapter — bubbles, geometry, and masks are
+    pixel-derived and shared across every translation of the chapter.
     """
     pages:    list[scan.Page] = []
     geometry: list[PageGeometry]     = []
@@ -106,8 +108,8 @@ def scan_chapter(
             ))
             if hook is not None:
                 hook.on(PageDone(
-                    chapter_id=chapter_id, project_id=project_id,
-                    stage="scan", page_index=index, page_total=total,
+                    chapter_id=chapter_id, stage="scan",
+                    page_index=index, page_total=total,
                 ))
             continue
 
@@ -125,7 +127,10 @@ def scan_chapter(
         geometry.append(page_geom)
 
         if hook is not None:
-            hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="scan", page_index=index, page_total=total))
+            hook.on(PageDone(
+                chapter_id=chapter_id, stage="scan",
+                page_index=index, page_total=total,
+            ))
 
         if artifacts is not None:
             _write_artifacts(artifacts, index, image, state)

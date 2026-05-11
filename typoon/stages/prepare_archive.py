@@ -20,7 +20,6 @@ from typoon.stages.prepare import RawChapterSource, prepare_chapter
 async def prepare_chapter_to_archive(
     source: RawChapterSource,
     *,
-    project_id: int,
     chapter_id: int,
     store: BlobStore,
     strategy: str = "auto",
@@ -41,7 +40,7 @@ async def prepare_chapter_to_archive(
             artifacts=artifacts,
         )
 
-        key = prepared_key(project_id, chapter_id)
+        key = prepared_key(chapter_id)
         page_count, _locator = await pack_and_upload(
             src_dir=webp_dir,
             archive_path=archive_path,

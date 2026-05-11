@@ -48,10 +48,23 @@ async def build_chapter_brief(
     pre_noise = {bk.key for bk in keyed if _is_auto_skip(bk.source_text)}
     visible_keyed = [bk for bk in keyed if bk.key not in pre_noise]
 
-    glossary_terms = await ctx.store.get_glossary(ctx.project_id)
-    prior_briefs   = await ctx.store.get_recent_chapter_briefs(
-        ctx.project_id, before_position=ctx.chapter_position, limit=10,
+    # Glossary: caller's user + community defaults, merged. The
+    # translate context only needs the resolved key=value mapping so
+    # the LLM can reference correct terms — community vs user origin
+    # is opaque here.
+    user_terms = await ctx.store.list_user_glossary(
+        ctx.owner_id,
+        source_lang=ctx.source_lang,
+        target_lang=ctx.target_lang,
     )
+    glossary_terms: dict[str, str] = {
+        r["source_term"]: r["target_term"] for r in user_terms
+    }
+    # Prior-brief lookup is per-author-per-material in the new model:
+    # we have no equivalent to "recent project briefs" because briefs
+    # bind to drafts, not chapters. Skip until the slice that wires
+    # per-draft brief history. Empty list keeps the prompt valid.
+    prior_briefs: list[dict] = []
     has_knowledge = bool(glossary_terms) or bool(prior_briefs)
     context_snapshot = _context_snapshot(
         glossary_terms=glossary_terms,

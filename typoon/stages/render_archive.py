@@ -2,18 +2,28 @@
 
 Wraps `stages.render.render_chapter`: produces WebP pages in tmp, packs
 them into a Bunle archive, uploads. The CPU-heavy render runs on a
-worker thread so the event loop stays responsive while the upload awaits.
+worker thread so the event loop stays responsive while the upload
+awaits.
 
-The persistent `chapters.rendered` flag flip is the caller's
-responsibility (`Store.set_rendered(True)` after this returns).
-Concurrency comes from `Store.claim_task('render', ...)` — only one
-worker can hold the render slot at a time.
+Target shape:
+  - `target_kind='draft'`        → `d/{draft_id}/render.bnl`
+                                    shared by every translation that
+                                    references the draft and has no edits.
+  - `target_kind='translation'`  → `t/{translation_id}/render.bnl`
+                                    fork the draft render when sparse
+                                    edits diverge.
+
+The DB pointer flip
+(`Store.update_translation_archive` or update_draft_archive) is the
+caller's responsibility. Concurrency comes from
+`Store.claim_task('render', ...)` — only one worker holds the slot.
 """
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Literal
 
 from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import pack_and_upload, render_key
@@ -28,11 +38,15 @@ from typoon.stages._workdir import workdir
 from typoon.stages.render import render_chapter
 
 
+RenderTargetKind = Literal["draft", "translation"]
+
+
 async def render_chapter_to_archive(
     translated: translate.Chapter,
     *,
-    project_id: int,
-    chapter_id: int,
+    target_kind: RenderTargetKind,
+    target_id:   int,
+    chapter_id:  int,
     reader: PreparedReader,
     runtime: VisionRuntime,
     page_geoms: dict[int, PageGeometry],
@@ -57,18 +71,16 @@ async def render_chapter_to_archive(
         rendered = await asyncio.to_thread(
             render_chapter,
             translated, out_dir, reader, runtime, page_geoms, masks,
-            chapter_id=chapter_id, project_id=project_id,
+            chapter_id=chapter_id,
+            target_kind=target_kind, target_id=target_id,
             hook=hook, artifacts=artifacts, skip_pages=skip_pages,
         )
 
         page_count, locator = await pack_and_upload(
             src_dir=out_dir,
             archive_path=archive_path,
-            key=render_key(project_id, chapter_id, archive_salt),
+            key=render_key(target_kind, target_id, archive_salt),
             store=store,
         )
-        # `rendered.pages` is the same set the bunle was packed from,
-        # so its length must match the archive's page_count. We return
-        # the bunle count as the source of truth.
-        _ = rendered  # (returned only for caller introspection if desired)
+        _ = rendered  # returned only for caller introspection if desired
         return locator, page_count

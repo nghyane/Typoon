@@ -36,8 +36,9 @@ def render_chapter(
     page_geoms: dict[int, PageGeometry],
     masks: MaskStore,
     *,
-    chapter_id: int = 0,
-    project_id: int = 0,
+    chapter_id:  int = 0,
+    target_kind: str = "draft",   # 'draft' | 'translation'
+    target_id:   int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
     skip_pages: frozenset[int] = frozenset(),
@@ -67,8 +68,11 @@ def render_chapter(
                     "06_render", f"{tp.index:04d}_dropped.png", reader.read_rgb(tp.index)
                 )
             if hook is not None:
-                hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",
-                                 page_index=tp.index, page_total=len(translated.pages)))
+                hook.on(_page_done(
+                    chapter_id=chapter_id,
+                    target_kind=target_kind, target_id=target_id,
+                    page_index=tp.index, page_total=len(translated.pages),
+                ))
             continue
 
         original   = reader.read_rgb(tp.index)
@@ -119,8 +123,11 @@ def render_chapter(
         out_index += 1
 
         if hook is not None:
-            hook.on(PageDone(chapter_id=chapter_id, project_id=project_id, stage="render",
-                             page_index=tp.index, page_total=len(translated.pages)))
+            hook.on(_page_done(
+                chapter_id=chapter_id,
+                target_kind=target_kind, target_id=target_id,
+                page_index=tp.index, page_total=len(translated.pages),
+            ))
 
         if artifacts is not None:
             artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
@@ -128,6 +135,26 @@ def render_chapter(
         rendered_pages.append(render.Page(source=tp, bubbles=rendered_bubbles))
 
     return render.Chapter(source=translated, pages=tuple(rendered_pages))
+
+
+def _page_done(
+    *,
+    chapter_id:  int,
+    target_kind: str,
+    target_id:   int,
+    page_index:  int,
+    page_total:  int,
+) -> PageDone:
+    """Build PageDone with the right id field set for the target."""
+    if target_kind == "draft":
+        return PageDone(
+            chapter_id=chapter_id, draft_id=target_id, stage="render",
+            page_index=page_index, page_total=page_total,
+        )
+    return PageDone(
+        chapter_id=chapter_id, translation_id=target_id, stage="render",
+        page_index=page_index, page_total=page_total,
+    )
 
 
 def _to_rgba(image: np.ndarray) -> np.ndarray:
