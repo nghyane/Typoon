@@ -354,6 +354,28 @@ class Store(Protocol):
         the per-chapter translation list."""
         ...
 
+    async def list_translations_by_upstream(
+        self,
+        material_id:   int,
+        upstream_urls: list[str],
+        viewer_id:     int,
+        viewer_guilds: list[str],
+    ) -> dict[str, list[dict]]:
+        """Manifest-side overlay: keyed by `chapter.upstream_url` so
+        the SPA can match it against the manifest chapter list without
+        needing internal chapter_ids. Returns same shape as
+        `list_translations_for_chapters`. Visibility rules identical."""
+        ...
+
+    async def list_my_translations(
+        self,
+        user_id: int,
+    ) -> list[dict]:
+        """Translations the user owns, joined with chapter + material
+        for the `/translate` index view. Ordered by translation
+        updated_at DESC."""
+        ...
+
     async def update_translation_archive(
         self,
         translation_id: int,

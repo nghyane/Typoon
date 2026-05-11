@@ -1110,6 +1110,95 @@ class PostgresStore:
             out[r["chapter_id"]].append(dict(r))
         return out
 
+    async def list_translations_by_upstream(
+        self,
+        material_id:   int,
+        upstream_urls: list[str],
+        viewer_id:     int,
+        viewer_guilds: list[str],
+    ) -> dict[str, list[dict]]:
+        """Manifest-coord overlay. Same visibility logic as
+        `list_translations_for_chapters`; key shape is upstream_url
+        so callers can join against the manifest chapter list before
+        any server chapter row exists for the URL.
+        """
+        if not upstream_urls:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    c.upstream_url,
+                    t.id, t.chapter_id, t.owner_id, t.target_lang,
+                    t.draft_id, t.in_feed, t.feed_guild_id,
+                    COALESCE(d.state, 'done') AS state,
+                    u.display_name AS creator_name,
+                    (t.archive_locator IS NULL AND t.draft_id IS NOT NULL) AS uses_default_render
+                FROM translations t
+                JOIN chapters c ON c.id = t.chapter_id
+                LEFT JOIN translation_drafts d ON d.id = t.draft_id
+                LEFT JOIN users u ON u.id = t.owner_id
+                WHERE c.material_id = $1
+                  AND c.upstream_url = ANY($2::text[])
+                  AND t.takedown_at IS NULL
+                  AND (
+                      t.owner_id = $3
+                      OR d.visibility = 'guild' AND d.scope_guild_id = ANY($4::text[])
+                      OR d.visibility = 'all_guilds' AND EXISTS (
+                          SELECT 1 FROM user_guilds ug
+                          WHERE ug.user_id = d.created_by
+                            AND ug.guild_id = ANY($4::text[])
+                      )
+                  )
+                ORDER BY c.upstream_url, t.created_at DESC
+                """,
+                material_id, upstream_urls, viewer_id, viewer_guilds,
+            )
+        out: dict[str, list[dict]] = {u: [] for u in upstream_urls}
+        for r in rows:
+            d = dict(r)
+            url = d.pop("upstream_url")
+            out.setdefault(url, []).append(d)
+        return out
+
+    async def list_my_translations(
+        self, user_id: int,
+    ) -> list[dict]:
+        """Translations owned by `user_id`, joined with chapter +
+        material for `/translate` index. Newest activity first.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                    t.id              AS translation_id,
+                    t.target_lang,
+                    {_ts('t.updated_at')},
+                    COALESCE(d.state, 'done') AS state,
+                    (t.archive_locator IS NOT NULL
+                     OR d.archive_locator IS NOT NULL) AS has_archive,
+                    c.id              AS chapter_id,
+                    c.number          AS chapter_number,
+                    c.label           AS chapter_label,
+                    c.position        AS chapter_position,
+                    c.upstream_url    AS chapter_upstream_url,
+                    m.id              AS material_id,
+                    m.title           AS material_title,
+                    m.cover_url       AS material_cover,
+                    m.source          AS material_source,
+                    m.upstream_ref    AS material_upstream_ref
+                FROM translations t
+                LEFT JOIN translation_drafts d ON d.id = t.draft_id
+                JOIN chapters  c ON c.id = t.chapter_id
+                JOIN materials m ON m.id = c.material_id
+                WHERE t.owner_id = $1
+                  AND t.takedown_at IS NULL
+                ORDER BY t.updated_at DESC
+                """,
+                user_id,
+            )
+        return [dict(r) for r in rows]
+
     async def update_translation_archive(
         self,
         translation_id: int,

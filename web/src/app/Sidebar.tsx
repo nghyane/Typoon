@@ -1,12 +1,13 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../shared/lib/cn'
-import { FolderOpen, Compass, Settings, ChevronLeft, ChevronRight, Library } from 'lucide-react'
+import { FolderOpen, Compass, Settings, ChevronLeft, ChevronRight, Library, Sparkles } from 'lucide-react'
 import { SidebarQuota } from './SidebarQuota'
 
 const NAV = [
-  { to: '/library',  label: 'Thư viện',    icon: Library,    search: undefined },
-  { to: '/browse',   label: 'Duyệt nguồn', icon: Compass,    search: undefined },
+  { to: '/library',   label: 'Thư viện',       icon: Library,  search: undefined },
+  { to: '/browse',    label: 'Duyệt nguồn',    icon: Compass,  search: undefined },
+  { to: '/translate', label: 'Bản dịch',       icon: Sparkles, search: undefined },
 ] as const
 
 const NAV_FOOT = [

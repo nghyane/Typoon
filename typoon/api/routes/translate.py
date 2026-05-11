@@ -76,6 +76,40 @@ class SpawnResult(BaseModel):
     chapter_id:     int
 
 
+# ── My translations index ─────────────────────────────────────────────
+
+
+class MyTranslationOut(BaseModel):
+    translation_id:        int
+    target_lang:           str
+    state:                 str          # done | running | error | pending
+    has_archive:           bool
+    updated_at:            str | None
+
+    chapter_id:            int
+    chapter_number:        str
+    chapter_label:         str | None
+    chapter_position:      int
+    chapter_upstream_url:  str | None
+
+    material_id:           int
+    material_title:        str
+    material_cover:        str | None
+    material_source:       str | None
+    material_upstream_ref: str | None
+
+
+@router.get("/mine", response_model=list[MyTranslationOut])
+async def list_my_translations(
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """User's own translations, newest activity first. Drives the
+    /translate index in the SPA."""
+    rows = await db.list_my_translations(user["id"])
+    return [MyTranslationOut(**r) for r in rows]
+
+
 @router.post("", response_model=SpawnResult)
 async def spawn_translation(
     body: SpawnBody,
@@ -380,6 +414,62 @@ class EditBubbleBody(BaseModel):
     page_index:  int
     bubble_idx:  int
     edited_text: str
+
+
+class BubbleEditOut(BaseModel):
+    page_index:      int
+    bubble_idx:      int
+    source_text:     str
+    draft_text:      str               # LLM-generated, from translation_draft_bubbles
+    edited_text:     str | None        # user override; None when no edit
+    kind:            str               # dialogue | sfx | skip
+
+
+@router.get(
+    "/{translation_id}/bubbles",
+    response_model=list[BubbleEditOut],
+)
+async def list_translation_bubbles(
+    translation_id: int,
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """Per-bubble view for the editor: source OCR + draft text +
+    optional user edit. Owner-only — sparse edits are personal."""
+    t = await require_translation_owner(translation_id, user, db)
+    chapter_id = t["chapter_id"]
+    draft_id   = t.get("draft_id")
+
+    source_bubbles = await db.get_bubbles(chapter_id)
+    draft_bubbles  = (
+        await db.get_draft_bubbles(draft_id) if draft_id else []
+    )
+    edits = await db.get_translation_edits(translation_id)
+
+    src_by_pos = {
+        (b["page_index"], b["bubble_idx"]): b for b in source_bubbles
+    }
+    draft_by_pos = {
+        (b["page_index"], b["bubble_idx"]): b for b in draft_bubbles
+    }
+    edit_by_pos = {
+        (e["page_index"], e["bubble_idx"]): e for e in edits
+    }
+
+    out: list[BubbleEditOut] = []
+    for pos in sorted(src_by_pos):
+        s = src_by_pos[pos]
+        d = draft_by_pos.get(pos)
+        e = edit_by_pos.get(pos)
+        out.append(BubbleEditOut(
+            page_index=pos[0],
+            bubble_idx=pos[1],
+            source_text=s["source_text"],
+            draft_text=d["translated_text"] if d else "",
+            edited_text=e["edited_text"] if e else None,
+            kind=(d.get("kind") if d else None) or "dialogue",
+        ))
+    return out
 
 
 @router.put("/{translation_id}/edits", status_code=204)

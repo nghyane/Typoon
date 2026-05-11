@@ -9,12 +9,15 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TranslateRouteImport } from './routes/translate'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as BrowseRouteImport } from './routes/browse'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TranslateIndexRouteImport } from './routes/translate.index'
 import { Route as BrowseIndexRouteImport } from './routes/browse.index'
+import { Route as TranslateTranslationIdRouteImport } from './routes/translate.$translationId'
 import { Route as BrowseSourceRouteImport } from './routes/browse.$source'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as BrowseSourceIndexRouteImport } from './routes/browse.$source.index'
@@ -25,6 +28,11 @@ import { Route as BrowseSourceMangaMangaIdRouteImport } from './routes/browse.$s
 import { Route as BrowseSourceMangaMangaIdIndexRouteImport } from './routes/browse.$source.manga.$mangaId.index'
 import { Route as BrowseSourceMangaMangaIdChapterChapterIdRouteImport } from './routes/browse.$source.manga.$mangaId.chapter.$chapterId'
 
+const TranslateRoute = TranslateRouteImport.update({
+  id: '/translate',
+  path: '/translate',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -50,10 +58,20 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TranslateIndexRoute = TranslateIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => TranslateRoute,
+} as any)
 const BrowseIndexRoute = BrowseIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => BrowseRoute,
+} as any)
+const TranslateTranslationIdRoute = TranslateTranslationIdRouteImport.update({
+  id: '/$translationId',
+  path: '/$translationId',
+  getParentRoute: () => TranslateRoute,
 } as any)
 const BrowseSourceRoute = BrowseSourceRouteImport.update({
   id: '/$source',
@@ -111,9 +129,12 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/translate': typeof TranslateRouteWithChildren
   '/auth/callback': typeof AuthCallbackRoute
   '/browse/$source': typeof BrowseSourceRouteWithChildren
+  '/translate/$translationId': typeof TranslateTranslationIdRoute
   '/browse/': typeof BrowseIndexRoute
+  '/translate/': typeof TranslateIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
   '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source/': typeof BrowseSourceIndexRoute
@@ -128,7 +149,9 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/translate/$translationId': typeof TranslateTranslationIdRoute
   '/browse': typeof BrowseIndexRoute
+  '/translate': typeof TranslateIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
   '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source': typeof BrowseSourceIndexRoute
@@ -143,9 +166,12 @@ export interface FileRoutesById {
   '/library': typeof LibraryRouteWithChildren
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/translate': typeof TranslateRouteWithChildren
   '/auth/callback': typeof AuthCallbackRoute
   '/browse/$source': typeof BrowseSourceRouteWithChildren
+  '/translate/$translationId': typeof TranslateTranslationIdRoute
   '/browse/': typeof BrowseIndexRoute
+  '/translate/': typeof TranslateIndexRoute
   '/browse/$source/search': typeof BrowseSourceSearchRoute
   '/library/entry/$entryId': typeof LibraryEntryEntryIdRoute
   '/browse/$source/': typeof BrowseSourceIndexRoute
@@ -162,9 +188,12 @@ export interface FileRouteTypes {
     | '/library'
     | '/login'
     | '/settings'
+    | '/translate'
     | '/auth/callback'
     | '/browse/$source'
+    | '/translate/$translationId'
     | '/browse/'
+    | '/translate/'
     | '/browse/$source/search'
     | '/library/entry/$entryId'
     | '/browse/$source/'
@@ -179,7 +208,9 @@ export interface FileRouteTypes {
     | '/login'
     | '/settings'
     | '/auth/callback'
+    | '/translate/$translationId'
     | '/browse'
+    | '/translate'
     | '/browse/$source/search'
     | '/library/entry/$entryId'
     | '/browse/$source'
@@ -193,9 +224,12 @@ export interface FileRouteTypes {
     | '/library'
     | '/login'
     | '/settings'
+    | '/translate'
     | '/auth/callback'
     | '/browse/$source'
+    | '/translate/$translationId'
     | '/browse/'
+    | '/translate/'
     | '/browse/$source/search'
     | '/library/entry/$entryId'
     | '/browse/$source/'
@@ -211,11 +245,19 @@ export interface RootRouteChildren {
   LibraryRoute: typeof LibraryRouteWithChildren
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
+  TranslateRoute: typeof TranslateRouteWithChildren
   AuthCallbackRoute: typeof AuthCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/translate': {
+      id: '/translate'
+      path: '/translate'
+      fullPath: '/translate'
+      preLoaderRoute: typeof TranslateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -251,12 +293,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/translate/': {
+      id: '/translate/'
+      path: '/'
+      fullPath: '/translate/'
+      preLoaderRoute: typeof TranslateIndexRouteImport
+      parentRoute: typeof TranslateRoute
+    }
     '/browse/': {
       id: '/browse/'
       path: '/'
       fullPath: '/browse/'
       preLoaderRoute: typeof BrowseIndexRouteImport
       parentRoute: typeof BrowseRoute
+    }
+    '/translate/$translationId': {
+      id: '/translate/$translationId'
+      path: '/$translationId'
+      fullPath: '/translate/$translationId'
+      preLoaderRoute: typeof TranslateTranslationIdRouteImport
+      parentRoute: typeof TranslateRoute
     }
     '/browse/$source': {
       id: '/browse/$source'
@@ -383,12 +439,27 @@ const LibraryRouteChildren: LibraryRouteChildren = {
 const LibraryRouteWithChildren =
   LibraryRoute._addFileChildren(LibraryRouteChildren)
 
+interface TranslateRouteChildren {
+  TranslateTranslationIdRoute: typeof TranslateTranslationIdRoute
+  TranslateIndexRoute: typeof TranslateIndexRoute
+}
+
+const TranslateRouteChildren: TranslateRouteChildren = {
+  TranslateTranslationIdRoute: TranslateTranslationIdRoute,
+  TranslateIndexRoute: TranslateIndexRoute,
+}
+
+const TranslateRouteWithChildren = TranslateRoute._addFileChildren(
+  TranslateRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BrowseRoute: BrowseRouteWithChildren,
   LibraryRoute: LibraryRouteWithChildren,
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
+  TranslateRoute: TranslateRouteWithChildren,
   AuthCallbackRoute: AuthCallbackRoute,
 }
 export const routeTree = rootRouteImport

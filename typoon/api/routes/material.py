@@ -224,6 +224,56 @@ async def patch_material(
     return MaterialOut.from_row(mat)
 
 
+# ── Manifest-side overlay ─────────────────────────────────────────────
+
+
+class TranslationOverlayBody(BaseModel):
+    upstream_urls: list[str]
+
+
+@router.post(
+    "/{material_id}/translation-overlay",
+    response_model=dict[str, list[ChapterTranslationOverlay]],
+)
+async def translation_overlay(
+    material_id: int,
+    body:        TranslationOverlayBody,
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """Bulk overlay query for the MangaPage chapter list.
+
+    The SPA has the manifest chapter list (upstream URLs); we return
+    which of those chapters already have visible translations so the
+    UI can render "[VN] @nghyane Đọc" instead of "Dịch" for cached
+    rows. Used POST so we can ship a long list without URL bloat;
+    semantics are still pure-read.
+    """
+    if not body.upstream_urls:
+        return {}
+    await require_material(material_id, db)
+    guilds = [g["id"] for g in await db.get_user_guilds(user["id"])]
+    raw = await db.list_translations_by_upstream(
+        material_id, body.upstream_urls,
+        viewer_id=user["id"], viewer_guilds=guilds,
+    )
+    out: dict[str, list[ChapterTranslationOverlay]] = {}
+    for url, trs in raw.items():
+        out[url] = [
+            ChapterTranslationOverlay(
+                id=t["id"],
+                target_lang=t["target_lang"],
+                creator_id=t.get("owner_id"),
+                creator_name=t.get("creator_name"),
+                state=t.get("state") or "done",
+                in_feed=bool(t.get("in_feed")),
+                from_cache=bool(t.get("uses_default_render")),
+            )
+            for t in trs
+        ]
+    return out
+
+
 # ── Delete ────────────────────────────────────────────────────────────
 
 

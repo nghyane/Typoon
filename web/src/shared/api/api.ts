@@ -98,6 +98,33 @@ export interface ApiMaterialDetail {
   chapters: ApiChapter[]
 }
 
+export interface ApiBubbleEdit {
+  page_index:  number
+  bubble_idx:  number
+  source_text: string
+  draft_text:  string
+  edited_text: string | null
+  kind:        'dialogue' | 'sfx' | 'skip'
+}
+
+export interface ApiMyTranslation {
+  translation_id:        number
+  target_lang:           string
+  state:                 DraftState
+  has_archive:           boolean
+  updated_at:            string | null
+  chapter_id:            number
+  chapter_number:        string
+  chapter_label:         string | null
+  chapter_position:      number
+  chapter_upstream_url:  string | null
+  material_id:           number
+  material_title:        string
+  material_cover:        string | null
+  material_source:       string | null
+  material_upstream_ref: string | null
+}
+
 export interface ApiTranslation {
   id:             number
   chapter_id:     number
@@ -306,6 +333,14 @@ export const api = {
       method: 'PATCH', body: json(body),
     }),
 
+  translationOverlay: (
+    materialId: number, upstreamUrls: string[],
+  ) =>
+    request<Record<string, ApiChapterTranslation[]>>(
+      `/material/${materialId}/translation-overlay`,
+      { method: 'POST', body: json({ upstream_urls: upstreamUrls }) },
+    ),
+
   deleteMaterial: (id: number) =>
     request<void>(`/material/${id}`, { method: 'DELETE' }),
 
@@ -348,8 +383,14 @@ export const api = {
       method: 'POST', body: json(body),
     }),
 
+  listMyTranslations: () =>
+    request<ApiMyTranslation[]>('/translate/mine'),
+
   getTranslation: (id: number) =>
     request<ApiTranslation>(`/translate/${id}`),
+
+  listTranslationBubbles: (id: number) =>
+    request<ApiBubbleEdit[]>(`/translate/${id}/bubbles`),
 
   patchTranslation: (id: number, body: Partial<{
     in_feed: boolean; feed_guild_id: string | null;

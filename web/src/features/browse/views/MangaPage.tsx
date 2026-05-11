@@ -15,7 +15,7 @@ import { EmptyState } from '@shared/ui/EmptyState'
 import { cn } from '@shared/lib/cn'
 import { fetchMangaDetail } from '../manifest/runtime'
 import { proxify } from '../proxy'
-import { api } from '@shared/api/api'
+import { api, type ApiChapterTranslation } from '@shared/api/api'
 import { useLibrary } from '@features/library/store'
 import { useDefaultGuildId } from '@features/auth/useMe'
 import { SpawnDialog } from '@features/translate/SpawnDialog'
@@ -151,6 +151,20 @@ function MangaContent({
   // Active guild for translation visibility scope. Picked from
   // /api/me's guild list; DA SDK could refine this later.
   const scopeGuildId = useDefaultGuildId()
+
+  // Translation overlay — server tells us which chapters already have
+  // visible translations so the row repaints from "Dịch" to "Đọc VN
+  // by @x". Keyed by manifest chapter URL.
+  const upstreamUrls = useMemo(
+    () => manga.chapters.map((c) => c.url),
+    [manga.chapters],
+  )
+  const { data: overlay = {} } = useQuery({
+    queryKey: ['material', materialId, 'translation-overlay'],
+    queryFn:  () => api.translationOverlay(materialId!, upstreamUrls),
+    enabled:  materialId != null && upstreamUrls.length > 0,
+    staleTime: 30_000,
+  })
 
   // Translate only when user wants it AND the source is not already
   // in the user's target language.
@@ -290,6 +304,7 @@ function MangaContent({
                 targetLang={autoTarget}
                 scopeGuildId={scopeGuildId}
                 manga={manga}
+                overlay={overlay[c.url] ?? []}
               />
             ))}
           </ul>
@@ -321,7 +336,7 @@ function LangPicker({
 
 function ChapterRow({
   manifestId, mangaId, materialId, chapter, translatedLabel, targetLang,
-  scopeGuildId, manga,
+  scopeGuildId, manga, overlay,
 }: {
   manifestId:       string
   mangaId:          string
@@ -334,6 +349,9 @@ function ChapterRow({
   targetLang:       string
   scopeGuildId:     string | null
   manga:            MangaDetail
+  /** Translations the viewer can read on this chapter, keyed off
+   *  manifest upstream_url. Drives the "Đọc Vi by @x" surface. */
+  overlay:          ApiChapterTranslation[]
 }) {
   const showTr = translatedLabel && translatedLabel !== chapter.label
   const [spawnOpen, setSpawnOpen] = useState(false)
@@ -342,11 +360,14 @@ function ChapterRow({
   const qc = useQueryClient()
 
   if (progress?.state === 'done' && pendingId !== null) {
-    // Refresh /api/material so subsequent renders see the new
-    // translation overlay; clear the local pending state so the
-    // chip flips to a [Đọc] button on next render.
     qc.invalidateQueries({ queryKey: ['material'] })
   }
+
+  // Pick the best read action from the overlay.
+  const readable = useMemo(
+    () => pickReadable(overlay, targetLang),
+    [overlay, targetLang],
+  )
 
   const spawn = useMutation({
     mutationFn: () =>
@@ -364,8 +385,6 @@ function ChapterRow({
     onSuccess: (result) => {
       setPendingId(result.translation_id)
       if (result.cache_hit) {
-        // Cache hit → translation done immediately; flip the chip to
-        // "Đọc" by clearing pending after a beat.
         qc.invalidateQueries({ queryKey: ['material'] })
       }
     },
@@ -374,14 +393,19 @@ function ChapterRow({
   return (
     <li className="flex items-center gap-3 px-3 py-2.5 hover:bg-hover transition-colors">
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-text truncate">
-          {showTr ? translatedLabel : chapter.label}
-          {showTr && (
-            <span className="text-text-subtle font-normal ml-2 text-[11px] italic">
-              {chapter.label}
-            </span>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm text-text truncate">
+            {showTr ? translatedLabel : chapter.label}
+          </p>
+          {overlay.length > 0 && (
+            <OverlayBadges overlay={overlay} />
           )}
-        </p>
+        </div>
+        {showTr && (
+          <p className="text-text-subtle font-normal text-[11px] italic mt-0.5 truncate">
+            {chapter.label}
+          </p>
+        )}
         <div className="flex items-center gap-2 text-[10px] text-text-subtle mt-0.5">
           {chapter.language && (
             <span className="uppercase font-semibold bg-surface-2 px-1 py-0.5 rounded-xs">
@@ -391,12 +415,46 @@ function ChapterRow({
           {chapter.date && (
             <span className="tabular">{chapter.date}</span>
           )}
+          {readable?.creator_name && (
+            <span className="truncate" title={`Bản của ${readable.creator_name}`}>
+              · @{readable.creator_name}
+            </span>
+          )}
         </div>
       </div>
 
       <div className="flex items-center gap-1.5 shrink-0">
         {pendingId !== null && progress ? (
           <ProgressChip progress={progress} />
+        ) : readable ? (
+          <>
+            <Link
+              to="/browse/$source/manga/$mangaId/chapter/$chapterId"
+              params={{
+                source:    manifestId,
+                mangaId:   encodeURIComponent(mangaId),
+                chapterId: encodeURIComponent(chapter.url),
+              }}
+              search={{ tx: readable.id } as never}
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium bg-success/15 text-success-text hover:bg-success/25 cursor-pointer"
+              title={readable.creator_name ? `Bản dịch của ${readable.creator_name}` : 'Bản dịch sẵn'}
+            >
+              <BookOpen size={11} />
+              Đọc {readable.target_lang.toUpperCase()}
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                if (!materialId) return
+                setSpawnOpen(true)
+              }}
+              disabled={!materialId}
+              className="inline-flex items-center justify-center size-7 rounded-sm text-text-muted hover:bg-surface-2 hover:text-text cursor-pointer disabled:opacity-50"
+              title="Tạo bản dịch riêng"
+            >
+              <Sparkles size={11} />
+            </button>
+          </>
         ) : (
           <>
             <Link
@@ -415,11 +473,8 @@ function ChapterRow({
               type="button"
               onClick={() => {
                 if (!materialId) return
-                if (scopeGuildId) {
-                  spawn.mutate()
-                } else {
-                  setSpawnOpen(true)
-                }
+                if (scopeGuildId) spawn.mutate()
+                else setSpawnOpen(true)
               }}
               disabled={!materialId || spawn.isPending}
               className={cn(
@@ -439,13 +494,68 @@ function ChapterRow({
       <SpawnDialog
         open={spawnOpen}
         onClose={() => setSpawnOpen(false)}
-        chapterId={0}   // we'll spawn via chapter_ref; dialog only needs display
+        chapterId={0}
         title={`${manga.title} · Ch ${chapter.number} → ${targetLang.toUpperCase()}`}
         targetLang={targetLang}
         scopeGuildId={scopeGuildId}
         onSpawned={(r) => setPendingId(r.translation_id)}
       />
     </li>
+  )
+}
+
+
+function pickReadable(
+  overlay:    ApiChapterTranslation[],
+  targetLang: string,
+): ApiChapterTranslation | null {
+  if (overlay.length === 0) return null
+  const done = overlay.filter((t) => t.state === 'done')
+  return (
+    done.find((t) => t.target_lang === targetLang)
+    ?? done[0]
+    ?? null
+  )
+}
+
+
+function OverlayBadges({
+  overlay,
+}: {
+  overlay: ApiChapterTranslation[]
+}) {
+  // Distinct done languages — collapse duplicates so 3 user translations
+  // in VN show "[VN]" once not three times.
+  const langs = new Map<string, ApiChapterTranslation>()
+  for (const t of overlay) {
+    if (t.state !== 'done') continue
+    if (!langs.has(t.target_lang)) langs.set(t.target_lang, t)
+  }
+  if (langs.size === 0) {
+    const running = overlay.find((t) => t.state === 'running')
+    if (!running) return null
+    return (
+      <span className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-accent/15 text-accent-text">
+        đang dịch
+      </span>
+    )
+  }
+  const shown = [...langs.values()].slice(0, 3)
+  return (
+    <div className="flex items-center gap-0.5">
+      {shown.map((t) => (
+        <span
+          key={t.id}
+          className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-success/15 text-success-text"
+          title={t.creator_name ? `Bản của ${t.creator_name}` : 'Bản dịch sẵn'}
+        >
+          {t.target_lang}
+        </span>
+      ))}
+      {langs.size > shown.length && (
+        <span className="text-[9px] text-text-subtle">+{langs.size - shown.length}</span>
+      )}
+    </div>
   )
 }
 
