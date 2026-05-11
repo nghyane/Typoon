@@ -29,8 +29,10 @@ export interface UploadFinalizeBody {
   tmp_id:    string
   upload_id: string
   parts:     FinalizePart[]
+  /** Display chapter number. Engine auto-generates when omitted. */
   number?:   string
-  title?:    string
+  /** Free-form chapter label (e.g. "Extra: Volume 1 Cover"). */
+  label?:    string
 }
 
 export interface UploadAbortBody {
@@ -38,21 +40,23 @@ export interface UploadAbortBody {
   upload_id: string
 }
 
-/** Engine-returned chapter row (kept loose — consumers narrow as needed). */
+/** Engine-returned chapter row. Kept loose so consumers can narrow as
+ *  needed; full type lives in the web SPA's `ApiChapter`. */
 export interface ApiChapterLike {
-  chapter_id: number
-  project_id: number
-  number:     string
-  state:      string
-  page_count: number
-  // ...other fields the consumer may project; keep this loose so the SDK
+  id:           number
+  material_id:  number
+  number:       string
+  page_count:   number
+  // …other fields the consumer may project; keep this loose so the SDK
   // doesn't pin the full API shape.
 }
 
 /** Minimal client surface the SDK depends on. The web SPA's `api.ts`
  *  and the extension's `TypoonClient` both implement this shape. */
 export interface UploadHttpClient {
-  uploadInit(projectId: number, body: UploadInitBody): Promise<UploadInitOut>
-  uploadFinalize(projectId: number, body: UploadFinalizeBody): Promise<ApiChapterLike>
-  uploadAbort(projectId: number, body: UploadAbortBody): Promise<void>
+  uploadInit(materialId: number, body: UploadInitBody): Promise<UploadInitOut>
+  uploadFinalize(
+    materialId: number, body: UploadFinalizeBody,
+  ): Promise<ApiChapterLike>
+  uploadAbort(materialId: number, body: UploadAbortBody): Promise<void>
 }

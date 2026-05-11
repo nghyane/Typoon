@@ -298,6 +298,39 @@ export const api = {
   deleteMaterial: (id: number) =>
     request<void>(`/material/${id}`, { method: 'DELETE' }),
 
+  // ── Chapter upload (ext / upload materials only) ────────────────
+  //
+  // Source-backed materials get their chapters from the manifest at
+  // read time and never call these routes. The SDK
+  // (`@typoon/upload-sdk`) drives the full handshake; web SPA + the
+  // browser extension both implement `UploadHttpClient` against the
+  // three methods below.
+  uploadInit: (materialId: number, body: { byte_size: number }) =>
+    request<{
+      tmp_id: string; upload_id: string;
+      parts: { number: number; url: string }[];
+      part_size: number; expires_in: number;
+    }>(
+      `/material/${materialId}/chapter/upload-init`,
+      { method: 'POST', body: json(body) },
+    ),
+  uploadFinalize: (materialId: number, body: {
+    tmp_id: string; upload_id: string;
+    parts: { number: number; etag: string }[];
+    number?: string; label?: string;
+  }) =>
+    request<ApiChapter>(
+      `/material/${materialId}/chapter/upload-finalize`,
+      { method: 'POST', body: json(body) },
+    ),
+  uploadAbort: (materialId: number, body: {
+    tmp_id: string; upload_id: string;
+  }) =>
+    request<void>(
+      `/material/${materialId}/chapter/upload-abort`,
+      { method: 'POST', body: json(body) },
+    ),
+
   // ── Translate ───────────────────────────────────────────────────
   spawnTranslate: (body: SpawnTranslateBody) =>
     request<SpawnTranslateResult>('/translate', {

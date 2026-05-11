@@ -23,7 +23,8 @@ const DEFAULT_CONCURRENCY = 4
 
 export interface UploadOptions {
   number?:      string
-  title?:       string
+  /** Free-form chapter label (e.g. "Extra: Volume 1 Cover"). */
+  label?:       string
   /** How many part PUTs to run in parallel. Default 4 — saturates a
    *  typical home upstream while staying inside R2 free-tier
    *  rate-limit guardrails. */
@@ -33,16 +34,16 @@ export interface UploadOptions {
 }
 
 export async function uploadChapterZip(
-  client:    UploadHttpClient,
-  projectId: number,
-  zip:       Blob,
-  opts:      UploadOptions = {},
+  client:     UploadHttpClient,
+  materialId: number,
+  zip:        Blob,
+  opts:       UploadOptions = {},
 ): Promise<ApiChapterLike> {
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
   const onProgress  = opts.onProgress ?? (() => {})
 
   // 1. Init.
-  const init = await client.uploadInit(projectId, { byte_size: zip.size })
+  const init = await client.uploadInit(materialId, { byte_size: zip.size })
   if (init.parts.length === 0) {
     throw new Error('upload-init returned zero parts')
   }
@@ -78,7 +79,7 @@ export async function uploadChapterZip(
   await Promise.all(Array.from({ length: concurrency }, () => worker()))
 
   if (failed !== null) {
-    await safeAbort(client, projectId, init.tmp_id, init.upload_id)
+    await safeAbort(client, materialId, init.tmp_id, init.upload_id)
     if (failed instanceof PermanentPutError) {
       throw new Error(`PUT ${failed.status}: ${failed.message}`)
     }
@@ -86,7 +87,7 @@ export async function uploadChapterZip(
   }
 
   if (completed.length !== init.parts.length) {
-    await safeAbort(client, projectId, init.tmp_id, init.upload_id)
+    await safeAbort(client, materialId, init.tmp_id, init.upload_id)
     throw new Error(
       `upload incomplete: ${completed.length}/${init.parts.length} parts`,
     )
@@ -101,30 +102,30 @@ export async function uploadChapterZip(
   }))
 
   try {
-    return await client.uploadFinalize(projectId, {
+    return await client.uploadFinalize(materialId, {
       tmp_id:    init.tmp_id,
       upload_id: init.upload_id,
       parts,
       number:    opts.number,
-      title:     opts.title,
+      label:     opts.label,
     })
   } catch (err) {
     // Finalize failed (engine couldn't unpack/ingest, or quota tripped
     // at the commit point). Abort so the inbox key dies now.
-    await safeAbort(client, projectId, init.tmp_id, init.upload_id)
+    await safeAbort(client, materialId, init.tmp_id, init.upload_id)
     throw err
   }
 }
 
 
 async function safeAbort(
-  client:    UploadHttpClient,
-  projectId: number,
-  tmp_id:    string,
-  upload_id: string,
+  client:     UploadHttpClient,
+  materialId: number,
+  tmp_id:     string,
+  upload_id:  string,
 ): Promise<void> {
   try {
-    await client.uploadAbort(projectId, { tmp_id, upload_id })
+    await client.uploadAbort(materialId, { tmp_id, upload_id })
   } catch {
     // Best-effort. Bucket lifecycle rule sweeps anything we miss.
   }
