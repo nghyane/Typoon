@@ -1,17 +1,34 @@
-# RFC — Material + Translation Architecture (v4 — DA-native, guild-scoped)
+# RFC — Material + Translation Architecture (v5 — community-driven identity)
 
 > **Status**: design final. Implementation begins from commit `f8977dd`
 > (the rollback point). Reverting to that SHA undoes everything below.
 >
-> Changelog from v3:
-> - DA-only (no plain web mode) → simpler auth, lower DMCA exposure
+> Changelog from v4:
+> - **Material cross-user dedup** for source-backed manga (replaces
+>   per-user material rows). Privacy isolation came from
+>   per-translation visibility, not material identity; per-user
+>   material was overcautious.
+> - **Community link voting** as the cross-source identity strategy.
+>   Replaces fuzzy title match, cover hash, and external MangaDex API.
+>   User actions (link / unlink / confirm / reject) accumulate votes
+>   on `material_link_votes`; suggestions derive from accumulated
+>   score.
+> - **Manifest extended** with `title_native`, `title_alt`,
+>   `cross_refs` to seed identity hints (1 line of selector work per
+>   source).
+> - **Cold-start strategy**: admin seeds top-100 manga links on
+>   launch; manifest hints carry the rest; community voting accrues
+>   organic over time.
+>
+> Changelog from v3 (carried forward):
+> - DA-only (no plain web mode)
 > - Guild-scoped sharing (`visibility ∈ {private, guild, all_guilds}`)
 > - Auto-share opt-out (default share) replacing manual opt-in
-> - Content-addressable cache (CAS by prepared.bnl hash) for cross-user dedup
-> - 3-layer pipeline ownership (chapter / draft / translation) to maximize cache hit
-> - Community glossary scaffold (phase 1 minimum, vote/contribution phase 2)
+> - CAS via `chapter.prepared_hash`
+> - 3-layer pipeline ownership (chapter / draft / translation)
+> - Community glossary scaffold
 > - DMCA takedown procedure with per-guild scope
-> - Removed `projects`, `project_pins`, `material_pins`, and `shared` boolean
+> - Removed `projects`, `project_pins`, `material_pins`, `shared` bool
 
 ## 1. Why this exists
 
@@ -78,16 +95,21 @@ Non-goals (deferred):
 ## 3. Mental model
 
 ```
-Material           Identity of a manga, source-agnostic, per-user.
+Material           Identity of a manga, source-agnostic.
   origin ∈ {source, extension, upload}
-  Two users importing the same HappyMH manga get two material rows.
+  Source-backed materials are CROSS-USER: two users importing
+    HappyMH/Naruto share the same material row (unique on
+    (source, upstream_ref)). `imported_by` tracks the first user
+    as an audit trail; ownership is NOT enforced here.
+  Extension / upload materials remain per-user (no upstream_ref to
+    dedup against; each capture is its own identity).
 
 Chapter            A unit of pages inside a Material.
   pages_origin ∈ {remote, local}
   remote: pages fetched at read-time via manifest runtime.
   local:  prepared.bnl lives in our blob store.
-  Identity is per-chapter — same physical chapter from different users
-  may share prepared.bnl via content-addressable storage (CAS).
+  CAS via prepared_hash deduplicates pixel content across chapters
+    that happen to be byte-identical (e.g. same upload zip).
 
 TranslationDraft   LLM output bound to (chapter, source_lang, target_lang,
                    glossary_fingerprint). Shared with visibility scope.
@@ -97,12 +119,14 @@ TranslationDraft   LLM output bound to (chapter, source_lang, target_lang,
 Translation        Per-user wrapper around a draft.
   Owns the render archive (or shares draft's default archive).
   Holds sparse edits (translation_edits) if user overrode bubbles.
-  Carries user-facing flags (visibility for Hội Mê Truyện feed
-  inclusion).
+  Carries user-facing flags (in_feed for Hội Mê Truyện inclusion).
 
 LibraryEntry       Per-user grouping of one or more Materials that
                    represent the same manga from the user's POV.
   Bookmark, last-read tracking, "Continue reading" hang off here.
+  Cross-source linking is community-voted (material_link_votes);
+  suggestions surface to the user; user actions accumulate votes
+  passively (link = +1, reject = -1, unlink = 0).
 ```
 
 ## 4. Schema
@@ -131,7 +155,10 @@ CREATE INDEX idx_user_guilds_guild ON user_guilds(guild_id);
 ```sql
 CREATE TABLE materials (
     id            BIGSERIAL PRIMARY KEY,
-    owner_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Audit trail only — the first user who caused this row to be
+    -- inserted. NOT an ownership boundary; subsequent users who
+    -- import the same source-backed manga share this row.
+    imported_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
     origin        TEXT NOT NULL CHECK (origin IN ('source','extension','upload')),
 
     -- Source-backed identity. NULL for ext + upload.
@@ -139,13 +166,22 @@ CREATE TABLE materials (
     upstream_ref  TEXT,        -- mangaUrl as the manifest runtime knows it
 
     -- Display snapshot — denormalized; refresh when manifest reports
-    -- a change.
+    -- a change. The first user who imported wins the snapshot;
+    -- subsequent imports MAY trigger a background refresh but never
+    -- mutate ownership.
     title         TEXT NOT NULL,
     cover_url     TEXT,
     description   TEXT,
     author        TEXT,
     status        TEXT,
     languages     TEXT[] NOT NULL DEFAULT '{}',
+
+    -- Identity hints used by community-voted cross-source linking.
+    -- Populated by the manifest runtime when the source exposes
+    -- them; left NULL otherwise.
+    title_native  TEXT,                  -- Japanese / Romaji / native title
+    title_alt     TEXT[],                -- aliases the source ships
+    cross_refs    JSONB,                 -- e.g. {"mdex_uuid":"…","anilist":12345}
 
     -- NSFW gate. Set by manifest (manifest.nsfw), by ext UI, or by
     -- user during upload. Forces draft visibility='private'.
@@ -154,13 +190,82 @@ CREATE TABLE materials (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- Materials are per-user — no cross-user dedup constraint. Two users
--- import the same HappyMH manga: two rows. Privacy isolation, DMCA
--- isolation. The CAS layer below handles compute dedup separately.
-CREATE INDEX idx_materials_owner   ON materials(owner_id);
-CREATE INDEX idx_materials_lookup  ON materials(owner_id, source, upstream_ref)
+
+-- Source-backed materials dedupe across users on (source, upstream_ref).
+-- Two users opening HappyMH/Naruto-slug share this single row.
+-- Extension / upload materials have source IS NULL → no dedup constraint;
+-- each capture / upload gets its own row.
+CREATE UNIQUE INDEX uniq_materials_source_ref
+    ON materials (source, upstream_ref)
     WHERE source IS NOT NULL;
+
+CREATE INDEX idx_materials_imported_by ON materials(imported_by);
+
+-- Identity-resolution support: find candidates by native title or
+-- cross-ref when no explicit user link exists yet.
+CREATE INDEX idx_materials_title_native
+    ON materials(title_native)
+    WHERE title_native IS NOT NULL;
+CREATE INDEX idx_materials_cross_refs
+    ON materials USING GIN (cross_refs)
+    WHERE cross_refs IS NOT NULL;
 ```
+
+#### 4.2.1 Cross-source linking (community-voted)
+
+```sql
+-- One vote per (user, pair). Canonical ordering on the pair
+-- (material_a_id < material_b_id) avoids storing A↔B twice.
+CREATE TABLE material_link_votes (
+    material_a_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    material_b_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    voter_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote           SMALLINT NOT NULL CHECK (vote IN (-1, 1)),
+    voted_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (material_a_id, material_b_id, voter_id),
+    CHECK (material_a_id < material_b_id)
+);
+CREATE INDEX idx_link_votes_a ON material_link_votes(material_a_id);
+CREATE INDEX idx_link_votes_b ON material_link_votes(material_b_id);
+
+-- Aggregate score, refreshed periodically (every 5 min) since vote
+-- changes are infrequent and a stale read is fine.
+CREATE MATERIALIZED VIEW material_links AS
+SELECT material_a_id,
+       material_b_id,
+       SUM(vote)::INTEGER  AS score,
+       COUNT(*)::INTEGER   AS total_votes
+FROM material_link_votes
+GROUP BY material_a_id, material_b_id;
+CREATE UNIQUE INDEX uniq_material_links
+    ON material_links(material_a_id, material_b_id);
+CREATE INDEX idx_links_a ON material_links(material_a_id);
+CREATE INDEX idx_links_b ON material_links(material_b_id);
+```
+
+Vote semantics:
+
+| User action                                | Effect on votes        |
+|--------------------------------------------|------------------------|
+| Confirms "yes, this is the same manga"     | +1                     |
+| Rejects "no, different manga"              | -1                     |
+| Unlinks an entry the user previously linked| Vote row deleted (= 0) |
+| Manually links via search                  | +1                     |
+
+Suggestion thresholds (used by `/api/library/suggest`):
+
+```
+score ≥ 3   → high confidence, may auto-link silently for new opens
+1 ≤ score ≤ 2  → suggest with explicit "Gộp / Bỏ qua" modal
+score = 0   → no suggestion via voting (fall back to manifest hints)
+score < 0   → never suggest (community has flagged the pair as wrong)
+```
+
+Anti-abuse phase 1:
+
+- 50 votes / user / day (`material_link_votes` rate-limited at API).
+- Vote score is visible to users (transparency).
+- Reputation weighting deferred to phase 2.
 
 ### 4.3 Chapter
 
@@ -690,10 +795,44 @@ GET  /api/library                          entries (with linked materials)
 POST /api/library/entry                    create entry (from a material)
 PATCH /api/library/entry/{id}              bookmark, title override
 DELETE /api/library/entry/{id}             also unlinks materials
-POST /api/library/entry/{id}/link          link material
-POST /api/library/entry/{id}/unlink        unlink material (if 0 left, drop entry)
-GET  /api/library/suggest?material_id=...  fuzzy match suggestion
+POST /api/library/entry/{id}/link          link material → also casts +1 vote
+                                           on the (existing_material, new) pair
+POST /api/library/entry/{id}/unlink        unlink material → removes the vote
+                                           (drops entry if 0 materials left)
+GET  /api/library/suggest?material_id=...  see §7.4.1
+POST /api/library/suggest/{candidate_id}/reject
+                                           explicit -1 vote on the suggested
+                                           pair (user clicks "Không, manga khác")
 ```
+
+#### 7.4.1 Suggestion ranking (server-side)
+
+The suggest endpoint blends three signals in priority order. The
+first one to clear its threshold wins:
+
+```
+1. cross_refs match  — material.cross_refs ∋ key X
+                        AND another material in user's library has
+                        cross_refs ∋ same X  (e.g. shared mdex_uuid)
+                       → high confidence, auto-link if vote score ≥ 0
+
+2. community votes   — material_links.score ≥ 3 for some pair
+                        (this_material, other) where other is in
+                        user's library
+                       → high confidence, present "Gộp luôn?"
+
+3. title_native      — case-folded equality between this material's
+                        title_native and any in user's library
+                       → medium confidence, present "Gộp / Khác manga"
+
+4. community votes   — score in [1, 2]
+                       → low confidence, present "Có thể là cùng manga?"
+
+5. nothing fires     → no suggestion; user must use manual search
+```
+
+Manifest hints (signals 1 & 3) are the **cold-start fuel**. Voting
+(signals 2 & 4) takes over as the system accumulates user actions.
 
 ### 7.5 Feed (Hội Mê Truyện, guild-scoped)
 
@@ -883,7 +1022,10 @@ docs/wiki/material-architecture.md        — promoted to canonical (no longer d
 |---|---|
 | Drop or migrate data | Drop & recreate (§8.2) |
 | Translation share visibility | Per-translation `in_feed` flag, decoupled from draft visibility |
-| Material identity for upload | Per-user, no content-hash cross-user dedup |
+| Material identity for source-backed | **Cross-user dedup** on `(source, upstream_ref)` (v5 reversal of v4 per-user). `imported_by` is audit, not ownership. |
+| Material identity for upload / ext | Per-row (no dedup) — no upstream_ref to dedup against |
+| Cross-source linking strategy | **Community voting** on `material_link_votes` + manifest identity hints (`title_native`, `cross_refs`). No external MangaDex API call. |
+| Cold start for voting | Admin seeds top-100 cross-source pairs on launch; manifest hints carry long tail; voting accrues organic |
 | Auto-spawn translation on ext capture | Yes — ext POSTs `/translate` with user's default target_lang |
 | Synthetic `source='community'` | Gone — Hội Mê Truyện is a feed query, not a source |
 | Auto-share opt-out | Default checked at spawn modal; uncheck → `force_private=true` |
@@ -892,5 +1034,6 @@ docs/wiki/material-architecture.md        — promoted to canonical (no longer d
 | Sharing scope | Guild-scoped (`visibility ∈ {private,guild,all_guilds}`) |
 | Public web access | Removed — DA-only deployment |
 | Default guild for new users | "Hội Mê Truyện Official" Discord guild — bot auto-invites on first login |
+| Manifest schema extension | Add `title_native`, `title_alt`, `cross_refs` selector slots; sources expose what they have (HappyMH `data-mdex-id`, MangaDex native UUID, OTruyen `english_name`) |
 
 Shipped at: _<pending merge SHA>_
