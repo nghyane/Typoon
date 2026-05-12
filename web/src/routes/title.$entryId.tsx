@@ -1,9 +1,9 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 import { TitleHub } from '@features/title/TitleHub'
 
-// URL is the state of truth for filter / search / sort, mirroring the
-// pre-refactor /projects/$projectId route. Refresh keeps the user's
-// filter; sharing a link captures the query.
+// URL is the state of truth for filter / search / sort / lang / uploader,
+// mirroring the pre-refactor /projects/$projectId route. Refresh keeps
+// the user's filter; sharing a link captures the full view.
 
 export type StatusFilter = 'all' | 'translated' | 'running' | 'error' | 'raw'
 export type Sort         = 'chapter_desc' | 'chapter_asc' | 'updated_desc'
@@ -16,9 +16,14 @@ const SORTS: ReadonlyArray<Sort> = [
 ]
 
 interface SearchParams {
-  filter?: StatusFilter
-  q?:      string
-  sort?:   Sort
+  filter?:   StatusFilter
+  q?:        string
+  sort?:     Sort
+  /** ISO 639-1 lang code — restricts list to chapters with any
+   *  version in this lang. */
+  lang?:     string
+  /** Translation creator handle (display name). */
+  uploader?: string
 }
 
 function TitleHubPage() {
@@ -29,9 +34,11 @@ function TitleHubPage() {
 
 export const Route = createFileRoute('/title/$entryId')({
   validateSearch: (s: Record<string, unknown>): SearchParams => ({
-    filter: FILTERS.includes(s.filter as StatusFilter) ? (s.filter as StatusFilter) : undefined,
-    q:      typeof s.q === 'string' && s.q.length > 0 ? s.q : undefined,
-    sort:   SORTS.includes(s.sort as Sort) ? (s.sort as Sort) : undefined,
+    filter:   FILTERS.includes(s.filter as StatusFilter) ? (s.filter as StatusFilter) : undefined,
+    q:        typeof s.q === 'string' && s.q.length > 0 ? s.q : undefined,
+    sort:     SORTS.includes(s.sort as Sort) ? (s.sort as Sort) : undefined,
+    lang:     typeof s.lang === 'string' && s.lang.length > 0 ? s.lang : undefined,
+    uploader: typeof s.uploader === 'string' && s.uploader.length > 0 ? s.uploader : undefined,
   }),
   beforeLoad: ({ params }) => {
     const id = Number(params.entryId)
