@@ -1,7 +1,6 @@
-import { useEffect } from 'react'
-import { Link } from '@tanstack/react-router'
+import { useEffect, useMemo } from 'react'
 import {
-  ArrowLeft, AlertTriangle, Clock,
+  AlertTriangle, Clock,
 } from 'lucide-react'
 import { Cover, coverUrl } from '@shared/ui/Cover'
 import { EmptyState } from '@shared/ui/EmptyState'
@@ -15,6 +14,9 @@ import type {
 } from '@shared/api/api'
 import { useHubData } from './useHubData'
 import { ChapterPanel } from './ChapterPanel'
+import {
+  preferredReadable, type HubChapter,
+} from './mergeChapters'
 
 // =============================================================================
 // TitleHub — `/title/$entryId` detail page, pro-design.
@@ -90,30 +92,16 @@ export function TitleHub({ entryId }: Props) {
 
   return (
     <div className="pb-16">
-      <MobileBack />
-      <Hero entry={entry} material={primaryMaterial.material} />
+      <Hero
+        entry={entry}
+        material={primaryMaterial.material}
+        chapters={chapters}
+      />
       <ChapterPanel
         chapters={chapters}
         targetLang={entry.target_lang}
         loading={chaptersLoading}
       />
-    </div>
-  )
-}
-
-
-// ── Mobile back link ────────────────────────────────────────────────
-
-function MobileBack() {
-  return (
-    <div className="sm:hidden px-4 pt-4">
-      <Link
-        to="/library"
-        className="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text"
-      >
-        <ArrowLeft size={14} />
-        Thư viện
-      </Link>
     </div>
   )
 }
@@ -130,10 +118,24 @@ const STATUS_LABEL: Record<LibraryStatus, string> = {
 }
 
 function Hero({
-  entry, material,
+  entry, material, chapters,
 }: {
-  entry: ApiLibraryEntry; material: ApiMaterial
+  entry: ApiLibraryEntry
+  material: ApiMaterial
+  chapters: HubChapter[]
 }) {
+  // Aggregate translation progress — 'X / Y' readable chapters in
+  // the target lang. Mirrors the old ProjectDetail inline progress
+  // bar but driven by merged hub data instead of project state.
+  const progress = useMemo(() => {
+    const total = chapters.length
+    if (total === 0) return null
+    const tgt = entry.target_lang?.toLowerCase() ?? null
+    let done = 0
+    for (const c of chapters) if (preferredReadable(c, tgt)) done++
+    return { done, total, pct: Math.round((done / total) * 100) }
+  }, [chapters, entry.target_lang])
+
   return (
     <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 sm:pb-5 flex items-start gap-3 sm:gap-4">
       <Cover
@@ -178,6 +180,22 @@ function Hero({
               <p className="mt-3 text-sm text-text-muted leading-relaxed line-clamp-2 max-w-2xl">
                 {material.description}
               </p>
+            )}
+
+            {progress && (
+              <div className="mt-3 flex items-center gap-3 max-w-md">
+                <div className="flex-1 h-1 rounded-full bg-surface-2 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-success transition-[width] duration-300"
+                    style={{ width: `${progress.pct}%` }}
+                  />
+                </div>
+                <span className="text-xs text-text-subtle tabular shrink-0">
+                  <span className="text-text-muted font-medium">{progress.done}</span>
+                  <span className="opacity-50">/</span>
+                  {progress.total}
+                </span>
+              </div>
             )}
 
             <ActivityRow summary={entry.translation_summary} />
