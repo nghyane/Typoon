@@ -75,31 +75,6 @@ export function useHubData(entryId: number) {
     enabled:   installedSource !== null && upstreamRef !== null,
   })
 
-  // Dev visibility — surface why the chapter list might be empty.
-  if (import.meta.env.DEV && material.data && !manifest.isPending) {
-    const m = material.data.material
-    if (m.source && m.upstream_ref) {
-      if (!installedSource) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[hub] no installed source matches material.source=${m.source}; `,
-          `installed:`, Object.keys(installedSourcesMap),
-        )
-      } else if (manifest.error) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[hub] manifest fetch failed for ${m.source}:`,
-          manifest.error,
-        )
-      } else if (manifest.data) {
-        // eslint-disable-next-line no-console
-        console.info(
-          `[hub] manifest ${m.source} returned ${manifest.data.chapters.length} chapters`,
-        )
-      }
-    }
-  }
-
   const rows = useMemo(
     () => mergeChapters(material.data?.chapters ?? [], manifest.data ?? null, installedSource),
     [material.data?.chapters, manifest.data, installedSource],

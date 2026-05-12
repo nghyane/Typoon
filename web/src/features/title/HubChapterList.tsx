@@ -35,9 +35,10 @@ export function HubChapterList({ rows, targetLang, loading }: Props) {
   if (rows.length === 0) {
     return (
       <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-8 text-center">
-        <p className="text-sm text-text-muted">Chưa có chương nào</p>
-        <p className="text-[11px] text-text-subtle mt-1">
-          Source này không trả về danh sách chương — kiểm tra manifest.
+        <p className="text-sm text-text-muted">Không có chương đọc được</p>
+        <p className="text-[11px] text-text-subtle mt-1 max-w-md mx-auto">
+          Nguồn không trả về chương nào ở ngôn ngữ này (có thể do bản quyền
+          hoặc chưa upload). Thử ngôn ngữ khác hoặc thêm nguồn khác cho cùng manga.
         </p>
       </div>
     )
