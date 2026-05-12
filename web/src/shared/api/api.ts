@@ -146,13 +146,27 @@ export interface ApiLibraryMaterialLink {
   linked_at:    string | null
 }
 
+export type LibraryStatus =
+  | 'reading' | 'plan' | 'on_hold' | 'done' | 'dropped'
+
 export interface ApiLibraryEntry {
   id:                   number
   title:                string
   cover_url:            string | null
-  bookmarked:           boolean
-  bookmarked_at:        string | null
   primary_material_id:  number | null
+
+  /** Reading state. Replaces the legacy `bookmarked` flag entirely;
+   *  the library UI filters by status. `dropped` is hidden from the
+   *  default list view. */
+  status:               LibraryStatus
+  /** Preferred read language for this entry. NULL = ask on first
+   *  open (the hub modal prompts before showing the chapter list). */
+  target_lang:          string | null
+  /** When TRUE, watcher auto-spawns a translation as soon as a new
+   *  chapter lands and `target_lang` differs from the source's
+   *  native langs. */
+  auto_translate:       boolean
+
   last_read_at:         string | null
   last_chapter_ref:     Record<string, unknown> | null
   materials:            ApiLibraryMaterialLink[]
@@ -479,22 +493,35 @@ export const api = {
     ),
 
   // ── Library ─────────────────────────────────────────────────────
-  listLibrary: () =>
-    request<ApiLibraryEntry[]>('/library'),
+  listLibrary: (opts: { status?: LibraryStatus } = {}) => {
+    const qs = new URLSearchParams()
+    if (opts.status) qs.set('status', opts.status)
+    const q = qs.toString()
+    return request<ApiLibraryEntry[]>(`/library${q ? `?${q}` : ''}`)
+  },
 
   getLibraryEntry: (id: number) =>
     request<ApiLibraryEntry>(`/library/entry/${id}`),
 
   createLibraryEntry: (body: {
-    material_id: number; title?: string; cover_url?: string | null;
+    material_id:     number
+    title?:          string
+    cover_url?:      string | null
+    target_lang?:    string | null
+    auto_translate?: boolean
+    status?:         LibraryStatus
   }) =>
     request<ApiLibraryEntry>('/library/entry', {
       method: 'POST', body: json(body),
     }),
 
   patchLibraryEntry: (id: number, body: Partial<{
-    title: string; bookmarked: boolean;
-    last_read_at: string; last_chapter_ref: Record<string, unknown>;
+    title:            string
+    status:           LibraryStatus
+    target_lang:      string | null
+    auto_translate:   boolean
+    last_read_at:     string
+    last_chapter_ref: Record<string, unknown>
   }>) =>
     request<ApiLibraryEntry>(`/library/entry/${id}`, {
       method: 'PATCH', body: json(body),

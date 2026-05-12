@@ -1,22 +1,38 @@
 import { Link } from '@tanstack/react-router'
-import { Bookmark, Sparkles } from 'lucide-react'
+import { BookmarkPlus, Check, Sparkles } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cover } from '@shared/ui/Cover'
 import { Tag } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { proxify } from '@features/browse/proxy'
-import { api } from '@shared/api/api'
+import { api, type LibraryStatus } from '@shared/api/api'
 import { useLibrary, type LibraryEntry } from '../store'
 import type { LibraryItem } from '../unified'
 
 // =============================================================================
 // LibraryItemCard — single card shape backed by /api/library entries.
 //
-// Click target: `/manga/library/$entryId` (the route below is a thin
-// resolver that fetches the entry's primary material and forwards to
-// /browse/$source/manga/$mangaId, possibly deep-linking into the
-// chapter the user last read).
+// Click target: `/library/entry/$entryId` resolves to the entry's hub
+// page (the post-M4 /title/{id} route). Status badge floats top-right
+// when the entry is anything other than 'reading' — the default state
+// doesn't deserve visual noise.
 // =============================================================================
+
+const STATUS_LABEL: Record<LibraryStatus, string> = {
+  reading: 'Đang đọc',
+  plan:    'Kế hoạch',
+  on_hold: 'Tạm dừng',
+  done:    'Đã xong',
+  dropped: 'Đã bỏ',
+}
+
+const STATUS_TONE: Record<LibraryStatus, 'success' | 'info' | 'warning' | 'neutral' | 'error'> = {
+  reading: 'success',
+  plan:    'info',
+  on_hold: 'warning',
+  done:    'neutral',
+  dropped: 'error',
+}
 
 interface Props {
   item: LibraryItem
@@ -36,7 +52,8 @@ export function LibraryItemCard({ item }: Props) {
           className="absolute inset-0 group-hover:brightness-110 transition-[filter]"
         />
 
-        {/* Top-right state cluster */}
+        {/* Top-right state cluster — "Mới" badge floats above status
+            so even at glance the user sees what's actionable. */}
         <div className="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
           {item.hasNew && (
             <Tag
@@ -47,13 +64,10 @@ export function LibraryItemCard({ item }: Props) {
               Mới
             </Tag>
           )}
-          {item.bookmarked && (
-            <span
-              className="size-6 rounded-sm bg-bg/80 backdrop-blur flex items-center justify-center"
-              title="Đã lưu"
-            >
-              <Bookmark size={11} className="fill-warning text-warning" />
-            </span>
+          {item.status !== 'reading' && (
+            <Tag tone={STATUS_TONE[item.status]} size="sm" uppercase>
+              {STATUS_LABEL[item.status]}
+            </Tag>
           )}
         </div>
 
@@ -81,54 +95,58 @@ export function LibraryItemCard({ item }: Props) {
 }
 
 // =============================================================================
-// BookmarkButton — toggles a library entry's bookmarked flag.
+// FollowButton — single CTA for "follow this manga".
 //
-// Three modes:
-//   (1) entryId known         → patch /library/entry/{id}
-//   (2) materialId known      → ensure entry exists (POST /library/entry
-//                                with material_id), then patch
-//                                bookmarked=true. Used from the manga
-//                                detail page.
-//   (3) external mangaUrl only → backwards-compat shim: writes to the
-//                                local reading-history store until
-//                                we wire material_id into the local
-//                                state shape.
+// Two entry conditions:
+//   (1) Already in library  → click cycles status (reading → dropped → ...);
+//                              UI uses STATUS_LABEL.
+//   (2) Not in library yet   → click POSTs /library/entry with default
+//                              `status='reading'` and `target_lang=null`
+//                              (the hub asks the user to pick at first
+//                              open). Caller may supply target_lang
+//                              from MaterialPage context to skip the
+//                              prompt.
 // =============================================================================
 
-interface BookmarkButtonProps {
-  size?:       'sm' | 'md'
-  entryId?:    number
-  materialId?: number
-  /** Used to seed the entry title when creating one on first bookmark. */
-  title?:      string
-  cover?:      string | null
-  bookmarked:  boolean
+interface FollowButtonProps {
+  size?:        'sm' | 'md'
+  entryId?:     number
+  materialId?:  number
+  /** Seed title/cover when creating an entry on first follow. */
+  title?:       string
+  cover?:       string | null
+  /** When known, baked into the new entry so the hub doesn't prompt. */
+  targetLang?:  string | null
+  /** Current status; null when not in library yet. */
+  status:       LibraryStatus | null
 }
 
-export function BookmarkButton({
+export function FollowButton({
   size = 'md',
-  entryId, materialId, title, cover, bookmarked,
-}: BookmarkButtonProps) {
+  entryId, materialId, title, cover, targetLang, status,
+}: FollowButtonProps) {
   const qc = useQueryClient()
+  const inLibrary = status !== null && status !== 'dropped'
+
   const mutation = useMutation({
     mutationFn: async () => {
+      // Toggle off → drop. Toggle on → reading.
+      const next: LibraryStatus = inLibrary ? 'dropped' : 'reading'
       if (entryId != null) {
-        await api.patchLibraryEntry(entryId, { bookmarked: !bookmarked })
+        await api.patchLibraryEntry(entryId, { status: next })
         return
       }
       if (materialId != null) {
-        // Ensure an entry exists, then patch the flag.
-        const entry = await api.createLibraryEntry({
-          material_id: materialId,
+        await api.createLibraryEntry({
+          material_id:  materialId,
           title,
-          cover_url: cover ?? null,
+          cover_url:    cover ?? null,
+          target_lang:  targetLang ?? null,
+          status:       'reading',
         })
-        if (!entry.bookmarked) {
-          await api.patchLibraryEntry(entry.id, { bookmarked: true })
-        }
         return
       }
-      throw new Error('BookmarkButton: pass entryId or materialId')
+      throw new Error('FollowButton: pass entryId or materialId')
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['library'] })
@@ -147,18 +165,19 @@ export function BookmarkButton({
       className={cn(
         'inline-flex items-center gap-1.5 rounded-sm cursor-pointer transition-colors',
         dims,
-        bookmarked
-          ? 'bg-warning/15 text-warning-text hover:bg-warning/25'
-          : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
+        inLibrary
+          ? 'bg-success/15 text-success-text hover:bg-success/25'
+          : 'bg-accent text-accent-fg hover:bg-accent-strong',
         mutation.isPending && 'opacity-60 cursor-wait',
       )}
-      title={bookmarked ? 'Bỏ lưu khỏi thư viện' : 'Lưu vào thư viện'}
+      title={inLibrary ? 'Bỏ theo dõi' : 'Theo dõi truyện này'}
     >
-      <Bookmark
-        size={size === 'sm' ? 11 : 13}
-        className={bookmarked ? 'fill-warning text-warning' : ''}
-      />
-      {bookmarked ? 'Đã lưu' : 'Lưu'}
+      {inLibrary ? (
+        <Check size={size === 'sm' ? 11 : 13} />
+      ) : (
+        <BookmarkPlus size={size === 'sm' ? 11 : 13} />
+      )}
+      {inLibrary ? (status && STATUS_LABEL[status]) : 'Theo dõi'}
     </button>
   )
 }

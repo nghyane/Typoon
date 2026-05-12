@@ -2,8 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
-  BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Languages,
-  Bookmark, Sparkles,
+  BookOpen, AlertTriangle, ArrowLeft, ExternalLink, Sparkles,
 } from 'lucide-react'
 import { useHeaderStore } from '../../../store/header'
 import { useAutoTranslate, shouldTranslate } from '../autoTranslate'
@@ -15,12 +14,34 @@ import { EmptyState } from '@shared/ui/EmptyState'
 import { cn } from '@shared/lib/cn'
 import { fetchMangaDetail } from '../manifest/runtime'
 import { proxify } from '../proxy'
-import { api, type ApiChapterTranslation } from '@shared/api/api'
+import { api, type ApiChapterTranslation, type ApiLibraryEntry } from '@shared/api/api'
 import { useLibrary } from '@features/library/store'
 import { useDefaultGuildId } from '@features/auth/useMe'
+import { FollowButton } from '@features/library/views/LibraryCard'
 import { SpawnDialog } from '@features/translate/SpawnDialog'
 import { useTranslateProgress } from '@features/translate/useTranslateProgress'
 import type { InstalledSource, MangaChapterRef, MangaDetail } from '../manifest/types'
+
+// =============================================================================
+// MangaPage — source manga detail surface.
+//
+// This is the per-source flavor of the future /title/{entry_id} hub.
+// The user lands here when they tap a manga card from /browse; the
+// page imports the material on first load and wires up everything
+// the hub will later inherit: follow status, target-lang awareness,
+// chapter overlay, inline spawn.
+//
+// Pro-design rules applied:
+//   • One sticky hero, density 80px cover, action cluster right.
+//   • Action verb is "Theo dõi" (FollowButton). Library status drives
+//     the label — no `bookmarked` boolean leaks into UI.
+//   • Chapter row is one widget: shows `[Đọc VN by @x]` when a
+//     translation is available, `[Dịch]` when not. No filter pills.
+//   • Lang picker is a single select beside the chapter count when
+//     the manifest exposes multiple langs.
+//   • Description collapses behind <details> so chapters ride near
+//     the top — readers want list density, not blurb prose.
+// =============================================================================
 
 interface Props {
   source:   InstalledSource
@@ -32,7 +53,7 @@ export function MangaPage({ source, mangaUrl }: Props) {
 
   // Language picker — only meaningful when the source supports
   // multiple translation languages.
-  const langs = manifest.languages
+  const langs       = manifest.languages
   const isMultiLang = langs.length > 1
   const [language, setLanguage] = useState<string>(langs[0] ?? 'en')
 
@@ -40,16 +61,13 @@ export function MangaPage({ source, mangaUrl }: Props) {
   const clearHeader = useHeaderStore((s) => s.clear)
 
   const { data: manga, isPending, isError, error } = useQuery({
-    queryKey: ['browse', 'manga', manifest.id, mangaUrl, isMultiLang ? language : ''],
-    queryFn:  () => fetchMangaDetail(manifest, mangaUrl, { language }),
+    queryKey:  ['browse', 'manga', manifest.id, mangaUrl, isMultiLang ? language : ''],
+    queryFn:   () => fetchMangaDetail(manifest, mangaUrl, { language }),
     staleTime: 5 * 60_000,
   })
 
-  // When the manga page returns the set of languages it actually has
-  // chapters for, narrow the picker to that intersection. If the
-  // user's current pick isn't in the list, auto-switch to the first
-  // available so they see chapters immediately instead of an empty
-  // state.
+  // Narrow the picker to languages the page actually carries chapters
+  // for, then auto-switch off an unavailable language.
   useEffect(() => {
     const avail = manga?.availableLanguages
     if (!avail || avail.length === 0) return
@@ -65,10 +83,9 @@ export function MangaPage({ source, mangaUrl }: Props) {
     return () => clearHeader()
   }, [manga, manifest, setHeader, clearHeader])
 
-  // Library — record view (title/cover/latestChapter snapshot) so:
-  //   1. This manga shows up in the cross-source "Đang đọc" list
-  //   2. New-chapter detection can compare latest vs lastChapterRead
-  // Browser-side via DA proxy = free; no backend involvement.
+  // Local reading history — keeps cross-source "Tiếp tục đọc" rail
+  // accurate without a backend round-trip. Server library is the
+  // source of truth for follow status; this is purely derived state.
   const recordView = useLibrary((s) => s.recordView)
   useEffect(() => {
     if (!manga) return
@@ -126,11 +143,10 @@ function MangaContent({
   const { manifest } = source
   const autoEnabled = useAutoTranslate((s) => s.enabled)
   const autoTarget  = useAutoTranslate((s) => s.target)
-  const setAuto     = useAutoTranslate((s) => s.setEnabled)
 
-  // Eagerly import the material into the backend so the chapter rows
-  // know their materialId for spawn (translate). The same query is
-  // consumed by SaveButton further down — React Query dedupes.
+  // Eagerly import the material so the chapter rows know their
+  // materialId for spawn. The same query is consumed by the library
+  // lookup below — React Query dedupes on identical key.
   const { data: material } = useQuery({
     queryKey: ['material', 'import', manifest.id, manga.url],
     queryFn:  () => api.importMaterial({
@@ -148,55 +164,48 @@ function MangaContent({
   })
   const materialId = material?.id ?? null
 
-  // Active guild for translation visibility scope. Picked from
-  // /api/me's guild list; DA SDK could refine this later.
+  // Active guild for translation visibility scope.
   const scopeGuildId = useDefaultGuildId()
 
-  // Translation overlay — server tells us which chapters already have
-  // visible translations so the row repaints from "Dịch" to "Đọc VN
-  // by @x". Keyed by manifest chapter URL.
+  // Library entry (if any) for this material — drives FollowButton
+  // state and `target_lang` override.
+  const { data: entries = [] } = useQuery({
+    queryKey:  ['library'],
+    queryFn:   () => api.listLibrary(),
+    staleTime: 30_000,
+  })
+  const entry = useMemo(() =>
+    entries.find((e: ApiLibraryEntry) =>
+      material != null
+      && e.materials.some((m) => m.material_id === material.id)
+    ),
+    [entries, material],
+  )
+
+  // Reading language — entry's `target_lang` wins when set; otherwise
+  // fall back to the global auto-translate target.
+  const targetLang = entry?.target_lang ?? autoTarget
+
+  // Translation overlay — keyed by manifest chapter URL.
   const upstreamUrls = useMemo(
     () => manga.chapters.map((c) => c.url),
     [manga.chapters],
   )
   const { data: overlay = {} } = useQuery({
-    queryKey: ['material', materialId, 'translation-overlay'],
-    queryFn:  () => api.translationOverlay(materialId!, upstreamUrls),
-    enabled:  materialId != null && upstreamUrls.length > 0,
+    queryKey:  ['material', materialId, 'translation-overlay'],
+    queryFn:   () => api.translationOverlay(materialId!, upstreamUrls),
+    enabled:   materialId != null && upstreamUrls.length > 0,
     staleTime: 30_000,
   })
 
-  // Aggregate counters powering the stat row + filter pills.
-  const stats = useMemo(() => {
-    let translated = 0
-    let raw = 0
-    for (const c of manga.chapters) {
-      const overlayDone = (overlay[c.url] ?? []).some((t) => t.state === 'done')
-      if (overlayDone) translated++
-      else raw++
-    }
-    return { translated, raw, total: manga.chapters.length }
-  }, [manga.chapters, overlay])
+  // Title/description auto-translate is a separate concern from the
+  // chapter pipeline — it lives in the local browser-translate hook.
+  const useTr   = shouldTranslate(autoEnabled, targetLang, manifest.languages)
+  const trTitle = useTranslated(manga.title,       targetLang, useTr)
+  const trDesc  = useTranslated(manga.description, targetLang, useTr)
 
-  const [filter, setFilter] = useState<'all' | 'translated' | 'raw'>('all')
-  const filteredChapters = useMemo(() => {
-    if (filter === 'all') return manga.chapters
-    return manga.chapters.filter((c) => {
-      const done = (overlay[c.url] ?? []).some((t) => t.state === 'done')
-      return filter === 'translated' ? done : !done
-    })
-  }, [manga.chapters, overlay, filter])
-
-  // Translate only when user wants it AND the source is not already
-  // in the user's target language.
-  const useTr = shouldTranslate(autoEnabled, autoTarget, manifest.languages)
-
-  const trTitle = useTranslated(manga.title, autoTarget, useTr)
-  const trDesc  = useTranslated(manga.description, autoTarget, useTr)
-
-  // Chapter labels — batch one shot. Keep stable order so cache hits.
-  const labels = useMemo(() => manga.chapters.map((c) => c.label), [manga.chapters])
-  const trLabels = useTranslatedBatch(labels, autoTarget, useTr)
+  const labels   = useMemo(() => manga.chapters.map((c) => c.label), [manga.chapters])
+  const trLabels = useTranslatedBatch(labels, targetLang, useTr)
 
   const displayTitle = useTr && trTitle ? trTitle : manga.title
   const displayDesc  = useTr && trDesc  ? trDesc  : manga.description
@@ -217,7 +226,7 @@ function MangaContent({
         </Link>
       </div>
 
-      {/* Hero — Discord-grade density mirroring ProjectHero pattern */}
+      {/* Hero ────────────────────────────────────────────────────── */}
       <header className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 flex items-start gap-3 sm:gap-4">
         <Cover
           src={manga.cover ? proxify(manga.cover) : null}
@@ -237,12 +246,12 @@ function MangaContent({
                 </p>
               )}
 
-              {/* Meta badge row — author, status, source, NSFW */}
+              {/* Meta badge row */}
               <div className="flex items-center gap-2 mt-2 flex-wrap text-xs text-text-subtle">
                 <span className="inline-flex items-center gap-1 h-[22px] px-2 rounded-xs bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                   {manifest.languages[0]?.toUpperCase() ?? '?'}
                   <span className="text-text-subtle">→</span>
-                  {autoTarget.toUpperCase()}
+                  {targetLang.toUpperCase()}
                 </span>
                 {manga.author && <span>{manga.author}</span>}
                 {manga.status && <span>· {manga.status}</span>}
@@ -256,38 +265,23 @@ function MangaContent({
                   <ExternalLink size={10} />
                 </a>
                 {manifest.nsfw && (
-                  <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded-xs bg-error/15 text-error-text">
+                  <span className="text-[11px] uppercase font-semibold px-1.5 py-0.5 rounded-xs bg-error/15 text-error-text">
                     NSFW
                   </span>
                 )}
               </div>
-
-              {/* Inline progress — translated chapter count */}
-              {stats.total > 0 && (
-                <div className="mt-3 flex items-center gap-3 max-w-md">
-                  <div className="flex-1 h-1 rounded-full bg-surface-2 overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-success transition-[width] duration-300"
-                      style={{
-                        width: stats.total > 0
-                          ? `${Math.round((stats.translated / stats.total) * 100)}%`
-                          : '0%',
-                      }}
-                    />
-                  </div>
-                  <span className="text-xs text-text-subtle tabular shrink-0">
-                    <span className="text-text-muted font-medium">{stats.translated}</span>
-                    <span className="opacity-50">/</span>
-                    {stats.total}
-                    <span className="ml-1 text-text-subtle">đã dịch</span>
-                  </span>
-                </div>
-              )}
             </div>
 
             {/* Action cluster — right side */}
             <div className="flex items-center gap-2 shrink-0 self-start">
-              <SaveButton source={source} manga={manga} />
+              <FollowButton
+                entryId={entry?.id}
+                materialId={material?.id}
+                title={manga.title}
+                cover={manga.cover}
+                targetLang={targetLang}
+                status={entry?.status ?? null}
+              />
               {firstChapter && (
                 <Link
                   to="/browse/$source/manga/$mangaId/chapter/$chapterId"
@@ -303,23 +297,12 @@ function MangaContent({
                   </Button>
                 </Link>
               )}
-              {!manifest.languages.includes(autoTarget) && (
-                <Button
-                  size="sm"
-                  variant={autoEnabled ? 'secondary' : 'ghost'}
-                  onClick={() => setAuto(!autoEnabled)}
-                  title={`${autoEnabled ? 'Tắt' : 'Bật'} tự dịch sang ${autoTarget.toUpperCase()}`}
-                >
-                  <Languages size={12} />
-                  {autoEnabled ? `Đã dịch ${autoTarget.toUpperCase()}` : 'Tự dịch'}
-                </Button>
-              )}
             </div>
           </div>
         </div>
       </header>
 
-      {/* Description — collapsible to keep chapter list near top */}
+      {/* Description — collapsible */}
       {displayDesc && (
         <details className="px-4 sm:px-6 pb-4 group">
           <summary className="text-xs text-text-subtle cursor-pointer hover:text-text-muted list-none flex items-center gap-1.5">
@@ -332,15 +315,11 @@ function MangaContent({
         </details>
       )}
 
-      {/* Chapter toolbar — filter pills + lang picker. Sticky on
-          scroll for fast revisit while reading deep into the list. */}
-      <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-4 sm:px-6 py-2 border-b border-border-soft flex flex-wrap items-center gap-3">
-        <ChapterFilter
-          value={filter}
-          onChange={setFilter}
-          stats={stats}
-        />
-        <div className="flex-1" />
+      {/* Chapter section header */}
+      <div className="px-4 sm:px-6 flex items-center justify-between gap-3 mt-2 mb-2">
+        <h2 className="text-sm font-semibold text-text">
+          {manga.chapters.length} chương
+        </h2>
         {isMultiLang && (
           <LangPicker
             value={language}
@@ -352,41 +331,30 @@ function MangaContent({
 
       {/* Chapter list */}
       <div className="px-4 sm:px-6">
-        {filteredChapters.length === 0 ? (
+        {manga.chapters.length === 0 ? (
           <EmptyState
             icon={BookOpen}
-            title={
-              filter === 'translated' ? 'Chưa có chương đã dịch' :
-              filter === 'raw'        ? 'Mọi chương đều đã có bản dịch' :
-                                        'Chưa có chương đọc được'
-            }
-            hint={
-              filter !== 'all'
-                ? 'Chuyển bộ lọc để xem toàn bộ.'
-                : isMultiLang
-                  ? `Không có chương ${language.toUpperCase()} đọc được tại nguồn. Hãy thử ngôn ngữ khác.`
-                  : 'Nguồn có thể chưa cập nhật hoặc đã đổi cấu trúc.'
-            }
+            title="Chưa có chương đọc được"
+            hint={isMultiLang
+              ? `Không có chương ${language.toUpperCase()} đọc được tại nguồn. Hãy thử ngôn ngữ khác.`
+              : 'Nguồn có thể chưa cập nhật hoặc đã đổi cấu trúc.'}
           />
         ) : (
-          <ul className="rounded-md bg-surface divide-y divide-border-soft overflow-hidden mt-2">
-            {filteredChapters.map((c) => {
-              const i = manga.chapters.indexOf(c)
-              return (
-                <ChapterRow
-                  key={c.id}
-                  manifestId={manifest.id}
-                  mangaId={manga.url}
-                  materialId={materialId}
-                  chapter={c}
-                  translatedLabel={useTr ? trLabels[i] : null}
-                  targetLang={autoTarget}
-                  scopeGuildId={scopeGuildId}
-                  manga={manga}
-                  overlay={overlay[c.url] ?? []}
-                />
-              )
-            })}
+          <ul className="rounded-md bg-surface divide-y divide-border-soft overflow-hidden">
+            {manga.chapters.map((c, i) => (
+              <ChapterRow
+                key={c.id}
+                manifestId={manifest.id}
+                mangaId={manga.url}
+                materialId={materialId}
+                chapter={c}
+                translatedLabel={useTr ? trLabels[i] : null}
+                targetLang={targetLang}
+                scopeGuildId={scopeGuildId}
+                manga={manga}
+                overlay={overlay[c.url] ?? []}
+              />
+            ))}
           </ul>
         )}
       </div>
@@ -395,55 +363,7 @@ function MangaContent({
 }
 
 
-// ── Chapter filter pills ─────────────────────────────────────────────
-
-function ChapterFilter({
-  value, onChange, stats,
-}: {
-  value:    'all' | 'translated' | 'raw'
-  onChange: (v: 'all' | 'translated' | 'raw') => void
-  stats:    { translated: number; raw: number; total: number }
-}) {
-  const items: Array<{
-    id: 'all' | 'translated' | 'raw'
-    label: string
-    count: number
-  }> = [
-    { id: 'all',        label: 'Tất cả',  count: stats.total      },
-    { id: 'translated', label: 'Đã dịch', count: stats.translated },
-    { id: 'raw',        label: 'Raw',     count: stats.raw        },
-  ]
-  return (
-    <div className="flex items-center gap-1">
-      {items.map((it) => {
-        const active = it.id === value
-        return (
-          <button
-            key={it.id}
-            type="button"
-            onClick={() => onChange(it.id)}
-            className={cn(
-              'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-[11px] font-medium transition-colors cursor-pointer',
-              active
-                ? 'bg-text text-bg'
-                : 'bg-surface text-text-muted hover:bg-surface-2 hover:text-text',
-            )}
-          >
-            {it.label}
-            {it.count > 0 && (
-              <span className={cn(
-                'text-[10px] tabular',
-                active ? 'text-bg/70' : 'text-text-subtle',
-              )}>
-                {it.count}
-              </span>
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
+// ── Lang picker ─────────────────────────────────────────────────────
 
 function LangPicker({
   value, options, onChange,
@@ -465,6 +385,15 @@ function LangPicker({
   )
 }
 
+
+// ── Chapter row ─────────────────────────────────────────────────────
+//
+// One verb at a time. When a translation exists at the user's
+// target_lang (or any done variant), the row shows `[Đọc VN by @x]`
+// and a small `Sparkles` button to fork a personal copy. When nothing
+// is available, the row collapses to `[Raw] [Dịch]`. While a spawn
+// is running, the chip replaces both with a live progress badge.
+
 function ChapterRow({
   manifestId, mangaId, materialId, chapter, translatedLabel, targetLang,
   scopeGuildId, manga, overlay,
@@ -481,7 +410,7 @@ function ChapterRow({
   scopeGuildId:     string | null
   manga:            MangaDetail
   /** Translations the viewer can read on this chapter, keyed off
-   *  manifest upstream_url. Drives the "Đọc Vi by @x" surface. */
+   *  manifest upstream_url. */
   overlay:          ApiChapterTranslation[]
 }) {
   const showTr = translatedLabel && translatedLabel !== chapter.label
@@ -494,7 +423,6 @@ function ChapterRow({
     qc.invalidateQueries({ queryKey: ['material'] })
   }
 
-  // Pick the best read action from the overlay.
   const readable = useMemo(
     () => pickReadable(overlay, targetLang),
     [overlay, targetLang],
@@ -528,24 +456,20 @@ function ChapterRow({
           <p className="text-sm text-text truncate">
             {showTr ? translatedLabel : chapter.label}
           </p>
-          {overlay.length > 0 && (
-            <OverlayBadges overlay={overlay} />
-          )}
+          {overlay.length > 0 && <OverlayBadges overlay={overlay} />}
         </div>
         {showTr && (
           <p className="text-text-subtle font-normal text-[11px] italic mt-0.5 truncate">
             {chapter.label}
           </p>
         )}
-        <div className="flex items-center gap-2 text-[10px] text-text-subtle mt-0.5">
+        <div className="flex items-center gap-2 text-[11px] text-text-subtle mt-0.5">
           {chapter.language && (
             <span className="uppercase font-semibold bg-surface-2 px-1 py-0.5 rounded-xs">
               {chapter.language}
             </span>
           )}
-          {chapter.date && (
-            <span className="tabular">{chapter.date}</span>
-          )}
+          {chapter.date && <span className="tabular">{chapter.date}</span>}
           {readable?.creator_name && (
             <span className="truncate" title={`Bản của ${readable.creator_name}`}>
               · @{readable.creator_name}
@@ -575,10 +499,7 @@ function ChapterRow({
             </Link>
             <button
               type="button"
-              onClick={() => {
-                if (!materialId) return
-                setSpawnOpen(true)
-              }}
+              onClick={() => { if (materialId) setSpawnOpen(true) }}
               disabled={!materialId}
               className="inline-flex items-center justify-center size-7 rounded-sm text-text-muted hover:bg-surface-2 hover:text-text cursor-pointer disabled:opacity-50"
               title="Tạo bản dịch riêng"
@@ -610,7 +531,7 @@ function ChapterRow({
               disabled={!materialId || spawn.isPending}
               className={cn(
                 'inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium cursor-pointer',
-                'bg-accent text-accent-fg hover:bg-accent-hover',
+                'bg-accent text-accent-fg hover:bg-accent-strong',
                 (!materialId || spawn.isPending) && 'opacity-60 cursor-wait',
               )}
               title="Dịch chương này"
@@ -655,8 +576,8 @@ function OverlayBadges({
 }: {
   overlay: ApiChapterTranslation[]
 }) {
-  // Distinct done languages — collapse duplicates so 3 user translations
-  // in VN show "[VN]" once not three times.
+  // Distinct done languages — collapse duplicates so 3 VN translations
+  // show "[VN]" once not three times.
   const langs = new Map<string, ApiChapterTranslation>()
   for (const t of overlay) {
     if (t.state !== 'done') continue
@@ -666,7 +587,7 @@ function OverlayBadges({
     const running = overlay.find((t) => t.state === 'running')
     if (!running) return null
     return (
-      <span className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-accent/15 text-accent-text">
+      <span className="text-[11px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-accent/15 text-accent-text">
         đang dịch
       </span>
     )
@@ -677,14 +598,14 @@ function OverlayBadges({
       {shown.map((t) => (
         <span
           key={t.id}
-          className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-success/15 text-success-text"
+          className="text-[11px] uppercase font-semibold px-1 py-0.5 rounded-xs bg-success/15 text-success-text"
           title={t.creator_name ? `Bản của ${t.creator_name}` : 'Bản dịch sẵn'}
         >
           {t.target_lang}
         </span>
       ))}
       {langs.size > shown.length && (
-        <span className="text-[9px] text-text-subtle">+{langs.size - shown.length}</span>
+        <span className="text-[11px] text-text-subtle">+{langs.size - shown.length}</span>
       )}
     </div>
   )
@@ -698,9 +619,9 @@ function ProgressChip({
 }) {
   if (!progress) return null
   const label = (() => {
-    if (progress.state === 'error')   return `Lỗi: ${progress.error?.slice(0, 40) ?? '?'}`
-    if (progress.state === 'done')    return 'Xong'
-    if (progress.total === 0)         return `${progress.stage || 'pending'}…`
+    if (progress.state === 'error') return `Lỗi: ${progress.error?.slice(0, 40) ?? '?'}`
+    if (progress.state === 'done')  return 'Xong'
+    if (progress.total === 0)       return `${progress.stage || 'pending'}…`
     const pct = Math.round((progress.index / progress.total) * 100)
     return `${progress.stage} ${pct}%`
   })()
@@ -718,112 +639,5 @@ function ProgressChip({
       <Sparkles size={11} className={progress.state === 'done' ? '' : 'animate-pulse'} />
       {label}
     </span>
-  )
-}
-
-
-// =============================================================================
-// SaveButton — "Lưu vào thư viện" for the manga detail hero.
-//
-// Source-backed manga need a material row before we can attach a
-// library_entry. The first click does an idempotent
-// /api/material/import with whatever the manifest gave us; subsequent
-// clicks toggle the bookmark flag on the existing entry.
-//
-// Mirroring state from /api/library means N entries on this manga
-// (same user) collapse to one — the library list is the source of
-// truth, not local guesses.
-// =============================================================================
-
-function SaveButton({
-  source, manga,
-}: {
-  source: InstalledSource
-  manga:  MangaDetail
-}) {
-  const qc = useQueryClient()
-  const { manifest } = source
-
-  // We pull the user's library to see whether this material already
-  // has an entry — needed for the bookmark icon state and to know
-  // which entry id to PATCH on toggle.
-  const { data: entries = [] } = useQuery({
-    queryKey: ['library'],
-    queryFn:  () => api.listLibrary(),
-    staleTime: 30_000,
-  })
-
-  // Re-use the import query already issued by MangaContent. Same
-  // queryKey so React Query dedupes — `staleTime` keeps it hot.
-  const { data: material } = useQuery({
-    queryKey: ['material', 'import', manifest.id, manga.url],
-    queryFn:  () => api.importMaterial({
-      source:       manifest.id,
-      upstream_ref: manga.url,
-      title:        manga.title,
-      cover_url:    manga.cover,
-      description:  manga.description,
-      author:       manga.author,
-      status:       manga.status,
-      languages:    manifest.languages,
-      nsfw:         !!manifest.nsfw,
-    }),
-    staleTime: 5 * 60_000,
-  })
-
-  const entry = useMemo(
-    () => entries.find((e) =>
-      material != null
-      && e.materials.some((m) => m.material_id === material.id)
-    ),
-    [entries, material],
-  )
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      if (!material) return
-      if (entry) {
-        await api.patchLibraryEntry(entry.id, {
-          bookmarked: !entry.bookmarked,
-        })
-      } else {
-        const created = await api.createLibraryEntry({
-          material_id: material.id,
-          title:       manga.title,
-          cover_url:   manga.cover,
-        })
-        if (!created.bookmarked) {
-          await api.patchLibraryEntry(created.id, { bookmarked: true })
-        }
-      }
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['library'] })
-    },
-  })
-
-  const on = !!entry?.bookmarked
-  const disabled = mutation.isPending || material == null
-
-  return (
-    <button
-      type="button"
-      onClick={() => mutation.mutate()}
-      disabled={disabled}
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-sm cursor-pointer transition-colors h-8 px-3 text-[13px]',
-        on
-          ? 'bg-warning/15 text-warning-text hover:bg-warning/25'
-          : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
-        disabled && 'opacity-60 cursor-wait',
-      )}
-      title={on ? 'Bỏ lưu khỏi thư viện' : 'Lưu vào thư viện'}
-    >
-      <Bookmark
-        size={13}
-        className={on ? 'fill-warning text-warning' : ''}
-      />
-      {on ? 'Đã lưu' : 'Lưu'}
-    </button>
   )
 }

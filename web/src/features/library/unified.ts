@@ -1,116 +1,106 @@
-// Unified library item — view-model adapter on top of /api/library
-// (server) and the local reading-history store (browser-only).
+// Unified library view-model — server library entries adapted for the
+// /library page grid.
 //
-// Backend owns: bookmark flag, primary_material_id, last_read_at,
-//               linked materials.
-// Local owns:   per-source "Tiếp tục đọc" snapshots (latest chapter
-//               we saw on each material so the chapter-row "Mới"
-//               badge can fire without a backend round-trip).
-//
-// The two are joined by material_id: a library entry's primary
-// material_id matches a local store key (`${source}::${mangaUrl}`)
-// via the per-material lookup the route does at /api/material/import.
-// In this slice we lean entirely on the server entry for the grid;
-// local history augments per-source rails (BrowseSourceHome) only.
+// Source of truth is `/api/library` (entries with `status` enum). This
+// module flattens each entry into a `LibraryItem` carrying the
+// status, target_lang, and a "hasNew" hint derived from the local
+// reading-history store. The local store remains the place where
+// per-source "Tiếp tục đọc" snapshots live; it powers the hint here
+// but never overrides server state.
 
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type ApiLibraryEntry } from '@shared/api/api'
+import { api, type ApiLibraryEntry, type LibraryStatus } from '@shared/api/api'
 import { coverUrl } from '@shared/ui/Cover'
 import { useLibrary, hasNewChapter } from './store'
 import { useShallow } from 'zustand/react/shallow'
-import type { LibraryFilter } from './hooks'
+
+/** Filter chip identities for the /library page. `all` excludes
+ *  `dropped` (the server applies the same filter when status param
+ *  is omitted). */
+export type LibraryFilter = 'all' | LibraryStatus
 
 export interface LibraryItem {
-  key:      string
-  /** Server library_entry id. Route uses this for /library/entry/$id
-   *  bookmark + unlink actions. */
-  entryId:  number
-  /** Primary material the entry routes to (the "default version" the
-   *  user clicked through last). */
+  key:        string
+  entryId:    number
   materialId: number | null
 
   title:    string
   cover:    string | null
 
-  /** Flags driving visual treatment + filter eligibility. */
-  bookmarked: boolean
-  reading:    boolean
-  hasNew:     boolean
+  /** Server enums + flags driving visual treatment. */
+  status:         LibraryStatus
+  targetLang:     string | null
+  autoTranslate:  boolean
 
-  /** Timestamps for sort. `activity` = most recent meaningful event. */
-  activity:    number
-  /** Chapter label overlay on cover; populated from the local
-   *  reading-history store when we have a recent snapshot. */
+  /** Local-derived: latest chapter at source differs from last-read. */
+  hasNew:    boolean
+
+  /** Most-recent meaningful timestamp for sort. */
+  activity:     number
+  /** Chapter label overlay on cover; from local reading-history. */
   chapterLabel: string | null
 }
 
 // ── adapter ───────────────────────────────────────────────────────
 
 function fromEntry(
-  e: ApiLibraryEntry,
+  e:               ApiLibraryEntry,
   hasNewFromLocal: boolean,
   chapterLabel:    string | null,
 ): LibraryItem {
-  const last = e.last_read_at ? Date.parse(e.last_read_at) : 0
-  const book = e.bookmarked_at ? Date.parse(e.bookmarked_at) : 0
+  const last    = e.last_read_at ? Date.parse(e.last_read_at) : 0
+  const created = e.created_at   ? Date.parse(e.created_at)   : 0
   return {
-    key:        `entry::${e.id}`,
-    entryId:    e.id,
-    materialId: e.primary_material_id,
-    title:      e.title,
-    cover:      coverUrl(e.cover_url, e.updated_at),
-    bookmarked: e.bookmarked,
-    reading:    e.last_read_at !== null,
-    hasNew:     hasNewFromLocal,
-    activity:   Math.max(last, book),
+    key:           `entry::${e.id}`,
+    entryId:       e.id,
+    materialId:    e.primary_material_id,
+    title:         e.title,
+    cover:         coverUrl(e.cover_url, e.updated_at),
+    status:        e.status,
+    targetLang:    e.target_lang,
+    autoTranslate: e.auto_translate,
+    hasNew:        hasNewFromLocal,
+    activity:      Math.max(last, created),
     chapterLabel,
   }
 }
 
-// ── merge + sort ──────────────────────────────────────────────────
+// ── sort ──────────────────────────────────────────────────────────
 
 function compare(a: LibraryItem, b: LibraryItem): number {
   if (a.hasNew !== b.hasNew) return a.hasNew ? -1 : 1
   return b.activity - a.activity
 }
 
-function matches(it: LibraryItem, filter: LibraryFilter): boolean {
-  if (filter === 'all')       return true
-  if (filter === 'reading')   return it.reading
-  if (filter === 'bookmarks') return it.bookmarked
-  return it.bookmarked && it.hasNew     // updates
-}
-
-/** Single hook returning filtered + sorted library items.
+/** Unified library data for the /library page.
  *
- *  Source of truth is `/api/library`. Local reading-history store
- *  supplies the per-entry "hasNew" flag and chapter-label overlay —
- *  both are reader-side derived state that doesn't need a round-trip.
- */
+ *  When `filter='all'`, the server query omits the status param so
+ *  the response naturally excludes `dropped`. Other filters narrow
+ *  to a single status enum value.
+ *
+ *  Local reading-history supplies the "hasNew" badge + chapter-label
+ *  overlay — both are derived state that doesn't need a round-trip. */
 export function useUnifiedLibrary(filter: LibraryFilter): {
   items:   LibraryItem[]
   loading: boolean
   counts:  Record<LibraryFilter, number>
 } {
+  // We always fetch the unfiltered list so chip counts stay accurate
+  // when the user toggles between filters. Server returns sans
+  // `dropped` already; counts are computed client-side.
   const { data: entries = [], isPending } = useQuery({
-    queryKey: ['library'],
-    queryFn:  () => api.listLibrary(),
+    queryKey:  ['library'],
+    queryFn:   () => api.listLibrary(),
     staleTime: 30_000,
   })
 
-  // Pull the local reading-history rows once and turn them into a
-  // material-id-keyed lookup. Local entries are keyed by source+url
-  // but the server entry only knows `primary_material_id`; the
-  // material-import route returns the material row which is how we'll
-  // bridge the two going forward. For now we expose history by
-  // material_id when the local store has annotated one (slice
-  // future-stamp: local store will track material_id alongside).
   const rawLocal = useLibrary(useShallow((s) => Object.values(s.items)))
 
   return useMemo(() => {
-    // Build a quick lookup for material_id → local row when present
-    // (the field is added in a follow-up slice; defensive read).
+    // material_id → local row index. The local store is keyed by
+    // (source, mangaUrl); we cross-reference via the optional
+    // `materialId` field the import-material flow stamps on.
     const byMaterial = new Map<number, typeof rawLocal[number]>()
     for (const e of rawLocal) {
       const mid = (e as unknown as { materialId?: number }).materialId
@@ -128,21 +118,22 @@ export function useUnifiedLibrary(filter: LibraryFilter): {
       )
     })
 
-    let all = 0, reading = 0, bookmarks = 0, updates = 0
-    for (const it of items) {
-      all++
-      if (it.reading) reading++
-      if (it.bookmarked) {
-        bookmarks++
-        if (it.hasNew) updates++
-      }
+    // Counts pivot on status. `all` = items minus dropped (server
+    // already filtered, so length equals all).
+    const counts: Record<LibraryFilter, number> = {
+      all: items.length,
+      reading: 0, plan: 0, on_hold: 0, done: 0, dropped: 0,
     }
+    for (const it of items) counts[it.status]++
 
-    const filtered = items.filter((it) => matches(it, filter)).sort(compare)
+    const filtered = filter === 'all'
+      ? items
+      : items.filter((it) => it.status === filter)
+
     return {
-      items: filtered,
+      items: filtered.sort(compare),
       loading: isPending,
-      counts:  { all, reading, bookmarks, updates },
+      counts,
     }
   }, [entries, rawLocal, filter, isPending])
 }

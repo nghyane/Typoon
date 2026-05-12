@@ -1,25 +1,20 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
-import { Bookmark, BookOpen, Sparkles, FolderOpen, Layers } from 'lucide-react'
+import { BookOpen, BookmarkCheck, Pause, CheckCircle2, Layers, FolderOpen } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 import { useHeaderStore } from '../store/header'
-import type { LibraryFilter } from '@features/library/hooks'
-import { useUnifiedLibrary } from '@features/library/unified'
+import { useUnifiedLibrary, type LibraryFilter } from '@features/library/unified'
 import { LibraryItemCard } from '@features/library/views/LibraryCard'
 
 // =============================================================================
 // /library — unified backend-backed surface.
 //
-// One grid, all entries. Filter chips, NOT tabs — scroll position
-// survives switching filters. "Có chương mới" chip auto-hides when
-// count is 0 to keep the row tidy.
-//
-// Source of truth: /api/library (per-user library_entries +
-// linked materials). Per-source reading history (Tiếp tục đọc rails)
-// still lives in the local zustand store; the grid card uses it to
-// supply the "Mới" badge + chapter overlay client-side.
+// One grid, all entries. Filter chips operate on the server `status`
+// enum so the URL stays canonical (filter=reading bookmarks fine via
+// browser back-button). `dropped` is excluded from the default list;
+// users wanting to see them can pass ?filter=dropped explicitly.
 // =============================================================================
 
 interface SearchParams { filter?: LibraryFilter }
@@ -27,30 +22,39 @@ interface SearchParams { filter?: LibraryFilter }
 const CHIPS: Array<{
   id:    LibraryFilter
   label: string
-  icon:  typeof Bookmark
+  icon:  typeof Layers
 }> = [
-  { id: 'all',       label: 'Tất cả',         icon: Layers   },
-  { id: 'reading',   label: 'Đang đọc',       icon: BookOpen },
-  { id: 'bookmarks', label: 'Đã lưu',         icon: Bookmark },
-  { id: 'updates',   label: 'Có chương mới',  icon: Sparkles },
+  { id: 'all',     label: 'Tất cả',    icon: Layers        },
+  { id: 'reading', label: 'Đang đọc',  icon: BookOpen      },
+  { id: 'plan',    label: 'Kế hoạch',  icon: BookmarkCheck },
+  { id: 'on_hold', label: 'Tạm dừng',  icon: Pause         },
+  { id: 'done',    label: 'Đã xong',   icon: CheckCircle2  },
 ]
 
 const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
   all: {
     title: 'Thư viện đang trống',
-    sub:   'Mở một truyện ở Duyệt nguồn hoặc tải truyện riêng để bắt đầu',
+    sub:   'Mở một truyện ở Duyệt nguồn rồi bấm "Theo dõi" để bắt đầu',
   },
   reading: {
     title: 'Chưa có truyện đang đọc',
-    sub:   'Truyện sẽ hiện ở đây sau khi bạn mở chương đầu tiên',
+    sub:   'Truyện vừa thêm sẽ tự vào đây',
   },
-  bookmarks: {
-    title: 'Chưa lưu truyện nào',
-    sub:   'Bấm "Lưu" ở trang truyện để thêm vào đây',
+  plan: {
+    title: 'Chưa có truyện trong kế hoạch',
+    sub:   'Đánh dấu "Kế hoạch" để lưu lại đọc sau',
   },
-  updates: {
-    title: 'Chưa có chương mới',
-    sub:   'Khi truyện đã lưu có chương mới, sẽ hiện ở đây',
+  on_hold: {
+    title: 'Không có truyện tạm dừng',
+    sub:   'Đánh dấu "Tạm dừng" khi muốn quay lại sau',
+  },
+  done: {
+    title: 'Chưa hoàn thành truyện nào',
+    sub:   'Đánh dấu "Đã xong" khi đọc xong một bộ',
+  },
+  dropped: {
+    title: 'Không có truyện đã bỏ',
+    sub:   'Truyện bị bỏ theo dõi sẽ hiện ở đây',
   },
 }
 
@@ -68,9 +72,8 @@ function LibraryPage() {
 
   return (
     <div className="px-4 sm:px-6 pt-4 sm:pt-6">
-      {/* Filter chips. Horizontal-scroll on narrow viewports so the
-          full set is always reachable; bleeds to the screen edge on
-          mobile to feel native. */}
+      {/* Filter chips. Horizontal-scroll on narrow viewports; bleeds
+          to the edge so the row feels native on mobile. */}
       <div
         className="flex items-center gap-1.5 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
         style={{ scrollbarWidth: 'none' }}
@@ -78,9 +81,9 @@ function LibraryPage() {
         {CHIPS.map(({ id, label, icon: Icon }) => {
           const active = filter === id
           const count  = counts[id]
-          // Hide "Có chương mới" chip entirely when count is 0 —
-          // empty filter is just dead space at the top of the page.
-          if (id === 'updates' && count === 0) return null
+          // Hide secondary chips when they would render zero — keeps
+          // the chrome dense for the typical reader.
+          if (id !== 'all' && id !== 'reading' && count === 0) return null
           return (
             <button
               key={id}
@@ -97,7 +100,7 @@ function LibraryPage() {
               {label}
               {count > 0 && (
                 <span className={cn(
-                  'text-[10px] tabular',
+                  'text-[11px] tabular',
                   active ? 'text-bg/70' : 'text-text-subtle',
                 )}>
                   {count}
@@ -121,7 +124,7 @@ function LibraryPage() {
             action={
               <Link
                 to="/browse"
-                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-[13px] font-medium hover:bg-accent-hover transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-[13px] font-medium hover:bg-accent-strong transition-colors cursor-pointer"
               >
                 Duyệt nguồn
               </Link>
@@ -145,12 +148,16 @@ function LibraryPage() {
   )
 }
 
+const VALID_FILTERS: ReadonlyArray<LibraryFilter> = [
+  'all', 'reading', 'plan', 'on_hold', 'done', 'dropped',
+]
+
 export const Route = createFileRoute('/library')({
   validateSearch: (search: Record<string, unknown>): SearchParams => {
     const f = search.filter
     return {
-      filter: (f === 'all' || f === 'reading' || f === 'bookmarks' || f === 'updates')
-        ? f
+      filter: VALID_FILTERS.includes(f as LibraryFilter)
+        ? (f as LibraryFilter)
         : 'all',
     }
   },
