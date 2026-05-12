@@ -149,6 +149,13 @@ export interface ApiLibraryMaterialLink {
 export type LibraryStatus =
   | 'reading' | 'plan' | 'on_hold' | 'done' | 'dropped'
 
+export interface ApiTranslationSummary {
+  pending: number
+  running: number
+  done:    number
+  error:   number
+}
+
 export interface ApiLibraryEntry {
   id:                   number
   title:                string
@@ -170,6 +177,10 @@ export interface ApiLibraryEntry {
   last_read_at:         string | null
   last_chapter_ref:     Record<string, unknown> | null
   materials:            ApiLibraryMaterialLink[]
+  /** Counts of this user's translations by draft state — drives the
+   *  card's "Đang dịch / Lỗi" activity chip. */
+  translation_summary:  ApiTranslationSummary
+
   created_at:           string | null
   updated_at:           string | null
 }
