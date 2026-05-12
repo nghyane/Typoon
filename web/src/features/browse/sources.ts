@@ -117,6 +117,15 @@ export function useEnabledSources(): InstalledSource[] {
   )
 }
 
+/** All installed sources, regardless of enabled flag. Used by the
+ *  AddMangaModal empty state so the user can re-enable a source
+ *  inline without leaving the modal. */
+export function useAllSources(): InstalledSource[] {
+  return useSources(
+    useShallow((s) => Object.values(s.sources)),
+  )
+}
+
 export function getSource(id: string): InstalledSource | null {
   return useSources.getState().sources[id] ?? null
 }

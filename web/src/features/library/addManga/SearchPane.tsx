@@ -3,6 +3,7 @@ import { Search, Link as LinkIcon, AlertTriangle, CheckCircle2 } from 'lucide-re
 import { input as inputCls } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { hasSearch } from '@features/browse/manifest/runtime'
+import { useAllSources, useSources } from '@features/browse/sources'
 import type { InstalledSource } from '@features/browse/manifest/types'
 import { isUrlLike, matchSource } from './parseUrl'
 import { useFanoutSearch } from './fanoutSearch'
@@ -84,10 +85,7 @@ export function SearchPane({
           onManualCreate={onManualCreate}
         />
       ) : query.trim().length < 2 ? (
-        <SourceListHint
-          sources={sources}
-          onPickDomain={(host) => setQuery(`https://${host}/`)}
-        />
+        <SourceListHint />
       ) : (
         <>
           <ScopeFilterRow
@@ -178,18 +176,17 @@ function UrlBadge({
 // chip carries a Link icon when the source supports search ('Tìm
 // được') vs a muted state for paste-only sources.
 
-// Domain list — empty-state replacement for the hint text. Each
-// row is one installed source rendered as 'name · host'. Clicking a
-// row pre-fills the input with `https://{host}/` so the user can
-// paste the slug after, or just sees that link-mode works. The
-// affordance speaks for itself; no heading, no capability tag.
+// Domain chip list — empty-state replacement for hint text. Each
+// installed source becomes a toggle chip. Active = included in
+// fanout search. Disabled chips dim to text-subtle. Chip itself is
+// the affordance: name + host text reads as a domain, click toggles
+// inclusion. The user can also paste a URL from any of those hosts
+// regardless of the toggle — paste mode always works.
 
-function SourceListHint({
-  sources, onPickDomain,
-}: {
-  sources:      InstalledSource[]
-  onPickDomain: (host: string) => void
-}) {
+function SourceListHint() {
+  const sources    = useAllSources()
+  const setEnabled = useSources((s) => s.setEnabled)
+
   if (sources.length === 0) {
     return (
       <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6 text-center">
@@ -201,24 +198,36 @@ function SourceListHint({
     )
   }
   return (
-    <ul className="rounded-md bg-surface-2 border border-border-soft divide-y divide-border-soft overflow-hidden">
-      {sources.map((s) => (
-        <li key={s.manifest.id}>
-          <button
-            type="button"
-            onClick={() => onPickDomain(s.manifest.host)}
-            className="w-full flex items-baseline gap-2 px-3 py-2 text-left hover:bg-hover transition-colors cursor-pointer"
-            title={`Dùng ${s.manifest.host}`}
-          >
-            <span className="text-[13px] text-text truncate">
-              {s.manifest.name}
-            </span>
-            <span className="text-[11px] text-text-subtle truncate">
-              {s.manifest.host}
-            </span>
-          </button>
-        </li>
-      ))}
+    <ul className="flex flex-wrap gap-1.5">
+      {sources.map((s) => {
+        const searchable = hasSearch(s.manifest)
+        const on = s.enabled
+        return (
+          <li key={s.manifest.id}>
+            <button
+              type="button"
+              onClick={() => searchable && setEnabled(s.manifest.id, !on)}
+              disabled={!searchable}
+              title={searchable
+                ? (on ? `Tắt tìm trên ${s.manifest.name}` : `Bật tìm trên ${s.manifest.name}`)
+                : `${s.manifest.name} chưa hỗ trợ tìm — dán link để thêm`}
+              className={cn(
+                'inline-flex items-baseline gap-1.5 h-8 px-3 rounded-sm text-[12px] transition-colors',
+                !searchable
+                  ? 'bg-bg/20 text-text-subtle/70 cursor-not-allowed'
+                  : on
+                  ? 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text cursor-pointer'
+                  : 'bg-bg/30 text-text-subtle hover:bg-hover hover:text-text cursor-pointer',
+              )}
+            >
+              <span className="truncate max-w-[140px]">{s.manifest.name}</span>
+              <span className="text-[11px] text-text-subtle truncate">
+                {s.manifest.host}
+              </span>
+            </button>
+          </li>
+        )
+      })}
     </ul>
   )
 }
