@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2,
+  BookOpen, Sparkles, Loader2, AlertCircle,
   ArrowDown, ArrowUp, Clock, RefreshCw, X, Check,
   Globe, UserCircle2,
 } from 'lucide-react'
@@ -576,9 +576,8 @@ function ChapterTable({
             <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
           </Th>
           <Th>Chương</Th>
-          <Th className="w-72 hidden sm:table-cell">Trạng thái</Th>
-          <Th className="w-24 hidden sm:table-cell">Cập nhật</Th>
-          <Th className="w-36 text-right pr-3">Thao tác</Th>
+          <Th className="w-28 hidden sm:table-cell">Cập nhật</Th>
+          <Th className="w-32 text-right pr-3">Thao tác</Th>
         </tr>
       </thead>
       <tbody>
@@ -605,11 +604,16 @@ function ChapterRow({
   checked:    boolean
   onToggle:   () => void
 }) {
-  const status   = chapterStatus(chapter, targetLang)
-  const readable = preferredReadable(chapter, targetLang)
-  const running  = inFlight(chapter, targetLang)
-  const errored  = lastError(chapter, targetLang)
-  const langs    = chapterLangs(chapter)
+  const status     = chapterStatus(chapter, targetLang)
+  const readable   = preferredReadable(chapter, targetLang)
+  const running    = inFlight(chapter, targetLang)
+  const errored    = lastError(chapter, targetLang)
+  // Other langs available for this chapter — surface only when they
+  // ADD information (i.e. langs the user can't already read in their
+  // target). For a vi→vi reader on a 40/40 translated title, this
+  // is empty and the sub-line stays clean.
+  const tgt        = targetLang?.toLowerCase() ?? null
+  const extraLangs = chapterLangs(chapter).filter((l) => l !== tgt)
 
   return (
     <tr
@@ -634,26 +638,20 @@ function ChapterRow({
             </span>
           )}
         </div>
-        <LangChips
-          langs={langs}
-          targetLang={targetLang}
-          className="mt-1.5 sm:hidden"
+        <SubLine
+          status={status}
+          readable={readable}
+          running={running}
+          errored={errored}
+          extraLangs={extraLangs}
         />
-        <div className="sm:hidden mt-1">
-          <StatusInline status={status} readable={readable} running={running} errored={errored} />
-        </div>
       </td>
 
-      <td className="px-3 py-3 w-72 hidden sm:table-cell">
-        <StatusInline status={status} readable={readable} running={running} errored={errored} />
-        <LangChips langs={langs} targetLang={targetLang} className="mt-1.5" />
-      </td>
-
-      <td className="px-3 py-3 text-xs text-text-subtle whitespace-nowrap w-24 tabular hidden sm:table-cell">
+      <td className="px-3 py-3 text-xs text-text-subtle whitespace-nowrap w-28 tabular hidden sm:table-cell">
         {chapter.updatedAt ? timeAgo(chapter.updatedAt) : '—'}
       </td>
 
-      <td className="px-3 py-3 w-36">
+      <td className="px-3 py-3 w-32">
         <div className="flex items-center gap-1 justify-end">
           <Action
             chapter={chapter}
@@ -769,93 +767,96 @@ function Action({
 }
 
 
-// ── Inline status text (column + mobile) ────────────────────────────
+// ── Row sub-line ────────────────────────────────────────────────────
+//
+// Only carries text when it ADDS information beyond the action button.
+// The action button already encodes the readable state ('Đọc VI' /
+// 'Đang dịch' / 'Thử lại' / 'Dịch'), so we skip a sub-line entirely
+// on the happy 'translated' path and let the action button speak for
+// the row. Sub-line shows up for:
+//
+//   • running   → '@creator' so the user knows whose draft is running.
+//   • error     → 'Lỗi · @creator' so the user knows what failed.
+//   • raw       → '+EN +KO' chip row of OTHER langs available, so the
+//                 user can decide whether to spawn a translation or
+//                 read an existing scanlation in a lang they know.
+//
+// On a 40/40 vi→vi title the sub-line is invisible across the board.
 
-function StatusInline({
-  status, readable, running, errored,
+function SubLine({
+  status, readable, running, errored, extraLangs,
 }: {
-  status:   StatusFilter
-  readable: HubVersion | null
-  running:  HubVersion | null
-  errored:  HubVersion | null
+  status:     StatusFilter
+  readable:   HubVersion | null
+  running:    HubVersion | null
+  errored:    HubVersion | null
+  extraLangs: string[]
 }) {
+  // Happy path: translation done, action button shows 'Đọc {LANG}'.
+  // Sub-line adds nothing → render nothing.
+  if (status === 'translated' && readable && extraLangs.length === 0) {
+    return null
+  }
+
   if (status === 'translated' && readable) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-success-text min-w-0">
-        <CheckCircle2 size={11} className="shrink-0" />
-        <span>Đã dịch</span>
-        {readable.creatorName && (
-          <span className="text-text-subtle ml-1 truncate">
-            · @{readable.creatorName}
-          </span>
-        )}
-      </span>
+      <div className="mt-1">
+        <LangChips langs={extraLangs} />
+      </div>
     )
   }
+
   if (status === 'running') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-info-text min-w-0">
+      <div className="mt-1 inline-flex items-center gap-1.5 text-xs text-info-text min-w-0">
         <Loader2 size={11} className="animate-spin shrink-0" />
-        <span>Đang dịch</span>
-        {running?.creatorName && (
-          <span className="text-text-subtle ml-1 truncate">
-            · @{running.creatorName}
-          </span>
-        )}
-      </span>
+        <span className="truncate">
+          {running?.creatorName ? `@${running.creatorName}` : 'Đang dịch'}
+        </span>
+      </div>
     )
   }
+
   if (status === 'error') {
     return (
-      <span
-        className="inline-flex items-center gap-1.5 text-xs text-error-text min-w-0"
-        title={errored?.creatorName ? `Lần dịch gần nhất của @${errored.creatorName} thất bại` : 'Lần dịch gần nhất thất bại'}
+      <div
+        className="mt-1 inline-flex items-center gap-1.5 text-xs text-error-text min-w-0"
+        title={errored?.creatorName
+          ? `Lần dịch gần nhất của @${errored.creatorName} thất bại`
+          : 'Lần dịch gần nhất thất bại'}
       >
         <AlertCircle size={11} className="shrink-0" />
-        <span>Lỗi</span>
-        {errored?.creatorName && (
-          <span className="text-text-subtle ml-1 truncate">
-            · @{errored.creatorName}
-          </span>
-        )}
-      </span>
+        <span className="truncate">
+          {errored?.creatorName ? `@${errored.creatorName}` : 'Lỗi'}
+        </span>
+      </div>
     )
   }
+
+  // status === 'raw' → list other langs available (if any), so the
+  // user can pivot to read in a non-target lang they speak.
+  if (extraLangs.length === 0) return null
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-text-subtle">
-      <span className="size-1.5 rounded-full bg-text-subtle" />
-      Raw
-    </span>
+    <div className="mt-1">
+      <LangChips langs={extraLangs} />
+    </div>
   )
 }
 
 
-function LangChips({
-  langs, targetLang, className,
-}: {
-  langs:      string[]
-  targetLang: string | null
-  className?: string
-}) {
+function LangChips({ langs }: { langs: string[] }) {
   if (langs.length === 0) return null
   return (
-    <div className={cn('flex flex-wrap items-center gap-1', className)}>
-      {langs.slice(0, 5).map((l) => {
-        const active = targetLang && l === targetLang.toLowerCase()
-        return (
-          <span
-            key={l}
-            className={cn(
-              'inline-flex items-center h-4 px-1 rounded-xs text-[10px] font-semibold uppercase',
-              active
-                ? 'bg-success/15 text-success-text'
-                : 'bg-bg/30 text-text-subtle',
-            )}
-          >
-            {l}
-          </span>
-        )
-      })}
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-[10px] text-text-subtle">Cũng có:</span>
+      {langs.slice(0, 5).map((l) => (
+        <span
+          key={l}
+          className="inline-flex items-center h-4 px-1 rounded-xs text-[10px] font-semibold uppercase bg-surface-2 text-text-subtle"
+        >
+          {l}
+        </span>
+      ))}
       {langs.length > 5 && (
         <span className="text-[10px] text-text-subtle">+{langs.length - 5}</span>
       )}
