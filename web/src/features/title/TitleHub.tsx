@@ -25,7 +25,7 @@ interface Props {
 }
 
 export function TitleHub({ entryId }: Props) {
-  const { entry, material, loading, error } = useHubData(entryId)
+  const { entry, material, rows, loading, chaptersLoading, error } = useHubData(entryId)
 
   const setHeader   = useHeaderStore((s) => s.set)
   const clearHeader = useHeaderStore((s) => s.clear)
@@ -98,8 +98,9 @@ export function TitleHub({ entryId }: Props) {
 
       <div className="px-4 sm:px-6">
         <HubChapterList
-          chapters={material.chapters}
+          rows={rows}
           targetLang={entry.target_lang}
+          loading={chaptersLoading}
         />
       </div>
     </div>

@@ -1,19 +1,45 @@
-// Hub data hook — assemble the title detail page for a library entry.
+// Hub data hook — merge DB chapters with manifest-live chapter list.
 //
-// Phase 1 strategy:
-//   • Read /api/library/entry/{id} for the entry shape + linked
-//     materials list.
-//   • Read /api/material/{primary_material_id} for chapters +
-//     per-chapter translation overlay (the backend already embeds
-//     these in the detail response).
+// A library entry's primary material may carry zero materialized
+// chapter rows in the DB (chapters are lazy — only created when a
+// user spawns a translation). The hub still needs to show the full
+// chapter list from day one, so we fetch:
 //
-// Cross-material chapter merge lands in a follow-up slice — for
-// now the hub shows the primary material's chapter list directly.
-// The entry-level metadata (status, target_lang, translation
-// summary) wraps it.
+//   • /api/library/entry/{id}             — entry metadata
+//   • /api/material/{primary_material_id} — DB chapters (with
+//     translation overlay) for chapters that have been touched
+//   • manifest.fetchMangaDetail            — live chapter list from
+//     the source. Free egress via the DA proxy; no backend hop.
+//
+// Merge key: `upstream_url`. A manifest chapter with a matching DB
+// chapter inherits the latter's translations + chapter id; the rest
+// render as raw-only rows the user can `Dịch` to materialize.
 
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '@shared/api/api'
+import {
+  api, type ApiChapter, type ApiChapterTranslation,
+} from '@shared/api/api'
+import { fetchMangaDetail } from '@features/browse/manifest/runtime'
+import { useSources } from '@features/browse/sources'
+import type {
+  InstalledSource, MangaChapterRef, MangaDetail,
+} from '@features/browse/manifest/types'
+
+export interface HubChapterRow {
+  /** Stable key for React lists. */
+  key:           string
+  /** DB chapter id when materialized; null when this row is manifest-only. */
+  chapterId:     number | null
+  number:        string
+  label:         string | null
+  upstreamUrl:   string | null
+  position:      number
+  pageCount:     number
+  translations:  ApiChapterTranslation[]
+  /** Whether the chapter exists in DB. Drives the 'Dịch' vs 'Đọc' affordance. */
+  materialized:  boolean
+}
 
 export function useHubData(entryId: number) {
   const entry = useQuery({
@@ -32,10 +58,93 @@ export function useHubData(entryId: number) {
     enabled:   primaryId !== null,
   })
 
+  const installedSource = useSources((s) => {
+    const sourceId = material.data?.material.source
+    if (!sourceId) return null
+    return s.sources[sourceId] ?? null
+  })
+
+  const upstreamRef = material.data?.material.upstream_ref ?? null
+
+  // Manifest-live chapter list. Only fires for source-backed materials
+  // (origin='source' implies both source + upstream_ref are non-null).
+  const manifest = useQuery({
+    queryKey:  ['manifest', 'detail', installedSource?.manifest.id, upstreamRef],
+    queryFn:   () => fetchMangaDetail(installedSource!.manifest, upstreamRef!),
+    staleTime: 5 * 60_000,
+    enabled:   installedSource !== null && upstreamRef !== null,
+  })
+
+  const rows = useMemo(
+    () => mergeChapters(material.data?.chapters ?? [], manifest.data ?? null, installedSource),
+    [material.data?.chapters, manifest.data, installedSource],
+  )
+
   return {
     entry:        entry.data ?? null,
     material:     material.data ?? null,
-    loading:      entry.isPending || (primaryId !== null && material.isPending),
-    error:        entry.error ?? material.error,
+    rows,
+    source:       installedSource,
+    loading:      entry.isPending
+                  || (primaryId !== null && material.isPending),
+    chaptersLoading: installedSource !== null && upstreamRef !== null && manifest.isPending,
+    error:        entry.error ?? material.error ?? manifest.error,
   }
+}
+
+
+/** Merge DB chapter rows with manifest-live ones.
+ *
+ *  • Manifest chapters drive the order (latest first by manifest).
+ *  • A DB chapter joins by `upstream_url`; when found it contributes
+ *    translations + chapter_id + page_count.
+ *  • DB-only chapters (no manifest row — e.g. user-uploaded extras)
+ *    append at the bottom in DB position order. */
+function mergeChapters(
+  dbChapters: ApiChapter[],
+  detail:     MangaDetail | null,
+  source:     InstalledSource | null,
+): HubChapterRow[] {
+  const byUrl = new Map<string, ApiChapter>()
+  for (const c of dbChapters) {
+    if (c.upstream_url) byUrl.set(c.upstream_url, c)
+  }
+
+  const rows: HubChapterRow[] = []
+  const seenChapterIds = new Set<number>()
+
+  if (detail) {
+    detail.chapters.forEach((m: MangaChapterRef, i) => {
+      const dbHit = byUrl.get(m.url)
+      if (dbHit) seenChapterIds.add(dbHit.id)
+      rows.push({
+        key:           `m::${source?.manifest.id ?? '?'}::${m.id}`,
+        chapterId:     dbHit?.id ?? null,
+        number:        m.number,
+        label:         m.label,
+        upstreamUrl:   m.url,
+        position:      -i,                // newest-first ordering hint
+        pageCount:     dbHit?.page_count ?? 0,
+        translations:  dbHit?.translations ?? [],
+        materialized:  !!dbHit,
+      })
+    })
+  }
+
+  for (const c of dbChapters) {
+    if (seenChapterIds.has(c.id)) continue
+    rows.push({
+      key:           `db::${c.id}`,
+      chapterId:     c.id,
+      number:        c.number,
+      label:         c.label,
+      upstreamUrl:   c.upstream_url,
+      position:      c.position,
+      pageCount:     c.page_count,
+      translations:  c.translations,
+      materialized:  true,
+    })
+  }
+
+  return rows
 }

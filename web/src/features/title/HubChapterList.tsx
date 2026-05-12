@@ -1,44 +1,51 @@
 import { useState } from 'react'
 import { BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
-import type { ApiChapter, ApiChapterTranslation } from '@shared/api/api'
+import type { ApiChapterTranslation } from '@shared/api/api'
+import type { HubChapterRow } from './useHubData'
 
 // =============================================================================
 // HubChapterList — chapter rows for the title page.
 //
-// Each row carries:
-//   • number + label
-//   • inline translation badges (per-lang done/running/error)
-//   • action: 'Đọc' when the viewer's target_lang has a done
-//     translation, otherwise 'Dịch' (spawn flow lands in slice 16).
-//
-// Sort: chapters descending by position so latest is on top — matches
-// every manga reader's expectation (MangaDex/MangaPlus default).
+// Rows come pre-merged from useHubData (manifest-live + DB chapters).
+// We don't sort here — merge order is already 'manifest order, then
+// DB extras'. A row's `materialized` flag toggles between 'Dịch'
+// (spawn flow) and 'Đọc' affordances; translation badges show only
+// on materialized rows.
 // =============================================================================
 
 interface Props {
-  chapters:   ApiChapter[]
+  rows:       HubChapterRow[]
   targetLang: string | null
+  loading:    boolean
 }
 
-export function HubChapterList({ chapters, targetLang }: Props) {
+export function HubChapterList({ rows, targetLang, loading }: Props) {
   const [filter, setFilter] = useState<'all' | 'translated' | 'raw'>('all')
 
-  if (chapters.length === 0) {
+  if (loading && rows.length === 0) {
+    return (
+      <div className="flex items-center gap-2.5 px-4 py-3 rounded-md bg-surface-2">
+        <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
+        <p className="text-sm text-text-muted">Đang tải danh sách chương…</p>
+      </div>
+    )
+  }
+
+  if (rows.length === 0) {
     return (
       <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-8 text-center">
-        <p className="text-sm text-text-muted">Chưa có chương nào trong cơ sở dữ liệu</p>
+        <p className="text-sm text-text-muted">Chưa có chương nào</p>
         <p className="text-[11px] text-text-subtle mt-1">
-          Mở reader hoặc bấm Dịch ở danh sách nguồn để vào hàng đợi pipeline.
+          Source này không trả về danh sách chương — kiểm tra manifest.
         </p>
       </div>
     )
   }
 
-  const sorted = [...chapters].sort((a, b) => b.position - a.position)
-  const filtered = sorted.filter((c) => {
+  const filtered = rows.filter((r) => {
     if (filter === 'all') return true
-    const done = c.translations.some((t) => t.state === 'done')
+    const done = r.translations.some((t) => t.state === 'done')
     return filter === 'translated' ? done : !done
   })
 
@@ -46,14 +53,14 @@ export function HubChapterList({ chapters, targetLang }: Props) {
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-2 px-0.5">
         <h2 className="text-[12px] uppercase tracking-wider text-text-subtle">
-          {chapters.length} chương
+          {rows.length} chương
         </h2>
         <FilterRow value={filter} onChange={setFilter} />
       </div>
 
       <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
-        {filtered.map((c) => (
-          <ChapterRow key={c.id} chapter={c} targetLang={targetLang} />
+        {filtered.map((r) => (
+          <ChapterRow key={r.key} row={r} targetLang={targetLang} />
         ))}
       </ul>
     </section>
@@ -95,31 +102,33 @@ function FilterRow({
 
 
 function ChapterRow({
-  chapter, targetLang,
+  row, targetLang,
 }: {
-  chapter: ApiChapter; targetLang: string | null
+  row: HubChapterRow; targetLang: string | null
 }) {
-  const readable = pickReadable(chapter.translations, targetLang)
+  const readable = pickReadable(row.translations, targetLang)
   return (
     <li className="flex items-center gap-3 px-3 py-2 hover:bg-hover transition-colors">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-[12px] font-medium text-text-muted tabular shrink-0">
-            Ch.{chapter.number}
+            Ch.{row.number}
           </span>
-          <p className="text-sm text-text truncate">
-            {chapter.label ?? '—'}
-          </p>
-          <TranslationBadges translations={chapter.translations} />
+          {row.label && (
+            <p className="text-sm text-text truncate">
+              {row.label}
+            </p>
+          )}
+          <TranslationBadges translations={row.translations} />
         </div>
         {readable?.creator_name && (
           <p className="text-[11px] text-text-subtle truncate mt-0.5">
-            Đọc bản của @{readable.creator_name}
+            Bản của @{readable.creator_name}
           </p>
         )}
       </div>
 
-      <Action chapter={chapter} readable={readable} targetLang={targetLang} />
+      <Action readable={readable} targetLang={targetLang} />
     </li>
   )
 }
@@ -128,7 +137,6 @@ function ChapterRow({
 function Action({
   readable, targetLang,
 }: {
-  chapter:    ApiChapter
   readable:   ApiChapterTranslation | null
   targetLang: string | null
 }) {
@@ -136,7 +144,6 @@ function Action({
     return (
       <button
         type="button"
-        // TODO(slice 14): wire reader route /title/$entryId/ch/$chapterId?tx=
         disabled
         className="inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium bg-success/15 text-success-text cursor-not-allowed opacity-80"
       >
@@ -148,7 +155,6 @@ function Action({
   return (
     <button
       type="button"
-      // TODO(slice 15): spawn translate inline
       disabled
       className="inline-flex items-center gap-1 h-7 px-2.5 rounded-sm text-[11px] font-medium bg-accent text-accent-fg cursor-not-allowed opacity-80"
       title={targetLang ? `Dịch sang ${targetLang.toUpperCase()}` : 'Chọn target_lang ở entry trước'}
@@ -169,7 +175,6 @@ function TranslationBadges({
   const running = translations.filter((t) => t.state === 'running' || t.state === 'pending')
   const errored = translations.filter((t) => t.state === 'error')
 
-  // Distinct done languages.
   const doneLangs = new Map<string, ApiChapterTranslation>()
   for (const t of done) if (!doneLangs.has(t.target_lang)) doneLangs.set(t.target_lang, t)
 
