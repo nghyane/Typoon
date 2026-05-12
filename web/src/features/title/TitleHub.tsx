@@ -13,7 +13,8 @@ import { FollowButton } from '@features/library/views/LibraryCard'
 import type {
   ApiLibraryEntry, ApiMaterial, LibraryStatus,
 } from '@shared/api/api'
-import { useHubData, type HubChapter } from './useHubData'
+import { useHubData } from './useHubData'
+import { ChapterPanel } from './ChapterPanel'
 
 // =============================================================================
 // TitleHub — `/title/$entryId` detail page, pro-design.
@@ -223,23 +224,4 @@ function ActivityRow({
   )
 }
 
-// ── Chapter panel ───────────────────────────────────────────────────
-// Stub. Slice in progress — DataTable + bulk select + version-aware
-// action lands in the next commit.
-
-function ChapterPanel({
-  chapters, targetLang, loading,
-}: {
-  chapters:   HubChapter[]
-  targetLang: string | null
-  loading:    boolean
-}) {
-  return (
-    <section className="px-4 sm:px-6">
-      <p className="text-sm text-text-muted">
-        {loading ? 'Đang tải…' : `${chapters.length} chương`}
-        {targetLang && ` · đọc bằng ${targetLang.toUpperCase()}`}
-      </p>
-    </section>
-  )
-}
+// ChapterPanel imported from ./ChapterPanel.tsx.
