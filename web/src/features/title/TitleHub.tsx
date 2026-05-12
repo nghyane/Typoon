@@ -4,6 +4,7 @@ import { ArrowLeft, AlertTriangle } from 'lucide-react'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 import { useHeaderStore } from '../../store/header'
+import { useSources } from '@features/browse/sources'
 import { HubHero } from './HubHero'
 import { HubChapterList } from './HubChapterList'
 import { useHubData } from './useHubData'
@@ -25,6 +26,12 @@ interface Props {
 }
 
 export function TitleHub({ entryId }: Props) {
+  // Source registry needs hydration when user lands here on a hard
+  // refresh — otherwise the manifest fetch in useHubData sees zero
+  // sources and the chapter list silently stays empty.
+  const ensureBundled = useSources((s) => s.ensureBundled)
+  useEffect(() => { ensureBundled() }, [ensureBundled])
+
   const { entry, material, rows, loading, chaptersLoading, error } = useHubData(entryId)
 
   const setHeader   = useHeaderStore((s) => s.set)
