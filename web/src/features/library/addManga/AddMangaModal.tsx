@@ -58,8 +58,18 @@ type Mode = 'search' | 'picked' | 'manual'
 
 
 export function AddMangaModal({ open, onClose }: Props) {
-  const sources = useEnabledSources().filter(
-    (s) => s.enabled && hasSearch(s.manifest),
+  // Every enabled source goes into the picker. We track searchability
+  // separately so non-searchable manifests (e.g. HappyMH right now)
+  // still show as installed but render disabled in the chip row.
+  const allSources    = useEnabledSources()
+  const searchableIds = useMemo(
+    () => new Set(allSources.filter((s) => hasSearch(s.manifest))
+                            .map((s) => s.manifest.id)),
+    [allSources],
+  )
+  const searchableSources = useMemo(
+    () => allSources.filter((s) => searchableIds.has(s.manifest.id)),
+    [allSources, searchableIds],
   )
 
   const [query,      setQuery]      = useState('')
@@ -73,10 +83,11 @@ export function AddMangaModal({ open, onClose }: Props) {
   const [status,     setStatus]     = useState<LibraryStatus>('reading')
 
   // URL paste locks the source picker to whatever manifest owns the
-  // host. Drop the lock when the user clears or replaces the input.
+  // host. We match against ALL enabled sources, not just searchable
+  // ones — paste-to-import works even when search doesn't.
   const urlMatch = useMemo(
-    () => isUrlLike(query) ? matchSource(query, sources) : null,
-    [query, sources],
+    () => isUrlLike(query) ? matchSource(query, allSources) : null,
+    [query, allSources],
   )
   const lockedSourceId = urlMatch?.source.manifest.id ?? null
 
@@ -113,7 +124,8 @@ export function AddMangaModal({ open, onClose }: Props) {
       footerLeft={<FooterLeft
         mode={mode}
         picked={picked}
-        sources={sources}
+        sources={allSources}
+        searchableSources={searchableSources}
         pickedSource={pickedSource}
         lockedSourceId={lockedSourceId}
       />}
@@ -142,7 +154,8 @@ export function AddMangaModal({ open, onClose }: Props) {
             <SearchBar
               query={query}
               setQuery={setQuery}
-              sources={sources}
+              sources={allSources}
+              searchableIds={searchableIds}
               pickedSource={pickedSource}
               setPickedSource={setPickedSource}
               lockedSourceId={lockedSourceId}
@@ -162,7 +175,7 @@ export function AddMangaModal({ open, onClose }: Props) {
             ) : (
               <Results
                 query={query}
-                sources={sources}
+                sources={searchableSources}
                 targetSourceId={pickedSource}
                 urlMatch={urlMatch}
                 onPick={setPicked}
@@ -180,11 +193,12 @@ export function AddMangaModal({ open, onClose }: Props) {
 // ── Search bar ────────────────────────────────────────────────────────
 
 function SearchBar({
-  query, setQuery, sources, pickedSource, setPickedSource, lockedSourceId,
+  query, setQuery, sources, searchableIds, pickedSource, setPickedSource, lockedSourceId,
 }: {
   query:           string
   setQuery:        (s: string) => void
   sources:         InstalledSource[]
+  searchableIds:   Set<string>
   pickedSource:    string | null
   setPickedSource: (id: string | null) => void
   lockedSourceId:  string | null
@@ -195,6 +209,7 @@ function SearchBar({
     <div className="flex items-center gap-2">
       <SourcePicker
         sources={sources}
+        searchableIds={searchableIds}
         value={pickedSource}
         onChange={setPickedSource}
         lockedTo={lockedSourceId}
@@ -659,13 +674,14 @@ function PickedDetail({
 // ── Footer ───────────────────────────────────────────────────────────
 
 function FooterLeft({
-  mode, picked, sources, pickedSource, lockedSourceId,
+  mode, picked, sources, searchableSources, pickedSource, lockedSourceId,
 }: {
-  mode:           Mode
-  picked:         Picked | null
-  sources:        InstalledSource[]
-  pickedSource:   string | null
-  lockedSourceId: string | null
+  mode:               Mode
+  picked:             Picked | null
+  sources:            InstalledSource[]
+  searchableSources:  InstalledSource[]
+  pickedSource:       string | null
+  lockedSourceId:     string | null
 }) {
   if (mode === 'manual') {
     return <span>Tạo manga không thuộc nguồn nào</span>
@@ -682,6 +698,17 @@ function FooterLeft({
   if (id) {
     const src = sources.find((s) => s.manifest.id === id)
     return <span>Tìm trên {src?.manifest.name ?? '?'}</span>
+  }
+  // Total may exceed searchable when some manifests don't ship a
+  // search endpoint. Surface both so "3 nguồn but only 2 chips
+  // active" stops being a mystery.
+  if (sources.length !== searchableSources.length) {
+    return (
+      <span>
+        {sources.length} nguồn đã cài
+        <span className="text-text-subtle"> · {searchableSources.length} hỗ trợ tìm kiếm</span>
+      </span>
+    )
   }
   return <span>{sources.length} nguồn đã cài</span>
 }
