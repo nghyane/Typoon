@@ -69,6 +69,7 @@ DraftState       = Literal["pending", "running", "done", "error"]
 PipelineStage    = Literal["prepare", "scan", "translate", "render"]
 TaskTargetKind   = Literal["chapter", "draft", "translation"]
 LinkOrigin       = Literal["primary", "auto", "manual"]
+LibraryStatus    = Literal["reading", "plan", "on_hold", "done", "dropped"]
 ReportTargetKind = Literal["material", "chapter", "draft", "translation"]
 ReportKind       = Literal["dmca", "abuse", "quality", "other"]
 ReportStatus     = Literal["open", "reviewing", "resolved", "dismissed"]
@@ -421,9 +422,18 @@ class Store(Protocol):
     ) -> bool: ...
 
     # ── Library entries ──────────────────────────────────────────
-    async def list_library_entries(self, user_id: int) -> list[dict]:
+    async def list_library_entries(
+        self,
+        user_id: int,
+        *,
+        status: LibraryStatus | None = None,
+    ) -> list[dict]:
         """Includes linked materials inline (one row per entry, with
-        a list field `materials`)."""
+        a list field `materials`).
+
+        `status` filter narrows to one reading state. None returns
+        every entry except `dropped` — the default library surface
+        hides dropped entries. Pass status='dropped' to see them."""
         ...
 
     async def get_library_entry(
@@ -437,17 +447,24 @@ class Store(Protocol):
         title:               str,
         cover_url:           str | None,
         primary_material_id: int,
+        target_lang:         str | None = None,
+        auto_translate:      bool = False,
+        status:              LibraryStatus = "reading",
     ) -> int:
-        """Create entry + link the primary material with link_origin='primary'."""
+        """Create entry + link the primary material with link_origin='primary'.
+        `target_lang` may be None when the user hasn't picked yet — the
+        hub asks at first open."""
         ...
 
     async def update_library_entry(
         self,
         entry_id: int, user_id: int,
         *,
-        title:        str | None = None,
-        bookmarked:   bool | None = None,
-        last_read_at: str | None = None,        # ISO; pass None to leave alone
+        title:            str | None = None,
+        status:           LibraryStatus | None = None,
+        target_lang:      str | None = None,
+        auto_translate:   bool | None = None,
+        last_read_at:     str | None = None,        # ISO; pass None to leave alone
         last_chapter_ref: dict | None = None,
     ) -> None: ...
 

@@ -172,13 +172,22 @@ class LibraryMaterialLink(BaseModel):
     linked_at:    str | None = None
 
 
+LibraryStatus = Literal["reading", "plan", "on_hold", "done", "dropped"]
+
+
 class LibraryEntryOut(BaseModel):
     id:                   int
     title:                str
     cover_url:            str | None = None
-    bookmarked:           bool
-    bookmarked_at:        str | None = None
     primary_material_id:  int | None = None
+
+    # Reading state — drives both the filter UI and the hub's
+    # "translate?" gate. `target_lang` is None until the user picks
+    # at the Add-manga modal.
+    status:               LibraryStatus
+    target_lang:          str | None = None
+    auto_translate:       bool       = False
+
     last_read_at:         str | None = None
     last_chapter_ref:     dict | None = None
     materials:            list[LibraryMaterialLink] = []

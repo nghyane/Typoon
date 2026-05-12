@@ -429,16 +429,37 @@ CREATE TABLE IF NOT EXISTS library_entries (
     title               TEXT NOT NULL,
     cover_url           TEXT,
     primary_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
-    bookmarked          BOOLEAN NOT NULL DEFAULT FALSE,
-    bookmarked_at       TIMESTAMPTZ,
+
+    -- Reading language preference. Drives the hub's chapter list:
+    -- chapters whose only available version is `target_lang` show
+    -- "Read"; others show "Translate" + spawn-on-click. NULL means
+    -- "user has not chosen yet" — the hub asks at first open.
+    target_lang         TEXT,
+    -- When TRUE, the watcher auto-spawns a translation as soon as a
+    -- new chapter lands and `target_lang` differs from the source's
+    -- native langs. Defaults to FALSE so casual users don't burn
+    -- LLM quota on every new chapter.
+    auto_translate      BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Reading status — the verb the user applies to the manga.
+    --   reading   actively reading; default after first "Add".
+    --   plan      saved to read later.
+    --   on_hold   paused mid-series.
+    --   done      finished reading the available run.
+    --   dropped   no longer interested; hidden from default views.
+    -- Replaces the legacy boolean `bookmarked` flag entirely; the
+    -- library UI filters by status enum.
+    status              TEXT NOT NULL DEFAULT 'reading'
+                          CHECK (status IN ('reading','plan','on_hold','done','dropped')),
+
     last_read_at        TIMESTAMPTZ,
     last_chapter_ref    JSONB,    -- {material_id, chapter_id, label, position}
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_library_user ON library_entries(user_id);
-CREATE INDEX IF NOT EXISTS idx_library_user_bookmarked
-    ON library_entries(user_id) WHERE bookmarked = TRUE;
+CREATE INDEX IF NOT EXISTS idx_library_user_status
+    ON library_entries(user_id, status);
 
 CREATE TABLE IF NOT EXISTS library_materials (
     entry_id     BIGINT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,

@@ -4,7 +4,8 @@ Endpoints:
     GET    /api/library                     entries with linked materials
     POST   /api/library/entry               create entry from a material
     GET    /api/library/entry/{id}          one entry
-    PATCH  /api/library/entry/{id}          title, bookmark, last-read
+    PATCH  /api/library/entry/{id}          title, status, target_lang,
+                                            auto_translate, last-read
     DELETE /api/library/entry/{id}          delete + unlink materials
 
     POST   /api/library/entry/{id}/link     attach material (casts +1)
@@ -14,8 +15,8 @@ Endpoints:
     POST   /api/library/suggest/{candidate}/reject?material_id=
                                               -1 vote on pair
 
-Bookmark, last-read, "Tiếp tục đọc" all live on the entry — never on
-the material directly.
+Reading status, last-read, "Tiếp tục đọc" all live on the entry —
+never on the material directly.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 from typoon.api.deps import get_store, require_user
 from typoon.api.models import (
     LibraryEntryOut, LibraryMaterialLink, LibrarySuggestionOut,
+    LibraryStatus,
 )
 from typoon.api.routes._shared import require_library_entry, require_material
 from typoon.storage import Store
@@ -42,9 +44,10 @@ def _entry_to_out(row: dict) -> LibraryEntryOut:
         id=row["id"],
         title=row["title"],
         cover_url=row.get("cover_url"),
-        bookmarked=bool(row.get("bookmarked")),
-        bookmarked_at=row.get("bookmarked_at"),
         primary_material_id=row.get("primary_material_id"),
+        status=row["status"],
+        target_lang=row.get("target_lang"),
+        auto_translate=bool(row.get("auto_translate")),
         last_read_at=row.get("last_read_at"),
         last_chapter_ref=row.get("last_chapter_ref"),
         materials=[
@@ -65,10 +68,13 @@ def _entry_to_out(row: dict) -> LibraryEntryOut:
 
 @router.get("", response_model=list[LibraryEntryOut])
 async def list_entries(
+    status: LibraryStatus | None = Query(None),
     user: dict  = Depends(require_user),
     db:   Store = Depends(get_store),
 ):
-    rows = await db.list_library_entries(user["id"])
+    """List entries filtered by status. Default (no status) hides
+    `dropped` so users don't see things they explicitly removed."""
+    rows = await db.list_library_entries(user["id"], status=status)
     return [_entry_to_out(r) for r in rows]
 
 
@@ -86,9 +92,15 @@ async def get_entry(
 
 
 class CreateEntryBody(BaseModel):
-    material_id:  int
-    title:        str | None = None
-    cover_url:    str | None = None
+    material_id:    int
+    title:          str | None = None
+    cover_url:      str | None = None
+    # Optional reading preference baked in at Add time. UI prompts for
+    # these in the Add-manga modal; defaults preserve the casual case
+    # (status=reading, target_lang=None means "ask later").
+    target_lang:    str | None       = None
+    auto_translate: bool             = False
+    status:         LibraryStatus    = "reading"
 
 
 @router.post("/entry", response_model=LibraryEntryOut)
@@ -103,6 +115,9 @@ async def create_entry(
         title=body.title or mat["title"],
         cover_url=body.cover_url or mat.get("cover_url"),
         primary_material_id=body.material_id,
+        target_lang=body.target_lang,
+        auto_translate=body.auto_translate,
+        status=body.status,
     )
     row = await db.get_library_entry(entry_id, user["id"])
     assert row is not None
@@ -110,10 +125,12 @@ async def create_entry(
 
 
 class PatchEntryBody(BaseModel):
-    title:            str | None = None
-    bookmarked:       bool | None = None
-    last_read_at:     str | None = None
-    last_chapter_ref: dict | None = None
+    title:            str | None           = None
+    status:           LibraryStatus | None = None
+    target_lang:      str | None           = None
+    auto_translate:   bool | None          = None
+    last_read_at:     str | None           = None
+    last_chapter_ref: dict | None          = None
 
 
 @router.patch("/entry/{entry_id}", response_model=LibraryEntryOut)
@@ -127,7 +144,9 @@ async def patch_entry(
     await db.update_library_entry(
         entry_id, user["id"],
         title=body.title,
-        bookmarked=body.bookmarked,
+        status=body.status,
+        target_lang=body.target_lang,
+        auto_translate=body.auto_translate,
         last_read_at=body.last_read_at,
         last_chapter_ref=body.last_chapter_ref,
     )

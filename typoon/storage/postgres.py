@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "17"  # +reports / moderation_actions (drops dmca_takedowns)
+SCHEMA_VERSION = "18"  # library_entries: target_lang + auto_translate + status enum
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
@@ -120,7 +120,7 @@ _TS_TRANSLATION = (
 )
 _TS_LIBRARY_ENTRY = (
     "id, user_id, title, cover_url, primary_material_id, "
-    f"bookmarked, {_ts('bookmarked_at')}, "
+    "target_lang, auto_translate, status, "
     f"{_ts('last_read_at')}, last_chapter_ref, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
@@ -1311,13 +1311,24 @@ class PostgresStore:
 
     # ── Library entries ───────────────────────────────────────────
 
-    async def list_library_entries(self, user_id: int) -> list[dict]:
+    async def list_library_entries(
+        self,
+        user_id: int,
+        *,
+        status: str | None = None,
+    ) -> list[dict]:
+        clauses = ["user_id=$1"]
+        args: list = [user_id]
+        if status is None:
+            clauses.append("status<>'dropped'")
+        else:
+            args.append(status); clauses.append(f"status=${len(args)}")
         async with self._pool.acquire() as conn:
             entries = await conn.fetch(
                 f"SELECT {_TS_LIBRARY_ENTRY} FROM library_entries "
-                "WHERE user_id=$1 "
-                "ORDER BY COALESCE(last_read_at, bookmarked_at, created_at) DESC",
-                user_id,
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY COALESCE(last_read_at, created_at) DESC",
+                *args,
             )
             if not entries:
                 return []
@@ -1374,13 +1385,20 @@ class PostgresStore:
         title:               str,
         cover_url:           str | None,
         primary_material_id: int,
+        target_lang:         str | None = None,
+        auto_translate:      bool = False,
+        status:              str = "reading",
     ) -> int:
+        if status not in ("reading", "plan", "on_hold", "done", "dropped"):
+            raise ValueError(f"invalid library status: {status!r}")
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO library_entries "
-                "  (user_id, title, cover_url, primary_material_id) "
-                "VALUES ($1, $2, $3, $4) RETURNING id",
+                "  (user_id, title, cover_url, primary_material_id, "
+                "   target_lang, auto_translate, status) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
                 user_id, title, cover_url, primary_material_id,
+                target_lang, auto_translate, status,
             )
             entry_id = row["id"]
             await conn.execute(
@@ -1396,7 +1414,9 @@ class PostgresStore:
         entry_id: int, user_id: int,
         *,
         title:            str | None = None,
-        bookmarked:       bool | None = None,
+        status:           str | None = None,
+        target_lang:      str | None = None,
+        auto_translate:   bool | None = None,
         last_read_at:     str | None = None,
         last_chapter_ref: dict | None = None,
     ) -> None:
@@ -1404,12 +1424,14 @@ class PostgresStore:
         args: list = []
         if title is not None:
             args.append(title); sets.append(f"title=${len(args)}")
-        if bookmarked is not None:
-            args.append(bookmarked); sets.append(f"bookmarked=${len(args)}")
-            if bookmarked:
-                sets.append("bookmarked_at=NOW()")
-            else:
-                sets.append("bookmarked_at=NULL")
+        if status is not None:
+            if status not in ("reading", "plan", "on_hold", "done", "dropped"):
+                raise ValueError(f"invalid library status: {status!r}")
+            args.append(status); sets.append(f"status=${len(args)}")
+        if target_lang is not None:
+            args.append(target_lang); sets.append(f"target_lang=${len(args)}")
+        if auto_translate is not None:
+            args.append(auto_translate); sets.append(f"auto_translate=${len(args)}")
         if last_read_at is not None:
             args.append(last_read_at)
             sets.append(f"last_read_at=${len(args)}::timestamptz")
