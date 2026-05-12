@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Sparkles, Loader2, AlertCircle,
-  BookOpen, ArrowDown, ArrowUp, Clock, RefreshCw, X, Check,
-  Globe, UserCircle2,
+  BookOpen, ArrowDown, ArrowUp, Clock,
 } from 'lucide-react'
 import { getRouteApi } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
@@ -53,11 +52,9 @@ interface Props {
 export function ChapterPanel({ chapters, targetLang, loading }: Props) {
   const search   = titleRoute.useSearch()
   const nav      = titleRoute.useNavigate()
-  const filter   = search.filter   ?? 'all'
-  const q        = search.q        ?? ''
-  const sort     = search.sort     ?? 'chapter_desc'
-  const lang     = search.lang     ?? null
-  const uploader = search.uploader ?? null
+  const filter = search.filter ?? 'all'
+  const q      = search.q      ?? ''
+  const sort   = search.sort   ?? 'chapter_desc'
 
   const setFilter = (next: StatusFilter) =>
     nav({ search: (s) => ({ ...s, filter: next === 'all' ? undefined : next }) })
@@ -65,36 +62,20 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
     nav({ search: (s) => ({ ...s, q: next || undefined }) })
   const setSort = (next: Sort) =>
     nav({ search: (s) => ({ ...s, sort: next === 'chapter_desc' ? undefined : next }) })
-  const setLang = (next: string | null) =>
-    nav({ search: (s) => ({ ...s, lang: next ?? undefined }) })
-  const setUploader = (next: string | null) =>
-    nav({ search: (s) => ({ ...s, uploader: next ?? undefined }) })
 
   const [sel, setSel] = useState<Set<string>>(new Set())
 
   const counts = useMemo(() => countByStatus(chapters, targetLang), [chapters, targetLang])
-  // Distinct dimensions across all loaded chapters. Drives the lang
-  // and uploader filter menus — only render the menu when there's
-  // an actual choice to make (≥ 2 options).
-  const facets = useMemo(() => collectFacets(chapters), [chapters])
 
   const visible = useMemo(() => {
     const term = q.trim().toLowerCase()
     let list = chapters.filter((c) => {
-      if (term && !`${c.number} ${c.label ?? ''}`.toLowerCase().includes(term)) {
-        return false
-      }
-      if (lang && !c.versions.some((v) => v.lang === lang)) return false
-      if (uploader && !c.versions.some(
-        (v) => v.kind === 'translation' && v.creatorName === uploader,
-      )) return false
+      if (term && !`${c.number} ${c.label ?? ''}`.toLowerCase().includes(term)) return false
       if (filter === 'all') return true
-      const status = chapterStatus(c, targetLang)
-      return status === filter
+      return chapterStatus(c, targetLang) === filter
     })
-    list = list.slice().sort(sortFn(sort))
-    return list
-  }, [chapters, q, filter, sort, lang, uploader, targetLang])
+    return list.slice().sort(sortFn(sort))
+  }, [chapters, q, filter, sort, targetLang])
 
   const eligibleForSpawn = useMemo(
     () => [...sel].filter((n) => {
@@ -122,14 +103,9 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
   return (
     <section className="px-4 sm:px-6">
       <Toolbar
-        q={q} setQ={setQ}
         filter={filter} setFilter={setFilter} counts={counts}
+        q={q} setQ={setQ}
         sort={sort} setSort={setSort}
-        lang={lang} setLang={setLang}
-        uploader={uploader} setUploader={setUploader}
-        facets={facets}
-        visibleCount={visible.length}
-        totalCount={chapters.length}
       />
 
       {loading && chapters.length === 0 ? (
@@ -171,254 +147,50 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
 
 // ── Toolbar ─────────────────────────────────────────────────────────
 //
-// One row, two clusters, divider in between:
+// Two intents: READ (find chapters with VI translation) and TRANSLATE
+// (find chapters without VI to spawn). Toolbar reflects exactly that:
 //
-//   [Tất cả 40] [Đã dịch 38] [Lỗi 2]  │  [🌐 VI] [👤 @nick] [🔍 Tìm…] [↓] [40/40]
-//   └── status filter (ghost pills) ─┘   └────────── view tools (surface-2) ──────────┘
+//   [Tất cả] [Đã dịch] [Chưa có] [Đang dịch] [Lỗi]   [🔍 Tìm…]  [↓ Sort]
 //
-// Status pills stay ghost so the active one reads as a tab. The
-// right cluster shares bg-surface-2 across every control — Lang
-// menu, Uploader menu, SearchInput, Sort, and the X/Y count chip.
-// Lang and Uploader collapse to nothing when there's only one
-// option (don't ask the user to pick from a list of 1).
-//
-// Mobile: row wraps, pills scroll-x, tools row falls below.
-
-interface ToolbarProps {
-  q:            string
-  setQ:         (v: string) => void
-  filter:       StatusFilter
-  setFilter:    (v: StatusFilter) => void
-  counts:       Record<StatusFilter, number>
-  sort:         Sort
-  setSort:      (s: Sort) => void
-  lang:         string | null
-  setLang:      (v: string | null) => void
-  uploader:     string | null
-  setUploader:  (v: string | null) => void
-  facets:       Facets
-  visibleCount: number
-  totalCount:   number
-}
+// "Chưa có" = raw chapters with no target-lang translation yet.
+// Pills hide when count = 0 (except "Tất cả" and the active one).
+// Search filters by chapter number or label.
+// Sort cycles: mới nhất → cũ nhất → cập nhật gần đây.
 
 function Toolbar({
-  q, setQ, filter, setFilter, counts, sort, setSort,
-  lang, setLang, uploader, setUploader, facets,
-  visibleCount, totalCount,
-}: ToolbarProps) {
-  const showLang     = facets.langs.length >= 2
-  const showUploader = facets.uploaders.length >= 2
-  return (
-    <div className="flex flex-wrap items-center gap-2 mb-4">
-      <div
-        className="overflow-x-auto -mx-1 px-1 min-w-0"
-        style={{ scrollbarWidth: 'none' }}
-      >
-        <Segmented value={filter} onChange={setFilter} counts={counts} />
-      </div>
-
-      <div className="hidden sm:block h-5 w-px bg-border" aria-hidden />
-
-      <div className="flex items-center gap-1 flex-1 sm:flex-initial min-w-0">
-        {showLang && (
-          <FilterMenu
-            icon={Globe}
-            label={lang ? lang.toUpperCase() : 'Ngôn ngữ'}
-            active={lang !== null}
-            options={facets.langs.map((l) => ({
-              value: l,
-              label: l.toUpperCase(),
-              count: facets.langCount[l] ?? 0,
-            }))}
-            value={lang}
-            onPick={setLang}
-          />
-        )}
-        {showUploader && (
-          <FilterMenu
-            icon={UserCircle2}
-            label={uploader ? `@${uploader}` : 'Người dịch'}
-            active={uploader !== null}
-            options={facets.uploaders.map((u) => ({
-              value: u,
-              label: `@${u}`,
-              count: facets.uploaderCount[u] ?? 0,
-            }))}
-            value={uploader}
-            onPick={setUploader}
-          />
-        )}
-        <SearchInput
-          value={q}
-          onChange={setQ}
-          placeholder="Tìm chương…"
-          className="flex-1 sm:w-56 sm:flex-initial min-w-0"
-        />
-        <SortCycle value={sort} onChange={setSort} />
-        <CountChip visible={visibleCount} total={totalCount} />
-      </div>
-    </div>
-  )
-}
-
-
-// ── Count chip — anchored to the right of the tools cluster ─────────
-//
-// Only renders when a filter is actually narrowing the list. When
-// visible == total, the hero's aggregate progress bar already
-// communicates the count; doubling it here is noise.
-
-function CountChip({ visible, total }: { visible: number; total: number }) {
-  if (visible === total) return null
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center h-8 px-2.5 rounded-sm shrink-0',
-        'text-[12px] tabular bg-surface-2 text-text-muted',
-      )}
-      title={`Đang lọc — ${visible} trong ${total} chương`}
-    >
-      <span className="text-text font-medium">{visible}</span>
-      <span className="opacity-50 mx-0.5">/</span>
-      {total}
-    </span>
-  )
-}
-
-
-// ── Lang / Uploader popover menu ────────────────────────────────────
-//
-// Click-outside / Escape to dismiss. Native HTML <details> would be
-// shorter but the disclosure arrow is visually noisy and styling is
-// browser-specific. We keep it manual for full control over the
-// surface and dock direction.
-
-interface MenuOption {
-  value: string
-  label: string
-  count: number
-}
-
-function FilterMenu({
-  icon: Icon, label, active, options, value, onPick,
+  filter, setFilter, counts, q, setQ, sort, setSort,
 }: {
-  icon:    typeof Globe
-  label:   string
-  active:  boolean
-  options: MenuOption[]
-  value:   string | null
-  onPick:  (v: string | null) => void
+  filter:    StatusFilter
+  setFilter: (v: StatusFilter) => void
+  counts:    Record<StatusFilter, number>
+  q:         string
+  setQ:      (v: string) => void
+  sort:      Sort
+  setSort:   (s: Sort) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDocPointer = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('pointerdown', onDocPointer)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('pointerdown', onDocPointer)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
   return (
-    <div ref={ref} className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm',
-          'text-[13px] bg-surface-2 transition-colors cursor-pointer',
-          'hover:bg-hover',
-          active ? 'text-text' : 'text-text-muted hover:text-text',
-        )}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-      >
-        <Icon size={12} className={active ? 'text-text' : 'text-text-subtle'} />
-        <span className="max-w-[10ch] truncate">{label}</span>
-        {active && (
-          <span
-            role="button"
-            tabIndex={0}
-            onPointerDown={(e) => {
-              e.stopPropagation()
-              onPick(null)
-            }}
-            className="ml-0.5 -mr-1 size-4 inline-flex items-center justify-center rounded-xs hover:bg-hover text-text-subtle hover:text-text"
-            aria-label="Bỏ lọc"
-          >
-            <X size={11} />
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <div
-          className={cn(
-            card,
-            'absolute top-full left-0 mt-1 z-30 min-w-[200px] py-1',
-            'shadow-[0_8px_24px_rgb(0,0,0,0.35)] border border-border-soft',
-          )}
-          role="listbox"
-        >
-          <button
-            type="button"
-            onClick={() => { onPick(null); setOpen(false) }}
-            className={cn(
-              'w-full flex items-center justify-between gap-3 px-3 h-8',
-              'text-[13px] text-left cursor-pointer transition-colors hover:bg-hover',
-              value === null ? 'text-text font-medium' : 'text-text-muted',
-            )}
-          >
-            <span>Tất cả</span>
-            {value === null && <Check size={12} className="text-accent" />}
-          </button>
-          <div className="h-px bg-border-soft my-1" />
-          {options.map((opt) => {
-            const selected = value === opt.value
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => { onPick(opt.value); setOpen(false) }}
-                className={cn(
-                  'w-full flex items-center justify-between gap-3 px-3 h-8',
-                  'text-[13px] text-left cursor-pointer transition-colors hover:bg-hover',
-                  selected ? 'text-text font-medium' : 'text-text-muted',
-                )}
-              >
-                <span className="truncate">{opt.label}</span>
-                <span className="flex items-center gap-2 shrink-0">
-                  <span className="text-[11px] tabular text-text-subtle">{opt.count}</span>
-                  {selected && <Check size={12} className="text-accent" />}
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      )}
+    <div className="flex items-center gap-2 mb-4 flex-wrap">
+      <div className="overflow-x-auto -mx-1 px-1 flex-1 min-w-0" style={{ scrollbarWidth: 'none' }}>
+        <StatusPills value={filter} onChange={setFilter} counts={counts} />
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <SearchInput value={q} onChange={setQ} placeholder="Tìm chương…" className="w-44" />
+        <SortCycle value={sort} onChange={setSort} />
+      </div>
     </div>
   )
 }
 
 
-const FILTERS: { key: StatusFilter; label: string }[] = [
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all',        label: 'Tất cả' },
   { key: 'translated', label: 'Đã dịch' },
+  { key: 'raw',        label: 'Chưa có' },
   { key: 'running',    label: 'Đang dịch' },
   { key: 'error',      label: 'Lỗi' },
-  { key: 'raw',        label: 'Raw' },
 ]
 
-function Segmented({
+function StatusPills({
   value, onChange, counts,
 }: {
   value:    StatusFilter
@@ -427,13 +199,9 @@ function Segmented({
 }) {
   return (
     <div className="inline-flex items-center gap-0.5">
-      {FILTERS.map(({ key, label }) => {
+      {STATUS_FILTERS.map(({ key, label }) => {
         const n = counts[key]
         const active = value === key
-        // Hide empty buckets EXCEPT 'all' and the currently selected
-        // one — keeps the toolbar from showing 'Lỗi 0' all the time
-        // while still letting the user stay on a filter that just
-        // emptied (so they can switch off it).
         if (!active && key !== 'all' && n === 0) return null
         return (
           <button
@@ -441,8 +209,8 @@ function Segmented({
             type="button"
             onClick={() => onChange(key)}
             className={cn(
-              'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors',
-              'inline-flex items-center gap-1.5 whitespace-nowrap',
+              'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors whitespace-nowrap',
+              'inline-flex items-center gap-1.5',
               active
                 ? 'bg-surface-2 text-text font-medium'
                 : 'text-text-muted hover:bg-hover hover:text-text',
@@ -450,10 +218,7 @@ function Segmented({
           >
             {label}
             {n > 0 && (
-              <span className={cn(
-                'tabular text-[11px] tracking-tight',
-                active ? 'text-text-muted' : 'text-text-subtle',
-              )}>
+              <span className={cn('tabular text-[11px]', active ? 'text-text-muted' : 'text-text-subtle')}>
                 {n}
               </span>
             )}
@@ -465,45 +230,29 @@ function Segmented({
 }
 
 
-const SORT_LABEL: Record<Sort, string> = {
+const SORT_LABELS: Record<Sort, string> = {
   chapter_desc: 'Mới nhất',
   chapter_asc:  'Cũ nhất',
   updated_desc: 'Cập nhật',
 }
-
-const SORT_ICON: Record<Sort, typeof ArrowDown> = {
+const SORT_ICONS: Record<Sort, typeof ArrowDown> = {
   chapter_desc: ArrowDown,
   chapter_asc:  ArrowUp,
   updated_desc: Clock,
 }
 
-// Same h-8 surface-2 affordance as SearchInput so the two read as
-// one "view tools" cluster. Click cycles through the 3 modes — a
-// dropdown would be heavier UI for a 3-option pick.
-function SortCycle({
-  value, onChange,
-}: {
-  value: Sort; onChange: (s: Sort) => void
-}) {
+function SortCycle({ value, onChange }: { value: Sort; onChange: (s: Sort) => void }) {
   const order: Sort[] = ['chapter_desc', 'chapter_asc', 'updated_desc']
-  const next = () => {
-    const i = order.indexOf(value)
-    onChange(order[(i + 1) % order.length]!)
-  }
-  const Icon = SORT_ICON[value]
+  const Icon = SORT_ICONS[value]
   return (
     <button
       type="button"
-      onClick={next}
+      onClick={() => onChange(order[(order.indexOf(value) + 1) % order.length]!)}
       title="Đổi cách sắp xếp"
-      className={cn(
-        'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm shrink-0',
-        'text-[13px] text-text-muted bg-surface-2',
-        'hover:bg-hover hover:text-text transition-colors cursor-pointer',
-      )}
+      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-[13px] text-text-muted bg-surface-2 hover:bg-hover hover:text-text transition-colors cursor-pointer shrink-0"
     >
       <Icon size={12} className="text-text-subtle" />
-      <span className="hidden sm:inline">{SORT_LABEL[value]}</span>
+      <span className="hidden sm:inline">{SORT_LABELS[value]}</span>
     </button>
   )
 }
@@ -643,7 +392,6 @@ function ChapterRow({
   const errored    = lastError(chapter, targetLang)
   const label      = stripChapterPrefix(chapter.label, chapter.number)
   const hasRaw     = chapter.versions.some((v) => v.kind === 'raw')
-  const canSpawn   = hasRaw && status !== 'running'
 
   // State stripe color — first <td> renders this via an inset box
   // shadow on the LEFT edge. Box-shadow is the cleanest way to paint
@@ -702,9 +450,6 @@ function ChapterRow({
 
       <td className="pl-2 pr-3 py-3 whitespace-nowrap text-right">
         <div className="inline-flex items-center gap-1 justify-end">
-          {canSpawn && status !== 'raw' && status !== 'error' && (
-            <SecondarySpawn />
-          )}
           <Action
             chapter={chapter}
             status={status}
@@ -744,25 +489,6 @@ function TimeCell({ iso }: { iso: string | null }) {
 // translation when an existing one exists but a different source/
 // quality is wanted. Disabled until the spawn dialog (slice 15) ships.
 
-function SecondarySpawn() {
-  return (
-    <button
-      type="button"
-      disabled
-      title="Dịch lại từ nguồn khác — slice 15 sẽ wire popover chọn source/lang"
-      className={cn(
-        'inline-flex items-center gap-0.5 h-7 px-2 rounded-sm shrink-0',
-        'text-[12px] text-text-subtle cursor-not-allowed',
-        'opacity-0 group-hover:opacity-100 transition-opacity',
-        'hover:bg-hover hover:text-text-muted',
-      )}
-    >
-      <Sparkles size={11} />
-      <span className="hidden sm:inline">Dịch</span>
-    </button>
-  )
-}
-
 
 // ── Smart action button ─────────────────────────────────────────────
 //
@@ -795,75 +521,41 @@ function Action({
 }) {
   if (status === 'running' && running) {
     return (
-      <Button
-        size="sm"
-        variant="secondary"
-        disabled
-        title="Pipeline đang dịch. Trạng thái sẽ tự cập nhật khi xong."
-      >
+      <span className="inline-flex items-center gap-1 text-sm text-info-text">
         <Loader2 size={12} className="animate-spin" />
         Đang dịch
-      </Button>
+      </span>
     )
   }
   if (status === 'error' && errored) {
+    // Retry not wired yet — show error state only, no action.
     return (
-      <Button
-        size="sm"
-        variant="secondary"
-        disabled
-        title="Dialog dịch lại sẽ wire ở slice 15."
-      >
-        <RefreshCw size={12} />
-        Thử lại
-      </Button>
+      <span className="inline-flex items-center gap-1 text-sm text-error-text">
+        <AlertCircle size={12} />
+        Lỗi
+      </span>
     )
   }
-  if (readable) {
-    if (readable.kind === 'raw' && readable.upstreamUrl) {
-      // Raw read = open source in a new tab. Same as the row's
-      // primary click target — having the button as a discrete
-      // anchor lets users click either spot with the same effect.
-      return (
-        <a
-          href={readable.upstreamUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          // Don't double-trigger when the row link is also clicked.
-          onClick={(e) => e.stopPropagation()}
-          title={`Mở chương trên ${readable.sourceName ?? 'nguồn'}`}
-          className="inline-flex"
-        >
-          <Button size="sm" variant="secondary" tabIndex={-1}>
-            <BookOpen size={12} />
-            Đọc {readable.lang.toUpperCase()}
-          </Button>
-        </a>
-      )
-    }
+  if (readable?.kind === 'raw' && readable.upstreamUrl) {
+    // Raw with upstream URL — only actionable case right now.
     return (
-      <Button
-        size="sm"
-        variant="secondary"
-        disabled
-        title="Reader sẽ wire ở slice 14."
+      <a
+        href={readable.upstreamUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`Mở chương trên ${readable.sourceName ?? 'nguồn'}`}
+        className="inline-flex"
       >
-        <BookOpen size={12} />
-        Đọc {readable.lang.toUpperCase()}
-      </Button>
+        <Button size="sm" variant="secondary" tabIndex={-1}>
+          <BookOpen size={12} />
+          Đọc {readable.lang.toUpperCase()}
+        </Button>
+      </a>
     )
   }
-  return (
-    <Button
-      size="sm"
-      variant="primary"
-      disabled
-      title="Dialog dịch sẽ wire ở slice 15."
-    >
-      <Sparkles size={12} />
-      Dịch
-    </Button>
-  )
+  // Translation reader (slice 14) and spawn dialog (slice 15) not
+  // wired yet — render nothing rather than a disabled placeholder.
+  return null
 }
 
 
@@ -980,49 +672,6 @@ function countByStatus(
 // Distinct langs + uploaders across all loaded chapters, with chapter
 // counts. Counts measure "chapters that have ≥1 matching version",
 // not version totals — what the user actually filters on.
-
-interface Facets {
-  langs:          string[]
-  langCount:      Record<string, number>
-  uploaders:      string[]
-  uploaderCount:  Record<string, number>
-}
-
-function collectFacets(chapters: HubChapter[]): Facets {
-  const langSet     = new Set<string>()
-  const uploaderSet = new Set<string>()
-  const langCount: Record<string, number>     = {}
-  const uploaderCount: Record<string, number> = {}
-
-  for (const c of chapters) {
-    const seenLangs:     Set<string> = new Set()
-    const seenUploaders: Set<string> = new Set()
-    for (const v of c.versions) {
-      if (v.lang && v.lang !== '?') {
-        seenLangs.add(v.lang)
-        langSet.add(v.lang)
-      }
-      if (v.kind === 'translation' && v.creatorName) {
-        seenUploaders.add(v.creatorName)
-        uploaderSet.add(v.creatorName)
-      }
-    }
-    for (const l of seenLangs)     langCount[l]     = (langCount[l]     ?? 0) + 1
-    for (const u of seenUploaders) uploaderCount[u] = (uploaderCount[u] ?? 0) + 1
-  }
-
-  // Langs: most chapters first; ties → alpha.
-  const langs = [...langSet].sort((a, b) => {
-    const da = langCount[b]! - langCount[a]!
-    return da !== 0 ? da : a.localeCompare(b)
-  })
-  const uploaders = [...uploaderSet].sort((a, b) => {
-    const da = uploaderCount[b]! - uploaderCount[a]!
-    return da !== 0 ? da : a.localeCompare(b)
-  })
-
-  return { langs, langCount, uploaders, uploaderCount }
-}
 
 
 function sortFn(s: Sort): (a: HubChapter, b: HubChapter) => number {
