@@ -198,36 +198,54 @@ function SourceListHint() {
     )
   }
   return (
-    <ul className="flex flex-wrap gap-1.5">
-      {sources.map((s) => {
-        const searchable = hasSearch(s.manifest)
-        const on = s.enabled
-        return (
-          <li key={s.manifest.id}>
-            <button
-              type="button"
-              onClick={() => searchable && setEnabled(s.manifest.id, !on)}
-              disabled={!searchable}
-              title={searchable
-                ? (on ? `Tắt tìm trên ${s.manifest.name}` : `Bật tìm trên ${s.manifest.name}`)
-                : `${s.manifest.name} chưa hỗ trợ tìm — dán link để thêm`}
-              className={cn(
-                'inline-flex items-baseline gap-1.5 h-8 px-3 rounded-sm text-[12px] transition-colors',
-                !searchable
-                  ? 'bg-bg/20 text-text-subtle/70 cursor-not-allowed'
-                  : on
-                  ? 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text cursor-pointer'
-                  : 'bg-bg/30 text-text-subtle hover:bg-hover hover:text-text cursor-pointer',
-              )}
-            >
-              <span className="truncate max-w-[140px]">{s.manifest.name}</span>
-              <span className="text-[11px] text-text-subtle truncate">
-                {s.manifest.host}
-              </span>
-            </button>
-          </li>
-        )
-      })}
-    </ul>
+    <div className="space-y-2">
+      <p className="text-[11px] text-text-subtle px-0.5">
+        Bấm để bật/tắt nguồn cho fanout search
+      </p>
+      <ul className="flex flex-wrap gap-1.5">
+        {sources.map((s) => {
+          const searchable = hasSearch(s.manifest)
+          const on = s.enabled && searchable
+          return (
+            <li key={s.manifest.id}>
+              <button
+                type="button"
+                onClick={() => searchable && setEnabled(s.manifest.id, !s.enabled)}
+                disabled={!searchable}
+                title={searchable
+                  ? (on ? `Tắt ${s.manifest.name}` : `Bật ${s.manifest.name}`)
+                  : `${s.manifest.name} chưa hỗ trợ tìm — dán link để thêm`
+                }
+                className={cn(
+                  'inline-flex items-center gap-2 h-8 pl-2 pr-3 rounded-sm text-[12px] transition-colors',
+                  !searchable
+                    ? 'bg-surface-2 text-text-subtle cursor-not-allowed border border-border-soft opacity-50'
+                    : on
+                    ? 'bg-accent/15 text-text border border-accent/30 hover:bg-accent/20 cursor-pointer'
+                    : 'bg-surface-2 text-text-muted border border-border-soft hover:bg-hover hover:text-text cursor-pointer',
+                )}
+              >
+                <span
+                  className={cn(
+                    'size-1.5 rounded-full shrink-0',
+                    on
+                      ? 'bg-accent'
+                      : searchable
+                      ? 'bg-text-subtle/40'
+                      : 'bg-text-subtle/20',
+                  )}
+                />
+                <span className="font-medium truncate max-w-[140px]">
+                  {s.manifest.name}
+                </span>
+                <span className="text-[11px] text-text-subtle truncate">
+                  {s.manifest.host}
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
