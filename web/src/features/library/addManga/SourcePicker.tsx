@@ -4,21 +4,20 @@ import { cn } from '@shared/lib/cn'
 import type { InstalledSource } from '@features/browse/manifest/types'
 
 // =============================================================================
-// SourcePicker — chip row when ≤4 enabled sources, dropdown when more.
+// SourcePicker — compact dropdown.
+//
+// Pro pattern (Linear / Raycast / GitHub command palette): a single
+// trigger chip that opens a menu. Even with 2–3 sources, an inline
+// chip row eats horizontal space that the search input needs.
 //
 // `searchableIds` flags which manifests expose a search endpoint.
-// Sources outside this set still appear in the picker but render in
-// a muted, non-selectable state with a hint that they require a URL
-// paste instead. We don't hide them — that contradicts the "X nguồn
-// đã cài" badge in settings and made users wonder why some sources
-// vanished.
+// Sources outside this set still appear in the menu but render in a
+// muted, non-selectable state with a hint pointing the user at URL
+// paste instead.
 //
-// `lockedTo` puts the picker in disabled mode (used while a URL paste
-// is being resolved — the source is implied by the URL, switching
-// would lose context).
+// `lockedTo` puts the picker in read-only mode (used while a URL
+// paste is being resolved — the source is implied by the URL).
 // =============================================================================
-
-const CHIP_THRESHOLD = 4
 
 interface Props {
   sources:        InstalledSource[]
@@ -28,113 +27,62 @@ interface Props {
   lockedTo?:      string | null
 }
 
-export function SourcePicker(props: Props) {
-  if (props.lockedTo) {
-    const src = props.sources.find((s) => s.manifest.id === props.lockedTo)
+export function SourcePicker({
+  sources, searchableIds, value, onChange, lockedTo,
+}: Props) {
+  const [open, setOpen] = useState(false)
+
+  if (lockedTo) {
+    const src = sources.find((s) => s.manifest.id === lockedTo)
     return (
       <span className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm bg-surface-2 text-sm text-text-muted shrink-0">
         <Globe size={12} />
-        {src?.manifest.name ?? props.lockedTo}
+        <span className="max-w-[120px] truncate">
+          {src?.manifest.name ?? lockedTo}
+        </span>
       </span>
     )
   }
-  return props.sources.length > CHIP_THRESHOLD
-    ? <DropdownPicker {...props} />
-    : <ChipRowPicker  {...props} />
-}
 
-
-function ChipRowPicker({
-  sources, searchableIds, value, onChange,
-}: Props) {
-  return (
-    <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
-      <Chip active={value === null} disabled={false} onClick={() => onChange(null)}>
-        Tất cả
-      </Chip>
-      {sources.map((s) => {
-        const searchable = searchableIds.has(s.manifest.id)
-        return (
-          <Chip
-            key={s.manifest.id}
-            active={value === s.manifest.id}
-            disabled={!searchable}
-            title={searchable
-              ? undefined
-              : `${s.manifest.name} chưa hỗ trợ tìm kiếm — dán đường dẫn manga để thêm trực tiếp`}
-            onClick={() => onChange(s.manifest.id)}
-          >
-            {!searchable && <LinkIcon size={10} />}
-            {s.manifest.name}
-          </Chip>
-        )
-      })}
-    </div>
-  )
-}
-
-
-function Chip({
-  active, disabled, title, onClick, children,
-}: {
-  active:    boolean
-  disabled:  boolean
-  title?:    string
-  onClick:   () => void
-  children:  React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={cn(
-        'inline-flex items-center gap-1 h-8 px-2.5 rounded-sm text-[13px] font-medium transition-colors shrink-0',
-        disabled
-          ? 'bg-surface-2 text-text-subtle/60 cursor-not-allowed'
-          : active
-          ? 'bg-text text-bg cursor-pointer'
-          : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text cursor-pointer',
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-
-function DropdownPicker({
-  sources, searchableIds, value, onChange,
-}: Props) {
-  const [open, setOpen] = useState(false)
-  const label = value === null
-    ? 'Tất cả nguồn'
+  const activeLabel = value === null
+    ? 'Tất cả'
     : sources.find((s) => s.manifest.id === value)?.manifest.name ?? '?'
+
   return (
     <div className="relative shrink-0">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm bg-surface-2 text-sm text-text hover:bg-hover transition-colors cursor-pointer"
+        className={cn(
+          'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm',
+          'bg-surface-2 text-sm text-text hover:bg-hover transition-colors cursor-pointer',
+        )}
+        title="Chọn nguồn để tìm"
       >
         <Globe size={12} className="text-text-subtle" />
-        <span className="max-w-[140px] truncate">{label}</span>
-        <ChevronDown size={12} className="text-text-subtle" />
+        <span className="max-w-[120px] truncate">{activeLabel}</span>
+        <ChevronDown
+          size={12}
+          className={cn(
+            'text-text-subtle transition-transform',
+            open && 'rotate-180',
+          )}
+        />
       </button>
+
       {open && (
         <>
           <div
             className="fixed inset-0 z-10"
             onMouseDown={() => setOpen(false)}
           />
-          <div className="absolute top-full mt-1 right-0 z-20 min-w-[220px] rounded-sm bg-surface-2 border border-border-soft shadow-lg overflow-hidden">
+          <div className="absolute top-full mt-1 left-0 z-20 min-w-[220px] rounded-sm bg-surface border border-border-soft shadow-lg overflow-hidden">
             <Option
               active={value === null}
               disabled={false}
               onClick={() => { onChange(null); setOpen(false) }}
             >
-              Tất cả nguồn
+              <span className="flex-1 truncate">Tất cả nguồn</span>
             </Option>
             <div className="border-t border-border-soft" />
             {sources.map((s) => {
@@ -144,16 +92,19 @@ function DropdownPicker({
                   key={s.manifest.id}
                   active={value === s.manifest.id}
                   disabled={!searchable}
-                  onClick={() => { onChange(s.manifest.id); setOpen(false) }}
                   title={searchable
                     ? undefined
-                    : 'Chưa hỗ trợ tìm — dán đường dẫn manga để thêm'}
+                    : `${s.manifest.name} chưa hỗ trợ tìm — dán link manga để thêm trực tiếp`}
+                  onClick={() => {
+                    if (!searchable) return
+                    onChange(s.manifest.id); setOpen(false)
+                  }}
                 >
                   <span className="flex-1 truncate inline-flex items-center gap-1.5">
-                    {!searchable && <LinkIcon size={10} />}
+                    {!searchable && <LinkIcon size={10} className="text-text-subtle" />}
                     {s.manifest.name}
                   </span>
-                  <span className="text-[11px] text-text-subtle ml-2 uppercase">
+                  <span className="text-[11px] text-text-subtle ml-2 uppercase shrink-0">
                     {s.manifest.languages.slice(0, 3).join('/')}
                   </span>
                 </Option>
@@ -187,7 +138,7 @@ function Option({
         disabled
           ? 'text-text-subtle/60 cursor-not-allowed'
           : 'hover:bg-hover cursor-pointer',
-        active && !disabled && 'text-text font-medium',
+        active && !disabled && 'bg-surface-2 text-text font-medium',
       )}
     >
       {children}
