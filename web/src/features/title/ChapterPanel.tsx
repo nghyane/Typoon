@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
 import {
   BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2,
-  ArrowDown, RefreshCw, Check, X,
+  ArrowDown, ArrowUp, Clock, RefreshCw, X,
 } from 'lucide-react'
 import { getRouteApi } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { DataTable, Th } from '@shared/ui/DataTable'
-import { SearchInput, DataToolbar } from '@shared/ui/DataToolbar'
+import { SearchInput } from '@shared/ui/DataToolbar'
 import { card } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
@@ -157,10 +157,22 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
 
 
 // ── Toolbar ─────────────────────────────────────────────────────────
+//
+// Layout — single-line cluster, all controls anchored left:
+//
+//   [Tất cả  40] [Đã dịch 40] [Đang dịch] [Lỗi] [Raw] │ [🔍 Tìm…] [↓ Mới]
+//   └──── filter group (transparent) ────┘             └── tools group ──┘
+//                                                         (bg-surface-2)
+//
+// Filter pills stay ghost (no surface) so the active one reads as a
+// selected tab. Search + Sort share bg-surface-2 — they're "view
+// tools", visually grouped. A 1px divider separates the two groups
+// so the row reads as one toolbar with two intents, not three loose
+// widgets floating.
+//
+// On mobile the row wraps: filter pills scroll horizontally on their
+// row, search + sort fall to a second line.
 
-// Segmented filter + search, mirroring ProjectDetail's DataToolbar
-// pattern. Counts surface on the pills directly so the user sees
-// state distribution at a glance — no dropdown to open.
 function Toolbar({
   q, setQ, filter, setFilter, counts, sort, setSort,
 }: {
@@ -173,17 +185,26 @@ function Toolbar({
   setSort:   (s: Sort) => void
 }) {
   return (
-    <DataToolbar right={<SortCycle value={sort} onChange={setSort} />}>
-      <div className="overflow-x-auto">
+    <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div
+        className="overflow-x-auto -mx-1 px-1 min-w-0"
+        style={{ scrollbarWidth: 'none' }}
+      >
         <Segmented value={filter} onChange={setFilter} counts={counts} />
       </div>
-      <SearchInput
-        value={q}
-        onChange={setQ}
-        placeholder="Tìm chương…"
-        className="flex-1 min-w-32"
-      />
-    </DataToolbar>
+
+      <div className="hidden sm:block h-5 w-px bg-border" aria-hidden />
+
+      <div className="flex items-center gap-1 flex-1 sm:flex-initial min-w-0">
+        <SearchInput
+          value={q}
+          onChange={setQ}
+          placeholder="Tìm chương…"
+          className="flex-1 sm:w-56 sm:flex-initial min-w-0"
+        />
+        <SortCycle value={sort} onChange={setSort} />
+      </div>
+    </div>
   )
 }
 
@@ -208,6 +229,11 @@ function Segmented({
       {FILTERS.map(({ key, label }) => {
         const n = counts[key]
         const active = value === key
+        // Hide empty buckets EXCEPT 'all' and the currently selected
+        // one — keeps the toolbar from showing 'Lỗi 0' all the time
+        // while still letting the user stay on a filter that just
+        // emptied (so they can switch off it).
+        if (!active && key !== 'all' && n === 0) return null
         return (
           <button
             key={key}
@@ -215,7 +241,7 @@ function Segmented({
             onClick={() => onChange(key)}
             className={cn(
               'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors',
-              'inline-flex items-center gap-2 whitespace-nowrap',
+              'inline-flex items-center gap-1.5 whitespace-nowrap',
               active
                 ? 'bg-surface-2 text-text font-medium'
                 : 'text-text-muted hover:bg-hover hover:text-text',
@@ -224,8 +250,8 @@ function Segmented({
             {label}
             {n > 0 && (
               <span className={cn(
-                'tabular text-[11px]',
-                active ? 'text-text-subtle' : 'text-text-subtle/80',
+                'tabular text-[11px] tracking-tight',
+                active ? 'text-text-muted' : 'text-text-subtle',
               )}>
                 {n}
               </span>
@@ -239,14 +265,20 @@ function Segmented({
 
 
 const SORT_LABEL: Record<Sort, string> = {
-  chapter_desc: 'Mới → cũ',
-  chapter_asc:  'Cũ → mới',
+  chapter_desc: 'Mới nhất',
+  chapter_asc:  'Cũ nhất',
   updated_desc: 'Cập nhật',
 }
 
-// Cycle through the 3 sort modes. A 3-state toggle keeps the toolbar
-// flat — no popover, no native <select> chrome leaking into the
-// design system.
+const SORT_ICON: Record<Sort, typeof ArrowDown> = {
+  chapter_desc: ArrowDown,
+  chapter_asc:  ArrowUp,
+  updated_desc: Clock,
+}
+
+// Same h-8 surface-2 affordance as SearchInput so the two read as
+// one "view tools" cluster. Click cycles through the 3 modes — a
+// dropdown would be heavier UI for a 3-option pick.
 function SortCycle({
   value, onChange,
 }: {
@@ -257,15 +289,20 @@ function SortCycle({
     const i = order.indexOf(value)
     onChange(order[(i + 1) % order.length]!)
   }
+  const Icon = SORT_ICON[value]
   return (
     <button
       type="button"
       onClick={next}
       title="Đổi cách sắp xếp"
-      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-[13px] text-text-muted hover:bg-hover hover:text-text transition-colors cursor-pointer"
+      className={cn(
+        'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm shrink-0',
+        'text-[13px] text-text-muted bg-surface-2',
+        'hover:bg-hover hover:text-text transition-colors cursor-pointer',
+      )}
     >
-      <ArrowDown size={12} className="text-text-subtle" />
-      {SORT_LABEL[value]}
+      <Icon size={12} className="text-text-subtle" />
+      <span className="hidden sm:inline">{SORT_LABEL[value]}</span>
     </button>
   )
 }
