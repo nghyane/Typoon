@@ -86,7 +86,7 @@ export function SearchPane({
       ) : query.trim().length < 2 ? (
         <SourceListHint
           sources={sources}
-          searchableIds={new Set(searchable.map((s) => s.manifest.id))}
+          onPickDomain={(host) => setQuery(`https://${host}/`)}
         />
       ) : (
         <>
@@ -178,10 +178,17 @@ function UrlBadge({
 // chip carries a Link icon when the source supports search ('Tìm
 // được') vs a muted state for paste-only sources.
 
+// Domain list — empty-state replacement for the hint text. Each
+// row is one installed source rendered as 'name · host'. Clicking a
+// row pre-fills the input with `https://{host}/` so the user can
+// paste the slug after, or just sees that link-mode works. The
+// affordance speaks for itself; no heading, no capability tag.
+
 function SourceListHint({
-  sources, searchableIds,
+  sources, onPickDomain,
 }: {
-  sources: InstalledSource[]; searchableIds: Set<string>
+  sources:      InstalledSource[]
+  onPickDomain: (host: string) => void
 }) {
   if (sources.length === 0) {
     return (
@@ -194,35 +201,24 @@ function SourceListHint({
     )
   }
   return (
-    <div className="rounded-md bg-surface-2 border border-border-soft px-4 py-3">
-      <p className="text-[11px] uppercase tracking-wider text-text-subtle mb-2">
-        Nguồn đã cài
-      </p>
-      <ul className="flex flex-wrap gap-1.5">
-        {sources.map((s) => {
-          const ok = searchableIds.has(s.manifest.id)
-          return (
-            <li
-              key={s.manifest.id}
-              className={cn(
-                'inline-flex items-baseline gap-1.5 h-7 px-2.5 rounded-sm text-[12px]',
-                ok
-                  ? 'bg-bg/40 text-text-muted'
-                  : 'bg-bg/20 text-text-subtle',
-              )}
-              title={ok
-                ? `${s.manifest.name} — tìm + dán link`
-                : `${s.manifest.name} — chỉ dán link`
-              }
-            >
-              <span className="truncate max-w-[140px]">{s.manifest.name}</span>
-              <span className="text-[11px] text-text-subtle truncate">
-                {s.manifest.host}
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
+    <ul className="rounded-md bg-surface-2 border border-border-soft divide-y divide-border-soft overflow-hidden">
+      {sources.map((s) => (
+        <li key={s.manifest.id}>
+          <button
+            type="button"
+            onClick={() => onPickDomain(s.manifest.host)}
+            className="w-full flex items-baseline gap-2 px-3 py-2 text-left hover:bg-hover transition-colors cursor-pointer"
+            title={`Dùng ${s.manifest.host}`}
+          >
+            <span className="text-[13px] text-text truncate">
+              {s.manifest.name}
+            </span>
+            <span className="text-[11px] text-text-subtle truncate">
+              {s.manifest.host}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   )
 }

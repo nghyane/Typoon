@@ -102,9 +102,15 @@ function SourceGroup({
   const manifest = source.manifest
   const [expanded, setExpanded] = useState(false)
 
-  const capped  = hits.slice(0, PER_GROUP_MAX)
-  const visible = expanded ? capped : capped.slice(0, INITIAL_PREVIEW)
-  const more    = capped.length - visible.length
+  // When the user has scoped to a single source via ScopeFilterRow,
+  // `hideHeader` is true — that's also our signal to skip the
+  // 'Xem thêm' collapse: the user already committed to this source,
+  // no need to hide hits behind another click.
+  const capped = hits.slice(0, PER_GROUP_MAX)
+  const visible = hideHeader || expanded
+    ? capped
+    : capped.slice(0, INITIAL_PREVIEW)
+  const more = capped.length - visible.length
 
   return (
     <section>
