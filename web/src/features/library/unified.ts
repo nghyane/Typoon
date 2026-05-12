@@ -49,6 +49,12 @@ function fromEntry(
 ): LibraryItem {
   const last    = e.last_read_at ? Date.parse(e.last_read_at) : 0
   const created = e.created_at   ? Date.parse(e.created_at)   : 0
+  // Defensive: older API responses (before slice-12 backend) and
+  // never-translated entries can omit the summary; coerce to the
+  // canonical empty shape so callers never see `undefined.running`.
+  const summary: ApiTranslationSummary = e.translation_summary ?? {
+    pending: 0, running: 0, done: 0, error: 0,
+  }
   return {
     key:           `entry::${e.id}`,
     entryId:       e.id,
@@ -58,7 +64,7 @@ function fromEntry(
     status:        e.status,
     targetLang:    e.target_lang,
     autoTranslate: e.auto_translate,
-    summary:       e.translation_summary,
+    summary,
     hasNew:        hasNewFromLocal,
     activity:      Math.max(last, created),
     chapterLabel,
