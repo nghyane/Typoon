@@ -254,21 +254,39 @@ class QueueStatsOut(BaseModel):
     active_workers: list[str]
 
 
-# ── DMCA ─────────────────────────────────────────────────────────────
+# ── Reports + moderation ─────────────────────────────────────────────
 
 
-TakedownTargetKind = Literal["material", "chapter", "draft", "translation"]
+ReportTargetKind = Literal["material", "chapter", "draft", "translation"]
+ReportKind       = Literal["dmca", "abuse", "quality", "other"]
+ReportStatus     = Literal["open", "reviewing", "resolved", "dismissed"]
+ModerationAction = Literal["takedown", "restore", "delete"]
 
 
-class DmcaTakedownOut(BaseModel):
+class ReportOut(BaseModel):
     id:              int
-    target_kind:     TakedownTargetKind
+    reporter_id:     int | None
+    reporter_label:  str
+    target_kind:     ReportTargetKind
     target_id:       int
     scope_guild_id:  str | None
+    kind:            ReportKind
     reason:          str
-    reporter:        str
-    taken_down_at:   str | None
-    restored_at:     str | None
+    status:          ReportStatus
+    created_at:      str | None
+    resolved_at:     str | None
+    resolved_by:     int | None
+
+
+class ModerationActionOut(BaseModel):
+    id:           int
+    report_id:    int | None
+    target_kind:  ReportTargetKind
+    target_id:    int
+    action:       ModerationAction
+    reason:       str
+    actor_id:     int | None
+    created_at:   str | None
 
 
 # ── User / identity ──────────────────────────────────────────────────

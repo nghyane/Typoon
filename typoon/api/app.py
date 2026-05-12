@@ -25,7 +25,8 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
-    auth, blobs, dmca, feed, glossary, library, material, me,
+    auth, blobs, feed, glossary, library, material, me,
+    memory, reports,
     translate, translate_events, upload, workers,
 )
 from typoon.config import load_config
@@ -130,6 +131,7 @@ if _serve_api:
     app.include_router(auth.router)
     app.include_router(me.router)
     app.include_router(material.router)
+    app.include_router(memory.router)
     app.include_router(upload.router)
     app.include_router(upload.local_router)
     app.include_router(translate.router)
@@ -137,8 +139,8 @@ if _serve_api:
     app.include_router(library.router)
     app.include_router(feed.router)
     app.include_router(glossary.router)
-    app.include_router(dmca.router)
-    app.include_router(dmca.admin_router)
+    app.include_router(reports.router)
+    app.include_router(reports.admin_router)
     app.include_router(workers.router)
 
 if _serve_storage:
