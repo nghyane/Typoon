@@ -2,14 +2,16 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AlertCircle, ExternalLink } from 'lucide-react'
 import {
-  buildAuthorizeUrl, discordActivityLogin, fetchAuthConfig, getToken,
-  setToken, takeLoginError, type AuthConfig,
+  buildAuthorizeUrl, discordActivityLogin, fetchAuthConfig, setToken,
+  takeLoginError, useCurrentUser, type AuthConfig,
 } from '@features/auth/auth'
 import { isDiscordActivity } from '@shared/discord/sdk'
 import { Spinner } from '@shared/ui/primitives'
 
 function LoginPage() {
   const nav = useNavigate()
+  const { user, loading } = useCurrentUser()
+
   const [error, setError] = useState<string | null>(null)
   const [cfg,   setCfg]   = useState<AuthConfig | null>(null)
   const [busy,  setBusy]  = useState(false)
@@ -21,8 +23,15 @@ function LoginPage() {
       .catch((e: Error) => { setError(e.message); setBusy(false) })
   }
 
+  // Redirect away ONLY when /api/auth/me confirms the token is valid.
+  // Trusting localStorage alone causes a navigate loop after the
+  // server's user row is dropped (token still in storage, but the
+  // /library guard kicks back to /login on every load).
   useEffect(() => {
-    if (getToken()) { nav({ to: '/library' }); return }
+    if (!loading && user) nav({ to: '/library' })
+  }, [loading, user, nav])
+
+  useEffect(() => {
     setError(takeLoginError())
     fetchAuthConfig()
       .then((c) => {
@@ -31,7 +40,18 @@ function LoginPage() {
         if (isDiscordActivity) doDALogin(c.discord_client_id)
       })
       .catch((e: Error) => setError(e.message))
-  }, [nav]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While useCurrentUser is still resolving the stored token, show
+  // a spinner instead of the login button. Without this, a valid
+  // session flashes the Discord button for ~200ms on every page load.
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg">
+        <Spinner size={24} />
+      </div>
+    )
+  }
 
   // DA: show spinner while authorizing, error + retry on failure
   if (isDiscordActivity) {
