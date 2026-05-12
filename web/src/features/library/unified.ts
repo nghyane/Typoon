@@ -1,9 +1,12 @@
 // Unified library view-model — server library entries adapted for
-// the /library grid + translation view.
+// the /library grid.
 //
-// Source of truth is `/api/library`. The local reading-history store
-// still owns per-source "Tiếp tục đọc" snapshots; this module joins
-// the two by primary_material_id when the local store knows it.
+// One grid. Filter chips combine reading status (5 enum values) with
+// translation activity (translating / errored). Status filters live
+// on `library_entry.status`; activity filters pivot on
+// `translation_summary`. Both kinds funnel through the same chip row
+// — manga and "bản dịch" are not separate views, just different
+// slices of the same list.
 
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -14,9 +17,14 @@ import { coverUrl } from '@shared/ui/Cover'
 import { useLibrary, hasNewChapter } from './store'
 import { useShallow } from 'zustand/react/shallow'
 
-/** Filter chip identities for the /library page. `all` excludes
- *  `dropped`. */
-export type LibraryFilter = 'all' | LibraryStatus
+/** Filter chip identities. `all` excludes `dropped`. Activity filters
+ *  (`translating`, `errored`) cut across status — they're answered by
+ *  translation_summary not the enum. */
+export type LibraryFilter =
+  | 'all'
+  | LibraryStatus
+  | 'translating'
+  | 'errored'
 
 export interface LibraryItem {
   key:        string
@@ -49,9 +57,6 @@ function fromEntry(
 ): LibraryItem {
   const last    = e.last_read_at ? Date.parse(e.last_read_at) : 0
   const created = e.created_at   ? Date.parse(e.created_at)   : 0
-  // Defensive: older API responses (before slice-12 backend) and
-  // never-translated entries can omit the summary; coerce to the
-  // canonical empty shape so callers never see `undefined.running`.
   const summary: ApiTranslationSummary = e.translation_summary ?? {
     pending: 0, running: 0, done: 0, error: 0,
   }
@@ -81,8 +86,16 @@ function compare(a: LibraryItem, b: LibraryItem): number {
   return b.activity - a.activity
 }
 
+function matches(it: LibraryItem, filter: LibraryFilter): boolean {
+  if (filter === 'all')         return true
+  if (filter === 'translating') return it.summary.running > 0 || it.summary.pending > 0
+  if (filter === 'errored')     return it.summary.error > 0
+  return it.status === filter
+}
+
 /** Unified library data. Always fetches the unfiltered list so chip
- *  counts stay accurate; client-side filter pivots on `status`. */
+ *  counts stay accurate; client-side filter pivots on the union of
+ *  status enum + activity buckets. */
 export function useUnifiedLibrary(filter: LibraryFilter): {
   items:   LibraryItem[]
   loading: boolean
@@ -117,12 +130,15 @@ export function useUnifiedLibrary(filter: LibraryFilter): {
     const counts: Record<LibraryFilter, number> = {
       all: items.length,
       reading: 0, plan: 0, on_hold: 0, done: 0, dropped: 0,
+      translating: 0, errored: 0,
     }
-    for (const it of items) counts[it.status]++
+    for (const it of items) {
+      counts[it.status]++
+      if (it.summary.running > 0 || it.summary.pending > 0) counts.translating++
+      if (it.summary.error   > 0)                            counts.errored++
+    }
 
-    const filtered = filter === 'all'
-      ? items
-      : items.filter((it) => it.status === filter)
+    const filtered = items.filter((it) => matches(it, filter))
 
     return {
       items: filtered.sort(compare),

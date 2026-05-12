@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import {
   Plus, Library, BookOpen, BookmarkCheck, Pause, CheckCircle2, Layers,
-  Sparkles,
+  Loader2, AlertCircle,
 } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 import { EmptyState } from '@shared/ui/EmptyState'
@@ -15,28 +15,23 @@ import { LibraryItemCard } from '@features/library/views/LibraryCard'
 import { AddMangaModal } from '@features/library/addManga/AddMangaModal'
 
 // =============================================================================
-// /library — unified hub. Backend-backed.
+// /library — unified grid.
 //
-// Two view modes share the same data + grid (M5 will split translation
-// into a per-row list; slice 12 keeps the manga grid plus an inline
-// "đang dịch" filter chip that pivots through the same component):
+// One list, one filter row. Chips combine reading status (5 enum
+// values: reading / plan / on_hold / done / dropped) with two
+// activity buckets sourced from translation_summary:
 //
-//   view=manga          (default) status chips, grid cards
-//   view=translation    chips narrow to entries with at least one
-//                       running/error/pending translation
+//   • Đang dịch   running > 0 OR pending > 0
+//   • Lỗi          error > 0
 //
-// Both views write through the URL so back/forward navigation
-// preserves state.
+// Activity chips are not a separate "view" — they're filters that
+// cut across status. A manga can be `status=reading` AND `Đang dịch`
+// at the same time; the chip is just one slice.
 // =============================================================================
 
-type LibraryView = 'manga' | 'translation'
+interface SearchParams { filter?: LibraryFilter }
 
-interface SearchParams {
-  filter?: LibraryFilter
-  view?:   LibraryView
-}
-
-const CHIPS: Array<{
+const STATUS_CHIPS: Array<{
   id:    LibraryFilter
   label: string
   icon:  typeof Layers
@@ -46,6 +41,16 @@ const CHIPS: Array<{
   { id: 'plan',    label: 'Kế hoạch',  icon: BookmarkCheck },
   { id: 'on_hold', label: 'Tạm dừng',  icon: Pause         },
   { id: 'done',    label: 'Đã xong',   icon: CheckCircle2  },
+]
+
+const ACTIVITY_CHIPS: Array<{
+  id:    LibraryFilter
+  label: string
+  icon:  typeof Layers
+  tone:  'info' | 'error'
+}> = [
+  { id: 'translating', label: 'Đang dịch', icon: Loader2,     tone: 'info'  },
+  { id: 'errored',     label: 'Lỗi',       icon: AlertCircle, tone: 'error' },
 ]
 
 const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
@@ -73,10 +78,18 @@ const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
     title: 'Không có truyện đã bỏ',
     sub:   'Truyện bị bỏ theo dõi sẽ hiện ở đây',
   },
+  translating: {
+    title: 'Không có bản dịch đang xử lý',
+    sub:   'Mở một chương rồi bấm "Dịch" để chạy bản dịch đầu tiên',
+  },
+  errored: {
+    title: 'Không có bản dịch lỗi',
+    sub:   'Khi pipeline dịch gặp lỗi, manga liên quan sẽ hiện ở đây',
+  },
 }
 
 function LibraryPage() {
-  const { filter = 'all', view = 'manga' } = Route.useSearch()
+  const { filter = 'all' } = Route.useSearch()
   const nav = useNavigate()
 
   const { items, loading, counts } = useUnifiedLibrary(filter)
@@ -93,49 +106,30 @@ function LibraryPage() {
 
   const [addOpen, setAddOpen] = useState(false)
 
-  // Translation view narrows further: entries that have at least one
-  // running/error/pending translation owned by this user.
-  const visible = view === 'translation'
-    ? items.filter((it) =>
-        it.summary.running > 0 || it.summary.error > 0 || it.summary.pending > 0,
-      )
-    : items
-
-  const isEmpty = !loading && visible.length === 0
+  const isEmpty = !loading && items.length === 0
+  const hint    = EMPTY_HINT[filter]
 
   return (
     <div className="px-4 sm:px-6 pt-4 sm:pt-6">
-      <Toolbar
-        view={view}
-        onSetView={(v) => nav({ to: '/library', search: { filter, view: v } })}
-        onAdd={() => setAddOpen(true)}
+      <Toolbar onAdd={() => setAddOpen(true)} />
+
+      <FilterChips
+        filter={filter}
+        counts={counts}
+        onPick={(id) => nav({ to: '/library', search: { filter: id } })}
       />
 
-      {view === 'manga' && (
-        <FilterChips
-          filter={filter}
-          counts={counts}
-          onPick={(id) => nav({ to: '/library', search: { filter: id, view } })}
-        />
-      )}
-
-      {loading && visible.length === 0 ? (
+      {loading && items.length === 0 ? (
         <div className="flex items-center justify-center py-24">
           <Spinner size={20} />
         </div>
       ) : isEmpty ? (
         <div className="py-12">
           <EmptyState
-            icon={view === 'translation' ? Sparkles : Library}
-            title={view === 'translation'
-              ? 'Không có bản dịch đang xử lý'
-              : EMPTY_HINT[filter].title
-            }
-            hint={view === 'translation'
-              ? 'Bản dịch đang chạy / lỗi / chờ sẽ hiện ở đây.'
-              : EMPTY_HINT[filter].sub
-            }
-            action={view === 'manga' && filter === 'all' ? (
+            icon={Library}
+            title={hint.title}
+            hint={hint.sub}
+            action={filter === 'all' ? (
               <Button variant="primary" onClick={() => setAddOpen(true)}>
                 <Plus size={14} />
                 Thêm manga đầu tiên
@@ -151,7 +145,7 @@ function LibraryPage() {
             'sm:grid-cols-[repeat(auto-fill,minmax(140px,1fr))]',
           )}
         >
-          {visible.map((it) => (
+          {items.map((it) => (
             <LibraryItemCard key={it.key} item={it} />
           ))}
         </div>
@@ -163,53 +157,25 @@ function LibraryPage() {
 }
 
 
-// ── Toolbar — view toggle + Add button ───────────────────────────────
+// ── Toolbar — Add button ─────────────────────────────────────────────
 
-function Toolbar({
-  view, onSetView, onAdd,
-}: {
-  view:       LibraryView
-  onSetView:  (v: LibraryView) => void
-  onAdd:      () => void
-}) {
+function Toolbar({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="flex items-center gap-2 mb-4">
-      <div className="inline-flex items-center gap-0.5 p-0.5 rounded-sm bg-surface-2">
-        <ViewBtn label="Manga"    active={view === 'manga'}       onClick={() => onSetView('manga')} />
-        <ViewBtn label="Bản dịch" active={view === 'translation'} onClick={() => onSetView('translation')} />
-      </div>
-      <div className="flex-1" />
+    <div className="flex items-center justify-end mb-4">
       <Button variant="primary" onClick={onAdd}>
         <Plus size={14} />
-        Thêm
+        Thêm manga
       </Button>
     </div>
   )
 }
 
-function ViewBtn({
-  label, active, onClick,
-}: {
-  label: string; active: boolean; onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'h-7 px-3 rounded-xs text-xs font-medium transition-colors cursor-pointer',
-        active
-          ? 'bg-bg text-text'
-          : 'text-text-muted hover:text-text',
-      )}
-    >
-      {label}
-    </button>
-  )
-}
-
 
 // ── Filter chip row ──────────────────────────────────────────────────
+//
+// Layout: status chips on the left, a thin divider, then activity
+// chips. Activity chips hide entirely when their count is 0 — keeps
+// the row dense for the casual reader who never spawns translations.
 
 function FilterChips({
   filter, counts, onPick,
@@ -218,41 +184,98 @@ function FilterChips({
   counts: Record<LibraryFilter, number>
   onPick: (id: LibraryFilter) => void
 }) {
+  const showActivity = counts.translating > 0 || counts.errored > 0
   return (
     <div
       className="flex items-center gap-1.5 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
       style={{ scrollbarWidth: 'none' }}
     >
-      {CHIPS.map(({ id, label, icon: Icon }) => {
+      {STATUS_CHIPS.map(({ id, label, icon: Icon }) => {
         const active = filter === id
         const count  = counts[id]
         if (id !== 'all' && id !== 'reading' && count === 0) return null
         return (
-          <button
+          <Chip
             key={id}
+            active={active}
+            count={count}
             onClick={() => onPick(id)}
-            className={cn(
-              'inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[13px] shrink-0',
-              'transition-colors cursor-pointer',
-              active
-                ? 'bg-text text-bg font-medium'
-                : 'bg-surface text-text-muted hover:bg-surface-2 hover:text-text',
-            )}
           >
             <Icon size={12} />
             {label}
-            {count > 0 && (
-              <span className={cn(
-                'text-[11px] tabular',
-                active ? 'text-bg/70' : 'text-text-subtle',
-              )}>
-                {count}
-              </span>
-            )}
-          </button>
+          </Chip>
+        )
+      })}
+
+      {showActivity && (
+        <span
+          aria-hidden
+          className="shrink-0 w-px h-5 bg-border-soft mx-1"
+        />
+      )}
+
+      {ACTIVITY_CHIPS.map(({ id, label, icon: Icon, tone }) => {
+        const count = counts[id]
+        if (count === 0) return null
+        const active = filter === id
+        return (
+          <Chip
+            key={id}
+            active={active}
+            count={count}
+            tone={tone}
+            onClick={() => onPick(id)}
+          >
+            <Icon
+              size={12}
+              className={tone === 'info' && count > 0 ? 'animate-spin' : ''}
+            />
+            {label}
+          </Chip>
         )
       })}
     </div>
+  )
+}
+
+
+function Chip({
+  active, count, tone, onClick, children,
+}: {
+  active:   boolean
+  count:    number
+  tone?:    'info' | 'error'
+  onClick:  () => void
+  children: React.ReactNode
+}) {
+  const accent = tone === 'info'
+    ? 'bg-info/15 text-info-text hover:bg-info/25'
+    : tone === 'error'
+    ? 'bg-error/15 text-error-text hover:bg-error/25'
+    : 'bg-surface text-text-muted hover:bg-surface-2 hover:text-text'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[13px] shrink-0',
+        'transition-colors cursor-pointer',
+        active
+          ? 'bg-text text-bg font-medium'
+          : accent,
+      )}
+    >
+      {children}
+      {count > 0 && (
+        <span className={cn(
+          'text-[11px] tabular',
+          active ? 'text-bg/70' : 'opacity-70',
+        )}>
+          {count}
+        </span>
+      )}
+    </button>
   )
 }
 
@@ -261,17 +284,16 @@ function FilterChips({
 
 const VALID_FILTERS: ReadonlyArray<LibraryFilter> = [
   'all', 'reading', 'plan', 'on_hold', 'done', 'dropped',
+  'translating', 'errored',
 ]
 
 export const Route = createFileRoute('/library')({
   validateSearch: (search: Record<string, unknown>): SearchParams => {
     const f = search.filter
-    const v = search.view
     return {
       filter: VALID_FILTERS.includes(f as LibraryFilter)
         ? (f as LibraryFilter)
         : 'all',
-      view: v === 'translation' ? 'translation' : 'manga',
     }
   },
   component: LibraryPage,
