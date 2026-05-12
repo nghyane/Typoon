@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookmarkPlus, Search, Link as LinkIcon, AlertTriangle,
-  Loader2, Wand2,
+  Loader2, Wand2, CheckCircle2,
 } from 'lucide-react'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
@@ -18,24 +18,23 @@ import type { InstalledSource, MangaSummary } from '@features/browse/manifest/ty
 import { isUrlLike, matchSource } from './parseUrl'
 import { useFanoutSearch, type SearchHit } from './fanoutSearch'
 import { ManualCreateForm } from './ManualCreateForm'
+import { Favicon } from './SourceBits'
+import { SourceSidebar } from './SourceSidebar'
 
 // =============================================================================
 // AddMangaModal — Library entry point.
 //
-// One input dispatches three modes:
+// Three modes, one modal:
 //
 //   ① http(s)://…   URL paste. Match against manifest.host across all
 //                   enabled sources. Unsupported host → manual create.
-//   ② "naruto"      Search. Fanout to EVERY searchable source; results
-//                   group by source so user picks the version they want.
-//                   No source picker — chooser-by-result is faster and
-//                   doesn't eat horizontal space in the modal.
-//   ③ empty         Hint card describing what the input does, plus a
-//                   capability legend (N searchable / M paste-only).
+//   ② "naruto"      Search. Sidebar scopes to one source or fanout to
+//                   every searchable manifest. Results group by source.
+//   ③ empty input   Hint card explaining the scope.
+//
+// Layout: search mode uses a 2-col split (sidebar + body); picked /
+// manual modes drop the sidebar for a wider form.
 // =============================================================================
-
-const FAVICON = (host: string) =>
-  `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`
 
 interface Props {
   open:    boolean
@@ -65,11 +64,9 @@ export function AddMangaModal({ open, onClose }: Props) {
     [allSources],
   )
 
-  const [query,      setQuery]      = useState('')
-  const [picked,     setPicked]     = useState<Picked | null>(null)
-  const [manualSeed, setManualSeed] = useState<string | null>(null)
-  // Sidebar selection: null = all sources fanout, string = single
-  // source. URL paste overrides this via lockedSourceId.
+  const [query,            setQuery]            = useState('')
+  const [picked,           setPicked]           = useState<Picked | null>(null)
+  const [manualSeed,       setManualSeed]       = useState<string | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
 
   const [targetLang, setTargetLang] = useState('vi')
@@ -169,16 +166,7 @@ export function AddMangaModal({ open, onClose }: Props) {
 }
 
 
-// ── Search split layout ──────────────────────────────────────────────
-//
-// Spotify/Slack-style sidebar on the left for source navigation. Body
-// on the right carries input + results. Sidebar is 180px and pinned
-// (no scroll horizontally); body fills the rest.
-//
-// Sidebar rows are sources; clicking one scopes the fanout to that
-// single source. Selecting 'Tất cả' returns to cross-source fanout.
-// Non-searchable sources still appear (paste-link path) but render
-// disabled — clicking them shows a hint instead of selecting.
+// ── Search split layout ─────────────────────────────────────────────
 
 function SearchSplit({
   query, setQuery, sources, searchableIds,
@@ -197,171 +185,63 @@ function SearchSplit({
   onPick:               (p: Picked) => void
   onManualCreate:       (seed: string) => void
 }) {
-  const isUrl = isUrlLike(query)
-  // URL paste pins the source — surface it but don't let the user
-  // pick something contradictory.
-  const effectiveSelected = lockedSourceId ?? selectedSourceId
+  const isUrl     = isUrlLike(query)
+  const effective = lockedSourceId ?? selectedSourceId
 
   const scopedSources = useMemo(() => {
-    if (effectiveSelected === null) {
+    if (effective === null) {
       return sources.filter((s) => searchableIds.has(s.manifest.id))
     }
-    return sources.filter((s) => s.manifest.id === effectiveSelected)
-  }, [sources, searchableIds, effectiveSelected])
+    return sources.filter((s) => s.manifest.id === effective)
+  }, [sources, searchableIds, effective])
 
   return (
-    <div className="flex min-h-[360px]">
-      {/* Sidebar */}
-      <aside className="w-44 shrink-0 border-r border-border-soft py-2 overflow-y-auto">
-        <SidebarRow
-          active={effectiveSelected === null}
-          disabled={lockedSourceId !== null}
-          onClick={() => setSelectedSourceId(null)}
-          icon={<AllIcon />}
-          label="Tất cả"
-          hint={`${searchableIds.size} tìm`}
-        />
-        <div className="my-1 mx-3 h-px bg-border-soft" />
-        {sources.map((s) => {
-          const searchable = searchableIds.has(s.manifest.id)
-          const active     = effectiveSelected === s.manifest.id
-          const lockedHere = lockedSourceId === s.manifest.id
-          return (
-            <SidebarRow
-              key={s.manifest.id}
-              active={active}
-              disabled={!searchable && !lockedHere}
-              locked={lockedHere}
-              onClick={() => {
-                if (!searchable && !lockedHere) return
-                setSelectedSourceId(s.manifest.id)
-              }}
-              icon={<Favicon host={s.manifest.host} size={16} />}
-              label={s.manifest.name}
-              hint={searchable ? '🔍 🔗' : '🔗'}
-            />
-          )
-        })}
-      </aside>
+    <div className="flex min-h-[420px] max-h-[60vh]">
+      <SourceSidebar
+        sources={sources}
+        searchableIds={searchableIds}
+        value={selectedSourceId}
+        onChange={setSelectedSourceId}
+        lockedSourceId={lockedSourceId}
+      />
 
-      {/* Body */}
-      <section className="flex-1 min-w-0 px-5 py-4 space-y-4 overflow-y-auto">
-        <InputRow
-          query={query}
-          setQuery={setQuery}
-          isUrl={isUrl}
-          urlMatch={urlMatch}
-        />
-
-        {isUrl ? (
-          urlMatch
-            ? <UrlImportCard match={urlMatch} onPick={onPick} />
-            : <UnsupportedUrlCard url={query} onManualCreate={onManualCreate} />
-        ) : query.trim().length < 2 ? (
-          <ScopeHint
-            selectedSourceId={effectiveSelected}
-            sources={sources}
-            searchableCount={searchableIds.size}
-          />
-        ) : (
-          <Results
+      <section className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <div className="px-5 pt-4 pb-3 border-b border-border-soft shrink-0">
+          <InputRow
             query={query}
-            searchableSources={scopedSources}
-            onPick={onPick}
-            onManualCreate={onManualCreate}
+            setQuery={setQuery}
+            isUrl={isUrl}
+            urlMatch={urlMatch}
           />
-        )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {isUrl ? (
+            urlMatch
+              ? <UrlImportCard match={urlMatch} onPick={onPick} />
+              : <UnsupportedUrlCard url={query} onManualCreate={onManualCreate} />
+          ) : query.trim().length < 2 ? (
+            <ScopeHint
+              selectedSourceId={effective}
+              sources={sources}
+              searchableCount={searchableIds.size}
+            />
+          ) : (
+            <Results
+              query={query}
+              searchableSources={scopedSources}
+              onPick={onPick}
+              onManualCreate={onManualCreate}
+            />
+          )}
+        </div>
       </section>
     </div>
   )
 }
 
 
-// ── Sidebar bits ─────────────────────────────────────────────────────
-
-function SidebarRow({
-  active, disabled, locked, onClick, icon, label, hint,
-}: {
-  active:   boolean
-  disabled: boolean
-  locked?:  boolean
-  onClick:  () => void
-  icon:     React.ReactNode
-  label:    string
-  hint?:    string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={disabled ? `${label} chưa hỗ trợ tìm — dán đường dẫn để thêm` : undefined}
-      className={cn(
-        'w-full flex items-center gap-2 h-9 px-3 text-left text-[13px] transition-colors',
-        active
-          ? 'bg-surface-2 text-text font-medium'
-          : disabled
-          ? 'text-text-subtle/60 cursor-not-allowed'
-          : 'text-text-muted hover:bg-hover hover:text-text cursor-pointer',
-        locked && 'ring-1 ring-success/40',
-      )}
-    >
-      <span className="shrink-0">{icon}</span>
-      <span className="flex-1 truncate">{label}</span>
-      {hint && (
-        <span className="text-[10px] text-text-subtle shrink-0">{hint}</span>
-      )}
-    </button>
-  )
-}
-
-
-function AllIcon() {
-  return (
-    <span className="size-4 rounded-xs bg-surface-2 flex items-center justify-center text-[9px] text-text-muted">
-      ∗
-    </span>
-  )
-}
-
-
-function ScopeHint({
-  selectedSourceId, sources, searchableCount,
-}: {
-  selectedSourceId: string | null
-  sources:          InstalledSource[]
-  searchableCount:  number
-}) {
-  const sel = selectedSourceId
-    ? sources.find((s) => s.manifest.id === selectedSourceId)
-    : null
-  return (
-    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6">
-      <div className="flex items-center gap-3">
-        <span className="size-9 rounded-sm bg-bg/40 flex items-center justify-center shrink-0">
-          {sel
-            ? <Favicon host={sel.manifest.host} size={18} />
-            : <Search size={16} className="text-text-subtle" />
-          }
-        </span>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">
-            {sel
-              ? `Tìm trên ${sel.manifest.name}`
-              : `Tìm trên ${searchableCount} nguồn cùng lúc`
-            }
-          </p>
-          <p className="text-[11px] text-text-subtle mt-0.5">
-            Hoặc dán đường dẫn manga vào ô trên để thêm trực tiếp.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-
-// ── Input row ───────────────────────────────────────────────────────
+// ── Input + URL badge ───────────────────────────────────────────────
 
 function InputRow({
   query, setQuery, isUrl, urlMatch,
@@ -383,8 +263,8 @@ function InputRow({
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Tìm tên truyện hoặc dán đường dẫn"
-        className={cn(input, 'pl-9 h-10', isUrl && (urlMatch ? 'pr-32' : 'pr-28'))}
+        placeholder="Tìm tên truyện hoặc dán đường dẫn manga"
+        className={cn(input, 'pl-9 h-10', isUrl && (urlMatch ? 'pr-36' : 'pr-32'))}
       />
       {isUrl && <UrlBadge urlMatch={urlMatch} />}
     </div>
@@ -397,24 +277,65 @@ function UrlBadge({
 }: {
   urlMatch: ReturnType<typeof matchSource>
 }) {
-  const cls = 'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 h-6 px-2 rounded-xs text-[11px] font-medium pointer-events-none'
+  const cls =
+    'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 ' +
+    'h-6 px-2 rounded-xs text-[11px] font-medium pointer-events-none'
   if (urlMatch) {
     return (
       <span className={cn(cls, 'bg-success/15 text-success-text')}>
-        <Favicon host={urlMatch.source.manifest.host} size={12} />
+        <CheckCircle2 size={10} />
         {urlMatch.source.manifest.name}
       </span>
     )
   }
   return (
     <span className={cn(cls, 'bg-warning/15 text-warning-text')}>
+      <AlertTriangle size={10} />
       Chưa hỗ trợ
     </span>
   )
 }
 
 
-// ── URL flows ───────────────────────────────────────────────────────
+// ── Empty-state hint ────────────────────────────────────────────────
+
+function ScopeHint({
+  selectedSourceId, sources, searchableCount,
+}: {
+  selectedSourceId: string | null
+  sources:          InstalledSource[]
+  searchableCount:  number
+}) {
+  const sel = selectedSourceId
+    ? sources.find((s) => s.manifest.id === selectedSourceId)
+    : null
+  return (
+    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-5 py-8">
+      <div className="flex items-center gap-3">
+        <span className="size-10 rounded-sm bg-bg/40 flex items-center justify-center shrink-0">
+          {sel
+            ? <Favicon host={sel.manifest.host} size={20} />
+            : <Search size={18} className="text-text-subtle" />
+          }
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-text">
+            {sel
+              ? `Tìm trên ${sel.manifest.name}`
+              : `Tìm trên ${searchableCount} nguồn cùng lúc`
+            }
+          </p>
+          <p className="text-[11px] text-text-subtle mt-1">
+            Hoặc dán đường dẫn manga vào ô trên để thêm trực tiếp.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ── URL paste flows ─────────────────────────────────────────────────
 
 function UnsupportedUrlCard({
   url, onManualCreate,
@@ -427,7 +348,9 @@ function UnsupportedUrlCard({
         <AlertTriangle size={14} className="text-warning-text shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
           <p className="text-sm text-text">Không có nguồn quản lý site này</p>
-          <p className="text-[11px] text-text-subtle mt-0.5 break-all line-clamp-2">{url}</p>
+          <p className="text-[11px] text-text-subtle mt-0.5 break-all line-clamp-2">
+            {url}
+          </p>
           <button
             type="button"
             onClick={() => onManualCreate('')}
@@ -502,7 +425,7 @@ function UrlImportCard({
 }
 
 
-// ── Results — fanout, grouped by source ─────────────────────────────
+// ── Results — fanout grouped by source ──────────────────────────────
 
 function Results({
   query, searchableSources, onPick, onManualCreate,
@@ -514,9 +437,6 @@ function Results({
 }) {
   const { hits, loading, failures } = useFanoutSearch(query, searchableSources)
 
-  // Group results by source for the user to scan vertically. Each
-  // source group keeps the manifest order React Query returned, no
-  // resort across sources.
   const groups = useMemo(() => {
     const by: Record<string, { source: InstalledSource; hits: SearchHit[] }> = {}
     for (const h of hits) {
@@ -524,11 +444,12 @@ function Results({
       if (!by[id]) by[id] = { source: h.source, hits: [] }
       by[id]!.hits.push(h)
     }
-    // Stable order by manifest registration.
     return searchableSources
       .map((s) => by[s.manifest.id])
       .filter((g): g is { source: InstalledSource; hits: SearchHit[] } => !!g)
   }, [hits, searchableSources])
+
+  const singleSource = searchableSources.length === 1
 
   if (loading && hits.length === 0) {
     return (
@@ -542,15 +463,20 @@ function Results({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {groups.length > 0 && (
-        <p className="text-[11px] uppercase tracking-wider text-text-subtle px-0.5">
-          {hits.length} kết quả
-          {loading && <span className="ml-1.5">· đang tìm thêm…</span>}
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <p className="text-[11px] uppercase tracking-wider text-text-subtle">
+            {hits.length} kết quả
+            {loading && <span className="ml-1.5 normal-case">· đang tìm thêm…</span>}
+          </p>
           {failures.length > 0 && (
-            <span className="ml-1.5 text-warning-text">· {failures.length} nguồn lỗi</span>
+            <span className="text-[11px] text-warning-text inline-flex items-center gap-1">
+              <AlertTriangle size={10} />
+              {failures.length} nguồn lỗi
+            </span>
           )}
-        </p>
+        </div>
       )}
 
       {groups.map(({ source, hits: groupHits }) => (
@@ -559,28 +485,40 @@ function Results({
           source={source}
           hits={groupHits}
           onPick={onPick}
+          hideHeader={singleSource}
         />
       ))}
 
-      <ManualCreateRow query={query} hits={hits.length} onManualCreate={onManualCreate} />
+      <ManualCreateRow
+        query={query}
+        hits={hits.length}
+        onManualCreate={onManualCreate}
+      />
     </div>
   )
 }
 
 
 function SourceGroup({
-  source, hits, onPick,
+  source, hits, onPick, hideHeader,
 }: {
-  source: InstalledSource; hits: SearchHit[]; onPick: (p: Picked) => void
+  source:     InstalledSource
+  hits:       SearchHit[]
+  onPick:     (p: Picked) => void
+  hideHeader: boolean
 }) {
   const manifest = source.manifest
   return (
     <section>
-      <header className="flex items-center gap-2 px-1 mb-1.5">
-        <Favicon host={manifest.host} size={14} />
-        <span className="text-[12px] font-medium text-text">{manifest.name}</span>
-        <span className="text-[11px] text-text-subtle">{hits.length}</span>
-      </header>
+      {!hideHeader && (
+        <header className="flex items-center gap-2 px-1 mb-1.5">
+          <Favicon host={manifest.host} size={14} />
+          <span className="text-[12px] font-medium text-text">
+            {manifest.name}
+          </span>
+          <span className="text-[11px] text-text-subtle">{hits.length}</span>
+        </header>
+      )}
       <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
         {hits.slice(0, 8).map(({ manga }) => (
           <ResultRow
@@ -639,7 +577,8 @@ function ResultRow({
         onClick={pick}
         disabled={resolving}
         className={cn(
-          'w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-hover transition-colors cursor-pointer',
+          'w-full flex items-center gap-3 px-3 py-2 text-left',
+          'hover:bg-hover transition-colors cursor-pointer',
           resolving && 'opacity-60 cursor-wait',
         )}
       >
@@ -677,7 +616,8 @@ function ManualCreateRow({
       type="button"
       onClick={() => onManualCreate(seed)}
       className={cn(
-        'w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md text-left transition-colors cursor-pointer',
+        'w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md',
+        'text-left transition-colors cursor-pointer',
         hits === 0
           ? 'bg-accent/10 border border-accent/20 hover:bg-accent/15'
           : 'bg-surface-2 hover:bg-hover',
@@ -691,8 +631,10 @@ function ManualCreateRow({
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-sm text-text">
-          {hits === 0 ? `Không tìm thấy. Tạo "${seed}" thủ công?`
-                      : `Không thấy "${seed}"? Tạo thủ công`}
+          {hits === 0
+            ? `Không tìm thấy. Tạo "${seed}" thủ công?`
+            : `Không thấy "${seed}"? Tạo thủ công`
+          }
         </p>
         <p className="text-[11px] text-text-subtle mt-0.5">
           Manga không thuộc nguồn nào · tải chương từ file zip/cbz
@@ -791,7 +733,10 @@ function PickedDetail({
             onChange={(e) => setAutoTr(e.target.checked)}
             className="size-4 cursor-pointer accent-accent"
           />
-          <label htmlFor="auto-translate" className="text-sm text-text-muted cursor-pointer select-none">
+          <label
+            htmlFor="auto-translate"
+            className="text-sm text-text-muted cursor-pointer select-none"
+          >
             Tự động dịch chương mới sang {targetLang.toUpperCase()}
             <span className="text-[11px] text-text-subtle ml-1">
               · tốn quota dịch cho mỗi chương mới
@@ -881,39 +826,14 @@ function ConfirmActions({
       <Button variant="ghost" onClick={onCancel} disabled={m.isPending}>
         Quay lại
       </Button>
-      <Button variant="primary" onClick={() => m.mutate()} disabled={m.isPending}>
+      <Button
+        variant="primary"
+        onClick={() => m.mutate()}
+        disabled={m.isPending}
+      >
         <BookmarkPlus size={14} />
         Thêm vào thư viện
       </Button>
     </>
-  )
-}
-
-
-// ── Bits ────────────────────────────────────────────────────────────
-
-function Favicon({ host, size }: { host: string; size: number }) {
-  return (
-    <span
-      className="rounded-xs bg-surface-2 overflow-hidden flex items-center justify-center shrink-0"
-      style={{ width: size, height: size }}
-    >
-      <img
-        src={FAVICON(host)}
-        alt=""
-        width={size}
-        height={size}
-        loading="lazy"
-        onError={(e) => {
-          const el = e.currentTarget
-          el.style.display = 'none'
-          if (el.parentElement) {
-            el.parentElement.classList.add('text-[9px]', 'font-bold', 'text-text-muted')
-            el.parentElement.textContent = host[0]?.toUpperCase() ?? '?'
-          }
-        }}
-        className="w-full h-full object-contain"
-      />
-    </span>
   )
 }
