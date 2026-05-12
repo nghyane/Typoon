@@ -1,10 +1,29 @@
-"""Window translation — translate a batch of bubbles in one LLM call."""
+"""Window translation — translate a batch of bubbles in one LLM call.
+
+Wire format (both directions) is line-based, sentinel-prefixed blocks::
+
+    @@ KEY page=3 active
+    source line 1
+    source line 2
+    @@ KEY2 page=3
+    context-only source
+
+The model replies with the same sentinel shape, kind in place of page/active::
+
+    @@ KEY dialogue
+    translated text
+    @@ KEY2 sfx
+    RẦM
+
+The format is chosen specifically because the sentinel `@@ <UPPERCASE_KEY>` at
+column 0 cannot collide with bubble text and cannot be produced by tag
+mirroring — failure modes that plagued the previous XML format.
+"""
 
 from __future__ import annotations
 
 import re
 import time
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -12,16 +31,19 @@ from pathlib import Path
 from typoon.adapters.ctx import TranslateCtx
 from typoon.stages.brief import ChapterBrief, brief_slice
 from typoon.domain.scan import BubbleKey
-from typoon.llm.conversation import ConversationBuffer
+from typoon.llm.ir import Message
 from typoon.runs.events import LLMCall, LLMResponse
 
 from . import prompt
 
-_RETRIES = 1
 _CONTEXT_SIZE = 20
-_VALID_KINDS = {"dialogue", "sfx"}
+_VALID_KINDS = ("dialogue", "sfx")
 _OCR_NOISE_RE = re.compile(r"^[\W_\d]+$")
 _NOISE_TERMS_PATH = Path(__file__).with_name("skills_data") / "noise_terms.txt"
+
+# Strict header at column 0. Key is uppercase alnum (matches assign_keys output);
+# kind is a closed whitelist. Anything else on the line → not a header.
+_HEADER_RE = re.compile(r"^@@ ([A-Z0-9]+) (dialogue|sfx)\s*$")
 
 
 @lru_cache(maxsize=1)
@@ -62,7 +84,13 @@ async def translate_window(
     window_num: int = 0,
     total_windows: int = 0,
 ) -> list[TranslationOp]:
-    """Translate one window of bubbles. Raises on unrecoverable failure."""
+    """Translate one window of bubbles in a single LLM call.
+
+    Returns ops for whichever active keys the model successfully emitted.
+    May return fewer ops than active keys; the caller (translate_chapter)
+    is responsible for collecting missing keys across windows and issuing
+    a single combined retry. Provider errors propagate.
+    """
     key_map = {bk.key: bk for bk in all_keyed}
 
     auto_skipped = [
@@ -92,43 +120,19 @@ async def translate_window(
         target_policy=prompt.load_target_policy(ctx.target_lang),
     )
     user = _build_user(context_block, context_keys, active, key_map)
-    buf = ConversationBuffer(system, user)
 
-    remaining = set(active)
-    ops: list[TranslationOp] = []
-
-    for attempt in range(_RETRIES + 1):
-        ctx.hook.on(LLMCall(agent=f"translate w{window_num+1}/{total_windows}", turn=attempt + 1))
-        t0 = time.monotonic()
-        resp = await ctx.translation_provider.call(buf.messages(), [])
-        ms = (time.monotonic() - t0) * 1000
-
-        parsed = _parse_xml(resp.text or "", remaining, key_map)
-        ctx.hook.on(LLMResponse(
-            agent=f"translate w{window_num+1}/{total_windows}",
-            turn=attempt + 1,
-            tool_calls=len(parsed),
-            ms=ms,
-        ))
-
-        for op in parsed:
-            ops.append(op)
-            remaining.discard(op.key)
-
-        if not remaining:
-            return auto_skipped + ops
-
-        if attempt < _RETRIES:
-            buf.append_assistant(resp.text or "")
-            buf.append_user(
-                f"Missing ids: {', '.join(sorted(remaining))}\n"
-                f"Reply with a <translations> block for ONLY these missing ids."
-            )
-
-    raise RuntimeError(
-        f"translate_window w{window_num+1}: incomplete after {_RETRIES+1} attempts. "
-        f"Missing: {', '.join(sorted(remaining))}"
+    agent = f"translate w{window_num+1}/{total_windows}"
+    ctx.hook.on(LLMCall(agent=agent, turn=1))
+    t0 = time.monotonic()
+    resp = await ctx.translation_provider.call(
+        [Message.system(system), Message.user_text(user)], [],
     )
+    ms = (time.monotonic() - t0) * 1000
+
+    ops = _parse_blocks(resp.text or "", active, key_map)
+    ctx.hook.on(LLMResponse(agent=agent, turn=1, tool_calls=len(ops), ms=ms))
+
+    return auto_skipped + ops
 
 
 def _build_user(
@@ -137,12 +141,12 @@ def _build_user(
     active: set[str],
     key_map: dict[str, BubbleKey],
 ) -> str:
-    lines = []
+    blocks: list[str] = []
     for key in context_keys:
         bk = key_map[key]
-        active_attr = ' active="true"' if key in active else ""
-        lines.append(f'<bubble key="{key}" page="{bk.page_index}"{active_attr}>{bk.source_text}</bubble>')
-    return f"{context_block}\n\n" + "\n".join(lines)
+        flag = " active" if key in active else ""
+        blocks.append(f"@@ {key} page={bk.page_index}{flag}\n{bk.source_text}")
+    return f"{context_block}\n\n" + "\n".join(blocks)
 
 
 def _is_auto_skip(text: str) -> bool:
@@ -159,46 +163,69 @@ def _is_auto_skip(text: str) -> bool:
     return False
 
 
-def _parse_xml(
+def _parse_blocks(
     text: str,
     active: set[str],
     key_map: dict[str, BubbleKey],
 ) -> list[TranslationOp]:
+    """Parse line-sentinel translation blocks. Tolerant of preamble/postamble.
+
+    A block starts on a line matching `^@@ <KEY> <kind>$` and ends at the
+    next such header or end of text. Body lines are joined with `\n`,
+    stripped of surrounding whitespace. Unknown/duplicate keys are
+    dropped. Auto-skip bubbles are forced to kind="skip" regardless of
+    what the model emitted.
+    """
     if "</think>" in text:
-        text = text[text.rfind("</think>") + len("</think>"):].strip()
+        text = text[text.rfind("</think>") + len("</think>"):]
 
-    start = text.find("<translations>")
-    end = text.find("</translations>")
-    if start == -1 or end == -1:
-        return []
-
-    try:
-        root = ET.fromstring(text[start: end + len("</translations>")])
-    except ET.ParseError:
-        return []
+    # Strip ```...``` code fences if model wrapped its reply.
+    text = text.strip()
+    if text.startswith("```"):
+        first_nl = text.find("\n")
+        if first_nl != -1:
+            text = text[first_nl + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
 
     ops: list[TranslationOp] = []
     seen: set[str] = set()
+    current_key: str | None = None
+    current_kind: str = "dialogue"
+    body: list[str] = []
 
-    for t in root.findall("t"):
-        key = t.attrib.get("id", "").strip().lstrip("#")
-        kind = t.attrib.get("kind", "dialogue").strip().lower()
-        translated = (t.text or "").strip()
+    def flush() -> None:
+        nonlocal current_key
+        if current_key is None:
+            return
+        key, kind = current_key, current_kind
+        translated = "\n".join(body).strip()
+        current_key = None
+        body.clear()
 
-        if not key or key not in key_map or key not in active or key in seen:
-            continue
-        if kind not in _VALID_KINDS:
-            kind = "dialogue"
+        if key not in key_map or key not in active or key in seen:
+            return
         # Auto-skip rubble (single digits/symbols) regardless of what the LLM
         # decided. The LLM cannot output kind="skip" itself — that decision is
         # owned by the context agent (brief.noise_keys) and the deterministic
         # _is_auto_skip filter.
         if _is_auto_skip(key_map[key].source_text):
-            kind, translated = "skip", ""
-        if kind != "skip" and not translated:
-            continue
-
+            seen.add(key)
+            ops.append(TranslationOp(key=key, kind="skip"))
+            return
+        if not translated:
+            return
         seen.add(key)
-        ops.append(TranslationOp(key=key, kind=kind, text=translated if kind != "skip" else ""))
+        ops.append(TranslationOp(key=key, kind=kind, text=translated))
+
+    for line in text.splitlines():
+        m = _HEADER_RE.match(line)
+        if m:
+            flush()
+            current_key = m.group(1)
+            current_kind = m.group(2)
+        elif current_key is not None:
+            body.append(line)
+    flush()
 
     return ops

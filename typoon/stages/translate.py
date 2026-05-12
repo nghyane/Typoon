@@ -60,6 +60,9 @@ async def translate_chapter(
     windows = _make_windows(translatable)
     total   = len(windows)
 
+    # Fan out windows in parallel. Provider errors propagate (chapter fails);
+    # parse-incompleteness does not — translate_window returns whatever it
+    # parsed and we collect missing keys for a single combined retry below.
     results = await asyncio.gather(*[
         translate_window(ctx, brief, wk, translatable, window_num=i, total_windows=total)
         for i, wk in enumerate(windows)
@@ -69,6 +72,23 @@ async def translate_chapter(
     for batch in results:
         for op in batch:
             ops[op.key] = op
+
+    missing = [bk.key for bk in translatable if bk.key not in ops]
+    if missing:
+        retry_ops = await translate_window(
+            ctx, brief, missing, translatable,
+            window_num=total, total_windows=total + 1,
+        )
+        for op in retry_ops:
+            ops[op.key] = op
+        still_missing = [k for k in missing if k not in ops]
+        if still_missing:
+            raise RuntimeError(
+                f"translate_chapter: {len(still_missing)} keys unresolved after retry: "
+                f"{', '.join(still_missing[:10])}"
+                + (f" (+{len(still_missing) - 10} more)" if len(still_missing) > 10 else "")
+            )
+
     return _build(scanned, keyed, ops), brief
 
 
