@@ -13,6 +13,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as TitleEntryIdRouteImport } from './routes/title.$entryId'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -35,6 +36,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TitleEntryIdRoute = TitleEntryIdRouteImport.update({
+  id: '/title/$entryId',
+  path: '/title/$entryId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
   id: '/auth/callback',
   path: '/auth/callback',
@@ -47,6 +53,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/title/$entryId': typeof TitleEntryIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +61,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/title/$entryId': typeof TitleEntryIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,13 +70,33 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/title/$entryId': typeof TitleEntryIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/library' | '/login' | '/settings' | '/auth/callback'
+  fullPaths:
+    | '/'
+    | '/library'
+    | '/login'
+    | '/settings'
+    | '/auth/callback'
+    | '/title/$entryId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/library' | '/login' | '/settings' | '/auth/callback'
-  id: '__root__' | '/' | '/library' | '/login' | '/settings' | '/auth/callback'
+  to:
+    | '/'
+    | '/library'
+    | '/login'
+    | '/settings'
+    | '/auth/callback'
+    | '/title/$entryId'
+  id:
+    | '__root__'
+    | '/'
+    | '/library'
+    | '/login'
+    | '/settings'
+    | '/auth/callback'
+    | '/title/$entryId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -77,6 +105,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
+  TitleEntryIdRoute: typeof TitleEntryIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -109,6 +138,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/title/$entryId': {
+      id: '/title/$entryId'
+      path: '/title/$entryId'
+      fullPath: '/title/$entryId'
+      preLoaderRoute: typeof TitleEntryIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth/callback': {
       id: '/auth/callback'
       path: '/auth/callback'
@@ -125,6 +161,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
   AuthCallbackRoute: AuthCallbackRoute,
+  TitleEntryIdRoute: TitleEntryIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

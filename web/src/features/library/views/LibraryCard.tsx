@@ -45,12 +45,11 @@ const STATUS_TONE: Record<LibraryStatus, TagTone> = {
 interface Props { item: LibraryItem }
 
 export function LibraryItemCard({ item }: Props) {
-  // TODO(slice 13): replace with hub route /title/$entryId once it ships.
-  // Until then click is inert — card still renders state for review.
   return (
-    <div
-      className="group flex flex-col gap-2 cursor-default"
-      data-entry={item.entryId}
+    <Link
+      to="/title/$entryId"
+      params={{ entryId: String(item.entryId) }}
+      className="group flex flex-col gap-2"
     >
       <div className="relative w-full aspect-[2/3] rounded-md overflow-hidden">
         <Cover
@@ -95,7 +94,7 @@ export function LibraryItemCard({ item }: Props) {
       <p className="text-[13px] font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
         {item.title}
       </p>
-    </div>
+    </Link>
   )
 }
 
