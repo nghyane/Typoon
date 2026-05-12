@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Search, Link as LinkIcon, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { input as inputCls } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
+import { useDebouncedValue } from '@shared/lib/useDebouncedValue'
 import { hasSearch } from '@features/browse/manifest/runtime'
 import { useAllSources, useSources } from '@features/browse/sources'
 import type { InstalledSource } from '@features/browse/manifest/types'
@@ -56,7 +57,11 @@ export function SearchPane({
   // Fanout always queries every searchable source; scope filter is
   // applied client-side over the merged hit list. That way the user
   // can switch source without re-running the request.
-  const { hits, loading, failures } = useFanoutSearch(query, searchable)
+  // Debounce the query before passing to the network. Each keystroke
+  // updates the input synchronously (no laggy typing) but fanout only
+  // fires after 250ms of stability — fewer requests, no flicker.
+  const debouncedQuery = useDebouncedValue(query, 250)
+  const { hits, loading, failures } = useFanoutSearch(debouncedQuery, searchable)
 
   const scopedHits = useMemo(() => {
     if (scopeId === null) return hits
@@ -84,7 +89,7 @@ export function SearchPane({
           onPick={onPick}
           onManualCreate={onManualCreate}
         />
-      ) : query.trim().length < 2 ? (
+      ) : debouncedQuery.trim().length < 2 ? (
         <SourceListHint />
       ) : (
         <>

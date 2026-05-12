@@ -10,7 +10,7 @@
 //   • we cap to `PER_SOURCE_LIMIT` after sorting — sources that return
 //     50+ results don't drown other sources in the merged list.
 
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, keepPreviousData } from '@tanstack/react-query'
 import {
   fetchBrowse, hasSearch,
 } from '@features/browse/manifest/runtime'
@@ -108,8 +108,13 @@ export function useFanoutSearch(
       queryFn:   async () =>
         await fetchBrowse(s.manifest, { search: true }, { q: q.trim() }),
       enabled,
-      staleTime: SEARCH_STALE,
-      retry:     false,
+      staleTime:       SEARCH_STALE,
+      retry:           false,
+      // Keep the previous source result on screen while a new query
+      // is in flight. Without this, every keystroke (post-debounce)
+      // would flash the per-source list to empty and back, making
+      // the modal feel jumpy on slow networks.
+      placeholderData: keepPreviousData,
     })),
   })
 
@@ -120,7 +125,11 @@ export function useFanoutSearch(
   for (let i = 0; i < queries.length; i++) {
     const result = queries[i]!
     const source = queried[i]!
-    if (result.isPending && enabled) loading = true
+    // `isFetching` covers both first-load and subsequent re-fetches.
+    // With placeholderData=keepPreviousData, `isPending` would be
+    // false on every keystroke after the first; isFetching keeps the
+    // loading indicator honest.
+    if (result.isFetching && enabled) loading = true
     if (result.error) {
       failures.push({ sourceId: source.manifest.id, error: result.error as Error })
     }
