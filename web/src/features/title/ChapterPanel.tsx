@@ -3,6 +3,7 @@ import {
   BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2,
   ArrowDown, RefreshCw, Check, X,
 } from 'lucide-react'
+import { getRouteApi } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { DataTable, Th } from '@shared/ui/DataTable'
@@ -18,20 +19,29 @@ import {
 // =============================================================================
 // ChapterPanel — hub's chapter list with bulk-select support.
 //
-// UX agreed in the design pass (see chat history):
-//   • Toolbar: search left, status filter + sort right.
-//   • SelectionBar appears once at least one chapter is checked;
-//     primary action 'Dịch hàng loạt' eligibility-filters to chapters
-//     that don't yet have a readable target_lang version.
+// State model:
+//   • filter / q / sort   live on the URL (TanStack Router search
+//                         params). Refresh preserves them, links
+//                         share them.
+//   • sel                 transient client state — doesn't belong
+//                         in the URL.
+//
+// UX agreed in the design pass:
+//   • Toolbar: segmented filter (counts inline) + search + sort
+//     cycle button. Mirrors the ProjectDetail DataToolbar pattern.
+//   • SelectionBar floats at bottom-center while ANY chapter is
+//     checked, primary action 'Dịch hàng loạt' eligibility-filters
+//     to chapters that don't yet have a readable target_lang version.
 //   • Row: checkbox + 'Ch.N + label' + lang chips + smart action.
-//     Smart action picks 'Đọc {lang}' when a readable version exists,
-//     'Xem tiến độ' when running/pending, 'Thử lại' on error, 'Dịch'
-//     otherwise. Caret ▾ on multi-version rows opens an Action menu
-//     with every version + 'Dịch riêng' force-spawn.
+//     Smart action picks 'Đọc {lang}' when a readable version
+//     exists, 'Xem tiến độ' when running/pending, 'Thử lại' on
+//     error, 'Dịch' otherwise.
 // =============================================================================
 
 type StatusFilter = 'all' | 'translated' | 'running' | 'error' | 'raw'
 type Sort         = 'chapter_desc' | 'chapter_asc' | 'updated_desc'
+
+const titleRoute = getRouteApi('/title/$entryId')
 
 interface Props {
   chapters:   HubChapter[]
@@ -40,10 +50,20 @@ interface Props {
 }
 
 export function ChapterPanel({ chapters, targetLang, loading }: Props) {
-  const [q,      setQ]      = useState('')
-  const [filter, setFilter] = useState<StatusFilter>('all')
-  const [sort,   setSort]   = useState<Sort>('chapter_desc')
-  const [sel,    setSel]    = useState<Set<string>>(new Set())
+  const search = titleRoute.useSearch()
+  const nav    = titleRoute.useNavigate()
+  const filter = search.filter ?? 'all'
+  const q      = search.q      ?? ''
+  const sort   = search.sort   ?? 'chapter_desc'
+
+  const setFilter = (next: StatusFilter) =>
+    nav({ search: (s) => ({ ...s, filter: next === 'all' ? undefined : next }) })
+  const setQ = (next: string) =>
+    nav({ search: (s) => ({ ...s, q: next || undefined }) })
+  const setSort = (next: Sort) =>
+    nav({ search: (s) => ({ ...s, sort: next === 'chapter_desc' ? undefined : next }) })
+
+  const [sel, setSel] = useState<Set<string>>(new Set())
 
   const counts = useMemo(() => countByStatus(chapters, targetLang), [chapters, targetLang])
 
