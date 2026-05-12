@@ -600,9 +600,7 @@ function ChapterTable({
                 When selection mode is active, the master 'select all'
                 checkbox lives here. */}
             <th className="pl-3 pr-2 py-2 w-8 text-left">
-              {anySelected && (
-                <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
-              )}
+              <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
             </th>
             <th className="pr-3 py-2 text-right">#</th>
             <th className="px-3 py-2 text-left">
@@ -728,14 +726,14 @@ function ChapterRow({
 // old ones fade to text-subtle. No NEW badge needed.
 
 function TimeCell({ iso }: { iso: string | null }) {
-  if (!iso) return <span className="text-xs text-text-subtle">—</span>
+  if (!iso) return <span className="text-sm text-text-subtle">—</span>
   const ageHours = (Date.now() - new Date(iso).getTime()) / 36e5
   const tone =
     ageHours < 24       ? 'text-text font-medium'
   : ageHours < 24 * 7   ? 'text-text-muted'
                         : 'text-text-subtle'
   return (
-    <span className={cn('text-xs', tone)} title={iso}>
+    <span className={cn('text-sm', tone)} title={iso}>
       {timeAgo(iso)}
     </span>
   )
