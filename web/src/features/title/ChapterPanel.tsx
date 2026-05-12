@@ -556,25 +556,29 @@ function SelectionBar({
 }
 
 
-// ── List ────────────────────────────────────────────────────────────
+// ── Table ───────────────────────────────────────────────────────────
 //
-// Flex-based list, not a <table>. The chapter list is a 1D sequence
-// (one chapter per row), not 2D tabular data — <table> was forcing
-// fixed cell widths which left huge gaps between columns and made
-// whole-row click target awkward to wire.
+// Real <table> — the chapter list IS tabular data (number, label,
+// time, actions). Table primitive gives us automatic content-driven
+// column widths (so chapter numbers '1' / '999' / '1.5' align across
+// rows without min-width tricks), ARIA semantics, and predictable
+// row geometry the browser optimizes for.
 //
-// Layout per row:
-//   ┃ [num] [label + sub-line]                  [time]  [actions]
-//   ▲                                                              ▲
-//   left stripe (state)                          whole row is a link
-//                                                target = primary
-//                                                action (read / open
-//                                                source / focus
-//                                                spawn).
+// Earlier mistake: hard-coding w-N on every <td>, keeping <thead>
+// (4-line noise above 40 chapters of data the user already
+// understands), and nesting <a><Button/></a> inside an
+// <td text-right><div></div></td> action cell — that's the layout
+// bug from the screenshot, not the <table> itself.
 //
-// Bulk-select checkbox lives at the left edge and reveals on row
-// hover OR when there's already an active selection — at-rest list
-// looks clean.
+// This pass:
+//   • No <thead>. Column labels are obvious from the data.
+//   • <td>s let content drive width (no w-N except where a min is
+//     genuinely required to avoid jitter on short labels).
+//   • Action cell flattens: one <td> containing the action group,
+//     no nested <a> wrapping the <Button/>. The action <a> sits as
+//     a sibling of any secondary spawn so they share the cell.
+//   • State stripe via box-shadow on the first <td> — paints over
+//     row background reliably, no ::before pseudo gymnastics.
 
 function ChapterTable({
   chapters, targetLang, sel, onToggle, onToggleAll, allChecked,
@@ -597,18 +601,20 @@ function ChapterTable({
           </span>
         </div>
       )}
-      <div role="list">
-        {chapters.map((c) => (
-          <ChapterRow
-            key={c.number}
-            chapter={c}
-            targetLang={targetLang}
-            checked={sel.has(c.number)}
-            anySelected={anySelected}
-            onToggle={() => onToggle(c.number)}
-          />
-        ))}
-      </div>
+      <table className="w-full">
+        <tbody>
+          {chapters.map((c) => (
+            <ChapterRow
+              key={c.number}
+              chapter={c}
+              targetLang={targetLang}
+              checked={sel.has(c.number)}
+              anySelected={anySelected}
+              onToggle={() => onToggle(c.number)}
+            />
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -627,71 +633,56 @@ function ChapterRow({
   const readable   = preferredReadable(chapter, targetLang)
   const running    = inFlight(chapter, targetLang)
   const errored    = lastError(chapter, targetLang)
-  // Other langs available for this chapter — surface only when they
-  // ADD information (i.e. langs the user can't already read in their
-  // target). For a vi→vi reader on a 40/40 translated title, this
-  // is empty and the sub-line stays clean.
   const tgt        = targetLang?.toLowerCase() ?? null
   const extraLangs = chapterLangs(chapter).filter((l) => l !== tgt)
-  // Clean label — strip 'Chương N' / 'Chapter N' / '第N话' duplicates.
   const label      = stripChapterPrefix(chapter.label, chapter.number)
-  // Can we spawn a NEW translation for this chapter? True iff there
-  // exists at least one raw version we haven't translated to target.
   const hasRaw     = chapter.versions.some((v) => v.kind === 'raw')
   const canSpawn   = hasRaw && status !== 'running'
 
-  // Left-edge state stripe — peripheral state indicator. Translated
-  // = no stripe (default = good); other states get a 2px color.
-  const stripe =
-    status === 'running' ? 'bg-info'
-  : status === 'error'   ? 'bg-error'
-  : status === 'raw'     ? 'bg-warning'
-                         : 'bg-transparent'
-
-  // Whole-row click target — primary action is 'open the reader'
-  // (currently external URL for raws, slice 14 for translations).
-  // The row anchors the link; per-element controls (checkbox,
-  // secondary spawn) stop propagation so they don't trigger the row.
-  const primaryHref =
-    readable?.kind === 'raw' && readable.upstreamUrl
-      ? readable.upstreamUrl
-      : null
+  // State stripe color — first <td> renders this via an inset box
+  // shadow on the LEFT edge. Box-shadow is the cleanest way to paint
+  // a 2px stripe inside a cell without affecting layout, and unlike
+  // a pseudo-element on <tr> it actually renders reliably across
+  // engines.
+  const stripeColor =
+    status === 'running' ? 'var(--color-info)'
+  : status === 'error'   ? 'var(--color-error)'
+  : status === 'raw'     ? 'var(--color-warning)'
+                         : 'transparent'
 
   return (
-    <div
-      role="listitem"
+    <tr
       className={cn(
-        'group relative flex items-center gap-3 pl-4 pr-3 py-3',
-        'border-b border-border-soft last:border-0 transition-colors',
+        'group transition-colors border-b border-border-soft last:border-0',
         checked ? 'bg-row-active' : 'hover:bg-hover',
       )}
     >
-      {/* State stripe */}
-      <span
-        aria-hidden
-        className={cn('absolute left-0 top-0 bottom-0 w-[2px]', stripe)}
-      />
-
-      {/* Checkbox — at-rest invisible. Reveals on row hover OR when
-          there's already an active selection. */}
-      <div
-        className={cn(
-          'shrink-0 transition-opacity',
-          checked || anySelected
-            ? 'opacity-100'
-            : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
-        )}
+      {/* Checkbox lane. State stripe lives on this cell so it paints
+          flush at the row's left edge regardless of cell padding. */}
+      <td
+        className="pl-3 pr-2 py-3 w-8"
+        style={{ boxShadow: `inset 2px 0 0 0 ${stripeColor}` }}
       >
-        <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
-      </div>
+        <div
+          className={cn(
+            'transition-opacity',
+            checked || anySelected
+              ? 'opacity-100'
+              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
+          )}
+        >
+          <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
+        </div>
+      </td>
 
-      {/* Number — tabular, fixed lane so labels align vertically. */}
-      <span className="font-semibold text-text tabular shrink-0 min-w-[3ch] text-right">
+      {/* Number — tabular, content-driven width, right-aligned so
+          single / double / triple digits stack with the same edge. */}
+      <td className="pr-3 py-3 tabular text-right font-semibold text-text whitespace-nowrap">
         {chapter.number}
-      </span>
+      </td>
 
-      {/* Label + sub-line — whole area is the click target. */}
-      <RowLink href={primaryHref} className="flex-1 min-w-0">
+      {/* Label + sub-line — flex container fills available width. */}
+      <td className="px-3 py-3 min-w-0 w-full">
         {label ? (
           <div className="text-sm text-text-muted truncate">{label}</div>
         ) : (
@@ -704,55 +695,27 @@ function ChapterRow({
           errored={errored}
           extraLangs={extraLangs}
         />
-      </RowLink>
+      </td>
 
-      <div className="hidden sm:block shrink-0 w-20 text-right">
+      <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap text-right">
         <TimeCell iso={chapter.updatedAt} />
-      </div>
+      </td>
 
-      <div className="shrink-0 flex items-center gap-1">
-        {canSpawn && status !== 'raw' && status !== 'error' && (
-          <SecondarySpawn />
-        )}
-        <Action
-          chapter={chapter}
-          status={status}
-          readable={readable}
-          running={running}
-          errored={errored}
-        />
-      </div>
-    </div>
-  )
-}
-
-
-// ── Row link wrapper ────────────────────────────────────────────────
-//
-// Turns the row's label area into a click target when a primary
-// reader href exists. Without an href (translation reader not wired
-// yet) it degrades to a plain <div> — the action button still works,
-// the row just isn't clickable from the label area.
-
-function RowLink({
-  href, className, children,
-}: {
-  href:      string | null
-  className: string
-  children:  React.ReactNode
-}) {
-  if (!href) {
-    return <div className={className}>{children}</div>
-  }
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(className, 'block hover:no-underline')}
-    >
-      {children}
-    </a>
+      <td className="pl-2 pr-3 py-3 whitespace-nowrap text-right">
+        <div className="inline-flex items-center gap-1 justify-end">
+          {canSpawn && status !== 'raw' && status !== 'error' && (
+            <SecondarySpawn />
+          )}
+          <Action
+            chapter={chapter}
+            status={status}
+            readable={readable}
+            running={running}
+            errored={errored}
+          />
+        </div>
+      </td>
+    </tr>
   )
 }
 
