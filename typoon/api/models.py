@@ -175,6 +175,16 @@ class LibraryMaterialLink(BaseModel):
 LibraryStatus = Literal["reading", "plan", "on_hold", "done", "dropped"]
 
 
+class TranslationSummary(BaseModel):
+    """Counts of *the viewer's* translations per draft state, keyed
+    by the library_entry. Cards use this for the "Đang dịch 2 · Lỗi 1"
+    chip so they never need a per-entry follow-up query."""
+    pending: int = 0
+    running: int = 0
+    done:    int = 0
+    error:   int = 0
+
+
 class LibraryEntryOut(BaseModel):
     id:                   int
     title:                str
@@ -191,6 +201,7 @@ class LibraryEntryOut(BaseModel):
     last_read_at:         str | None = None
     last_chapter_ref:     dict | None = None
     materials:            list[LibraryMaterialLink] = []
+    translation_summary:  TranslationSummary = TranslationSummary()
     created_at:           str | None = None
     updated_at:           str | None = None
 

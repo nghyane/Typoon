@@ -1339,11 +1339,43 @@ class PostgresStore:
                 "FROM library_materials WHERE entry_id = ANY($1::bigint[])",
                 ids,
             )
+            # Translation summary per entry — pivots by draft state so the
+            # library card can render "Đang dịch 2 · Lỗi 1" without N+1
+            # queries. Counts only translations the user owns; cross-user
+            # cached translations don't count as "the user's work".
+            summary_rows = await conn.fetch(
+                """
+                SELECT lm.entry_id,
+                       td.state,
+                       COUNT(*) AS n
+                FROM   library_materials lm
+                JOIN   chapters c          ON c.material_id = lm.material_id
+                JOIN   translations t      ON t.chapter_id  = c.id
+                                          AND t.owner_id   = $2
+                JOIN   translation_drafts td ON td.id = t.draft_id
+                WHERE  lm.entry_id = ANY($1::bigint[])
+                  AND  t.takedown_at IS NULL
+                GROUP BY lm.entry_id, td.state
+                """,
+                ids, user_id,
+            )
         by_entry: dict[int, list[dict]] = {i: [] for i in ids}
         for l in links:
             d = dict(l)
             eid = d.pop("entry_id")
             by_entry.setdefault(eid, []).append(d)
+        summary_by_entry: dict[int, dict[str, int]] = {
+            i: {"pending": 0, "running": 0, "done": 0, "error": 0}
+            for i in ids
+        }
+        for r in summary_rows:
+            bucket = summary_by_entry.setdefault(
+                r["entry_id"],
+                {"pending": 0, "running": 0, "done": 0, "error": 0},
+            )
+            state = r["state"]
+            if state in bucket:
+                bucket[state] = int(r["n"])
         out: list[dict] = []
         for e in entries:
             d = dict(e)
@@ -1351,6 +1383,10 @@ class PostgresStore:
             if isinstance(raw, str):
                 d["last_chapter_ref"] = json.loads(raw)
             d["materials"] = by_entry.get(d["id"], [])
+            d["translation_summary"] = summary_by_entry.get(
+                d["id"],
+                {"pending": 0, "running": 0, "done": 0, "error": 0},
+            )
             out.append(d)
         return out
 
@@ -1371,11 +1407,34 @@ class PostgresStore:
                 "FROM library_materials WHERE entry_id=$1",
                 entry_id,
             )
+            # Same per-state translation summary the list endpoint
+            # carries — keeps the hub page's single-entry fetch as
+            # informative as the grid's bulk fetch.
+            summary_rows = await conn.fetch(
+                """
+                SELECT td.state, COUNT(*) AS n
+                FROM   library_materials lm
+                JOIN   chapters c          ON c.material_id = lm.material_id
+                JOIN   translations t      ON t.chapter_id  = c.id
+                                          AND t.owner_id   = $2
+                JOIN   translation_drafts td ON td.id = t.draft_id
+                WHERE  lm.entry_id = $1
+                  AND  t.takedown_at IS NULL
+                GROUP BY td.state
+                """,
+                entry_id, user_id,
+            )
         d = dict(entry)
         raw = d.get("last_chapter_ref")
         if isinstance(raw, str):
             d["last_chapter_ref"] = json.loads(raw)
         d["materials"] = [dict(l) for l in links]
+        summary = {"pending": 0, "running": 0, "done": 0, "error": 0}
+        for r in summary_rows:
+            state = r["state"]
+            if state in summary:
+                summary[state] = int(r["n"])
+        d["translation_summary"] = summary
         return d
 
     async def create_library_entry(

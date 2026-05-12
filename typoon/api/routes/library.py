@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from typoon.api.deps import get_store, require_user
 from typoon.api.models import (
     LibraryEntryOut, LibraryMaterialLink, LibrarySuggestionOut,
-    LibraryStatus,
+    LibraryStatus, TranslationSummary,
 )
 from typoon.api.routes._shared import require_library_entry, require_material
 from typoon.storage import Store
@@ -40,6 +40,7 @@ router = APIRouter(
 
 
 def _entry_to_out(row: dict) -> LibraryEntryOut:
+    summary = row.get("translation_summary") or {}
     return LibraryEntryOut(
         id=row["id"],
         title=row["title"],
@@ -58,6 +59,12 @@ def _entry_to_out(row: dict) -> LibraryEntryOut:
             )
             for m in (row.get("materials") or [])
         ],
+        translation_summary=TranslationSummary(
+            pending=int(summary.get("pending", 0)),
+            running=int(summary.get("running", 0)),
+            done=int(summary.get("done", 0)),
+            error=int(summary.get("error", 0)),
+        ),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
