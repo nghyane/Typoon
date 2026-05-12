@@ -15,6 +15,7 @@ import {
   stripChapterPrefix,
   type HubChapter, type HubVersion,
 } from './mergeChapters'
+import { useSpawnChapter } from './useSpawnChapter'
 
 // =============================================================================
 // ChapterPanel
@@ -336,6 +337,16 @@ function ChapterRow({
   const errored  = lastError(chapter, targetLang)
   const label    = stripChapterPrefix(chapter.label, chapter.number)
 
+  // Spawn hook — drives download→pack→upload→translate for this row.
+  const { progress, spawn, reset } = useSpawnChapter(targetLang ?? '')
+  const spawning = progress.phase !== 'idle' && progress.phase !== 'done' && progress.phase !== 'error'
+
+  // Best raw version to spawn from: primary material first
+  // (mergeChapters already puts primary material versions first).
+  const spawnableRaw = chapter.versions.find(
+    (v) => v.kind === 'raw' && !!v.upstreamUrl && !!v.sourceId,
+  ) ?? null
+
   const stripeColor =
     status === 'running' ? 'var(--color-info)'
   : status === 'error'   ? 'var(--color-error)'
@@ -369,15 +380,27 @@ function ChapterRow({
           ? <div className="text-sm text-text-muted truncate">{label}</div>
           : <div className="text-sm text-text-subtle">—</div>
         }
-        {/* Sub-line: only for in-progress states where the action
-            cell can't carry the full context. */}
-        {status === 'running' && (
+        {/* Sub-line: in-progress translation states + spawn progress */}
+        {progress.phase === 'error' && (
+          <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-error-text">
+            <AlertCircle size={10} className="shrink-0" />
+            <span className="truncate">{progress.error}</span>
+            <button type="button" onClick={reset} className="underline ml-1 cursor-pointer">Đóng</button>
+          </div>
+        )}
+        {spawning && (
+          <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-info-text">
+            <Loader2 size={10} className="animate-spin shrink-0" />
+            <SpawnLabel progress={progress} />
+          </div>
+        )}
+        {!spawning && progress.phase === 'idle' && status === 'running' && (
           <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-info-text">
             <Loader2 size={10} className="animate-spin shrink-0" />
             {running?.creatorName ? `@${running.creatorName}` : 'Đang dịch'}
           </div>
         )}
-        {status === 'error' && (
+        {!spawning && progress.phase === 'idle' && status === 'error' && (
           <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-error-text">
             <AlertCircle size={10} className="shrink-0" />
             {errored?.creatorName ? `@${errored.creatorName}` : 'Lỗi dịch'}
@@ -390,7 +413,13 @@ function ChapterRow({
       </td>
 
       <td className="pl-2 pr-3 py-3 whitespace-nowrap text-right">
-        <RowAction status={status} readable={readable} />
+        <RowAction
+          status={status}
+          readable={readable}
+          spawnableRaw={spawnableRaw}
+          spawning={spawning}
+          onSpawn={() => spawnableRaw && spawn(spawnableRaw)}
+        />
       </td>
     </tr>
   )
@@ -398,26 +427,27 @@ function ChapterRow({
 
 
 // ── Action cell ──────────────────────────────────────────────────────
-//
-// Only renders when there's something the user can actually DO now.
-// Disabled placeholders for unwired slices are removed — they signal
-// "broken" not "coming soon".
-//
-// Wired (slice 13):
-//   raw + upstreamUrl → external link to source page
-//
-// Not yet wired:
-//   translation done  → reader (slice 14)
-//   raw no url        → spawn dialog (slice 15)
-//   error             → retry (slice 15)
-//   running           → nothing (wait)
 
 function RowAction({
-  status, readable,
+  status, readable, spawnableRaw, spawning, onSpawn,
 }: {
-  status:   StatusFilter
-  readable: HubVersion | null
+  status:       StatusFilter
+  readable:     HubVersion | null
+  spawnableRaw: HubVersion | null
+  spawning:     boolean
+  onSpawn:      () => void
 }) {
+  // Spawning in progress — spinner replaces all actions.
+  if (spawning) {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-info-text">
+        <Loader2 size={12} className="animate-spin" />
+        Đang xử lý
+      </span>
+    )
+  }
+
+  // Readable raw — open source in new tab.
   if (readable?.kind === 'raw' && readable.upstreamUrl) {
     return (
       <a
@@ -434,8 +464,37 @@ function RowAction({
       </a>
     )
   }
-  // All other states: nothing actionable yet.
+
+  // Raw chapter with spawnable source — show Dịch button.
+  if (status === 'raw' && spawnableRaw) {
+    return (
+      <button
+        type="button"
+        onClick={onSpawn}
+        className="inline-flex items-center gap-1 text-sm text-accent hover:text-accent/80 transition-colors cursor-pointer"
+        title={`Tải và dịch từ ${spawnableRaw.sourceName ?? 'nguồn'}`}
+      >
+        <Sparkles size={12} />
+        Dịch
+      </button>
+    )
+  }
+
   return null
+}
+
+
+// ── Spawn progress label ─────────────────────────────────────────────
+
+function SpawnLabel({ progress }: { progress: { phase: string; current: number; total: number; pct: number } }) {
+  switch (progress.phase) {
+    case 'fetching':    return <>Đang lấy danh sách trang…</>
+    case 'downloading': return <>{progress.current}/{progress.total} trang</>
+    case 'packing':     return <>Đang nén…</>
+    case 'uploading':   return <>Đang tải lên {progress.pct}%</>
+    case 'spawning':    return <>Đang khởi động dịch…</>
+    default:            return null
+  }
 }
 
 
