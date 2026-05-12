@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
-  Sparkles, Loader2, AlertCircle,
-  BookOpen, ArrowDown, ArrowUp, Clock,
+  Sparkles, Loader2, AlertCircle, BookOpen,
+  ArrowDown, ArrowUp, Clock, X,
 } from 'lucide-react'
 import { getRouteApi } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
@@ -17,25 +17,19 @@ import {
 } from './mergeChapters'
 
 // =============================================================================
-// ChapterPanel — hub's chapter list with bulk-select support.
+// ChapterPanel
 //
-// State model:
-//   • filter / q / sort   live on the URL (TanStack Router search
-//                         params). Refresh preserves them, links
-//                         share them.
-//   • sel                 transient client state — doesn't belong
-//                         in the URL.
+// Two user intents:
+//   READ      — find chapters that already have a VI translation → Đọc
+//   TRANSLATE — find chapters without VI → Dịch (slice 15)
 //
-// UX agreed in the design pass:
-//   • Toolbar: segmented filter (counts inline) + search + sort
-//     cycle button. Mirrors the ProjectDetail DataToolbar pattern.
-//   • SelectionBar floats at bottom-center while ANY chapter is
-//     checked, primary action 'Dịch hàng loạt' eligibility-filters
-//     to chapters that don't yet have a readable target_lang version.
-//   • Row: checkbox + 'Ch.N + label' + lang chips + smart action.
-//     Smart action picks 'Đọc {lang}' when a readable version
-//     exists, 'Xem tiến độ' when running/pending, 'Thử lại' on
-//     error, 'Dịch' otherwise.
+// Toolbar: status pills (Tất cả / Đã dịch / Chưa có / Đang dịch / Lỗi)
+//          + search + sort. Nothing else.
+//
+// Row: number | label | time | action
+//   action = "Đọc VI" link when raw upstreamUrl available (slice 13)
+//          = null otherwise (slice 14/15 not wired yet)
+//   sub-line = creator info only for running/error states
 // =============================================================================
 
 type StatusFilter = 'all' | 'translated' | 'running' | 'error' | 'raw'
@@ -50,26 +44,29 @@ interface Props {
 }
 
 export function ChapterPanel({ chapters, targetLang, loading }: Props) {
-  const search   = titleRoute.useSearch()
-  const nav      = titleRoute.useNavigate()
+  const search = titleRoute.useSearch()
+  const nav    = titleRoute.useNavigate()
   const filter = search.filter ?? 'all'
   const q      = search.q      ?? ''
   const sort   = search.sort   ?? 'chapter_desc'
 
-  const setFilter = (next: StatusFilter) =>
-    nav({ search: (s) => ({ ...s, filter: next === 'all' ? undefined : next }) })
-  const setQ = (next: string) =>
-    nav({ search: (s) => ({ ...s, q: next || undefined }) })
-  const setSort = (next: Sort) =>
-    nav({ search: (s) => ({ ...s, sort: next === 'chapter_desc' ? undefined : next }) })
+  const setFilter = (v: StatusFilter) =>
+    nav({ search: (s) => ({ ...s, filter: v === 'all' ? undefined : v }) })
+  const setQ = (v: string) =>
+    nav({ search: (s) => ({ ...s, q: v || undefined }) })
+  const setSort = (v: Sort) =>
+    nav({ search: (s) => ({ ...s, sort: v === 'chapter_desc' ? undefined : v }) })
 
   const [sel, setSel] = useState<Set<string>>(new Set())
 
-  const counts = useMemo(() => countByStatus(chapters, targetLang), [chapters, targetLang])
+  const counts = useMemo(
+    () => countByStatus(chapters, targetLang),
+    [chapters, targetLang],
+  )
 
   const visible = useMemo(() => {
     const term = q.trim().toLowerCase()
-    let list = chapters.filter((c) => {
+    const list = chapters.filter((c) => {
       if (term && !`${c.number} ${c.label ?? ''}`.toLowerCase().includes(term)) return false
       if (filter === 'all') return true
       return chapterStatus(c, targetLang) === filter
@@ -77,27 +74,20 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
     return list.slice().sort(sortFn(sort))
   }, [chapters, q, filter, sort, targetLang])
 
-  const eligibleForSpawn = useMemo(
+  const eligibleSpawn = useMemo(
     () => [...sel].filter((n) => {
       const ch = chapters.find((c) => c.number === n)
-      if (!ch) return false
-      const status = chapterStatus(ch, targetLang)
-      return status === 'raw'
+      return ch ? chapterStatus(ch, targetLang) === 'raw' : false
     }),
     [sel, chapters, targetLang],
   )
 
-  const toggle = (n: string) => {
-    setSel((prev) => {
-      const next = new Set(prev)
-      if (next.has(n)) next.delete(n)
-      else next.add(n)
-      return next
-    })
-  }
-  const toggleAllVisible = () => {
+  const toggle = (n: string) =>
+    setSel((prev) => { const s = new Set(prev); s.has(n) ? s.delete(n) : s.add(n); return s })
+
+  const toggleAll = () => {
     const allOn = visible.every((c) => sel.has(c.number))
-    setSel(() => allOn ? new Set() : new Set(visible.map((c) => c.number)))
+    setSel(allOn ? new Set() : new Set(visible.map((c) => c.number)))
   }
 
   return (
@@ -109,18 +99,30 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
       />
 
       {loading && chapters.length === 0 ? (
-        <div className="space-y-1.5">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-12 rounded-md bg-surface-2 animate-pulse" />
+        <div className="space-y-px rounded-md overflow-hidden border border-border-soft">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="h-12 bg-surface-2 animate-pulse" />
           ))}
         </div>
       ) : visible.length === 0 ? (
         <EmptyState
           icon={Sparkles}
-          title={chapters.length === 0 ? 'Không có chương đọc được' : 'Không tìm thấy chương phù hợp'}
-          hint={chapters.length === 0
-            ? 'Nguồn không trả về chương nào ở ngôn ngữ này.'
-            : 'Thử từ khoá khác hoặc bỏ bộ lọc.'}
+          title={
+            chapters.length === 0
+              ? 'Chưa có chương nào'
+              : filter === 'translated'
+              ? 'Chưa có chương nào được dịch'
+              : filter === 'raw'
+              ? 'Tất cả chương đã có bản dịch'
+              : 'Không tìm thấy chương phù hợp'
+          }
+          hint={
+            chapters.length === 0
+              ? 'Nguồn chưa trả về chương nào.'
+              : q
+              ? 'Thử từ khoá khác.'
+              : undefined
+          }
         />
       ) : (
         <ChapterTable
@@ -128,7 +130,7 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
           targetLang={targetLang}
           sel={sel}
           onToggle={toggle}
-          onToggleAll={toggleAllVisible}
+          onToggleAll={toggleAll}
           allChecked={visible.length > 0 && visible.every((c) => sel.has(c.number))}
         />
       )}
@@ -136,7 +138,7 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
       {sel.size > 0 && (
         <SelectionBar
           selected={sel.size}
-          eligibleSpawn={eligibleForSpawn.length}
+          eligibleSpawn={eligibleSpawn.length}
           onClear={() => setSel(new Set())}
         />
       )}
@@ -146,16 +148,20 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
 
 
 // ── Toolbar ─────────────────────────────────────────────────────────
-//
-// Two intents: READ (find chapters with VI translation) and TRANSLATE
-// (find chapters without VI to spawn). Toolbar reflects exactly that:
-//
-//   [Tất cả] [Đã dịch] [Chưa có] [Đang dịch] [Lỗi]   [🔍 Tìm…]  [↓ Sort]
-//
-// "Chưa có" = raw chapters with no target-lang translation yet.
-// Pills hide when count = 0 (except "Tất cả" and the active one).
-// Search filters by chapter number or label.
-// Sort cycles: mới nhất → cũ nhất → cập nhật gần đây.
+
+const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all',        label: 'Tất cả' },
+  { key: 'translated', label: 'Đã dịch' },
+  { key: 'raw',        label: 'Chưa có' },
+  { key: 'running',    label: 'Đang dịch' },
+  { key: 'error',      label: 'Lỗi' },
+]
+
+const SORT_META: Record<Sort, { label: string; icon: typeof ArrowDown }> = {
+  chapter_desc: { label: 'Mới nhất', icon: ArrowDown },
+  chapter_asc:  { label: 'Cũ nhất',  icon: ArrowUp },
+  updated_desc: { label: 'Cập nhật', icon: Clock },
+}
 
 function Toolbar({
   filter, setFilter, counts, q, setQ, sort, setSort,
@@ -166,105 +172,70 @@ function Toolbar({
   q:         string
   setQ:      (v: string) => void
   sort:      Sort
-  setSort:   (s: Sort) => void
+  setSort:   (v: Sort) => void
 }) {
+  const sortOrder: Sort[] = ['chapter_desc', 'chapter_asc', 'updated_desc']
+  const { label: sortLabel, icon: SortIcon } = SORT_META[sort]
+
   return (
     <div className="flex items-center gap-2 mb-4 flex-wrap">
-      <div className="overflow-x-auto -mx-1 px-1 flex-1 min-w-0" style={{ scrollbarWidth: 'none' }}>
-        <StatusPills value={filter} onChange={setFilter} counts={counts} />
+      {/* Status pills — scroll-x on mobile */}
+      <div
+        className="overflow-x-auto -mx-1 px-1 flex-1 min-w-0"
+        style={{ scrollbarWidth: 'none' }}
+      >
+        <div className="inline-flex items-center gap-0.5">
+          {STATUS_FILTERS.map(({ key, label }) => {
+            const n = counts[key]
+            const active = filter === key
+            if (!active && key !== 'all' && n === 0) return null
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFilter(key)}
+                className={cn(
+                  'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors whitespace-nowrap',
+                  'inline-flex items-center gap-1.5',
+                  active
+                    ? 'bg-surface-2 text-text font-medium'
+                    : 'text-text-muted hover:bg-hover hover:text-text',
+                )}
+              >
+                {label}
+                {n > 0 && (
+                  <span className={cn(
+                    'tabular text-[11px]',
+                    active ? 'text-text-muted' : 'text-text-subtle',
+                  )}>
+                    {n}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
+
+      {/* Search + sort — right cluster, same surface */}
       <div className="flex items-center gap-1 shrink-0">
         <SearchInput value={q} onChange={setQ} placeholder="Tìm chương…" className="w-44" />
-        <SortCycle value={sort} onChange={setSort} />
+        <button
+          type="button"
+          onClick={() => setSort(sortOrder[(sortOrder.indexOf(sort) + 1) % sortOrder.length]!)}
+          title="Đổi cách sắp xếp"
+          className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-[13px] text-text-muted bg-surface-2 hover:bg-hover hover:text-text transition-colors cursor-pointer shrink-0"
+        >
+          <SortIcon size={12} className="text-text-subtle" />
+          <span className="hidden sm:inline">{sortLabel}</span>
+        </button>
       </div>
     </div>
   )
 }
 
 
-const STATUS_FILTERS: { key: StatusFilter; label: string }[] = [
-  { key: 'all',        label: 'Tất cả' },
-  { key: 'translated', label: 'Đã dịch' },
-  { key: 'raw',        label: 'Chưa có' },
-  { key: 'running',    label: 'Đang dịch' },
-  { key: 'error',      label: 'Lỗi' },
-]
-
-function StatusPills({
-  value, onChange, counts,
-}: {
-  value:    StatusFilter
-  onChange: (v: StatusFilter) => void
-  counts:   Record<StatusFilter, number>
-}) {
-  return (
-    <div className="inline-flex items-center gap-0.5">
-      {STATUS_FILTERS.map(({ key, label }) => {
-        const n = counts[key]
-        const active = value === key
-        if (!active && key !== 'all' && n === 0) return null
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => onChange(key)}
-            className={cn(
-              'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors whitespace-nowrap',
-              'inline-flex items-center gap-1.5',
-              active
-                ? 'bg-surface-2 text-text font-medium'
-                : 'text-text-muted hover:bg-hover hover:text-text',
-            )}
-          >
-            {label}
-            {n > 0 && (
-              <span className={cn('tabular text-[11px]', active ? 'text-text-muted' : 'text-text-subtle')}>
-                {n}
-              </span>
-            )}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-
-const SORT_LABELS: Record<Sort, string> = {
-  chapter_desc: 'Mới nhất',
-  chapter_asc:  'Cũ nhất',
-  updated_desc: 'Cập nhật',
-}
-const SORT_ICONS: Record<Sort, typeof ArrowDown> = {
-  chapter_desc: ArrowDown,
-  chapter_asc:  ArrowUp,
-  updated_desc: Clock,
-}
-
-function SortCycle({ value, onChange }: { value: Sort; onChange: (s: Sort) => void }) {
-  const order: Sort[] = ['chapter_desc', 'chapter_asc', 'updated_desc']
-  const Icon = SORT_ICONS[value]
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(order[(order.indexOf(value) + 1) % order.length]!)}
-      title="Đổi cách sắp xếp"
-      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-[13px] text-text-muted bg-surface-2 hover:bg-hover hover:text-text transition-colors cursor-pointer shrink-0"
-    >
-      <Icon size={12} className="text-text-subtle" />
-      <span className="hidden sm:inline">{SORT_LABELS[value]}</span>
-    </button>
-  )
-}
-
-
-// ── Selection bar ───────────────────────────────────────────────────
-//
-// Floating bottom-center bar, same pattern as the old ProjectDetail
-// SelectionBar — stays visible while the user scrolls a long chapter
-// list, instead of trapping itself at the top of the panel. The bulk
-// spawn primary action is disabled with an explanatory tooltip until
-// slice 15 wires the spawn dialog.
+// ── Selection bar ────────────────────────────────────────────────────
 
 function SelectionBar({
   selected, eligibleSpawn, onClear,
@@ -283,19 +254,15 @@ function SelectionBar({
       <span className="text-sm text-text-muted tabular">
         <span className="text-text font-medium">{selected}</span> chương đã chọn
         {eligibleSpawn < selected && (
-          <span className="text-text-subtle ml-1.5">
-            · {eligibleSpawn} dịch được
-          </span>
+          <span className="text-text-subtle ml-1.5">· {eligibleSpawn} chưa có bản dịch</span>
         )}
       </span>
       <Button
-        variant="primary"
-        size="sm"
-        disabled
+        variant="primary" size="sm" disabled
         title="Bulk spawn sẽ wire ở slice 15"
       >
         <Sparkles size={12} />
-        Dịch hàng loạt ({eligibleSpawn})
+        Dịch ({eligibleSpawn})
       </Button>
       <Button variant="ghost" size="sm" icon onClick={onClear} aria-label="Bỏ chọn">
         <X size={14} />
@@ -305,29 +272,7 @@ function SelectionBar({
 }
 
 
-// ── Table ───────────────────────────────────────────────────────────
-//
-// Real <table> — the chapter list IS tabular data (number, label,
-// time, actions). Table primitive gives us automatic content-driven
-// column widths (so chapter numbers '1' / '999' / '1.5' align across
-// rows without min-width tricks), ARIA semantics, and predictable
-// row geometry the browser optimizes for.
-//
-// Earlier mistake: hard-coding w-N on every <td>, keeping <thead>
-// (4-line noise above 40 chapters of data the user already
-// understands), and nesting <a><Button/></a> inside an
-// <td text-right><div></div></td> action cell — that's the layout
-// bug from the screenshot, not the <table> itself.
-//
-// This pass:
-//   • No <thead>. Column labels are obvious from the data.
-//   • <td>s let content drive width (no w-N except where a min is
-//     genuinely required to avoid jitter on short labels).
-//   • Action cell flattens: one <td> containing the action group,
-//     no nested <a> wrapping the <Button/>. The action <a> sits as
-//     a sibling of any secondary spawn so they share the cell.
-//   • State stripe via box-shadow on the first <td> — paints over
-//     row background reliably, no ::before pseudo gymnastics.
+// ── Table ────────────────────────────────────────────────────────────
 
 function ChapterTable({
   chapters, targetLang, sel, onToggle, onToggleAll, allChecked,
@@ -345,10 +290,7 @@ function ChapterTable({
       <table className="w-full">
         <thead>
           <tr className="text-[11px] font-medium tracking-wide text-text-subtle uppercase bg-surface-2/40 border-b border-border-soft">
-            {/* Checkbox lane — no label, just visual lane alignment.
-                When selection mode is active, the master 'select all'
-                checkbox lives here. */}
-            <th className="pl-3 pr-2 py-2 w-8 text-left">
+            <th className="pl-3 pr-2 py-2 w-8">
               <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
             </th>
             <th className="pr-3 py-2 text-right">#</th>
@@ -377,6 +319,8 @@ function ChapterTable({
 }
 
 
+// ── Row ──────────────────────────────────────────────────────────────
+
 function ChapterRow({
   chapter, targetLang, checked, anySelected, onToggle,
 }: {
@@ -386,62 +330,59 @@ function ChapterRow({
   anySelected: boolean
   onToggle:    () => void
 }) {
-  const status     = chapterStatus(chapter, targetLang)
-  const readable   = preferredReadable(chapter, targetLang)
-  const running    = inFlight(chapter, targetLang)
-  const errored    = lastError(chapter, targetLang)
-  const label      = stripChapterPrefix(chapter.label, chapter.number)
-  const hasRaw     = chapter.versions.some((v) => v.kind === 'raw')
+  const status   = chapterStatus(chapter, targetLang)
+  const readable = preferredReadable(chapter, targetLang)
+  const running  = inFlight(chapter, targetLang)
+  const errored  = lastError(chapter, targetLang)
+  const label    = stripChapterPrefix(chapter.label, chapter.number)
 
-  // State stripe color — first <td> renders this via an inset box
-  // shadow on the LEFT edge. Box-shadow is the cleanest way to paint
-  // a 2px stripe inside a cell without affecting layout, and unlike
-  // a pseudo-element on <tr> it actually renders reliably across
-  // engines.
   const stripeColor =
     status === 'running' ? 'var(--color-info)'
   : status === 'error'   ? 'var(--color-error)'
                          : 'transparent'
 
   return (
-    <tr
-      className={cn(
-        'group transition-colors border-b border-border-soft last:border-0',
-        checked ? 'bg-row-active' : 'hover:bg-hover',
-      )}
-    >
-      {/* Checkbox cell — at-rest invisible, reveals on row hover or
-          when any row is already selected. State stripe via
-          box-shadow on this cell's left edge. */}
+    <tr className={cn(
+      'group transition-colors border-b border-border-soft last:border-0',
+      checked ? 'bg-row-active' : 'hover:bg-hover',
+    )}>
       <td
         className="pl-3 pr-1 py-3 w-8"
         style={{ boxShadow: `inset 2px 0 0 0 ${stripeColor}` }}
       >
         <div className={cn(
           'transition-opacity',
-          checked ? 'opacity-100' : anySelected ? 'opacity-60 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100',
+          checked || anySelected
+            ? 'opacity-100'
+            : 'opacity-0 group-hover:opacity-100',
         )}>
           <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
         </div>
       </td>
 
-      {/* Number — tabular, right-aligned, content-driven width. */}
       <td className="pr-3 py-3 whitespace-nowrap tabular text-right font-semibold text-text">
         {chapter.number}
       </td>
 
-      {/* Label + sub-line — flex container fills available width. */}
       <td className="px-3 py-3 min-w-0 w-full">
-        {label ? (
-          <div className="text-sm text-text-muted truncate">{label}</div>
-        ) : (
-          <div className="text-sm text-text-subtle italic">Chương {chapter.number}</div>
+        {label
+          ? <div className="text-sm text-text-muted truncate">{label}</div>
+          : <div className="text-sm text-text-subtle">—</div>
+        }
+        {/* Sub-line: only for in-progress states where the action
+            cell can't carry the full context. */}
+        {status === 'running' && (
+          <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-info-text">
+            <Loader2 size={10} className="animate-spin shrink-0" />
+            {running?.creatorName ? `@${running.creatorName}` : 'Đang dịch'}
+          </div>
         )}
-        <SubLine
-          status={status}
-          running={running}
-          errored={errored}
-        />
+        {status === 'error' && (
+          <div className="mt-0.5 inline-flex items-center gap-1 text-xs text-error-text">
+            <AlertCircle size={10} className="shrink-0" />
+            {errored?.creatorName ? `@${errored.creatorName}` : 'Lỗi dịch'}
+          </div>
+        )}
       </td>
 
       <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap text-right w-px">
@@ -449,101 +390,41 @@ function ChapterRow({
       </td>
 
       <td className="pl-2 pr-3 py-3 whitespace-nowrap text-right">
-        <div className="inline-flex items-center gap-1 justify-end">
-          <Action
-            chapter={chapter}
-            status={status}
-            readable={readable}
-            running={running}
-            errored={errored}
-          />
-        </div>
+        <RowAction status={status} readable={readable} />
       </td>
     </tr>
   )
 }
 
 
-// ── Time cell — color shifts by freshness ───────────────────────────
+// ── Action cell ──────────────────────────────────────────────────────
 //
-// 'mắt tự kéo về chương mới' — recent updates render in text-text,
-// old ones fade to text-subtle. No NEW badge needed.
-
-function TimeCell({ iso }: { iso: string | null }) {
-  if (!iso) return <span className="text-sm text-text-subtle">—</span>
-  const ageHours = (Date.now() - new Date(iso).getTime()) / 36e5
-  const tone =
-    ageHours < 24       ? 'text-text font-medium'
-  : ageHours < 24 * 7   ? 'text-text-muted'
-                        : 'text-text-subtle'
-  return (
-    <span className={cn('text-sm', tone)} title={iso}>
-      {timeAgo(iso)}
-    </span>
-  )
-}
-
-
-// ── Secondary spawn button — '+Dịch' on rows that already have a
-// readable target lang. Power-user affordance to commission a new
-// translation when an existing one exists but a different source/
-// quality is wanted. Disabled until the spawn dialog (slice 15) ships.
-
-
-// ── Smart action button ─────────────────────────────────────────────
+// Only renders when there's something the user can actually DO now.
+// Disabled placeholders for unwired slices are removed — they signal
+// "broken" not "coming soon".
 //
-// Action mapping (slice 13 scope):
-//   • readable.raw  → external link to upstreamUrl (opens source in
-//                     new tab). Reader for raws ships with slice 14;
-//                     until then the source page is the next best
-//                     thing for a translated-read flow.
-//   • readable.translation → disabled with explicit 'slice 14' hint.
-//     Translation reader needs the page-by-page render fetch which
-//     isn't wired yet.
-//   • running       → disabled progress indicator; spawn-driven
-//                     refresh will flip the row to readable once the
-//                     translation lands.
-//   • errored       → disabled retry; spawn dialog (slice 15) is
-//                     where retry will live.
-//   • raw (no target match yet) → disabled 'Dịch'; same dialog.
+// Wired (slice 13):
+//   raw + upstreamUrl → external link to source page
 //
-// Each disabled branch carries a `title` so the user understands
-// WHY it's inert, not just THAT it is.
+// Not yet wired:
+//   translation done  → reader (slice 14)
+//   raw no url        → spawn dialog (slice 15)
+//   error             → retry (slice 15)
+//   running           → nothing (wait)
 
-function Action({
-  status, readable, running, errored,
+function RowAction({
+  status, readable,
 }: {
-  chapter:   HubChapter
-  status:    StatusFilter
-  readable:  HubVersion | null
-  running:   HubVersion | null
-  errored:   HubVersion | null
+  status:   StatusFilter
+  readable: HubVersion | null
 }) {
-  if (status === 'running' && running) {
-    return (
-      <span className="inline-flex items-center gap-1 text-sm text-info-text">
-        <Loader2 size={12} className="animate-spin" />
-        Đang dịch
-      </span>
-    )
-  }
-  if (status === 'error' && errored) {
-    // Retry not wired yet — show error state only, no action.
-    return (
-      <span className="inline-flex items-center gap-1 text-sm text-error-text">
-        <AlertCircle size={12} />
-        Lỗi
-      </span>
-    )
-  }
   if (readable?.kind === 'raw' && readable.upstreamUrl) {
-    // Raw with upstream URL — only actionable case right now.
     return (
       <a
         href={readable.upstreamUrl}
         target="_blank"
         rel="noopener noreferrer"
-        title={`Mở chương trên ${readable.sourceName ?? 'nguồn'}`}
+        title={`Mở trên ${readable.sourceName ?? 'nguồn'}`}
         className="inline-flex"
       >
         <Button size="sm" variant="secondary" tabIndex={-1}>
@@ -553,72 +434,26 @@ function Action({
       </a>
     )
   }
-  // Translation reader (slice 14) and spawn dialog (slice 15) not
-  // wired yet — render nothing rather than a disabled placeholder.
+  // All other states: nothing actionable yet.
   return null
 }
 
 
-// ── Row sub-line ────────────────────────────────────────────────────
-//
-// Only carries text when it ADDS information beyond the action button.
-// The action button already encodes the readable state ('Đọc VI' /
-// 'Đang dịch' / 'Thử lại' / 'Dịch'), so we skip a sub-line entirely
-// on the happy 'translated' path and let the action button speak for
-// the row. Sub-line shows up for:
-//
-//   • running   → '@creator' so the user knows whose draft is running.
-//   • error     → 'Lỗi · @creator' so the user knows what failed.
-//   • raw       → '+EN +KO' chip row of OTHER langs available, so the
-//                 user can decide whether to spawn a translation or
-//                 read an existing scanlation in a lang they know.
-//
-// On a 40/40 vi→vi title the sub-line is invisible across the board.
+// ── Time cell ────────────────────────────────────────────────────────
+// Color shifts by freshness so the eye naturally finds new chapters.
 
-function SubLine({
-  status, running, errored,
-}: {
-  status:   StatusFilter
-  running:  HubVersion | null
-  errored:  HubVersion | null
-}) {
-  if (status === 'running') {
-    return (
-      <div className="mt-1 inline-flex items-center gap-1.5 text-xs text-info-text min-w-0">
-        <Loader2 size={11} className="animate-spin shrink-0" />
-        <span className="truncate">
-          {running?.creatorName ? `@${running.creatorName}` : 'Đang dịch'}
-        </span>
-      </div>
-    )
-  }
-  if (status === 'error') {
-    return (
-      <div
-        className="mt-1 inline-flex items-center gap-1.5 text-xs text-error-text min-w-0"
-        title={errored?.creatorName
-          ? `Lần dịch gần nhất của @${errored.creatorName} thất bại`
-          : 'Lần dịch gần nhất thất bại'}
-      >
-        <AlertCircle size={11} className="shrink-0" />
-        <span className="truncate">
-          {errored?.creatorName ? `@${errored.creatorName}` : 'Lỗi'}
-        </span>
-      </div>
-    )
-  }
-  return null
+function TimeCell({ iso }: { iso: string | null }) {
+  if (!iso) return <span className="text-sm text-text-subtle">—</span>
+  const ageH = (Date.now() - new Date(iso).getTime()) / 36e5
+  const cls  = ageH < 24 ? 'text-text font-medium' : ageH < 168 ? 'text-text-muted' : 'text-text-subtle'
+  return <span className={cn('text-sm', cls)} title={iso}>{timeAgo(iso)}</span>
 }
 
 
-// ── Checkbox primitive ──────────────────────────────────────────────
+// ── Checkbox ─────────────────────────────────────────────────────────
 
-function Checkbox({
-  checked, onClick, ariaLabel,
-}: {
-  checked:   boolean
-  onClick:   () => void
-  ariaLabel: string
+function Checkbox({ checked, onClick, ariaLabel }: {
+  checked: boolean; onClick: () => void; ariaLabel: string
 }) {
   return (
     <button
@@ -627,9 +462,7 @@ function Checkbox({
       aria-label={ariaLabel}
       className={cn(
         'size-4 rounded-xs border flex items-center justify-center cursor-pointer transition-colors',
-        checked
-          ? 'bg-accent border-accent text-accent-fg'
-          : 'border-text-subtle hover:border-text-muted',
+        checked ? 'bg-accent border-accent text-accent-fg' : 'border-text-subtle hover:border-text-muted',
       )}
     >
       {checked && (
@@ -642,42 +475,32 @@ function Checkbox({
 }
 
 
-// ── Status derivation ──────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 
 function chapterStatus(c: HubChapter, targetLang: string | null): StatusFilter {
   const tgt = targetLang?.toLowerCase() ?? null
   if (!tgt) return 'raw'
   if (preferredReadable(c, tgt)) return 'translated'
-  if (inFlight(c, tgt))           return 'running'
-  if (lastError(c, tgt))          return 'error'
+  if (inFlight(c, tgt))          return 'running'
+  if (lastError(c, tgt))         return 'error'
   return 'raw'
 }
-
 
 function countByStatus(
   chapters: HubChapter[],
   targetLang: string | null,
 ): Record<StatusFilter, number> {
   const out: Record<StatusFilter, number> = {
-    all: chapters.length,
-    translated: 0, running: 0, error: 0, raw: 0,
+    all: chapters.length, translated: 0, running: 0, error: 0, raw: 0,
   }
   for (const c of chapters) out[chapterStatus(c, targetLang)]++
   return out
 }
 
-
-// ── Facet derivation ───────────────────────────────────────────────
-//
-// Distinct langs + uploaders across all loaded chapters, with chapter
-// counts. Counts measure "chapters that have ≥1 matching version",
-// not version totals — what the user actually filters on.
-
-
 function sortFn(s: Sort): (a: HubChapter, b: HubChapter) => number {
   switch (s) {
-    case 'chapter_desc':   return (a, b) => b.sortKey - a.sortKey
-    case 'chapter_asc':    return (a, b) => a.sortKey - b.sortKey
-    case 'updated_desc':   return (a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')
+    case 'chapter_desc':  return (a, b) => b.sortKey - a.sortKey
+    case 'chapter_asc':   return (a, b) => a.sortKey - b.sortKey
+    case 'updated_desc':  return (a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')
   }
 }
