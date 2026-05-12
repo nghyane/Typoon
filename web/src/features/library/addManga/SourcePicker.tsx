@@ -1,19 +1,16 @@
 import { useState } from 'react'
-import { ChevronDown, Globe, Check, Link as LinkIcon } from 'lucide-react'
+import { ChevronDown, Globe, Check, Link as LinkIcon, Search } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 import type { InstalledSource } from '@features/browse/manifest/types'
 
 // =============================================================================
-// SourcePicker — compact dropdown.
+// SourcePicker — compact dropdown with per-source capability legend.
 //
-// Pro pattern (Linear / Raycast / GitHub command palette): a single
-// trigger chip that opens a menu. Even with 2–3 sources, an inline
-// chip row eats horizontal space that the search input needs.
-//
-// `searchableIds` flags which manifests expose a search endpoint.
-// Sources outside this set still appear in the menu but render in a
-// muted, non-selectable state with a hint pointing the user at URL
-// paste instead.
+// Every option carries two capability icons so the user can tell at
+// a glance which manifests support which path:
+//   🔍 Search   the manifest has a search endpoint.
+//   🔗 URL      always available — every source accepts URL paste
+//                via host match.
 //
 // `lockedTo` puts the picker in read-only mode (used while a URL
 // paste is being resolved — the source is implied by the URL).
@@ -21,6 +18,8 @@ import type { InstalledSource } from '@features/browse/manifest/types'
 
 interface Props {
   sources:        InstalledSource[]
+  /** Subset of sources that expose a search endpoint. URL paste
+   *  works on every enabled source, so it isn't tracked separately. */
   searchableIds:  Set<string>
   value:          string | null   // null = "all"
   onChange:       (id: string | null) => void
@@ -76,7 +75,7 @@ export function SourcePicker({
             className="fixed inset-0 z-10"
             onMouseDown={() => setOpen(false)}
           />
-          <div className="absolute top-full mt-1 left-0 z-20 min-w-[220px] rounded-sm bg-surface border border-border-soft shadow-lg overflow-hidden">
+          <div className="absolute top-full mt-1 left-0 z-20 min-w-[260px] rounded-sm bg-surface border border-border-soft shadow-lg overflow-hidden">
             <Option
               active={value === null}
               disabled={false}
@@ -101,12 +100,12 @@ export function SourcePicker({
                   }}
                 >
                   <span className="flex-1 truncate inline-flex items-center gap-1.5">
-                    {!searchable && <LinkIcon size={10} className="text-text-subtle" />}
                     {s.manifest.name}
+                    <span className="text-[11px] text-text-subtle uppercase">
+                      {s.manifest.languages.slice(0, 3).join('/')}
+                    </span>
                   </span>
-                  <span className="text-[11px] text-text-subtle ml-2 uppercase shrink-0">
-                    {s.manifest.languages.slice(0, 3).join('/')}
-                  </span>
+                  <CapabilityIcons searchable={searchable} />
                 </Option>
               )
             })}
@@ -134,7 +133,7 @@ function Option({
       disabled={disabled}
       title={title}
       className={cn(
-        'w-full flex items-center justify-between gap-2 h-8 px-3 text-sm text-left transition-colors',
+        'w-full flex items-center justify-between gap-2 h-9 px-3 text-sm text-left transition-colors',
         disabled
           ? 'text-text-subtle/60 cursor-not-allowed'
           : 'hover:bg-hover cursor-pointer',
@@ -146,5 +145,45 @@ function Option({
         <Check size={13} className="text-success-text shrink-0" />
       )}
     </button>
+  )
+}
+
+
+/** Two pills showing what this source can do. URL paste is always
+ *  shown (every source accepts it via host match); search is muted
+ *  when the manifest has no search endpoint. */
+function CapabilityIcons({ searchable }: { searchable: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-1 shrink-0">
+      <CapIcon
+        Icon={Search}
+        active={searchable}
+        title={searchable ? 'Hỗ trợ tìm theo tên' : 'Chưa hỗ trợ tìm'}
+      />
+      <CapIcon
+        Icon={LinkIcon}
+        active={true}
+        title="Hỗ trợ dán đường dẫn"
+      />
+    </span>
+  )
+}
+
+
+function CapIcon({
+  Icon, active, title,
+}: {
+  Icon: typeof Search; active: boolean; title: string
+}) {
+  return (
+    <span
+      title={title}
+      className={cn(
+        'inline-flex items-center justify-center size-5 rounded-xs',
+        active ? 'bg-surface-2 text-text-muted' : 'bg-transparent text-text-subtle/40',
+      )}
+    >
+      <Icon size={10} />
+    </span>
   )
 }

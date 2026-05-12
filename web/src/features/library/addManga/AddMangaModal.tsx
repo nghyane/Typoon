@@ -159,6 +159,7 @@ export function AddMangaModal({ open, onClose }: Props) {
               pickedSource={pickedSource}
               setPickedSource={setPickedSource}
               lockedSourceId={lockedSourceId}
+              urlMatch={urlMatch}
             />
 
             {mode === 'picked' && picked ? (
@@ -194,6 +195,7 @@ export function AddMangaModal({ open, onClose }: Props) {
 
 function SearchBar({
   query, setQuery, sources, searchableIds, pickedSource, setPickedSource, lockedSourceId,
+  urlMatch,
 }: {
   query:           string
   setQuery:        (s: string) => void
@@ -202,35 +204,133 @@ function SearchBar({
   pickedSource:    string | null
   setPickedSource: (id: string | null) => void
   lockedSourceId:  string | null
+  urlMatch:        ReturnType<typeof matchSource>
 }) {
   const isUrl = isUrlLike(query)
   const Icon  = isUrl ? LinkIcon : Search
+
+  // Placeholder follows the picker scope so the user knows what the
+  // input will do before typing.
+  const placeholder = (() => {
+    if (isUrl) return 'Đang phân giải đường dẫn…'
+    if (pickedSource === null) return 'Tìm trên các nguồn hoặc dán đường dẫn'
+    const src = sources.find((s) => s.manifest.id === pickedSource)
+    const searchable = src && searchableIds.has(src.manifest.id)
+    if (!src) return 'Tìm tên truyện hoặc dán đường dẫn'
+    return searchable
+      ? `Tìm trên ${src.manifest.name} hoặc dán đường dẫn`
+      : `Dán đường dẫn từ ${src.manifest.name}`
+  })()
+
   return (
-    <div className="flex items-center gap-2">
-      <SourcePicker
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <SourcePicker
+          sources={sources}
+          searchableIds={searchableIds}
+          value={pickedSource}
+          onChange={setPickedSource}
+          lockedTo={lockedSourceId}
+        />
+        <div className="relative flex-1 min-w-0">
+          <Icon
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
+          />
+          <input
+            autoFocus
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={placeholder}
+            className={cn(
+              input,
+              'pl-9',
+              isUrl && (urlMatch ? 'pr-28' : 'pr-32'),
+            )}
+          />
+          {isUrl && (
+            <UrlDetectedBadge urlMatch={urlMatch} />
+          )}
+        </div>
+      </div>
+      <CapabilityLegend
         sources={sources}
         searchableIds={searchableIds}
-        value={pickedSource}
-        onChange={setPickedSource}
-        lockedTo={lockedSourceId}
+        isUrl={isUrl}
       />
-      <div className="relative flex-1 min-w-0">
-        <Icon
-          size={14}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
-        />
-        <input
-          autoFocus
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={isUrl
-            ? 'Đang phân giải đường dẫn…'
-            : 'Tìm tên truyện hoặc dán đường dẫn'
-          }
-          className={cn(input, 'pl-9')}
-        />
-      </div>
+    </div>
+  )
+}
+
+
+/** Inline badge inside the URL-mode input. Green = source matched;
+ *  amber = no installed manifest claims this host. Click is dead —
+ *  the badge is informational. */
+function UrlDetectedBadge({
+  urlMatch,
+}: {
+  urlMatch: ReturnType<typeof matchSource>
+}) {
+  if (urlMatch) {
+    return (
+      <span
+        className={cn(
+          'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1',
+          'h-6 px-2 rounded-xs bg-success/15 text-success-text text-[11px] font-medium',
+          'pointer-events-none',
+        )}
+      >
+        <CheckLine />
+        {urlMatch.source.manifest.name}
+      </span>
+    )
+  }
+  return (
+    <span
+      className={cn(
+        'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1',
+        'h-6 px-2 rounded-xs bg-warning/15 text-warning-text text-[11px] font-medium',
+        'pointer-events-none',
+      )}
+    >
+      Chưa hỗ trợ
+    </span>
+  )
+}
+
+
+function CheckLine() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}
+
+
+/** Static legend so the user knows up front how many sources can be
+ *  searched vs paste-linked. Hides while in URL mode — the input
+ *  badge already tells the user what they need to know. */
+function CapabilityLegend({
+  sources, searchableIds, isUrl,
+}: {
+  sources: InstalledSource[]; searchableIds: Set<string>; isUrl: boolean
+}) {
+  if (isUrl) return null
+  const total      = sources.length
+  const searchable = searchableIds.size
+  return (
+    <div className="flex items-center gap-3 text-[11px] text-text-subtle px-0.5">
+      <span className="inline-flex items-center gap-1">
+        <Search size={10} />
+        Tìm: <span className="text-text-muted">{searchable} nguồn</span>
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <LinkIcon size={10} />
+        Dán link: <span className="text-text-muted">{total} nguồn</span>
+      </span>
     </div>
   )
 }
