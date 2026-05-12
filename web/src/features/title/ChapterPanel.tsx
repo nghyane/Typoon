@@ -1,19 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  BookOpen, Sparkles, Loader2, AlertCircle,
-  ArrowDown, ArrowUp, Clock, RefreshCw, X, Check,
+  Sparkles, Loader2, AlertCircle,
+  BookOpen, ArrowDown, ArrowUp, Clock, RefreshCw, X, Check,
   Globe, UserCircle2,
 } from 'lucide-react'
 import { getRouteApi } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
 import { EmptyState } from '@shared/ui/EmptyState'
-import { DataTable, Th } from '@shared/ui/DataTable'
 import { SearchInput } from '@shared/ui/DataToolbar'
 import { card } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
 import {
   preferredReadable, inFlight, lastError, chapterLangs,
+  stripChapterPrefix,
   type HubChapter, type HubVersion,
 } from './mergeChapters'
 
@@ -556,7 +556,25 @@ function SelectionBar({
 }
 
 
-// ── Table ───────────────────────────────────────────────────────────
+// ── List ────────────────────────────────────────────────────────────
+//
+// Flex-based list, not a <table>. The chapter list is a 1D sequence
+// (one chapter per row), not 2D tabular data — <table> was forcing
+// fixed cell widths which left huge gaps between columns and made
+// whole-row click target awkward to wire.
+//
+// Layout per row:
+//   ┃ [num] [label + sub-line]                  [time]  [actions]
+//   ▲                                                              ▲
+//   left stripe (state)                          whole row is a link
+//                                                target = primary
+//                                                action (read / open
+//                                                source / focus
+//                                                spawn).
+//
+// Bulk-select checkbox lives at the left edge and reveals on row
+// hover OR when there's already an active selection — at-rest list
+// looks clean.
 
 function ChapterTable({
   chapters, targetLang, sel, onToggle, onToggleAll, allChecked,
@@ -568,41 +586,42 @@ function ChapterTable({
   onToggleAll: () => void
   allChecked:  boolean
 }) {
+  const anySelected = sel.size > 0
   return (
-    <DataTable className="overflow-x-auto">
-      <thead>
-        <tr className="bg-surface-2">
-          <Th className="w-10">
-            <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
-          </Th>
-          <Th>Chương</Th>
-          <Th className="w-28 hidden sm:table-cell">Cập nhật</Th>
-          <Th className="w-32 text-right pr-3">Thao tác</Th>
-        </tr>
-      </thead>
-      <tbody>
+    <div className="rounded-md overflow-hidden border border-border-soft">
+      {anySelected && (
+        <div className="flex items-center gap-3 h-9 px-3 bg-surface-2 border-b border-border-soft">
+          <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
+          <span className="text-xs text-text-muted">
+            {sel.size} đã chọn
+          </span>
+        </div>
+      )}
+      <div role="list">
         {chapters.map((c) => (
           <ChapterRow
             key={c.number}
             chapter={c}
             targetLang={targetLang}
             checked={sel.has(c.number)}
+            anySelected={anySelected}
             onToggle={() => onToggle(c.number)}
           />
         ))}
-      </tbody>
-    </DataTable>
+      </div>
+    </div>
   )
 }
 
 
 function ChapterRow({
-  chapter, targetLang, checked, onToggle,
+  chapter, targetLang, checked, anySelected, onToggle,
 }: {
-  chapter:    HubChapter
-  targetLang: string | null
-  checked:    boolean
-  onToggle:   () => void
+  chapter:     HubChapter
+  targetLang:  string | null
+  checked:     boolean
+  anySelected: boolean
+  onToggle:    () => void
 }) {
   const status     = chapterStatus(chapter, targetLang)
   const readable   = preferredReadable(chapter, targetLang)
@@ -614,30 +633,70 @@ function ChapterRow({
   // is empty and the sub-line stays clean.
   const tgt        = targetLang?.toLowerCase() ?? null
   const extraLangs = chapterLangs(chapter).filter((l) => l !== tgt)
+  // Clean label — strip 'Chương N' / 'Chapter N' / '第N话' duplicates.
+  const label      = stripChapterPrefix(chapter.label, chapter.number)
+  // Can we spawn a NEW translation for this chapter? True iff there
+  // exists at least one raw version we haven't translated to target.
+  const hasRaw     = chapter.versions.some((v) => v.kind === 'raw')
+  const canSpawn   = hasRaw && status !== 'running'
+
+  // Left-edge state stripe — peripheral state indicator. Translated
+  // = no stripe (default = good); other states get a 2px color.
+  const stripe =
+    status === 'running' ? 'bg-info'
+  : status === 'error'   ? 'bg-error'
+  : status === 'raw'     ? 'bg-warning'
+                         : 'bg-transparent'
+
+  // Whole-row click target — primary action is 'open the reader'
+  // (currently external URL for raws, slice 14 for translations).
+  // The row anchors the link; per-element controls (checkbox,
+  // secondary spawn) stop propagation so they don't trigger the row.
+  const primaryHref =
+    readable?.kind === 'raw' && readable.upstreamUrl
+      ? readable.upstreamUrl
+      : null
 
   return (
-    <tr
+    <div
+      role="listitem"
       className={cn(
-        'transition-colors border-b border-border-soft last:border-0',
+        'group relative flex items-center gap-3 pl-4 pr-3 py-3',
+        'border-b border-border-soft last:border-0 transition-colors',
         checked ? 'bg-row-active' : 'hover:bg-hover',
       )}
-      style={checked ? { boxShadow: 'inset 2px 0 0 0 var(--color-accent)' } : undefined}
     >
-      <td className="px-3 py-3 w-10">
-        <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
-      </td>
+      {/* State stripe */}
+      <span
+        aria-hidden
+        className={cn('absolute left-0 top-0 bottom-0 w-[2px]', stripe)}
+      />
 
-      <td className="px-3 py-3 min-w-0">
-        <div className="flex items-baseline gap-2 min-w-0">
-          <span className="font-semibold text-text tabular shrink-0">
-            Ch.{chapter.number}
-          </span>
-          {chapter.label && (
-            <span className="text-sm text-text-muted truncate">
-              {chapter.label}
-            </span>
-          )}
-        </div>
+      {/* Checkbox — at-rest invisible. Reveals on row hover OR when
+          there's already an active selection. */}
+      <div
+        className={cn(
+          'shrink-0 transition-opacity',
+          checked || anySelected
+            ? 'opacity-100'
+            : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
+        )}
+      >
+        <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
+      </div>
+
+      {/* Number — tabular, fixed lane so labels align vertically. */}
+      <span className="font-semibold text-text tabular shrink-0 min-w-[3ch] text-right">
+        {chapter.number}
+      </span>
+
+      {/* Label + sub-line — whole area is the click target. */}
+      <RowLink href={primaryHref} className="flex-1 min-w-0">
+        {label ? (
+          <div className="text-sm text-text-muted truncate">{label}</div>
+        ) : (
+          <div className="text-sm text-text-subtle italic">Chương {chapter.number}</div>
+        )}
         <SubLine
           status={status}
           readable={readable}
@@ -645,24 +704,100 @@ function ChapterRow({
           errored={errored}
           extraLangs={extraLangs}
         />
-      </td>
+      </RowLink>
 
-      <td className="px-3 py-3 text-xs text-text-subtle whitespace-nowrap w-28 tabular hidden sm:table-cell">
-        {chapter.updatedAt ? timeAgo(chapter.updatedAt) : '—'}
-      </td>
+      <div className="hidden sm:block shrink-0 w-20 text-right">
+        <TimeCell iso={chapter.updatedAt} />
+      </div>
 
-      <td className="px-3 py-3 w-32">
-        <div className="flex items-center gap-1 justify-end">
-          <Action
-            chapter={chapter}
-            status={status}
-            readable={readable}
-            running={running}
-            errored={errored}
-          />
-        </div>
-      </td>
-    </tr>
+      <div className="shrink-0 flex items-center gap-1">
+        {canSpawn && status !== 'raw' && status !== 'error' && (
+          <SecondarySpawn />
+        )}
+        <Action
+          chapter={chapter}
+          status={status}
+          readable={readable}
+          running={running}
+          errored={errored}
+        />
+      </div>
+    </div>
+  )
+}
+
+
+// ── Row link wrapper ────────────────────────────────────────────────
+//
+// Turns the row's label area into a click target when a primary
+// reader href exists. Without an href (translation reader not wired
+// yet) it degrades to a plain <div> — the action button still works,
+// the row just isn't clickable from the label area.
+
+function RowLink({
+  href, className, children,
+}: {
+  href:      string | null
+  className: string
+  children:  React.ReactNode
+}) {
+  if (!href) {
+    return <div className={className}>{children}</div>
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(className, 'block hover:no-underline')}
+    >
+      {children}
+    </a>
+  )
+}
+
+
+// ── Time cell — color shifts by freshness ───────────────────────────
+//
+// 'mắt tự kéo về chương mới' — recent updates render in text-text,
+// old ones fade to text-subtle. No NEW badge needed.
+
+function TimeCell({ iso }: { iso: string | null }) {
+  if (!iso) return <span className="text-xs text-text-subtle">—</span>
+  const ageHours = (Date.now() - new Date(iso).getTime()) / 36e5
+  const tone =
+    ageHours < 24       ? 'text-text font-medium'
+  : ageHours < 24 * 7   ? 'text-text-muted'
+                        : 'text-text-subtle'
+  return (
+    <span className={cn('text-xs', tone)} title={iso}>
+      {timeAgo(iso)}
+    </span>
+  )
+}
+
+
+// ── Secondary spawn button — '+Dịch' on rows that already have a
+// readable target lang. Power-user affordance to commission a new
+// translation when an existing one exists but a different source/
+// quality is wanted. Disabled until the spawn dialog (slice 15) ships.
+
+function SecondarySpawn() {
+  return (
+    <button
+      type="button"
+      disabled
+      title="Dịch lại từ nguồn khác — slice 15 sẽ wire popover chọn source/lang"
+      className={cn(
+        'inline-flex items-center gap-0.5 h-7 px-2 rounded-sm shrink-0',
+        'text-[12px] text-text-subtle cursor-not-allowed',
+        'opacity-0 group-hover:opacity-100 transition-opacity',
+        'hover:bg-hover hover:text-text-muted',
+      )}
+    >
+      <Sparkles size={11} />
+      <span className="hidden sm:inline">Dịch</span>
+    </button>
   )
 }
 
@@ -724,13 +859,16 @@ function Action({
   }
   if (readable) {
     if (readable.kind === 'raw' && readable.upstreamUrl) {
-      // Raw read = open the source page in a new tab. Reader is
-      // slice 14; until then this is the read flow.
+      // Raw read = open source in a new tab. Same as the row's
+      // primary click target — having the button as a discrete
+      // anchor lets users click either spot with the same effect.
       return (
         <a
           href={readable.upstreamUrl}
           target="_blank"
           rel="noopener noreferrer"
+          // Don't double-trigger when the row link is also clicked.
+          onClick={(e) => e.stopPropagation()}
           title={`Mở chương trên ${readable.sourceName ?? 'nguồn'}`}
           className="inline-flex"
         >

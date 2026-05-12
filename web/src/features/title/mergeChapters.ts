@@ -229,6 +229,43 @@ function translationVersion(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+// Strip the chapter-number prefix from labels across common languages.
+// Sources frequently emit labels that just echo the chapter number
+// ("Chương 40", "Chapter 40", "第40话") which prepends nothing and only
+// duplicates information already shown next to it.
+//
+// Patterns covered:
+//   VI    "Chương 40", "Chương: 40", "Chương 40: Trận cuối"
+//   EN    "Chapter 40", "Ch. 40", "Ch 40", "Chapter 40 - Showdown"
+//   ZH    "第40话", "第40話"
+//   JA    "第40話", "第40回"
+//   KO    "40화"
+//   plain "40", "40 - Title", "40: Title"
+//
+// After the chapter token, any of `:`, `-`, `—`, `·` separators get
+// stripped along with surrounding whitespace. If nothing meaningful
+// remains, returns null so callers can hide the label entirely.
+export function stripChapterPrefix(
+  label: string | null | undefined,
+  number: string,
+): string | null {
+  if (!label) return null
+  const num = number.replace('.', '\\.')
+  const re = new RegExp(
+    String.raw`^\s*(?:` +
+      String.raw`ch(?:apter)?\.?\s*` +
+      String.raw`|chương\s*:?\s*` +
+      String.raw`|第\s*` +
+    String.raw`)?` +
+    num +
+    String.raw`\s*(?:话|話|回|화)?\s*[:\-—·.]?\s*`,
+    'i',
+  )
+  const stripped = label.replace(re, '').trim()
+  return stripped.length > 0 ? stripped : null
+}
+
+
 function normalizeNumber(n: string): string {
   const trimmed = n.trim()
   // Strip leading zeros from the integer part: '001' → '1', '01.5' → '1.5'.
