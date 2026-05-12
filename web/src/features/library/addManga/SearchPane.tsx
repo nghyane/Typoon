@@ -205,20 +205,19 @@ function SourceListHint({
             <li
               key={s.manifest.id}
               className={cn(
-                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-[12px]',
+                'inline-flex items-baseline gap-1.5 h-7 px-2.5 rounded-sm text-[12px]',
                 ok
                   ? 'bg-bg/40 text-text-muted'
                   : 'bg-bg/20 text-text-subtle',
               )}
               title={ok
-                ? `${s.manifest.host} · tìm được + dán link`
-                : `${s.manifest.host} · chỉ dán link`
+                ? `${s.manifest.name} — tìm + dán link`
+                : `${s.manifest.name} — chỉ dán link`
               }
             >
               <span className="truncate max-w-[140px]">{s.manifest.name}</span>
-              <span className="text-text-subtle">·</span>
-              <span className="text-[11px] text-text-subtle">
-                {ok ? 'tìm + link' : 'link'}
+              <span className="text-[11px] text-text-subtle truncate">
+                {s.manifest.host}
               </span>
             </li>
           )
