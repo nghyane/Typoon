@@ -1,12 +1,10 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Library, Compass, Sparkles, Settings } from 'lucide-react'
+import { Library, Settings } from 'lucide-react'
 import { cn } from '../shared/lib/cn'
 
 const ITEMS = [
-  { to: '/library',   label: 'Thư viện', icon: Library  },
-  { to: '/browse',    label: 'Duyệt',    icon: Compass  },
-  { to: '/translate', label: 'Bản dịch', icon: Sparkles },
-  { to: '/settings',  label: 'Cài đặt',  icon: Settings },
+  { to: '/library',  label: 'Thư viện', icon: Library  },
+  { to: '/settings', label: 'Cài đặt',  icon: Settings },
 ] as const
 
 export function BottomNav() {
