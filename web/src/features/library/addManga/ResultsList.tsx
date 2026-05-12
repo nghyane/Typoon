@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, Loader2, ChevronDown } from 'lucide-react'
 import { Cover } from '@shared/ui/Cover'
 import { cn } from '@shared/lib/cn'
 import { fetchMangaDetail } from '@features/browse/manifest/runtime'
@@ -9,20 +9,20 @@ import type { SearchHit } from './fanoutSearch'
 import type { Picked } from './types'
 
 // =============================================================================
-// ResultsList — compact, score-sorted flat list.
+// ResultsList — grouped per source with score-ranked preview + expand.
 //
-// Hits arrive per-source already capped at PER_SOURCE_LIMIT (8) and
-// scored against the query inside `fanoutSearch`. This component:
-//   • flattens every source into one list,
-//   • sorts globally by fuzzy score (highest first),
-//   • renders each row with a small source label so the user knows
-//     where the match came from without breaking flow.
+// Each source group renders its top INITIAL_PREVIEW hits (sorted by
+// fuzzy score). When the group has more, a 'Xem thêm N' row reveals
+// the rest in place — modal stays compact by default; deeper digs
+// available on demand.
 //
-// Caps the displayed list at MAX_VISIBLE to keep the modal compact;
-// 'Còn N kết quả' note at the bottom hints at the rest.
+// Source scope filter (set externally via ScopeFilterRow) narrows
+// `searchableSources`; when only one source remains the per-group
+// header collapses to a single inline row.
 // =============================================================================
 
-const MAX_VISIBLE = 20
+const INITIAL_PREVIEW = 3
+const PER_GROUP_MAX   = 8
 
 export function ResultsList({
   hits, loading, failures, searchableSources, onPick,
@@ -34,12 +34,21 @@ export function ResultsList({
   searchableSources: InstalledSource[]
   onPick:            (p: Picked) => void
 }) {
-  const sorted = useMemo(
-    () => [...hits].sort((a, b) => b.score - a.score),
-    [hits],
-  )
-  const visible = sorted.slice(0, MAX_VISIBLE)
-  const hidden  = Math.max(0, sorted.length - MAX_VISIBLE)
+  const groups = useMemo(() => {
+    const by: Record<string, { source: InstalledSource; hits: SearchHit[] }> = {}
+    for (const h of hits) {
+      const id = h.source.manifest.id
+      if (!by[id]) by[id] = { source: h.source, hits: [] }
+      by[id]!.hits.push(h)
+    }
+    for (const id in by) {
+      by[id]!.hits.sort((a, b) => b.score - a.score)
+    }
+    return searchableSources
+      .map((s) => by[s.manifest.id])
+      .filter((g): g is { source: InstalledSource; hits: SearchHit[] } => !!g)
+  }, [hits, searchableSources])
+
   const singleSource = searchableSources.length === 1
 
   if (loading && hits.length === 0) {
@@ -54,7 +63,7 @@ export function ResultsList({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 px-0.5">
         <p className="text-[11px] uppercase tracking-wider text-text-subtle">
           {hits.length} kết quả
@@ -68,33 +77,83 @@ export function ResultsList({
         )}
       </div>
 
-      <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
-        {visible.map((hit) => (
-          <ResultRow
-            key={`${hit.source.manifest.id}::${hit.manga.id}`}
-            hit={hit}
-            showSource={!singleSource}
-            onPick={onPick}
-          />
-        ))}
-      </ul>
-
-      {hidden > 0 && (
-        <p className="text-[11px] text-text-subtle text-center">
-          Còn {hidden} kết quả khớp ít hơn · gõ chính xác hơn để thu hẹp
-        </p>
-      )}
+      {groups.map(({ source, hits: g }) => (
+        <SourceGroup
+          key={source.manifest.id}
+          source={source}
+          hits={g}
+          onPick={onPick}
+          hideHeader={singleSource}
+        />
+      ))}
     </div>
   )
 }
 
 
-function ResultRow({
-  hit, showSource, onPick,
+function SourceGroup({
+  source, hits, onPick, hideHeader,
 }: {
-  hit:        SearchHit
-  showSource: boolean
+  source:     InstalledSource
+  hits:       SearchHit[]
   onPick:     (p: Picked) => void
+  hideHeader: boolean
+}) {
+  const manifest = source.manifest
+  const [expanded, setExpanded] = useState(false)
+
+  const capped  = hits.slice(0, PER_GROUP_MAX)
+  const visible = expanded ? capped : capped.slice(0, INITIAL_PREVIEW)
+  const more    = capped.length - visible.length
+
+  return (
+    <section>
+      {!hideHeader && (
+        <header className="flex items-baseline justify-between gap-2 px-1 mb-1.5">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-[12px] font-medium text-text truncate">
+              {manifest.name}
+            </span>
+            <span className="text-[11px] text-text-subtle truncate">
+              {manifest.host}
+            </span>
+          </div>
+          <span className="text-[11px] text-text-subtle shrink-0">
+            {hits.length}
+          </span>
+        </header>
+      )}
+      <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
+        {visible.map((hit) => (
+          <ResultRow
+            key={`${manifest.id}::${hit.manga.id}`}
+            hit={hit}
+            onPick={onPick}
+          />
+        ))}
+        {more > 0 && (
+          <li>
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="w-full inline-flex items-center justify-center gap-1.5 h-8 text-[12px] text-text-muted hover:bg-hover hover:text-text transition-colors cursor-pointer"
+            >
+              <ChevronDown size={12} />
+              Xem thêm {more}
+            </button>
+          </li>
+        )}
+      </ul>
+    </section>
+  )
+}
+
+
+function ResultRow({
+  hit, onPick,
+}: {
+  hit:    SearchHit
+  onPick: (p: Picked) => void
 }) {
   const { source, manga } = hit
   const manifest = source.manifest
@@ -150,17 +209,11 @@ function ResultRow({
           <p className="text-[13px] text-text truncate leading-tight">
             {manga.title}
           </p>
-          <p className="text-[11px] text-text-subtle truncate mt-0.5">
-            {showSource && (
-              <>
-                <span>{manifest.name}</span>
-                <span className="mx-1 opacity-40">·</span>
-              </>
-            )}
-            <span className="uppercase">
+          {manifest.languages.length > 0 && (
+            <p className="text-[11px] text-text-subtle uppercase mt-0.5">
               {manifest.languages.slice(0, 3).join('/')}
-            </span>
-          </p>
+            </p>
+          )}
         </div>
         {resolving && (
           <Loader2 size={13} className="text-text-subtle animate-spin shrink-0" />
