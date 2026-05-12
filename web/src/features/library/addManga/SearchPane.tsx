@@ -68,7 +68,7 @@ export function SearchPane({
   }, [searchable, scopeId])
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3 min-h-[420px]">
       <InputRow
         query={query}
         setQuery={(v) => { setQuery(v); setScopeId(null) }}
@@ -84,9 +84,9 @@ export function SearchPane({
           onManualCreate={onManualCreate}
         />
       ) : query.trim().length < 2 ? (
-        <EmptyState
-          total={sources.length}
-          searchable={searchable.length}
+        <SourceListHint
+          sources={sources}
+          searchableIds={new Set(searchable.map((s) => s.manifest.id))}
         />
       ) : (
         <>
@@ -173,33 +173,57 @@ function UrlBadge({
 }
 
 
-function EmptyState({
-  total, searchable,
+// Empty-state hint. Shows the source roster as chips so the user
+// knows what the app can reach without reading instructions. Each
+// chip carries a Link icon when the source supports search ('Tìm
+// được') vs a muted state for paste-only sources.
+
+function SourceListHint({
+  sources, searchableIds,
 }: {
-  total: number; searchable: number
+  sources: InstalledSource[]; searchableIds: Set<string>
 }) {
-  return (
-    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-5">
-      <div className="flex items-start gap-3">
-        <span className="size-9 rounded-sm bg-bg/40 flex items-center justify-center shrink-0">
-          <Search size={16} className="text-text-subtle" />
-        </span>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">
-            Gõ tên truyện hoặc dán đường dẫn manga
-          </p>
-          <div className="mt-2 flex items-center gap-3 text-[11px] text-text-subtle">
-            <span className="inline-flex items-center gap-1">
-              <Search size={10} />
-              Tìm: <span className="text-text-muted">{searchable} nguồn</span>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <LinkIcon size={10} />
-              Dán link: <span className="text-text-muted">{total} nguồn</span>
-            </span>
-          </div>
-        </div>
+  if (sources.length === 0) {
+    return (
+      <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6 text-center">
+        <p className="text-sm text-text-muted">Chưa cài nguồn nào</p>
+        <p className="text-[11px] text-text-subtle mt-1">
+          Mở Cài đặt để cài nguồn đầu tiên.
+        </p>
       </div>
+    )
+  }
+  return (
+    <div className="rounded-md bg-surface-2 border border-border-soft px-4 py-3">
+      <p className="text-[11px] uppercase tracking-wider text-text-subtle mb-2">
+        Nguồn đã cài
+      </p>
+      <ul className="flex flex-wrap gap-1.5">
+        {sources.map((s) => {
+          const ok = searchableIds.has(s.manifest.id)
+          return (
+            <li
+              key={s.manifest.id}
+              className={cn(
+                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-[12px]',
+                ok
+                  ? 'bg-bg/40 text-text-muted'
+                  : 'bg-bg/20 text-text-subtle',
+              )}
+              title={ok
+                ? `${s.manifest.host} · tìm được + dán link`
+                : `${s.manifest.host} · chỉ dán link`
+              }
+            >
+              <span className="truncate max-w-[140px]">{s.manifest.name}</span>
+              <span className="text-text-subtle">·</span>
+              <span className="text-[11px] text-text-subtle">
+                {ok ? 'tìm + link' : 'link'}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
