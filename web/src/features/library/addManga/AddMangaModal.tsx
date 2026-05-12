@@ -37,7 +37,7 @@ export function AddMangaModal({ open, onClose }: Props) {
   const [picked,           setPicked]           = useState<Picked | null>(null)
   const [manualSeed,       setManualSeed]       = useState<string | null>(null)
   const [query,            setQuery]            = useState('')
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
+  const [scopeId, setScopeId] = useState<string | null>(null)
 
   const [targetLang, setTargetLang] = useState('vi')
   const [autoTr,     setAutoTr]     = useState(false)
@@ -48,7 +48,7 @@ export function AddMangaModal({ open, onClose }: Props) {
     setPicked(null)
     setManualSeed(null)
     setQuery('')
-    setSelectedSourceId(null)
+    setScopeId(null)
     setTargetLang('vi')
     setAutoTr(false)
     setStatus('reading')
@@ -108,8 +108,8 @@ export function AddMangaModal({ open, onClose }: Props) {
             query={query}
             setQuery={setQuery}
             sources={allSources}
-            selectedSourceId={selectedSourceId}
-            setSelectedSourceId={setSelectedSourceId}
+            scopeId={scopeId}
+            setScopeId={setScopeId}
             onPick={setPicked}
             onManualCreate={(seed) => setManualSeed(seed)}
           />
