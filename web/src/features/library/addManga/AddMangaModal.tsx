@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookmarkPlus, Search, Link as LinkIcon, AlertTriangle,
-  Globe, Loader2,
+  Globe, Loader2, Wand2,
 } from 'lucide-react'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
@@ -12,28 +12,29 @@ import { toast } from '@shared/ui/Toaster'
 import { cn } from '@shared/lib/cn'
 import { api, type LibraryStatus } from '@shared/api/api'
 import { useEnabledSources } from '@features/browse/sources'
-import { fetchMangaDetail } from '@features/browse/manifest/runtime'
+import { fetchMangaDetail, hasSearch } from '@features/browse/manifest/runtime'
 import { proxify } from '@features/browse/proxy'
 import type { InstalledSource, MangaSummary } from '@features/browse/manifest/types'
 import { isUrlLike, matchSource } from './parseUrl'
 import { useFanoutSearch } from './fanoutSearch'
+import { SourcePicker } from './SourcePicker'
+import { ManualCreateForm } from './ManualCreateForm'
 
 // =============================================================================
-// AddMangaModal — entry point to /library.
+// AddMangaModal — Library entry point.
 //
-// One modal, two intents:
+// Three modes, one modal. The input is the dispatcher:
 //
-//   ① Paste URL    user has a specific manga page open elsewhere
-//   ② Type name    user wants to discover something fanned-out
-//
-// Mode auto-detects from the input: anything starting with http(s)://
-// flips to URL mode; anything else falls back to search results. The
-// switch is invisible to the user — no tabs, no segment control.
-//
-// After picking a result, the form expands to ask for `target_lang`
-// + `auto_translate`. Confirming POSTs /api/material/import then
-// /api/library/entry — both calls are idempotent for the resolved
-// material, so a retry after a partial failure is safe.
+//   ① http(s)://…           URL paste. Match against manifest.host.
+//                            When matched, fetch detail page lazily.
+//                            When not, fall through to manual create
+//                            with the URL as a hint.
+//   ② "naruto" (text)        Search. Source picker scopes the query
+//                            to one manifest (default: all). Manual
+//                            create CTA appears in empty state.
+//   ③ empty input            Show hint card; the source picker is
+//                            still active so the user can browse one
+//                            source even before typing.
 // =============================================================================
 
 interface Props {
@@ -42,56 +43,66 @@ interface Props {
 }
 
 interface Picked {
-  source:    InstalledSource
-  /** Manga URL on the upstream source (also the material upstream_ref). */
+  source:      InstalledSource
   upstreamRef: string
-  /** Resolved display title from manifest. Fed to /material/import so
-   *  the snapshot is right on first write. */
-  title:     string
-  cover:     string | null
-  /** Detail fields only populated after we hit fetchMangaDetail. Until
-   *  then we render the summary-level data the search row carried. */
+  title:       string
+  cover:       string | null
   description: string | null
   author:      string | null
   status:      string | null
-  /** Manifest-declared languages — drives the target_lang default. */
   languages:   string[]
   nsfw:        boolean
 }
 
+type Mode = 'search' | 'picked' | 'manual'
+
 
 export function AddMangaModal({ open, onClose }: Props) {
-  const sources = useEnabledSources()
+  const sources = useEnabledSources().filter(
+    (s) => s.enabled && hasSearch(s.manifest),
+  )
 
-  const [query, setQuery] = useState('')
-  const [picked, setPicked] = useState<Picked | null>(null)
+  const [query,      setQuery]      = useState('')
+  const [pickedSource, setPickedSource] = useState<string | null>(null)
+  const [picked,     setPicked]     = useState<Picked | null>(null)
+  const [manualSeed, setManualSeed] = useState<string | null>(null)
 
   // Status + target_lang form, only shown after Picked.
   const [targetLang, setTargetLang] = useState('vi')
-  const [autoTr, setAutoTr]         = useState(false)
-  const [status, setStatus]         = useState<LibraryStatus>('reading')
+  const [autoTr,     setAutoTr]     = useState(false)
+  const [status,     setStatus]     = useState<LibraryStatus>('reading')
+
+  // URL paste locks the source picker to whatever manifest owns the
+  // host. Drop the lock when the user clears or replaces the input.
+  const urlMatch = useMemo(
+    () => isUrlLike(query) ? matchSource(query, sources) : null,
+    [query, sources],
+  )
+  const lockedSourceId = urlMatch?.source.manifest.id ?? null
 
   useEffect(() => {
     if (!open) return
     setQuery('')
+    setPickedSource(null)
     setPicked(null)
+    setManualSeed(null)
     setTargetLang('vi')
     setAutoTr(false)
     setStatus('reading')
   }, [open])
 
-  // Default target_lang follows the picked manga's *first* native
-  // language only when it differs from VI — preserves "I want VN
-  // translation" as the casual default while still being smart about
-  // already-VN sources.
+  // Pick default target_lang heuristic: if source is already in VI,
+  // skip auto-translate; otherwise default ON.
   useEffect(() => {
     if (!picked) return
     const native = picked.languages[0]
-    if (native && native === 'vi') setTargetLang('vi')
-    else setTargetLang('vi')
-    // auto_translate defaults to TRUE only when target ≠ native
+    setTargetLang('vi')
     setAutoTr(!(native && native === 'vi'))
   }, [picked])
+
+  const mode: Mode = manualSeed !== null ? 'manual'
+                   : picked !== null     ? 'picked'
+                                          : 'search'
 
   return (
     <Modal
@@ -99,47 +110,66 @@ export function AddMangaModal({ open, onClose }: Props) {
       onClose={onClose}
       title="Thêm manga vào thư viện"
       size="md"
-      footerLeft={picked
-        ? <FooterContext picked={picked} />
-        : <SearchHint query={query} sources={sources} />
-      }
-      footer={picked
-        ? <ConfirmActions
-            picked={picked}
-            targetLang={targetLang}
-            autoTr={autoTr}
-            status={status}
-            onCancel={() => setPicked(null)}
-            onDone={onClose}
-          />
-        : <Button variant="ghost" onClick={onClose}>Huỷ</Button>
-      }
+      footerLeft={<FooterLeft
+        mode={mode}
+        picked={picked}
+        sources={sources}
+        pickedSource={pickedSource}
+        lockedSourceId={lockedSourceId}
+      />}
+      footer={mode === 'picked' && picked ? (
+        <ConfirmActions
+          picked={picked}
+          targetLang={targetLang}
+          autoTr={autoTr}
+          status={status}
+          onCancel={() => setPicked(null)}
+          onDone={onClose}
+        />
+      ) : mode === 'search' ? (
+        <Button variant="ghost" onClick={onClose}>Huỷ</Button>
+      ) : undefined}
     >
       <div className="px-5 py-4 space-y-4">
-        {/* Input — single field, mode is implicit. */}
-        <SearchOrUrlField
-          query={query}
-          setQuery={setQuery}
-          disabled={picked !== null}
-        />
-
-        {picked ? (
-          <PickedDetail
-            picked={picked}
-            targetLang={targetLang}
-            setTargetLang={setTargetLang}
-            autoTr={autoTr}
-            setAutoTr={setAutoTr}
-            status={status}
-            setStatus={setStatus}
-            onChangePick={() => setPicked(null)}
+        {mode === 'manual' ? (
+          <ManualCreateForm
+            initialTitle={manualSeed ?? ''}
+            onCancel={() => setManualSeed(null)}
+            onCreated={onClose}
           />
         ) : (
-          <Results
-            query={query}
-            sources={sources}
-            onPick={setPicked}
-          />
+          <>
+            <SearchBar
+              query={query}
+              setQuery={setQuery}
+              sources={sources}
+              pickedSource={pickedSource}
+              setPickedSource={setPickedSource}
+              lockedSourceId={lockedSourceId}
+            />
+
+            {mode === 'picked' && picked ? (
+              <PickedDetail
+                picked={picked}
+                targetLang={targetLang}
+                setTargetLang={setTargetLang}
+                autoTr={autoTr}
+                setAutoTr={setAutoTr}
+                status={status}
+                setStatus={setStatus}
+                onChangePick={() => setPicked(null)}
+              />
+            ) : (
+              <Results
+                query={query}
+                sources={sources}
+                targetSourceId={pickedSource}
+                urlMatch={urlMatch}
+                onPick={setPicked}
+                onManualCreate={(seed) => setManualSeed(seed)}
+              />
+            )}
+          </>
         )}
       </div>
     </Modal>
@@ -147,21 +177,29 @@ export function AddMangaModal({ open, onClose }: Props) {
 }
 
 
-// ── Input ────────────────────────────────────────────────────────────
+// ── Search bar ────────────────────────────────────────────────────────
 
-function SearchOrUrlField({
-  query, setQuery, disabled,
+function SearchBar({
+  query, setQuery, sources, pickedSource, setPickedSource, lockedSourceId,
 }: {
-  query: string; setQuery: (s: string) => void; disabled: boolean
+  query:           string
+  setQuery:        (s: string) => void
+  sources:         InstalledSource[]
+  pickedSource:    string | null
+  setPickedSource: (id: string | null) => void
+  lockedSourceId:  string | null
 }) {
   const isUrl = isUrlLike(query)
   const Icon  = isUrl ? LinkIcon : Search
   return (
-    <div>
-      <label className={label}>
-        {isUrl ? 'Đường dẫn manga' : 'Tên truyện hoặc đường dẫn'}
-      </label>
-      <div className="relative">
+    <div className="flex items-center gap-2">
+      <SourcePicker
+        sources={sources}
+        value={pickedSource}
+        onChange={setPickedSource}
+        lockedTo={lockedSourceId}
+      />
+      <div className="relative flex-1 min-w-0">
         <Icon
           size={14}
           className="absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none"
@@ -171,8 +209,10 @@ function SearchOrUrlField({
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="https://… hoặc gõ tên truyện"
-          disabled={disabled}
+          placeholder={isUrl
+            ? 'Đang phân giải đường dẫn…'
+            : 'Tìm tên truyện hoặc dán đường dẫn'
+          }
           className={cn(input, 'pl-9')}
         />
       </div>
@@ -181,66 +221,105 @@ function SearchOrUrlField({
 }
 
 
-// ── Results ──────────────────────────────────────────────────────────
+// ── Results dispatch ──────────────────────────────────────────────────
 
 function Results({
-  query, sources, onPick,
+  query, sources, targetSourceId, urlMatch, onPick, onManualCreate,
 }: {
-  query:   string
-  sources: InstalledSource[]
-  onPick:  (p: Picked) => void
+  query:          string
+  sources:        InstalledSource[]
+  targetSourceId: string | null
+  urlMatch:       ReturnType<typeof matchSource>
+  onPick:         (p: Picked) => void
+  onManualCreate: (seed: string) => void
 }) {
-  // URL paste short-circuits to a single match — no search call.
   if (isUrlLike(query)) {
-    return <UrlResolver url={query} sources={sources} onPick={onPick} />
+    if (urlMatch) {
+      return <UrlImportCard match={urlMatch} onPick={onPick} />
+    }
+    return <UnsupportedUrlCard url={query} onManualCreate={onManualCreate} />
   }
 
-  return <SearchResults query={query} sources={sources} onPick={onPick} />
+  if (query.trim().length < 2) {
+    return <SearchHint sources={sources} targetSourceId={targetSourceId} />
+  }
+
+  return (
+    <SearchResults
+      query={query}
+      sources={sources}
+      targetSourceId={targetSourceId}
+      onPick={onPick}
+      onManualCreate={onManualCreate}
+    />
+  )
 }
 
 
-function UrlResolver({
-  url, sources, onPick,
+function SearchHint({
+  sources, targetSourceId,
 }: {
-  url: string; sources: InstalledSource[]; onPick: (p: Picked) => void
+  sources: InstalledSource[]; targetSourceId: string | null
 }) {
-  const match = useMemo(() => matchSource(url, sources), [url, sources])
+  const scopeLabel = targetSourceId === null
+    ? `${sources.length} nguồn`
+    : sources.find((s) => s.manifest.id === targetSourceId)?.manifest.name ?? '?'
+  return (
+    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-8 text-center">
+      <Search size={20} className="mx-auto text-text-subtle" />
+      <p className="text-sm text-text-muted mt-2">
+        Gõ tên truyện để tìm trên {scopeLabel}
+      </p>
+      <p className="text-xs text-text-subtle mt-1">
+        Hoặc dán đường dẫn manga để thêm trực tiếp
+      </p>
+    </div>
+  )
+}
 
-  if (!match) {
-    return (
-      <Card>
-        <CardLeft icon={AlertTriangle} tone="warning" />
+
+function UnsupportedUrlCard({
+  url, onManualCreate,
+}: {
+  url: string; onManualCreate: (seed: string) => void
+}) {
+  return (
+    <div className="rounded-md bg-warning/10 border border-warning/20 px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        <AlertTriangle size={14} className="text-warning-text shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">Chưa hỗ trợ nguồn này</p>
-          <p className="text-xs text-text-subtle mt-0.5">
-            Cài thêm nguồn trong Cài đặt rồi quay lại.
+          <p className="text-sm text-text">Không có nguồn quản lý site này</p>
+          <p className="text-[11px] text-text-subtle mt-0.5 break-all line-clamp-2">
+            {url}
           </p>
+          <button
+            type="button"
+            onClick={() => onManualCreate('')}
+            className="mt-2.5 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm bg-surface-2 text-[12px] text-text hover:bg-hover cursor-pointer transition-colors"
+          >
+            <Wand2 size={12} />
+            Tạo thủ công thay
+          </button>
         </div>
-      </Card>
-    )
-  }
-
-  return <UrlImportCard match={match} onPick={onPick} />
+      </div>
+    </div>
+  )
 }
 
 
 function UrlImportCard({
   match, onPick,
 }: {
-  match: ReturnType<typeof matchSource> & object
+  match: NonNullable<ReturnType<typeof matchSource>>
   onPick: (p: Picked) => void
 }) {
   const { source, upstreamRef } = match
   const manifest = source.manifest
 
-  // Pull the detail page so we have title/cover/description before
-  // confirming. Lazy: fires only once the URL stays stable.
-  const [loading, setLoading] = useState(true)
-  const [err,     setErr]     = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
     setErr(null)
     fetchMangaDetail(manifest, upstreamRef)
       .then((d) => {
@@ -261,101 +340,134 @@ function UrlImportCard({
         if (cancelled) return
         setErr(e instanceof Error ? e.message : 'Không tải được trang truyện')
       })
-      .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [manifest, upstreamRef, source, onPick])
 
-  if (loading) {
-    return (
-      <Card>
-        <CardLeft icon={Loader2} tone="neutral" spin />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">Đang tải từ {manifest.name}…</p>
-          <p className="text-xs text-text-subtle truncate mt-0.5">{upstreamRef}</p>
-        </div>
-      </Card>
-    )
-  }
-
   if (err) {
     return (
-      <Card>
-        <CardLeft icon={AlertTriangle} tone="error" />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">Không tải được</p>
-          <p className="text-xs text-error-text mt-0.5 line-clamp-2">{err}</p>
+      <div className="rounded-md bg-error/10 border border-error/20 px-4 py-3">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle size={14} className="text-error-text shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-text">Không tải được từ {manifest.name}</p>
+            <p className="text-[11px] text-error-text mt-0.5 line-clamp-2">{err}</p>
+          </div>
         </div>
-      </Card>
+      </div>
     )
   }
-  // After onPick fires we render nothing — parent swaps to PickedDetail.
-  return null
+  return (
+    <div className="rounded-md bg-surface-2 px-4 py-3">
+      <div className="flex items-center gap-2.5">
+        <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-text">Đang tải từ {manifest.name}…</p>
+          <p className="text-[11px] text-text-subtle truncate mt-0.5">{upstreamRef}</p>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 
-function SearchResults({
-  query, sources, onPick,
-}: {
-  query:   string
-  sources: InstalledSource[]
-  onPick:  (p: Picked) => void
-}) {
-  const { hits, loading, failures, total } = useFanoutSearch(query, sources)
+// ── Search results list ──────────────────────────────────────────────
 
-  if (query.trim().length < 2) {
+function SearchResults({
+  query, sources, targetSourceId, onPick, onManualCreate,
+}: {
+  query:          string
+  sources:        InstalledSource[]
+  targetSourceId: string | null
+  onPick:         (p: Picked) => void
+  onManualCreate: (seed: string) => void
+}) {
+  const { hits, loading, failures, queried } =
+    useFanoutSearch(query, sources, targetSourceId)
+
+  if (loading && hits.length === 0) {
     return (
-      <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-8 text-center">
-        <Search size={20} className="mx-auto text-text-subtle" />
-        <p className="text-sm text-text-muted mt-2">
-          Gõ tên truyện để tìm trên {total} nguồn cùng lúc
-        </p>
-        <p className="text-xs text-text-subtle mt-1">
-          Hoặc dán đường dẫn manga để thêm trực tiếp
+      <div className="flex items-center gap-2.5 px-4 py-3 rounded-md bg-surface-2">
+        <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
+        <p className="text-sm text-text-muted">
+          Đang tìm trên {queried.length} nguồn…
         </p>
       </div>
     )
   }
 
-  if (loading && hits.length === 0) {
-    return (
-      <Card>
-        <CardLeft icon={Loader2} tone="neutral" spin />
-        <p className="text-sm text-text-muted">Đang tìm trên {total} nguồn…</p>
-      </Card>
-    )
-  }
-
-  if (hits.length === 0) {
-    return (
-      <Card>
-        <CardLeft icon={Search} tone="neutral" />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">Không tìm thấy</p>
-          <p className="text-xs text-text-subtle mt-0.5">
-            Thử đổi từ khoá hoặc dán đường dẫn trực tiếp.
-          </p>
-        </div>
-      </Card>
-    )
-  }
-
   return (
-    <div className="space-y-1.5">
-      <p className="text-[11px] uppercase tracking-wider text-text-subtle">
-        {hits.length} kết quả {loading && '· đang tìm thêm…'}
-        {failures.length > 0 && ` · ${failures.length} nguồn lỗi`}
-      </p>
-      <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
-        {hits.slice(0, 30).map(({ source, manga }) => (
-          <SearchResultRow
-            key={`${source.manifest.id}::${manga.id}`}
-            source={source}
-            manga={manga}
-            onPick={onPick}
-          />
-        ))}
-      </ul>
+    <div className="space-y-2">
+      {hits.length > 0 && (
+        <p className="text-[11px] uppercase tracking-wider text-text-subtle px-1">
+          {hits.length} kết quả
+          {loading && <span className="ml-1.5">· đang tìm thêm…</span>}
+          {failures.length > 0 && (
+            <span className="ml-1.5 text-warning-text">
+              · {failures.length} nguồn lỗi
+            </span>
+          )}
+        </p>
+      )}
+
+      {hits.length > 0 && (
+        <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
+          {hits.slice(0, 30).map(({ source, manga }) => (
+            <SearchResultRow
+              key={`${source.manifest.id}::${manga.id}`}
+              source={source}
+              manga={manga}
+              onPick={onPick}
+            />
+          ))}
+        </ul>
+      )}
+
+      <ManualCreateRow query={query} hits={hits.length} onManualCreate={onManualCreate} />
     </div>
+  )
+}
+
+
+function ManualCreateRow({
+  query, hits, onManualCreate,
+}: {
+  query: string; hits: number; onManualCreate: (seed: string) => void
+}) {
+  const seed = query.trim()
+  // Always-visible CTA: when there ARE hits, framed as "Không thấy?";
+  // when none, the CTA is the primary path forward.
+  return (
+    <button
+      type="button"
+      onClick={() => onManualCreate(seed)}
+      className={cn(
+        'w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md',
+        'text-left transition-colors cursor-pointer',
+        hits === 0
+          ? 'bg-accent/10 border border-accent/20 hover:bg-accent/15'
+          : 'bg-surface-2 hover:bg-hover',
+      )}
+    >
+      <span className={cn(
+        'inline-flex items-center justify-center size-8 rounded-sm shrink-0',
+        hits === 0
+          ? 'bg-accent text-accent-fg'
+          : 'bg-surface text-text-muted',
+      )}>
+        <Wand2 size={13} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-text">
+          {hits === 0
+            ? `Không tìm thấy. Tạo "${seed}" thủ công?`
+            : `Không thấy "${seed}"? Tạo thủ công`
+          }
+        </p>
+        <p className="text-[11px] text-text-subtle mt-0.5">
+          Manga không thuộc nguồn nào · tải chương từ file zip/cbz
+        </p>
+      </div>
+    </button>
   )
 }
 
@@ -384,8 +496,6 @@ function SearchResultRow({
         nsfw:        !!manifest.nsfw,
       })
     } catch {
-      // Fall back to summary fields when detail fetch fails — user can
-      // still add the manga; refresh later picks up the rest.
       onPick({
         source,
         upstreamRef: manga.url,
@@ -459,7 +569,6 @@ function PickedDetail({
 }) {
   return (
     <div className="space-y-4">
-      {/* Picked-manga card */}
       <div className="flex items-start gap-3 p-3 rounded-md bg-surface-2">
         <Cover
           src={picked.cover ? proxify(picked.cover) : null}
@@ -494,7 +603,6 @@ function PickedDetail({
         </button>
       </div>
 
-      {/* Form */}
       <div className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-3">
         <div>
           <label className={label}>Đọc bằng</label>
@@ -550,26 +658,32 @@ function PickedDetail({
 
 // ── Footer ───────────────────────────────────────────────────────────
 
-function SearchHint({
-  query, sources,
+function FooterLeft({
+  mode, picked, sources, pickedSource, lockedSourceId,
 }: {
-  query: string; sources: InstalledSource[]
+  mode:           Mode
+  picked:         Picked | null
+  sources:        InstalledSource[]
+  pickedSource:   string | null
+  lockedSourceId: string | null
 }) {
-  if (query.trim().length === 0) {
-    return <>{sources.length} nguồn sẵn sàng</>
+  if (mode === 'manual') {
+    return <span>Tạo manga không thuộc nguồn nào</span>
   }
-  if (isUrlLike(query)) return <>Đang phân giải đường dẫn</>
-  return <>Tìm trên {sources.filter((s) => s.enabled).length} nguồn</>
-}
-
-
-function FooterContext({ picked }: { picked: Picked }) {
-  return (
-    <span className="inline-flex items-center gap-2 truncate">
-      <span className="truncate">{picked.title}</span>
-      <Tag tone="info" size="sm">{picked.source.manifest.name}</Tag>
-    </span>
-  )
+  if (mode === 'picked' && picked) {
+    return (
+      <span className="inline-flex items-center gap-2 truncate">
+        <span className="truncate">{picked.title}</span>
+        <Tag tone="info" size="sm">{picked.source.manifest.name}</Tag>
+      </span>
+    )
+  }
+  const id = lockedSourceId ?? pickedSource
+  if (id) {
+    const src = sources.find((s) => s.manifest.id === id)
+    return <span>Tìm trên {src?.manifest.name ?? '?'}</span>
+  }
+  return <span>{sources.length} nguồn đã cài</span>
 }
 
 
@@ -597,7 +711,7 @@ function ConfirmActions({
         languages:    picked.languages,
         nsfw:         picked.nsfw,
       })
-      const entry = await api.createLibraryEntry({
+      return await api.createLibraryEntry({
         material_id:    material.id,
         title:          picked.title,
         cover_url:      picked.cover ?? null,
@@ -605,7 +719,6 @@ function ConfirmActions({
         auto_translate: autoTr,
         status,
       })
-      return entry
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['library'] })
@@ -629,39 +742,5 @@ function ConfirmActions({
         Thêm vào thư viện
       </Button>
     </>
-  )
-}
-
-
-// ── Card primitives ──────────────────────────────────────────────────
-
-function Card({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-md bg-surface-2 border border-border-soft">
-      {children}
-    </div>
-  )
-}
-
-function CardLeft({
-  icon: Icon, tone, spin,
-}: {
-  icon: typeof Search
-  tone: 'success' | 'warning' | 'error' | 'neutral'
-  spin?: boolean
-}) {
-  const cls = {
-    success: 'text-success-text bg-success/15',
-    warning: 'text-warning-text bg-warning/15',
-    error:   'text-error-text bg-error/15',
-    neutral: 'text-text-muted bg-surface',
-  }[tone]
-  return (
-    <span className={cn(
-      'inline-flex items-center justify-center size-8 rounded-sm shrink-0',
-      cls,
-    )}>
-      <Icon size={14} className={spin ? 'animate-spin' : ''} />
-    </span>
   )
 }
