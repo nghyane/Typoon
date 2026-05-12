@@ -4,27 +4,31 @@ import { cn } from '@shared/lib/cn'
 import type { InstalledSource } from '@features/browse/manifest/types'
 
 // =============================================================================
-// SourcePicker — compact dropdown with per-source capability legend.
+// SourcePicker — compact dropdown with rich option cards.
 //
-// Every option carries two capability icons so the user can tell at
-// a glance which manifests support which path:
-//   🔍 Search   the manifest has a search endpoint.
-//   🔗 URL      always available — every source accepts URL paste
-//                via host match.
+// Each option is 2 lines: name + capability pills on the top row,
+// host + language tag on the bottom row. A 24px favicon on the left
+// gives the source identity at a glance. We pull favicons from
+// Google's S2 endpoint — same as Chrome/Firefox URL bar — so no
+// server-side asset pipeline is required.
 //
-// `lockedTo` puts the picker in read-only mode (used while a URL
-// paste is being resolved — the source is implied by the URL).
+// `searchableIds` flags manifests with a search endpoint. URL paste
+// works on every enabled source, so it's always-on in the legend.
+// `lockedTo` puts the picker in read-only mode (URL paste implies
+// the source).
 // =============================================================================
 
 interface Props {
   sources:        InstalledSource[]
-  /** Subset of sources that expose a search endpoint. URL paste
-   *  works on every enabled source, so it isn't tracked separately. */
   searchableIds:  Set<string>
   value:          string | null   // null = "all"
   onChange:       (id: string | null) => void
   lockedTo?:      string | null
 }
+
+const FAVICON = (host: string) =>
+  `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`
+
 
 export function SourcePicker({
   sources, searchableIds, value, onChange, lockedTo,
@@ -43,9 +47,9 @@ export function SourcePicker({
     )
   }
 
-  const activeLabel = value === null
-    ? 'Tất cả'
-    : sources.find((s) => s.manifest.id === value)?.manifest.name ?? '?'
+  const active = value === null
+    ? null
+    : sources.find((s) => s.manifest.id === value)
 
   return (
     <div className="relative shrink-0">
@@ -58,8 +62,13 @@ export function SourcePicker({
         )}
         title="Chọn nguồn để tìm"
       >
-        <Globe size={12} className="text-text-subtle" />
-        <span className="max-w-[120px] truncate">{activeLabel}</span>
+        {active
+          ? <Favicon host={active.manifest.host} size={14} />
+          : <Globe size={12} className="text-text-subtle" />
+        }
+        <span className="max-w-[120px] truncate">
+          {active?.manifest.name ?? 'Tất cả'}
+        </span>
         <ChevronDown
           size={12}
           className={cn(
@@ -75,40 +84,29 @@ export function SourcePicker({
             className="fixed inset-0 z-10"
             onMouseDown={() => setOpen(false)}
           />
-          <div className="absolute top-full mt-1 left-0 z-20 min-w-[260px] rounded-sm bg-surface border border-border-soft shadow-lg overflow-hidden">
-            <Option
+          <div
+            role="listbox"
+            className="absolute top-full mt-1 left-0 z-20 w-[320px] max-h-[360px] overflow-auto rounded-md bg-surface border border-border-soft shadow-lg"
+          >
+            <AllOption
               active={value === null}
-              disabled={false}
+              total={sources.length}
+              searchable={searchableIds.size}
               onClick={() => { onChange(null); setOpen(false) }}
-            >
-              <span className="flex-1 truncate">Tất cả nguồn</span>
-            </Option>
-            <div className="border-t border-border-soft" />
-            {sources.map((s) => {
-              const searchable = searchableIds.has(s.manifest.id)
-              return (
-                <Option
-                  key={s.manifest.id}
-                  active={value === s.manifest.id}
-                  disabled={!searchable}
-                  title={searchable
-                    ? undefined
-                    : `${s.manifest.name} chưa hỗ trợ tìm — dán link manga để thêm trực tiếp`}
-                  onClick={() => {
-                    if (!searchable) return
-                    onChange(s.manifest.id); setOpen(false)
-                  }}
-                >
-                  <span className="flex-1 truncate inline-flex items-center gap-1.5">
-                    {s.manifest.name}
-                    <span className="text-[11px] text-text-subtle uppercase">
-                      {s.manifest.languages.slice(0, 3).join('/')}
-                    </span>
-                  </span>
-                  <CapabilityIcons searchable={searchable} />
-                </Option>
-              )
-            })}
+            />
+            <div className="h-px bg-border-soft" />
+            {sources.map((s) => (
+              <SourceOption
+                key={s.manifest.id}
+                source={s}
+                searchable={searchableIds.has(s.manifest.id)}
+                active={value === s.manifest.id}
+                onClick={() => {
+                  if (!searchableIds.has(s.manifest.id)) return
+                  onChange(s.manifest.id); setOpen(false)
+                }}
+              />
+            ))}
           </div>
         </>
       )}
@@ -117,31 +115,87 @@ export function SourcePicker({
 }
 
 
-function Option({
-  active, disabled, title, onClick, children,
+// ── All sources row ─────────────────────────────────────────────────
+
+function AllOption({
+  active, total, searchable, onClick,
 }: {
-  active:   boolean
-  disabled: boolean
-  title?:   string
-  onClick:  () => void
-  children: React.ReactNode
+  active:     boolean
+  total:      number
+  searchable: number
+  onClick:    () => void
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
-      title={title}
       className={cn(
-        'w-full flex items-center justify-between gap-2 h-9 px-3 text-sm text-left transition-colors',
-        disabled
-          ? 'text-text-subtle/60 cursor-not-allowed'
-          : 'hover:bg-hover cursor-pointer',
-        active && !disabled && 'bg-surface-2 text-text font-medium',
+        'w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors cursor-pointer',
+        'hover:bg-hover',
+        active && 'bg-surface-2',
       )}
     >
-      {children}
-      {active && !disabled && (
+      <span className="size-8 rounded-sm bg-surface-2 flex items-center justify-center shrink-0">
+        <Globe size={14} className="text-text-muted" />
+      </span>
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm text-text font-medium">Tất cả nguồn</span>
+        <span className="block text-[11px] text-text-subtle mt-0.5">
+          {searchable} tìm được · {total} dán link
+        </span>
+      </span>
+      {active && <Check size={13} className="text-success-text shrink-0" />}
+    </button>
+  )
+}
+
+
+// ── Source row ──────────────────────────────────────────────────────
+
+function SourceOption({
+  source, searchable, active, onClick,
+}: {
+  source:     InstalledSource
+  searchable: boolean
+  active:     boolean
+  onClick:    () => void
+}) {
+  const { manifest } = source
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!searchable}
+      title={searchable
+        ? undefined
+        : `${manifest.name} chưa hỗ trợ tìm — dán đường dẫn để thêm`}
+      className={cn(
+        'w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors',
+        searchable
+          ? 'hover:bg-hover cursor-pointer'
+          : 'cursor-not-allowed opacity-60',
+        active && searchable && 'bg-surface-2',
+      )}
+    >
+      <Favicon host={manifest.host} size={28} />
+      <span className="flex-1 min-w-0">
+        <span className="flex items-center gap-1.5">
+          <span className="text-sm text-text font-medium truncate">
+            {manifest.name}
+          </span>
+          <CapPill kind="search" active={searchable} />
+          <CapPill kind="link"   active={true} />
+        </span>
+        <span className="block text-[11px] text-text-subtle mt-0.5 truncate">
+          {manifest.host}
+          {manifest.languages.length > 0 && (
+            <span className="uppercase ml-1.5">
+              · {manifest.languages.slice(0, 3).join('/')}
+            </span>
+          )}
+        </span>
+      </span>
+      {active && searchable && (
         <Check size={13} className="text-success-text shrink-0" />
       )}
     </button>
@@ -149,41 +203,53 @@ function Option({
 }
 
 
-/** Two pills showing what this source can do. URL paste is always
- *  shown (every source accepts it via host match); search is muted
- *  when the manifest has no search endpoint. */
-function CapabilityIcons({ searchable }: { searchable: boolean }) {
+// ── Bits ────────────────────────────────────────────────────────────
+
+function Favicon({ host, size }: { host: string; size: number }) {
   return (
-    <span className="inline-flex items-center gap-1 shrink-0">
-      <CapIcon
-        Icon={Search}
-        active={searchable}
-        title={searchable ? 'Hỗ trợ tìm theo tên' : 'Chưa hỗ trợ tìm'}
-      />
-      <CapIcon
-        Icon={LinkIcon}
-        active={true}
-        title="Hỗ trợ dán đường dẫn"
+    <span
+      className="rounded-sm bg-surface-2 overflow-hidden flex items-center justify-center shrink-0"
+      style={{ width: size, height: size }}
+    >
+      <img
+        src={FAVICON(host)}
+        alt=""
+        width={size}
+        height={size}
+        loading="lazy"
+        onError={(e) => {
+          // Fallback to the host's first letter when Google's S2 has
+          // no record. Avoid stretched broken-image icons in the menu.
+          const el = e.currentTarget
+          el.style.display = 'none'
+          el.parentElement?.classList.add('font-bold', 'text-text-muted', 'text-[11px]')
+          if (el.parentElement) el.parentElement.textContent = host[0]?.toUpperCase() ?? '?'
+        }}
+        className="w-full h-full object-contain"
       />
     </span>
   )
 }
 
 
-function CapIcon({
-  Icon, active, title,
+function CapPill({
+  kind, active,
 }: {
-  Icon: typeof Search; active: boolean; title: string
+  kind: 'search' | 'link'; active: boolean
 }) {
+  const Icon = kind === 'search' ? Search : LinkIcon
   return (
     <span
-      title={title}
+      title={kind === 'search'
+        ? (active ? 'Hỗ trợ tìm theo tên' : 'Chưa hỗ trợ tìm')
+        : 'Hỗ trợ dán đường dẫn'
+      }
       className={cn(
-        'inline-flex items-center justify-center size-5 rounded-xs',
-        active ? 'bg-surface-2 text-text-muted' : 'bg-transparent text-text-subtle/40',
+        'inline-flex items-center justify-center size-4 rounded-xs shrink-0',
+        active ? 'bg-surface-2 text-text-muted' : 'text-text-subtle/40',
       )}
     >
-      <Icon size={10} />
+      <Icon size={9} />
     </span>
   )
 }
