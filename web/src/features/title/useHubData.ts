@@ -25,7 +25,6 @@ import { useSources } from '@features/browse/sources'
 import type {
   InstalledSource, MangaChapterRef, MangaDetail,
 } from '@features/browse/manifest/types'
-
 export interface HubChapterRow {
   /** Stable key for React lists. */
   key:           string
@@ -58,11 +57,12 @@ export function useHubData(entryId: number) {
     enabled:   primaryId !== null,
   })
 
-  const installedSource = useSources((s) => {
-    const sourceId = material.data?.material.source
-    if (!sourceId) return null
-    return s.sources[sourceId] ?? null
-  })
+  const installedSourcesMap = useSources((s) => s.sources)
+  const sourceId = material.data?.material.source ?? null
+  const installedSource: InstalledSource | null = useMemo(
+    () => sourceId ? (installedSourcesMap[sourceId] ?? null) : null,
+    [sourceId, installedSourcesMap],
+  )
 
   const upstreamRef = material.data?.material.upstream_ref ?? null
 
@@ -74,6 +74,31 @@ export function useHubData(entryId: number) {
     staleTime: 5 * 60_000,
     enabled:   installedSource !== null && upstreamRef !== null,
   })
+
+  // Dev visibility — surface why the chapter list might be empty.
+  if (import.meta.env.DEV && material.data && !manifest.isPending) {
+    const m = material.data.material
+    if (m.source && m.upstream_ref) {
+      if (!installedSource) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[hub] no installed source matches material.source=${m.source}; `,
+          `installed:`, Object.keys(installedSourcesMap),
+        )
+      } else if (manifest.error) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[hub] manifest fetch failed for ${m.source}:`,
+          manifest.error,
+        )
+      } else if (manifest.data) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[hub] manifest ${m.source} returned ${manifest.data.chapters.length} chapters`,
+        )
+      }
+    }
+  }
 
   const rows = useMemo(
     () => mergeChapters(material.data?.chapters ?? [], manifest.data ?? null, installedSource),

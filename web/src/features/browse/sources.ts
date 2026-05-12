@@ -129,3 +129,19 @@ export function useAllSources(): InstalledSource[] {
 export function getSource(id: string): InstalledSource | null {
   return useSources.getState().sources[id] ?? null
 }
+
+// Hydrate bundled manifests on module load. Without this, the first
+// render of any consumer that doesn't itself call ensureBundled (e.g.
+// /title/{id} via direct refresh) sees an empty registry — and the
+// downstream manifest fetch silently never fires.
+//
+// Persisted user state still rehydrates from localStorage first via
+// the zustand `persist` middleware; ensureBundled() only fills gaps
+// (new bundled manifests) so this never clobbers user toggles.
+if (typeof window !== 'undefined') {
+  // Defer one microtask so the persist middleware has a chance to
+  // rehydrate from localStorage before we patch the store.
+  queueMicrotask(() => {
+    useSources.getState().ensureBundled()
+  })
+}
