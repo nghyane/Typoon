@@ -48,10 +48,28 @@ async def build_chapter_brief(
     pre_noise = {bk.key for bk in keyed if _is_auto_skip(bk.source_text)}
     visible_keyed = [bk for bk in keyed if bk.key not in pre_noise]
 
-    # Glossary: caller's user + community defaults, merged. The
-    # translate context only needs the resolved key=value mapping so
-    # the LLM can reference correct terms — community vs user origin
-    # is opaque here.
+    # Per-user translator memory drives the long-lived context: per-
+    # material character/world/style/glossary cards plus a sliding
+    # window of briefs from prior chapters this user already translated.
+    # Auto-create on first touch so subsequent appends have a row to
+    # hang off; the cards stay empty until the agent / user populates
+    # them.
+    memory = await ctx.store.get_translator_memory(
+        user_id=ctx.owner_id,
+        material_id=ctx.material_id,
+        target_lang=ctx.target_lang,
+    )
+    if memory is None:
+        memory = await ctx.store.upsert_translator_memory(
+            user_id=ctx.owner_id,
+            material_id=ctx.material_id,
+            source_lang=ctx.source_lang,
+            target_lang=ctx.target_lang,
+        )
+
+    # Glossary: user_glossary (lang-pair scoped) merged with memory's
+    # per-material glossary cards. Memory takes precedence — it is the
+    # narrowest scope and the one the agent actively learns into.
     user_terms = await ctx.store.list_user_glossary(
         ctx.owner_id,
         source_lang=ctx.source_lang,
@@ -60,11 +78,30 @@ async def build_chapter_brief(
     glossary_terms: dict[str, str] = {
         r["source_term"]: r["target_term"] for r in user_terms
     }
-    # Prior-brief lookup is per-author-per-material in the new model:
-    # we have no equivalent to "recent project briefs" because briefs
-    # bind to drafts, not chapters. Skip until the slice that wires
-    # per-draft brief history. Empty list keeps the prompt valid.
-    prior_briefs: list[dict] = []
+    for term in memory.get("glossary", []) or []:
+        src = term.get("source_term")
+        tgt = term.get("target_term")
+        if src and tgt:
+            glossary_terms[src] = tgt
+
+    # Sliding window of prior briefs for this (user, material, lang).
+    # Replaces the slice-1 placeholder `prior_briefs = []`. Window of 5
+    # chapters keeps the prompt bounded; the agent can pull older
+    # entries on demand via search_knowledge once that's wired to
+    # memory briefs (TODO once the M2 storage move settles).
+    prior_brief_rows = await ctx.store.list_recent_memory_briefs(
+        memory_id=memory["id"],
+        before_chapter_id=ctx.chapter_id,
+        limit=5,
+    )
+    prior_briefs: list[dict] = [
+        {
+            "chapter": r.get("number"),
+            "brief":   r.get("brief_json") or {},
+            "summary": r.get("summary"),
+        }
+        for r in prior_brief_rows
+    ]
     has_knowledge = bool(glossary_terms) or bool(prior_briefs)
     context_snapshot = _context_snapshot(
         glossary_terms=glossary_terms,

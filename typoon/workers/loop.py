@@ -433,6 +433,30 @@ async def _handle_translate(
     await ctx.db.save_draft_bubbles(draft_id, translated.to_db_records())
     await ctx.db.update_draft_state(draft_id, state="done")
 
+    # Append into the draft owner's translator_memory so subsequent
+    # chapters in the same (user, material, target_lang) inherit the
+    # context. The row was created (or fetched) in build_chapter_brief —
+    # we look it up by the same key and append a brief snapshot.
+    #
+    # Cache-reuse note: when another user later hits this draft via
+    # the visibility cache, this append fires once for the original
+    # spawner. Cache consumers don't accumulate memory because their
+    # spawn never ran the agent loop. That's deliberate — memory
+    # tracks who DID the translation, not who READ it.
+    if material is not None:
+        memory_row = await ctx.db.get_translator_memory(
+            user_id=draft["created_by"],
+            material_id=chapter["material_id"],
+            target_lang=draft["target_lang"],
+        )
+        if memory_row is not None:
+            await ctx.db.append_memory_brief(
+                memory_id=memory_row["id"],
+                chapter_id=chapter_id,
+                brief_json=brief.to_dict(),
+                summary=brief.summary or None,
+            )
+
     # Fan out render: target the draft (shared default render). When
     # users later add sparse edits, individual translations re-render
     # to their own t/{id}/render.bnl key.
