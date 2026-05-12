@@ -236,6 +236,61 @@ export interface ApiQueueStats {
   active_workers: string[]
 }
 
+// ── Translator memory ───────────────────────────────────────────────
+
+/** Free-form character card. The agent suggests; the user accepts +
+ *  edits + locks. We keep the JSON shape loose (Record<string,unknown>)
+ *  so the agent loop can extend fields without a migration — UI reads
+ *  named keys (name/pronouns/role/notes) defensively. */
+export interface ApiMemoryCharacter {
+  name:        string
+  aliases?:    string[]
+  pronouns?:   { self?: string; other?: string }
+  role?:       string
+  notes?:      string
+  locked?:     boolean
+  pending?:    boolean      // agent-suggested, awaiting user accept
+}
+
+export interface ApiMemoryGlossaryTerm {
+  source_term: string
+  target_term: string
+  notes?:      string
+  locked?:     boolean
+  pending?:    boolean
+}
+
+export interface ApiMemoryStyleRef {
+  kind:   'translation' | 'chapter'
+  id:     number
+  label:  string
+  weight: number
+}
+
+export interface ApiTranslatorMemory {
+  material_id:     number
+  source_lang:     string
+  target_lang:     string
+  characters:      ApiMemoryCharacter[]
+  world:           Record<string, unknown>
+  style:           Record<string, unknown>
+  glossary:        ApiMemoryGlossaryTerm[]
+  style_refs:      ApiMemoryStyleRef[]
+  last_chapter_id: number | null
+  updated_at:      string | null
+}
+
+export interface ApiMemoryBrief {
+  chapter_id:  number
+  position:    number
+  number:      string
+  label:       string | null
+  summary:     string | null
+  brief_json:  Record<string, unknown>
+  created_at:  string | null
+  updated_at:  string | null
+}
+
 // ── Translate spawn ──────────────────────────────────────────────────
 
 export interface SpawnTranslateBody {
@@ -521,13 +576,63 @@ export const api = {
   // ── Workers (admin-ish dashboard) ───────────────────────────────
   workers: () => request<ApiQueueStats>('/workers'),
 
-  // ── DMCA ────────────────────────────────────────────────────────
-  reportDmca: (body: {
-    target_kind: 'material' | 'chapter' | 'draft' | 'translation';
-    target_id: number; reason: string; reporter: string;
-    scope_guild_id?: string | null;
+  // ── Translator memory ───────────────────────────────────────────
+  // Per (user, material, target_lang) knowledge bag. The agent loop
+  // reads cards + sliding-window briefs on every spawn; the UI exposes
+  // the same cards under /title/{entry_id}/memory so users can lock /
+  // edit / reset without ever opening "settings".
+  getMemory: (materialId: number, targetLang: string) =>
+    request<ApiTranslatorMemory | null>(
+      `/material/${materialId}/memory?target_lang=${encodeURIComponent(targetLang)}`,
+    ),
+
+  upsertMemory: (
+    materialId: number,
+    body: {
+      target_lang:  string
+      source_lang?: string                 // required on first write
+      characters?:  unknown[] | null       // null = leave intact
+      world?:       Record<string, unknown> | null
+      style?:       Record<string, unknown> | null
+      glossary?:    unknown[] | null
+      style_refs?:  unknown[] | null
+    },
+  ) =>
+    request<ApiTranslatorMemory>(`/material/${materialId}/memory`, {
+      method: 'PUT', body: json(body),
+    }),
+
+  resetMemory: (materialId: number, targetLang: string) =>
+    request<void>(
+      `/material/${materialId}/memory?target_lang=${encodeURIComponent(targetLang)}`,
+      { method: 'DELETE' },
+    ),
+
+  listMemoryBriefs: (
+    materialId: number,
+    opts: { target_lang: string; before_chapter_id?: number; limit?: number },
+  ) => {
+    const qs = new URLSearchParams({ target_lang: opts.target_lang })
+    if (opts.before_chapter_id != null)
+      qs.set('before_chapter_id', String(opts.before_chapter_id))
+    if (opts.limit != null) qs.set('limit', String(opts.limit))
+    return request<ApiMemoryBrief[]>(
+      `/material/${materialId}/memory/briefs?${qs.toString()}`,
+    )
+  },
+
+  // ── Reports ─────────────────────────────────────────────────────
+  // User intake — any authenticated user can file. `kind` picks the
+  // category (dmca / abuse / quality / other); admin queue handles
+  // the rest. Reporter identity is taken from the auth session.
+  submitReport: (body: {
+    target_kind:    'material' | 'chapter' | 'draft' | 'translation'
+    target_id:      number
+    scope_guild_id?: string | null
+    kind?:          'dmca' | 'abuse' | 'quality' | 'other'
+    reason:         string
   }) =>
-    request<{ takedown_id: number }>('/dmca/report', {
+    request<{ report_id: number }>('/reports', {
       method: 'POST', body: json(body),
     }),
 }
