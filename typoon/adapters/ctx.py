@@ -17,8 +17,7 @@ from typoon.storage import Store
 @dataclass(frozen=True)
 class TranslateCtx:
     translation_provider: Provider
-    context_provider:     Provider
-    vision_provider:      Provider
+    vision_provider:      Provider   # used by both storyboard context pass + look_at
     store:                Store
     chapter_id:           int       # DB primary key
     draft_id:             int       # which draft this run is filling in
@@ -45,8 +44,7 @@ def make_ctx(
 ) -> TranslateCtx:
     from typoon.config import load_config
     from typoon.providers import (
-        make_context_provider, make_translation_provider,
-        make_vision_provider,
+        make_translation_provider, make_vision_provider,
     )
     from typoon.runs.events import Hook as _Hook
 
@@ -57,7 +55,6 @@ def make_ctx(
 
     return TranslateCtx(
         translation_provider=make_translation_provider(config),
-        context_provider=make_context_provider(config),
         vision_provider=make_vision_provider(config),
         store=store,
         chapter_id=chapter_id,

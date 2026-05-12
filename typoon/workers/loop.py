@@ -435,8 +435,10 @@ async def _handle_translate(
 
     # Append into the draft owner's translator_memory so subsequent
     # chapters in the same (user, material, target_lang) inherit the
-    # context. The row was created (or fetched) in build_chapter_brief —
-    # we look it up by the same key and append a brief snapshot.
+    # context. The memory row is created lazily by the API/UI when the
+    # user first touches the material; we only append a brief snapshot
+    # here. If the row does not exist yet (e.g. background cache job),
+    # we skip the append silently.
     #
     # Cache-reuse note: when another user later hits this draft via
     # the visibility cache, this append fires once for the original
@@ -449,13 +451,22 @@ async def _handle_translate(
             material_id=chapter["material_id"],
             target_lang=draft["target_lang"],
         )
-        if memory_row is not None:
-            await ctx.db.append_memory_brief(
-                memory_id=memory_row["id"],
-                chapter_id=chapter_id,
-                brief_json=brief.to_dict(),
-                summary=brief.summary or None,
+        if memory_row is None:
+            # Lazy create: first translate of this (user, material,
+            # target_lang) seeds the memory row so subsequent chapters
+            # have somewhere to append briefs.
+            memory_row = await ctx.db.upsert_translator_memory(
+                user_id=draft["created_by"],
+                material_id=chapter["material_id"],
+                source_lang=draft["source_lang"],
+                target_lang=draft["target_lang"],
             )
+        await ctx.db.append_memory_brief(
+            memory_id=memory_row["id"],
+            chapter_id=chapter_id,
+            brief_json=brief.to_dict(),
+            summary=brief.summary_line(),
+        )
 
     # Fan out render: target the draft (shared default render). When
     # users later add sparse edits, individual translations re-render
@@ -553,7 +564,7 @@ async def _handle_render(
         async with ctx.db._pool.acquire() as conn:  # type: ignore[attr-defined]
             await conn.execute(
                 "UPDATE translation_drafts SET "
-                "  archive_backend=$1, archive_locator=$2 "
+                "  archive_backend=$1, archive_locator=$2, rendered_at=NOW() "
                 "WHERE id=$3",
                 public.backend_name, locator, draft_id,
             )

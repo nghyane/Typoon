@@ -17,8 +17,9 @@ STAGE_DIRS = (
     "02_detect",
     "03_group",
     "04_ocr",
-    "05_translate",
-    "06_render",
+    "05_context",
+    "06_translate",
+    "07_render",
     "final",
 )
 
@@ -28,6 +29,7 @@ class ArtifactSink(Protocol):
 
     def write_json(self, stage: str, name: str, data: Any) -> Path: ...
     def write_image(self, stage: str, name: str, image: np.ndarray) -> Path: ...
+    def write_bytes(self, stage: str, name: str, data: bytes) -> Path: ...
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,12 @@ class FileArtifactSink:
         bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) if image.ndim == 3 else image
         if not cv2.imwrite(str(out), bgr):
             raise RuntimeError(f"Failed to write image: {out}")
+        return out
+
+    def write_bytes(self, stage: str, name: str, data: bytes) -> Path:
+        out = self._path(stage, name)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
         return out
 
     def _path(self, stage: str, name: str) -> Path:

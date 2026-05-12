@@ -46,11 +46,5 @@ class _LazyTemplate(str):
         return self._loaded.format(**kwargs)
 
 
-CONTEXT_SYSTEM = _LazyTemplate("agents/context.md")
-PAGE_SYSTEM    = _LazyTemplate("agents/page.md")
-
-CONTEXT_USER = """\
-{context_snapshot}
-
-## Chapter text to analyze
-{chapter_text}"""
+STORYBOARD_SYSTEM = _LazyTemplate("agents/storyboard.md")
+PAGE_SYSTEM       = _LazyTemplate("agents/page.md")

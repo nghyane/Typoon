@@ -48,14 +48,9 @@ class TranslationConfig(BaseModel):
     reasoning_effort: str | None = None
 
 
-class ContextAgentConfig(BaseModel):
-    provider: str = "anthropic"
-    model: str = "claude-haiku-4-5"
-    max_tokens: int | None = 8192
-    reasoning_effort: str | None = None
-
-
 class VisionAgentConfig(BaseModel):
+    """Vision provider — drives both the per-chapter storyboard context pass
+    (`stages.scan_context`) and on-demand `look_at` calls during translation."""
     provider: str = "openai"
     model: str = "gpt-4o-mini"
     max_tokens: int | None = 4096
@@ -214,7 +209,6 @@ class Config(BaseSettings):
     default_target_lang: str = "vi"
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     translation: TranslationConfig = TranslationConfig()
-    context_agent: ContextAgentConfig = ContextAgentConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
     # OCR backend choice. `"auto"` picks the first available backend in

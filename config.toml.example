@@ -50,7 +50,12 @@ extra_headers = { cf-aig-authorization = "Bearer <your-cf-aig-token>" }
 provider = "cf"
 model = "dynamic/auto"   # Gateway auto-routes; requires endpoint compat path
 
-[context_agent]
+[vision_agent]
+# Drives the per-chapter storyboard context pass (replaces the old
+# context_agent multi-turn loop) and on-demand look_at calls. The
+# storyboard pass sends ONE image + bubble list per chunk of up to 9
+# pages, so the provider must support image inputs (OpenAI-compatible
+# Responses API, Anthropic, or Gemini).
 provider = "cf"
 model = "dynamic/auto"
 
@@ -77,7 +82,7 @@ model = "dynamic/auto"
 # provider = "minimax"
 # model = "MiniMax-M2.7"
 #
-# [context_agent]
+# [vision_agent]
 # provider = "minimax"
 # model = "MiniMax-M2.5"    # cheaper model for context phase
 

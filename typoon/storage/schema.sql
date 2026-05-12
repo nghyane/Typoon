@@ -182,9 +182,8 @@ CREATE INDEX IF NOT EXISTS idx_links_a ON material_links(material_a_id);
 CREATE INDEX IF NOT EXISTS idx_links_b ON material_links(material_b_id);
 
 -- ── Chapter ─────────────────────────────────────────────────────────
--- A unit of pages inside a Material. `pages_origin = 'remote'` defers
--- page fetch to read-time via the manifest runtime (no local copy).
--- `pages_origin = 'local'` keeps prepared.bnl in our blob store.
+-- A unit of pages inside a Material. Pages are always local: the
+-- prepare stage fetches + stores them in our blob store as prepared.bnl.
 --
 -- `prepared_hash` is the content-addressable cache key. Two chapter
 -- rows with identical pixel content (same upload zip, identical
@@ -207,8 +206,6 @@ CREATE TABLE IF NOT EXISTS chapters (
     number            TEXT NOT NULL,
     label             TEXT,                 -- full label as the source presents
     upstream_url      TEXT,                 -- chapter URL on source; NULL for upload
-
-    pages_origin      TEXT NOT NULL CHECK (pages_origin IN ('remote','local')),
 
     -- CAS for prepared.bnl. SHA256 hex string; NULL until prepare runs.
     prepared_hash     TEXT,
@@ -322,6 +319,12 @@ CREATE TABLE IF NOT EXISTS translation_drafts (
     progress_stage     TEXT,
     progress_index     INTEGER,
     progress_total     INTEGER,
+
+    -- Default render archive. Every translation pointing at this draft
+    -- with no per-translation override (sparse edits) serves from here.
+    archive_backend    TEXT,
+    archive_locator    TEXT,
+    rendered_at        TIMESTAMPTZ,
 
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -567,9 +570,10 @@ CREATE INDEX IF NOT EXISTS idx_translator_memory_material
     ON translator_memory(material_id);
 
 -- Sliding-window chapter briefs. One row per (memory, chapter).
--- `brief_json` holds the full ChapterBrief shape (summary, glossary,
--- address rules, style_notes, page_notes, noise). `summary` denormalised
--- for list views + FTS.
+-- `brief_json` holds the ChapterBrief shape (glossary, style_notes,
+-- key_notes, characters, noise_keys, noise_pages) emitted by the
+-- per-chapter storyboard vision pass. `summary` is denormalised from
+-- the first style_note line for list views + FTS.
 CREATE TABLE IF NOT EXISTS translator_memory_briefs (
     memory_id    BIGINT NOT NULL REFERENCES translator_memory(id) ON DELETE CASCADE,
     chapter_id   BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,

@@ -83,17 +83,6 @@ def make_translation_provider(config: Config) -> Provider:
     )
 
 
-def make_context_provider(config: Config) -> Provider:
-    name = config.context_agent.provider
-    pcfg = config.providers.get(name)
-    if pcfg is None:
-        raise ValueError(f"Provider '{name}' not found in [providers]")
-    return _build_provider(
-        name, pcfg, config.context_agent.model, config.context_agent.reasoning_effort,
-        max_tokens=config.context_agent.max_tokens,
-    )
-
-
 def make_vision_provider(config: Config) -> Provider:
     name = config.vision_agent.provider
     pcfg = config.providers.get(name)

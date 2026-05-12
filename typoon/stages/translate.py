@@ -14,7 +14,7 @@ from typoon.domain import scan, translate
 from typoon.domain.scan import BubbleKey
 from typoon.runs.artifacts import ArtifactSink
 from typoon.stages.brief import ChapterBrief
-from typoon.stages.context import build_chapter_brief
+from typoon.stages.scan_context import build_chapter_context
 from typoon.stages.keys import assign_keys
 from typoon.stages.page import TranslationOp, translate_window
 
@@ -38,9 +38,9 @@ async def translate_chapter(
         return _empty(scanned), ChapterBrief()
 
     keyed  = assign_keys(scanned.all_bubbles, chapter_id=ctx.chapter_id)
-    brief  = await build_chapter_brief(ctx, scanned.prepared, reader, keyed)
+    brief  = await build_chapter_context(ctx, reader, keyed, artifacts=artifacts)
 
-    # Bubbles flagged as noise by the context agent (site chrome, watermarks,
+    # Bubbles flagged as noise by the context pass (site chrome, watermarks,
     # buttons, page counters) bypass the translator entirely — they get a
     # kind="skip" op without an LLM round trip. Pages flagged whole as
     # noise extend that to every bubble on those pages.

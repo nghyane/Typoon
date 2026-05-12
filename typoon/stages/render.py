@@ -65,7 +65,7 @@ def render_chapter(
                 # Record the drop so visual verification can confirm
                 # which pages were excluded by the brief.
                 artifacts.write_image(
-                    "06_render", f"{tp.index:04d}_dropped.png", reader.read_rgb(tp.index)
+                    "07_render", f"{tp.index:04d}_dropped.png", reader.read_rgb(tp.index)
                 )
             if hook is not None:
                 hook.on(_page_done(
@@ -130,7 +130,7 @@ def render_chapter(
             ))
 
         if artifacts is not None:
-            artifacts.write_image("06_render", f"{tp.index:04d}_rendered.png", result.image)
+            artifacts.write_image("07_render", f"{tp.index:04d}_rendered.png", result.image)
 
         rendered_pages.append(render.Page(source=tp, bubbles=rendered_bubbles))
 
