@@ -593,15 +593,25 @@ function ChapterTable({
   const anySelected = sel.size > 0
   return (
     <div className="rounded-md overflow-hidden border border-border-soft">
-      {anySelected && (
-        <div className="flex items-center gap-3 h-9 px-3 bg-surface-2 border-b border-border-soft">
-          <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
-          <span className="text-xs text-text-muted">
-            {sel.size} đã chọn
-          </span>
-        </div>
-      )}
       <table className="w-full">
+        <thead>
+          <tr className="text-[11px] font-medium tracking-wide text-text-subtle uppercase bg-surface-2/40 border-b border-border-soft">
+            {/* Checkbox lane — no label, just visual lane alignment.
+                When selection mode is active, the master 'select all'
+                checkbox lives here. */}
+            <th className="pl-3 pr-2 py-2 w-8 text-left">
+              {anySelected && (
+                <Checkbox checked={allChecked} onClick={onToggleAll} ariaLabel="Chọn tất cả" />
+              )}
+            </th>
+            <th className="pr-3 py-2 text-right">#</th>
+            <th className="px-3 py-2 text-left">
+              {anySelected ? `${sel.size} đã chọn` : 'Chương'}
+            </th>
+            <th className="px-3 py-2 hidden sm:table-cell text-right">Cập nhật</th>
+            <th className="pl-2 pr-3 py-2 text-right">Thao tác</th>
+          </tr>
+        </thead>
         <tbody>
           {chapters.map((c) => (
             <ChapterRow
