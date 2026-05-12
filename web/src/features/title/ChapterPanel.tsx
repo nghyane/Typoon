@@ -12,7 +12,7 @@ import { card } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
 import {
-  preferredReadable, inFlight, lastError, chapterLangs,
+  preferredReadable, inFlight, lastError,
   stripChapterPrefix,
   type HubChapter, type HubVersion,
 } from './mergeChapters'
@@ -643,8 +643,6 @@ function ChapterRow({
   const readable   = preferredReadable(chapter, targetLang)
   const running    = inFlight(chapter, targetLang)
   const errored    = lastError(chapter, targetLang)
-  const tgt        = targetLang?.toLowerCase() ?? null
-  const extraLangs = chapterLangs(chapter).filter((l) => l !== tgt)
   const label      = stripChapterPrefix(chapter.label, chapter.number)
   const hasRaw     = chapter.versions.some((v) => v.kind === 'raw')
   const canSpawn   = hasRaw && status !== 'running'
@@ -667,27 +665,23 @@ function ChapterRow({
         checked ? 'bg-row-active' : 'hover:bg-hover',
       )}
     >
-      {/* Checkbox lane. State stripe lives on this cell so it paints
-          flush at the row's left edge regardless of cell padding. */}
+      {/* Checkbox cell — at-rest invisible, reveals on row hover or
+          when any row is already selected. State stripe via
+          box-shadow on this cell's left edge. */}
       <td
-        className="pl-3 pr-2 py-3 w-8"
+        className="pl-3 pr-1 py-3 w-8"
         style={{ boxShadow: `inset 2px 0 0 0 ${stripeColor}` }}
       >
-        <div
-          className={cn(
-            'transition-opacity',
-            checked || anySelected
-              ? 'opacity-100'
-              : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100',
-          )}
-        >
+        <div className={cn(
+          'transition-opacity',
+          checked ? 'opacity-100' : anySelected ? 'opacity-60 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100',
+        )}>
           <Checkbox checked={checked} onClick={onToggle} ariaLabel="Chọn chương" />
         </div>
       </td>
 
-      {/* Number — tabular, content-driven width, right-aligned so
-          single / double / triple digits stack with the same edge. */}
-      <td className="pr-3 py-3 tabular text-right font-semibold text-text whitespace-nowrap">
+      {/* Number — tabular, right-aligned, content-driven width. */}
+      <td className="pr-3 py-3 whitespace-nowrap tabular text-right font-semibold text-text">
         {chapter.number}
       </td>
 
@@ -700,10 +694,8 @@ function ChapterRow({
         )}
         <SubLine
           status={status}
-          readable={readable}
           running={running}
           errored={errored}
-          extraLangs={extraLangs}
         />
       </td>
 
@@ -895,28 +887,12 @@ function Action({
 // On a 40/40 vi→vi title the sub-line is invisible across the board.
 
 function SubLine({
-  status, readable, running, errored, extraLangs,
+  status, running, errored,
 }: {
-  status:     StatusFilter
-  readable:   HubVersion | null
-  running:    HubVersion | null
-  errored:    HubVersion | null
-  extraLangs: string[]
+  status:   StatusFilter
+  running:  HubVersion | null
+  errored:  HubVersion | null
 }) {
-  // Happy path: translation done, action button shows 'Đọc {LANG}'.
-  // Sub-line adds nothing → render nothing.
-  if (status === 'translated' && readable && extraLangs.length === 0) {
-    return null
-  }
-
-  if (status === 'translated' && readable) {
-    return (
-      <div className="mt-1">
-        <LangChips langs={extraLangs} />
-      </div>
-    )
-  }
-
   if (status === 'running') {
     return (
       <div className="mt-1 inline-flex items-center gap-1.5 text-xs text-info-text min-w-0">
@@ -927,7 +903,6 @@ function SubLine({
       </div>
     )
   }
-
   if (status === 'error') {
     return (
       <div
@@ -943,36 +918,7 @@ function SubLine({
       </div>
     )
   }
-
-  // status === 'raw' → list other langs available (if any), so the
-  // user can pivot to read in a non-target lang they speak.
-  if (extraLangs.length === 0) return null
-  return (
-    <div className="mt-1">
-      <LangChips langs={extraLangs} />
-    </div>
-  )
-}
-
-
-function LangChips({ langs }: { langs: string[] }) {
-  if (langs.length === 0) return null
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      <span className="text-[10px] text-text-subtle">Cũng có:</span>
-      {langs.slice(0, 5).map((l) => (
-        <span
-          key={l}
-          className="inline-flex items-center h-4 px-1 rounded-xs text-[10px] font-semibold uppercase bg-surface-2 text-text-subtle"
-        >
-          {l}
-        </span>
-      ))}
-      {langs.length > 5 && (
-        <span className="text-[10px] text-text-subtle">+{langs.length - 5}</span>
-      )}
-    </div>
-  )
+  return null
 }
 
 
