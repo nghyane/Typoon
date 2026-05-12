@@ -263,19 +263,22 @@ function Toolbar({
 
 
 // ── Count chip — anchored to the right of the tools cluster ─────────
+//
+// Only renders when a filter is actually narrowing the list. When
+// visible == total, the hero's aggregate progress bar already
+// communicates the count; doubling it here is noise.
 
 function CountChip({ visible, total }: { visible: number; total: number }) {
-  const filtered = visible !== total
+  if (visible === total) return null
   return (
     <span
       className={cn(
         'inline-flex items-center h-8 px-2.5 rounded-sm shrink-0',
-        'text-[12px] tabular bg-surface-2',
-        filtered ? 'text-text-muted' : 'text-text-subtle',
+        'text-[12px] tabular bg-surface-2 text-text-muted',
       )}
-      title={filtered ? `Đang lọc — ${visible} trong ${total} chương` : `${total} chương`}
+      title={`Đang lọc — ${visible} trong ${total} chương`}
     >
-      <span className={filtered ? 'text-text font-medium' : ''}>{visible}</span>
+      <span className="text-text font-medium">{visible}</span>
       <span className="opacity-50 mx-0.5">/</span>
       {total}
     </span>
