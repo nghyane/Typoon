@@ -653,7 +653,6 @@ function ChapterRow({
   const stripeColor =
     status === 'running' ? 'var(--color-info)'
   : status === 'error'   ? 'var(--color-error)'
-  : status === 'raw'     ? 'var(--color-warning)'
                          : 'transparent'
 
   return (
