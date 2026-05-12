@@ -402,12 +402,12 @@ function ChapterRow({
           className="mt-1.5 sm:hidden"
         />
         <div className="sm:hidden mt-1">
-          <StatusInline status={status} readable={readable} />
+          <StatusInline status={status} readable={readable} running={running} errored={errored} />
         </div>
       </td>
 
       <td className="px-3 py-3 w-72 hidden sm:table-cell">
-        <StatusInline status={status} readable={readable} />
+        <StatusInline status={status} readable={readable} running={running} errored={errored} />
         <LangChips langs={langs} targetLang={targetLang} className="mt-1.5" />
       </td>
 
@@ -432,6 +432,24 @@ function ChapterRow({
 
 
 // ── Smart action button ─────────────────────────────────────────────
+//
+// Action mapping (slice 13 scope):
+//   • readable.raw  → external link to upstreamUrl (opens source in
+//                     new tab). Reader for raws ships with slice 14;
+//                     until then the source page is the next best
+//                     thing for a translated-read flow.
+//   • readable.translation → disabled with explicit 'slice 14' hint.
+//     Translation reader needs the page-by-page render fetch which
+//     isn't wired yet.
+//   • running       → disabled progress indicator; spawn-driven
+//                     refresh will flip the row to readable once the
+//                     translation lands.
+//   • errored       → disabled retry; spawn dialog (slice 15) is
+//                     where retry will live.
+//   • raw (no target match yet) → disabled 'Dịch'; same dialog.
+//
+// Each disabled branch carries a `title` so the user understands
+// WHY it's inert, not just THAT it is.
 
 function Action({
   status, readable, running, errored,
@@ -444,7 +462,12 @@ function Action({
 }) {
   if (status === 'running' && running) {
     return (
-      <Button size="sm" variant="secondary" disabled>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled
+        title="Pipeline đang dịch. Trạng thái sẽ tự cập nhật khi xong."
+      >
         <Loader2 size={12} className="animate-spin" />
         Đang dịch
       </Button>
@@ -452,23 +475,55 @@ function Action({
   }
   if (status === 'error' && errored) {
     return (
-      <Button size="sm" variant="secondary" disabled>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled
+        title="Dialog dịch lại sẽ wire ở slice 15."
+      >
         <RefreshCw size={12} />
         Thử lại
       </Button>
     )
   }
   if (readable) {
-    // TODO(slice 14): wire reader route /title/$entryId/ch/$cid?tx=
+    if (readable.kind === 'raw' && readable.upstreamUrl) {
+      // Raw read = open the source page in a new tab. Reader is
+      // slice 14; until then this is the read flow.
+      return (
+        <a
+          href={readable.upstreamUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Mở chương trên ${readable.sourceName ?? 'nguồn'}`}
+          className="inline-flex"
+        >
+          <Button size="sm" variant="secondary" tabIndex={-1}>
+            <BookOpen size={12} />
+            Đọc {readable.lang.toUpperCase()}
+          </Button>
+        </a>
+      )
+    }
     return (
-      <Button size="sm" variant="secondary" disabled>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled
+        title="Reader sẽ wire ở slice 14."
+      >
         <BookOpen size={12} />
         Đọc {readable.lang.toUpperCase()}
       </Button>
     )
   }
   return (
-    <Button size="sm" variant="primary" disabled>
+    <Button
+      size="sm"
+      variant="primary"
+      disabled
+      title="Dialog dịch sẽ wire ở slice 15."
+    >
       <Sparkles size={12} />
       Dịch
     </Button>
@@ -479,16 +534,18 @@ function Action({
 // ── Inline status text (column + mobile) ────────────────────────────
 
 function StatusInline({
-  status, readable,
+  status, readable, running, errored,
 }: {
   status:   StatusFilter
   readable: HubVersion | null
+  running:  HubVersion | null
+  errored:  HubVersion | null
 }) {
   if (status === 'translated' && readable) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-success-text">
-        <CheckCircle2 size={11} />
-        Đã dịch
+      <span className="inline-flex items-center gap-1.5 text-xs text-success-text min-w-0">
+        <CheckCircle2 size={11} className="shrink-0" />
+        <span>Đã dịch</span>
         {readable.creatorName && (
           <span className="text-text-subtle ml-1 truncate">
             · @{readable.creatorName}
@@ -499,17 +556,30 @@ function StatusInline({
   }
   if (status === 'running') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-info-text">
-        <Loader2 size={11} className="animate-spin" />
-        Đang dịch
+      <span className="inline-flex items-center gap-1.5 text-xs text-info-text min-w-0">
+        <Loader2 size={11} className="animate-spin shrink-0" />
+        <span>Đang dịch</span>
+        {running?.creatorName && (
+          <span className="text-text-subtle ml-1 truncate">
+            · @{running.creatorName}
+          </span>
+        )}
       </span>
     )
   }
   if (status === 'error') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-error-text">
-        <AlertCircle size={11} />
-        Lỗi
+      <span
+        className="inline-flex items-center gap-1.5 text-xs text-error-text min-w-0"
+        title={errored?.creatorName ? `Lần dịch gần nhất của @${errored.creatorName} thất bại` : 'Lần dịch gần nhất thất bại'}
+      >
+        <AlertCircle size={11} className="shrink-0" />
+        <span>Lỗi</span>
+        {errored?.creatorName && (
+          <span className="text-text-subtle ml-1 truncate">
+            · @{errored.creatorName}
+          </span>
+        )}
       </span>
     )
   }
