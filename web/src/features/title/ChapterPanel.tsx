@@ -696,7 +696,7 @@ function ChapterRow({
         />
       </td>
 
-      <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap text-right">
+      <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap text-right w-px">
         <TimeCell iso={chapter.updatedAt} />
       </td>
 
