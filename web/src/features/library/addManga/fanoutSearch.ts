@@ -1,9 +1,14 @@
-// Cross-source search fanout — runs the query against one or every
-// enabled source in parallel.
+// Cross-source search fanout with per-source fuzzy ranking.
 //
 // React Query keys per-source so adding/removing a target source
 // doesn't invalidate the others. Each source query is independent;
 // a slow or broken source never blocks the rest.
+//
+// Per-source ranking + cap:
+//   • each source's raw hits get a fuzzy similarity score against the
+//     query (token overlap + substring boost).
+//   • we cap to `PER_SOURCE_LIMIT` after sorting — sources that return
+//     50+ results don't drown other sources in the merged list.
 
 import { useQueries } from '@tanstack/react-query'
 import {
@@ -16,6 +21,9 @@ import type {
 export interface SearchHit {
   source:  InstalledSource
   manga:   MangaSummary
+  /** Lazy match score 0..1. Used for stable per-source ordering and
+   *  optional cross-source merge. */
+  score:   number
 }
 
 export interface SearchResult {
@@ -26,7 +34,59 @@ export interface SearchResult {
   queried:  InstalledSource[]
 }
 
-const SEARCH_STALE = 5 * 60_000
+const SEARCH_STALE     = 5 * 60_000
+const PER_SOURCE_LIMIT = 8
+
+
+/** Fuzzy match score in [0, 1]. Designed for short title strings,
+ *  not full-text. Substring boost lets exact substring matches
+ *  outrank loose token overlap. */
+function fuzzyScore(query: string, title: string): number {
+  const q = query.trim().toLowerCase()
+  const t = title.trim().toLowerCase()
+  if (!q || !t) return 0
+  if (t === q)              return 1.0
+  if (t.startsWith(q))      return 0.95
+  if (t.includes(q))        return 0.85
+
+  const qTokens = q.split(/\s+/).filter(Boolean)
+  const tTokens = t.split(/\s+/).filter(Boolean)
+  if (qTokens.length === 0) return 0
+
+  let matched = 0
+  for (const qt of qTokens) {
+    if (tTokens.some((tt) => tt.includes(qt))) matched++
+  }
+  const overlap = matched / qTokens.length
+
+  // Character-level bigram overlap as a fallback so "narto" still
+  // ranks "naruto" reasonably.
+  const bigrams = (s: string) => {
+    const out: string[] = []
+    for (let i = 0; i < s.length - 1; i++) out.push(s.slice(i, i + 2))
+    return out
+  }
+  const qbg = new Set(bigrams(q))
+  const tbg = bigrams(t)
+  if (qbg.size === 0 || tbg.length === 0) return overlap * 0.7
+  let bigramHit = 0
+  for (const b of tbg) if (qbg.has(b)) bigramHit++
+  const bigramOverlap = bigramHit / Math.max(qbg.size, tbg.length)
+
+  return Math.max(overlap * 0.7, bigramOverlap * 0.6)
+}
+
+
+function rankAndCap(query: string, source: InstalledSource, raws: MangaSummary[]): SearchHit[] {
+  const scored = raws.map<SearchHit>((m) => ({
+    source,
+    manga: m,
+    score: fuzzyScore(query, m.title),
+  }))
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, PER_SOURCE_LIMIT)
+}
+
 
 export function useFanoutSearch(
   q:              string,
@@ -65,7 +125,7 @@ export function useFanoutSearch(
       failures.push({ sourceId: source.manifest.id, error: result.error as Error })
     }
     if (result.data) {
-      for (const m of result.data) hits.push({ source, manga: m })
+      hits.push(...rankAndCap(q, source, result.data))
     }
   }
 
