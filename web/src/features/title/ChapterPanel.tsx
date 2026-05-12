@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import {
   BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2,
-  ChevronDown, ArrowDown, RefreshCw,
+  ArrowDown, RefreshCw, Check, X,
 } from 'lucide-react'
 import { Button } from '@shared/ui/Button'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { DataTable, Th } from '@shared/ui/DataTable'
-import { SearchInput } from '@shared/ui/DataToolbar'
+import { SearchInput, DataToolbar } from '@shared/ui/DataToolbar'
+import { card } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { timeAgo } from '@shared/lib/time'
 import {
@@ -91,19 +92,6 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
         sort={sort} setSort={setSort}
       />
 
-      {sel.size > 0 && (
-        <SelectionBar
-          selected={sel.size}
-          eligibleSpawn={eligibleForSpawn.length}
-          onClear={() => setSel(new Set())}
-          onBulkSpawn={() => {
-            // TODO(slice 15): wire bulk spawn dialog.
-            // eslint-disable-next-line no-alert
-            alert(`Sẽ dịch ${eligibleForSpawn.length} chương — slice 15 sẽ wire`)
-          }}
-        />
-      )}
-
       {loading && chapters.length === 0 ? (
         <div className="space-y-1.5">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -135,6 +123,14 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
           <span className="text-text-muted">{chapters.length}</span> chương
         </p>
       )}
+
+      {sel.size > 0 && (
+        <SelectionBar
+          selected={sel.size}
+          eligibleSpawn={eligibleForSpawn.length}
+          onClear={() => setSel(new Set())}
+        />
+      )}
     </section>
   )
 }
@@ -142,6 +138,9 @@ export function ChapterPanel({ chapters, targetLang, loading }: Props) {
 
 // ── Toolbar ─────────────────────────────────────────────────────────
 
+// Segmented filter + search, mirroring ProjectDetail's DataToolbar
+// pattern. Counts surface on the pills directly so the user sees
+// state distribution at a glance — no dropdown to open.
 function Toolbar({
   q, setQ, filter, setFilter, counts, sort, setSort,
 }: {
@@ -154,23 +153,30 @@ function Toolbar({
   setSort:   (s: Sort) => void
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 mb-3">
+    <DataToolbar right={<SortCycle value={sort} onChange={setSort} />}>
+      <div className="overflow-x-auto">
+        <Segmented value={filter} onChange={setFilter} counts={counts} />
+      </div>
       <SearchInput
         value={q}
         onChange={setQ}
         placeholder="Tìm chương…"
-        className="flex-1 min-w-40 max-w-sm"
+        className="flex-1 min-w-32"
       />
-      <div className="flex items-center gap-1 ml-auto">
-        <StatusSelect value={filter} onChange={setFilter} counts={counts} />
-        <SortSelect value={sort} onChange={setSort} />
-      </div>
-    </div>
+    </DataToolbar>
   )
 }
 
 
-function StatusSelect({
+const FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: 'all',        label: 'Tất cả' },
+  { key: 'translated', label: 'Đã dịch' },
+  { key: 'running',    label: 'Đang dịch' },
+  { key: 'error',      label: 'Lỗi' },
+  { key: 'raw',        label: 'Raw' },
+]
+
+function Segmented({
   value, onChange, counts,
 }: {
   value:    StatusFilter
@@ -178,86 +184,114 @@ function StatusSelect({
   counts:   Record<StatusFilter, number>
 }) {
   return (
-    <label className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm bg-surface-2 hover:bg-hover transition-colors cursor-pointer">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as StatusFilter)}
-        className="bg-transparent text-[13px] text-text outline-none cursor-pointer pr-1"
-      >
-        <option value="all">Tất cả ({counts.all})</option>
-        <option value="translated">Đã dịch ({counts.translated})</option>
-        <option value="running">Đang dịch ({counts.running})</option>
-        <option value="error">Lỗi ({counts.error})</option>
-        <option value="raw">Raw ({counts.raw})</option>
-      </select>
-      <ChevronDown size={11} className="text-text-subtle" aria-hidden />
-    </label>
+    <div className="inline-flex items-center gap-0.5">
+      {FILTERS.map(({ key, label }) => {
+        const n = counts[key]
+        const active = value === key
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            className={cn(
+              'h-8 px-3 rounded-sm text-[13px] cursor-pointer transition-colors',
+              'inline-flex items-center gap-2 whitespace-nowrap',
+              active
+                ? 'bg-surface-2 text-text font-medium'
+                : 'text-text-muted hover:bg-hover hover:text-text',
+            )}
+          >
+            {label}
+            {n > 0 && (
+              <span className={cn(
+                'tabular text-[11px]',
+                active ? 'text-text-subtle' : 'text-text-subtle/80',
+              )}>
+                {n}
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
 
-function SortSelect({
+const SORT_LABEL: Record<Sort, string> = {
+  chapter_desc: 'Mới → cũ',
+  chapter_asc:  'Cũ → mới',
+  updated_desc: 'Cập nhật',
+}
+
+// Cycle through the 3 sort modes. A 3-state toggle keeps the toolbar
+// flat — no popover, no native <select> chrome leaking into the
+// design system.
+function SortCycle({
   value, onChange,
 }: {
   value: Sort; onChange: (s: Sort) => void
 }) {
+  const order: Sort[] = ['chapter_desc', 'chapter_asc', 'updated_desc']
+  const next = () => {
+    const i = order.indexOf(value)
+    onChange(order[(i + 1) % order.length]!)
+  }
   return (
-    <label className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm bg-surface-2 hover:bg-hover transition-colors cursor-pointer">
+    <button
+      type="button"
+      onClick={next}
+      title="Đổi cách sắp xếp"
+      className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-[13px] text-text-muted hover:bg-hover hover:text-text transition-colors cursor-pointer"
+    >
       <ArrowDown size={12} className="text-text-subtle" />
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as Sort)}
-        className="bg-transparent text-[13px] text-text outline-none cursor-pointer"
-      >
-        <option value="chapter_desc">Chương mới → cũ</option>
-        <option value="chapter_asc">Chương cũ → mới</option>
-        <option value="updated_desc">Cập nhật gần đây</option>
-      </select>
-    </label>
+      {SORT_LABEL[value]}
+    </button>
   )
 }
 
 
 // ── Selection bar ───────────────────────────────────────────────────
+//
+// Floating bottom-center bar, same pattern as the old ProjectDetail
+// SelectionBar — stays visible while the user scrolls a long chapter
+// list, instead of trapping itself at the top of the panel. The bulk
+// spawn primary action is disabled with an explanatory tooltip until
+// slice 15 wires the spawn dialog.
 
 function SelectionBar({
-  selected, eligibleSpawn, onClear, onBulkSpawn,
+  selected, eligibleSpawn, onClear,
 }: {
   selected:      number
   eligibleSpawn: number
   onClear:       () => void
-  onBulkSpawn:   () => void
 }) {
   return (
-    <div className="flex items-center gap-2 mb-3 px-3 h-10 rounded-md bg-accent/10 border border-accent/20">
-      <span className="text-[13px] text-text">
-        <span className="font-medium">{selected}</span> đã chọn
+    <div className={cn(
+      'fixed left-1/2 -translate-x-1/2 z-50 flex items-center gap-3',
+      'bottom-[calc(3.5rem+0.75rem+var(--saib))] sm:bottom-[calc(1.25rem+var(--saib))]',
+      card,
+      'pl-4 pr-2 py-2 shadow-[0_8px_32px_rgb(0,0,0,0.4)]',
+    )}>
+      <span className="text-sm text-text-muted tabular">
+        <span className="text-text font-medium">{selected}</span> chương đã chọn
         {eligibleSpawn < selected && (
           <span className="text-text-subtle ml-1.5">
             · {eligibleSpawn} dịch được
           </span>
         )}
       </span>
-      <button
-        type="button"
-        onClick={onClear}
-        className="text-xs text-text-subtle hover:text-text underline-offset-2 hover:underline cursor-pointer"
-      >
-        Bỏ chọn
-      </button>
-      <div className="flex-1" />
       <Button
         variant="primary"
         size="sm"
-        onClick={onBulkSpawn}
-        disabled={eligibleSpawn === 0}
-        title={eligibleSpawn === 0
-          ? 'Tất cả chương đã chọn đều đã có bản dịch — không cần dịch lại'
-          : `Dịch ${eligibleSpawn} chương chưa có bản dịch`
-        }
+        disabled
+        title="Bulk spawn sẽ wire ở slice 15"
       >
         <Sparkles size={12} />
         Dịch hàng loạt ({eligibleSpawn})
+      </Button>
+      <Button variant="ghost" size="sm" icon onClick={onClear} aria-label="Bỏ chọn">
+        <X size={14} />
       </Button>
     </div>
   )
