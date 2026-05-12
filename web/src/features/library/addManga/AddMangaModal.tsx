@@ -68,6 +68,9 @@ export function AddMangaModal({ open, onClose }: Props) {
   const [query,      setQuery]      = useState('')
   const [picked,     setPicked]     = useState<Picked | null>(null)
   const [manualSeed, setManualSeed] = useState<string | null>(null)
+  // Sidebar selection: null = all sources fanout, string = single
+  // source. URL paste overrides this via lockedSourceId.
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
 
   const [targetLang, setTargetLang] = useState('vi')
   const [autoTr,     setAutoTr]     = useState(false)
@@ -77,12 +80,14 @@ export function AddMangaModal({ open, onClose }: Props) {
     () => isUrlLike(query) ? matchSource(query, allSources) : null,
     [query, allSources],
   )
+  const lockedSourceId = urlMatch?.source.manifest.id ?? null
 
   useEffect(() => {
     if (!open) return
     setQuery('')
     setPicked(null)
     setManualSeed(null)
+    setSelectedSourceId(null)
     setTargetLang('vi')
     setAutoTr(false)
     setStatus('reading')
@@ -104,7 +109,7 @@ export function AddMangaModal({ open, onClose }: Props) {
       open={open}
       onClose={onClose}
       title="Thêm manga vào thư viện"
-      size="md"
+      size={mode === 'search' ? 'lg' : 'md'}
       footerLeft={<FooterLeft
         mode={mode}
         picked={picked}
@@ -124,14 +129,16 @@ export function AddMangaModal({ open, onClose }: Props) {
         <Button variant="ghost" onClick={onClose}>Huỷ</Button>
       )}
     >
-      <div className="px-5 py-4 space-y-4">
-        {mode === 'manual' ? (
+      {mode === 'manual' ? (
+        <div className="px-5 py-4">
           <ManualCreateForm
             initialTitle={manualSeed ?? ''}
             onCancel={() => setManualSeed(null)}
             onCreated={onClose}
           />
-        ) : mode === 'picked' && picked ? (
+        </div>
+      ) : mode === 'picked' && picked ? (
+        <div className="px-5 py-4">
           <PickedDetail
             picked={picked}
             targetLang={targetLang}
@@ -142,67 +149,213 @@ export function AddMangaModal({ open, onClose }: Props) {
             setStatus={setStatus}
             onChangePick={() => setPicked(null)}
           />
-        ) : (
-          <SearchPane
-            query={query}
-            setQuery={setQuery}
-            sources={allSources}
-            searchableIds={searchableIds}
-            urlMatch={urlMatch}
-            onPick={setPicked}
-            onManualCreate={(seed) => setManualSeed(seed)}
-          />
-        )}
-      </div>
+        </div>
+      ) : (
+        <SearchSplit
+          query={query}
+          setQuery={setQuery}
+          sources={allSources}
+          searchableIds={searchableIds}
+          selectedSourceId={selectedSourceId}
+          setSelectedSourceId={setSelectedSourceId}
+          lockedSourceId={lockedSourceId}
+          urlMatch={urlMatch}
+          onPick={setPicked}
+          onManualCreate={(seed) => setManualSeed(seed)}
+        />
+      )}
     </Modal>
   )
 }
 
 
-// ── Search pane ─────────────────────────────────────────────────────
+// ── Search split layout ──────────────────────────────────────────────
+//
+// Spotify/Slack-style sidebar on the left for source navigation. Body
+// on the right carries input + results. Sidebar is 180px and pinned
+// (no scroll horizontally); body fills the rest.
+//
+// Sidebar rows are sources; clicking one scopes the fanout to that
+// single source. Selecting 'Tất cả' returns to cross-source fanout.
+// Non-searchable sources still appear (paste-link path) but render
+// disabled — clicking them shows a hint instead of selecting.
 
-function SearchPane({
-  query, setQuery, sources, searchableIds, urlMatch, onPick, onManualCreate,
+function SearchSplit({
+  query, setQuery, sources, searchableIds,
+  selectedSourceId, setSelectedSourceId,
+  lockedSourceId, urlMatch,
+  onPick, onManualCreate,
 }: {
-  query:          string
-  setQuery:       (s: string) => void
-  sources:        InstalledSource[]
-  searchableIds:  Set<string>
-  urlMatch:       ReturnType<typeof matchSource>
-  onPick:         (p: Picked) => void
-  onManualCreate: (seed: string) => void
+  query:                string
+  setQuery:             (s: string) => void
+  sources:              InstalledSource[]
+  searchableIds:        Set<string>
+  selectedSourceId:     string | null
+  setSelectedSourceId:  (id: string | null) => void
+  lockedSourceId:       string | null
+  urlMatch:             ReturnType<typeof matchSource>
+  onPick:               (p: Picked) => void
+  onManualCreate:       (seed: string) => void
 }) {
   const isUrl = isUrlLike(query)
+  // URL paste pins the source — surface it but don't let the user
+  // pick something contradictory.
+  const effectiveSelected = lockedSourceId ?? selectedSourceId
+
+  const scopedSources = useMemo(() => {
+    if (effectiveSelected === null) {
+      return sources.filter((s) => searchableIds.has(s.manifest.id))
+    }
+    return sources.filter((s) => s.manifest.id === effectiveSelected)
+  }, [sources, searchableIds, effectiveSelected])
+
   return (
-    <div className="space-y-4">
-      <InputRow
-        query={query}
-        setQuery={setQuery}
-        isUrl={isUrl}
-        urlMatch={urlMatch}
-      />
-
-      {!isUrl && (
-        <CapabilityLegend
-          total={sources.length}
-          searchable={searchableIds.size}
+    <div className="flex min-h-[360px]">
+      {/* Sidebar */}
+      <aside className="w-44 shrink-0 border-r border-border-soft py-2 overflow-y-auto">
+        <SidebarRow
+          active={effectiveSelected === null}
+          disabled={lockedSourceId !== null}
+          onClick={() => setSelectedSourceId(null)}
+          icon={<AllIcon />}
+          label="Tất cả"
+          hint={`${searchableIds.size} tìm`}
         />
-      )}
+        <div className="my-1 mx-3 h-px bg-border-soft" />
+        {sources.map((s) => {
+          const searchable = searchableIds.has(s.manifest.id)
+          const active     = effectiveSelected === s.manifest.id
+          const lockedHere = lockedSourceId === s.manifest.id
+          return (
+            <SidebarRow
+              key={s.manifest.id}
+              active={active}
+              disabled={!searchable && !lockedHere}
+              locked={lockedHere}
+              onClick={() => {
+                if (!searchable && !lockedHere) return
+                setSelectedSourceId(s.manifest.id)
+              }}
+              icon={<Favicon host={s.manifest.host} size={16} />}
+              label={s.manifest.name}
+              hint={searchable ? '🔍 🔗' : '🔗'}
+            />
+          )
+        })}
+      </aside>
 
-      {isUrl ? (
-        urlMatch
-          ? <UrlImportCard match={urlMatch} onPick={onPick} />
-          : <UnsupportedUrlCard url={query} onManualCreate={onManualCreate} />
-      ) : query.trim().length < 2 ? (
-        <SearchHint sources={sources} searchableIds={searchableIds} />
-      ) : (
-        <Results
+      {/* Body */}
+      <section className="flex-1 min-w-0 px-5 py-4 space-y-4 overflow-y-auto">
+        <InputRow
           query={query}
-          searchableSources={sources.filter((s) => searchableIds.has(s.manifest.id))}
-          onPick={onPick}
-          onManualCreate={onManualCreate}
+          setQuery={setQuery}
+          isUrl={isUrl}
+          urlMatch={urlMatch}
         />
+
+        {isUrl ? (
+          urlMatch
+            ? <UrlImportCard match={urlMatch} onPick={onPick} />
+            : <UnsupportedUrlCard url={query} onManualCreate={onManualCreate} />
+        ) : query.trim().length < 2 ? (
+          <ScopeHint
+            selectedSourceId={effectiveSelected}
+            sources={sources}
+            searchableCount={searchableIds.size}
+          />
+        ) : (
+          <Results
+            query={query}
+            searchableSources={scopedSources}
+            onPick={onPick}
+            onManualCreate={onManualCreate}
+          />
+        )}
+      </section>
+    </div>
+  )
+}
+
+
+// ── Sidebar bits ─────────────────────────────────────────────────────
+
+function SidebarRow({
+  active, disabled, locked, onClick, icon, label, hint,
+}: {
+  active:   boolean
+  disabled: boolean
+  locked?:  boolean
+  onClick:  () => void
+  icon:     React.ReactNode
+  label:    string
+  hint?:    string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={disabled ? `${label} chưa hỗ trợ tìm — dán đường dẫn để thêm` : undefined}
+      className={cn(
+        'w-full flex items-center gap-2 h-9 px-3 text-left text-[13px] transition-colors',
+        active
+          ? 'bg-surface-2 text-text font-medium'
+          : disabled
+          ? 'text-text-subtle/60 cursor-not-allowed'
+          : 'text-text-muted hover:bg-hover hover:text-text cursor-pointer',
+        locked && 'ring-1 ring-success/40',
       )}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="flex-1 truncate">{label}</span>
+      {hint && (
+        <span className="text-[10px] text-text-subtle shrink-0">{hint}</span>
+      )}
+    </button>
+  )
+}
+
+
+function AllIcon() {
+  return (
+    <span className="size-4 rounded-xs bg-surface-2 flex items-center justify-center text-[9px] text-text-muted">
+      ∗
+    </span>
+  )
+}
+
+
+function ScopeHint({
+  selectedSourceId, sources, searchableCount,
+}: {
+  selectedSourceId: string | null
+  sources:          InstalledSource[]
+  searchableCount:  number
+}) {
+  const sel = selectedSourceId
+    ? sources.find((s) => s.manifest.id === selectedSourceId)
+    : null
+  return (
+    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6">
+      <div className="flex items-center gap-3">
+        <span className="size-9 rounded-sm bg-bg/40 flex items-center justify-center shrink-0">
+          {sel
+            ? <Favicon host={sel.manifest.host} size={18} />
+            : <Search size={16} className="text-text-subtle" />
+          }
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-text">
+            {sel
+              ? `Tìm trên ${sel.manifest.name}`
+              : `Tìm trên ${searchableCount} nguồn cùng lúc`
+            }
+          </p>
+          <p className="text-[11px] text-text-subtle mt-0.5">
+            Hoặc dán đường dẫn manga vào ô trên để thêm trực tiếp.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -257,72 +410,6 @@ function UrlBadge({
     <span className={cn(cls, 'bg-warning/15 text-warning-text')}>
       Chưa hỗ trợ
     </span>
-  )
-}
-
-
-// ── Static legend ───────────────────────────────────────────────────
-
-function CapabilityLegend({
-  total, searchable,
-}: {
-  total: number; searchable: number
-}) {
-  return (
-    <div className="flex items-center gap-3 text-[11px] text-text-subtle px-0.5">
-      <span className="inline-flex items-center gap-1">
-        <Search size={10} />
-        Tìm: <span className="text-text-muted">{searchable} nguồn</span>
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <LinkIcon size={10} />
-        Dán link: <span className="text-text-muted">{total} nguồn</span>
-      </span>
-    </div>
-  )
-}
-
-
-// ── Empty state hint ────────────────────────────────────────────────
-
-function SearchHint({
-  sources, searchableIds,
-}: {
-  sources: InstalledSource[]; searchableIds: Set<string>
-}) {
-  return (
-    <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6">
-      <div className="flex items-start gap-3">
-        <span className="size-9 rounded-sm bg-bg/40 flex items-center justify-center shrink-0">
-          <Search size={16} className="text-text-subtle" />
-        </span>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-text">
-            Tìm tên truyện hoặc dán đường dẫn manga
-          </p>
-          <p className="text-[11px] text-text-subtle mt-1">
-            Tìm sẽ chạy trên {searchableIds.size} nguồn cùng lúc, kết quả gom theo nguồn.
-          </p>
-        </div>
-      </div>
-      {sources.length > 0 && (
-        <ul className="mt-3 flex flex-wrap items-center gap-1.5">
-          {sources.map((s) => (
-            <li
-              key={s.manifest.id}
-              className="inline-flex items-center gap-1.5 h-6 pl-1 pr-2 rounded-xs bg-bg/40 text-[11px] text-text-muted"
-              title={`${s.manifest.name} · ${s.manifest.host}`}
-            >
-              <Favicon host={s.manifest.host} size={12} />
-              {s.manifest.name}
-              <span className="text-text-subtle">
-                {searchableIds.has(s.manifest.id) ? '🔍🔗' : '🔗'}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
   )
 }
 
