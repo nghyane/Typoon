@@ -7,18 +7,26 @@ import { EmptyState } from '@shared/ui/EmptyState'
 import { Button } from '@shared/ui/Button'
 import { input as inputCls } from '@shared/ui/primitives'
 import { useSources, useEnabledSources } from '../sources'
+import { useLibrary } from '@features/library/store'
+import { useShallow } from 'zustand/react/shallow'
+import { LibraryRailCard } from '@features/library/views/LibraryCard'
 import { SourceCard, InstallSourceCard } from './SourceCard'
+import { Shelf } from './Shelf'
 
 // =============================================================================
 // BrowseHub — /browse landing.
 //
-// Layout alignment with /projects (the sibling list page):
-//   • Same full-bleed `px-6` (no centered max-width container)
-//   • Same auto-fill grid pattern — cards size themselves into N
-//     columns based on viewport. With 2-5 sources users still see a
-//     full row; expanded viewports fill 4 columns; mobile collapses
-//     to single column without media-query branching.
-//   • Title lives in app header (useHeaderStore) — no duplicate hero.
+// Pro design (slice 8): reader-first surface. Sections in order of how
+// users actually open this page:
+//
+//   1. ⏯ Tiếp tục đọc      Cross-source rail from local reading history.
+//                          Hides when user has nothing in progress.
+//   2. 📚 Nguồn            Manifest sources cards. Demoted from top
+//                          (Tachiyomi pattern) but still primary
+//                          discovery for users who think in sources.
+//   3. + Cài nguồn          Trailing affordance for repo / file installs.
+//
+// Global search placeholder remains — fanout search lands in slice 9.
 // =============================================================================
 
 export function BrowseHub() {
@@ -34,20 +42,24 @@ export function BrowseHub() {
 
   const sources = useEnabledSources()
 
+  // Local "Tiếp tục đọc" — across every source the user has touched.
+  // Sorted by lastReadAt; limited so the rail stays one screen tall.
+  const continueItems = useLibrary(
+    useShallow((s) =>
+      Object.values(s.items)
+        .filter((e) => e.lastReadAt !== null)
+        .sort((a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0))
+        .slice(0, 12),
+    ),
+  )
+
   return (
     <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-12">
-      {/* Subtitle / context strip */}
-      <p className="text-sm text-text-subtle mb-5">
-        {sources.length > 0
-          ? `${sources.length} nguồn đã cài · Quản lý trong Cài đặt`
-          : 'Khám phá truyện từ các nguồn bên ngoài'}
-      </p>
-
-      {/* Global search placeholder — disabled until phase 2 */}
+      {/* Search row — disabled stub until fanout search ships. */}
       <label
         className={cn(
           inputCls,
-          'flex items-center gap-2 cursor-text h-9 mb-6 max-w-md',
+          'flex items-center gap-2 cursor-text h-9 mb-6 max-w-xl',
         )}
       >
         <Search size={14} className="text-text-subtle shrink-0" />
@@ -62,28 +74,49 @@ export function BrowseHub() {
         </kbd>
       </label>
 
-      {sources.length === 0 ? (
-        <EmptyState
-          icon={Compass}
-          title="Chưa có nguồn nào"
-          hint="Cài nguồn để bắt đầu duyệt truyện."
-          action={
-            <Link to="/settings">
-              <Button variant="primary">Cài nguồn đầu tiên</Button>
-            </Link>
-          }
-        />
-      ) : (
-        // Auto-fill so card count fills the row: 1 col mobile, 2 col
-        // sm+, 3-4 col on wide viewports. Mirrors `/projects` grid
-        // pattern so /browse doesn't read as a different surface.
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-2">
-          {sources.map((s) => (
-            <SourceCard key={s.manifest.id} source={s} />
+      {/* Continue reading rail */}
+      {continueItems.length > 0 && (
+        <Shelf label="Tiếp tục đọc">
+          {continueItems.map((entry) => (
+            <LibraryRailCard
+              key={`${entry.source}::${entry.mangaUrl}`}
+              entry={entry}
+            />
           ))}
-          <InstallSourceCard />
-        </div>
+        </Shelf>
       )}
+
+      {/* Source picker */}
+      <section className="mt-2">
+        <div className="flex items-baseline gap-2 mb-3">
+          <h2 className="text-sm font-semibold text-text">Nguồn</h2>
+          <span className="text-[11px] text-text-subtle">
+            {sources.length} nguồn đã cài
+          </span>
+        </div>
+
+        {sources.length === 0 ? (
+          <EmptyState
+            icon={Compass}
+            title="Chưa có nguồn nào"
+            hint="Cài nguồn để bắt đầu duyệt truyện."
+            action={
+              <Link to="/settings">
+                <Button variant="primary">Cài nguồn đầu tiên</Button>
+              </Link>
+            }
+          />
+        ) : (
+          // Auto-fill so card count fills the row. Each card is a
+          // Discord-channel-row shape — same density as /settings.
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-2">
+            {sources.map((s) => (
+              <SourceCard key={s.manifest.id} source={s} />
+            ))}
+            <InstallSourceCard />
+          </div>
+        )}
+      </section>
     </div>
   )
 }

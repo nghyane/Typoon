@@ -166,6 +166,27 @@ function MangaContent({
     staleTime: 30_000,
   })
 
+  // Aggregate counters powering the stat row + filter pills.
+  const stats = useMemo(() => {
+    let translated = 0
+    let raw = 0
+    for (const c of manga.chapters) {
+      const overlayDone = (overlay[c.url] ?? []).some((t) => t.state === 'done')
+      if (overlayDone) translated++
+      else raw++
+    }
+    return { translated, raw, total: manga.chapters.length }
+  }, [manga.chapters, overlay])
+
+  const [filter, setFilter] = useState<'all' | 'translated' | 'raw'>('all')
+  const filteredChapters = useMemo(() => {
+    if (filter === 'all') return manga.chapters
+    return manga.chapters.filter((c) => {
+      const done = (overlay[c.url] ?? []).some((t) => t.state === 'done')
+      return filter === 'translated' ? done : !done
+    })
+  }, [manga.chapters, overlay, filter])
+
   // Translate only when user wants it AND the source is not already
   // in the user's target language.
   const useTr = shouldTranslate(autoEnabled, autoTarget, manifest.languages)
@@ -184,7 +205,7 @@ function MangaContent({
 
   return (
     <div className="pb-16">
-      {/* mobile back to source */}
+      {/* Mobile back */}
       <div className="sm:hidden px-4 pt-4">
         <Link
           to="/browse/$source"
@@ -196,120 +217,230 @@ function MangaContent({
         </Link>
       </div>
 
-      {/* hero */}
-      <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-5 flex items-start gap-4 sm:gap-6">
+      {/* Hero — Discord-grade density mirroring ProjectHero pattern */}
+      <header className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4 flex items-start gap-3 sm:gap-4">
         <Cover
           src={manga.cover ? proxify(manga.cover) : null}
           title={displayTitle}
-          className="w-24 sm:w-32 aspect-[2/3] rounded-md shrink-0"
+          fontSize="text-xl"
+          className="w-20 aspect-[2/3] rounded-md shrink-0"
         />
-        <div className="flex-1 min-w-0 pt-1">
-          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-text leading-tight">
-            {displayTitle}
-          </h1>
-          {useTr && trTitle && trTitle !== manga.title && (
-            <p className="text-[11px] text-text-subtle mt-1 italic">
-              {manga.title}
-            </p>
-          )}
-          <p className="text-xs text-text-subtle mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-            {manga.author && <span>{manga.author}</span>}
-            {manga.author && manga.status && <span>·</span>}
-            {manga.status && <span>{manga.status}</span>}
-            {(manga.author || manga.status) && <span>·</span>}
-            <a
-              href={manga.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 hover:text-text"
-            >
-              {manifest.name}
-              <ExternalLink size={10} />
-            </a>
-          </p>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-2xl font-semibold tracking-tight text-text line-clamp-2">
+                {displayTitle}
+              </h1>
+              {useTr && trTitle && trTitle !== manga.title && (
+                <p className="text-[11px] text-text-subtle mt-1 italic line-clamp-1">
+                  {manga.title}
+                </p>
+              )}
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <SaveButton source={source} manga={manga} />
-            {firstChapter && (
-              <Link
-                to="/browse/$source/manga/$mangaId/chapter/$chapterId"
-                params={{
-                  source:    manifest.id,
-                  mangaId:   encodeURIComponent(manga.url),
-                  chapterId: encodeURIComponent(firstChapter.url),
-                }}
-              >
-                <Button>
-                  <BookOpen size={13} />
-                  Đọc thử
+              {/* Meta badge row — author, status, source, NSFW */}
+              <div className="flex items-center gap-2 mt-2 flex-wrap text-xs text-text-subtle">
+                <span className="inline-flex items-center gap-1 h-[22px] px-2 rounded-xs bg-surface-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                  {manifest.languages[0]?.toUpperCase() ?? '?'}
+                  <span className="text-text-subtle">→</span>
+                  {autoTarget.toUpperCase()}
+                </span>
+                {manga.author && <span>{manga.author}</span>}
+                {manga.status && <span>· {manga.status}</span>}
+                <a
+                  href={manga.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 hover:text-text"
+                >
+                  {manifest.name}
+                  <ExternalLink size={10} />
+                </a>
+                {manifest.nsfw && (
+                  <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded-xs bg-error/15 text-error-text">
+                    NSFW
+                  </span>
+                )}
+              </div>
+
+              {/* Inline progress — translated chapter count */}
+              {stats.total > 0 && (
+                <div className="mt-3 flex items-center gap-3 max-w-md">
+                  <div className="flex-1 h-1 rounded-full bg-surface-2 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-success transition-[width] duration-300"
+                      style={{
+                        width: stats.total > 0
+                          ? `${Math.round((stats.translated / stats.total) * 100)}%`
+                          : '0%',
+                      }}
+                    />
+                  </div>
+                  <span className="text-xs text-text-subtle tabular shrink-0">
+                    <span className="text-text-muted font-medium">{stats.translated}</span>
+                    <span className="opacity-50">/</span>
+                    {stats.total}
+                    <span className="ml-1 text-text-subtle">đã dịch</span>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Action cluster — right side */}
+            <div className="flex items-center gap-2 shrink-0 self-start">
+              <SaveButton source={source} manga={manga} />
+              {firstChapter && (
+                <Link
+                  to="/browse/$source/manga/$mangaId/chapter/$chapterId"
+                  params={{
+                    source:    manifest.id,
+                    mangaId:   encodeURIComponent(manga.url),
+                    chapterId: encodeURIComponent(firstChapter.url),
+                  }}
+                >
+                  <Button>
+                    <BookOpen size={13} />
+                    Đọc thử
+                  </Button>
+                </Link>
+              )}
+              {!manifest.languages.includes(autoTarget) && (
+                <Button
+                  size="sm"
+                  variant={autoEnabled ? 'secondary' : 'ghost'}
+                  onClick={() => setAuto(!autoEnabled)}
+                  title={`${autoEnabled ? 'Tắt' : 'Bật'} tự dịch sang ${autoTarget.toUpperCase()}`}
+                >
+                  <Languages size={12} />
+                  {autoEnabled ? `Đã dịch ${autoTarget.toUpperCase()}` : 'Tự dịch'}
                 </Button>
-              </Link>
-            )}
-            {!manifest.languages.includes(autoTarget) && (
-              <Button
-                size="sm"
-                onClick={() => setAuto(!autoEnabled)}
-                title={`${autoEnabled ? 'Tắt' : 'Bật'} tự dịch sang ${autoTarget.toUpperCase()}`}
-              >
-                <Languages size={12} />
-                {autoEnabled ? `Đã dịch ${autoTarget.toUpperCase()}` : 'Tự dịch'}
-              </Button>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* description */}
+      {/* Description — collapsible to keep chapter list near top */}
       {displayDesc && (
-        <div className="px-4 sm:px-6 pb-5">
-          <p className="text-sm text-text-muted leading-relaxed whitespace-pre-line">
+        <details className="px-4 sm:px-6 pb-4 group">
+          <summary className="text-xs text-text-subtle cursor-pointer hover:text-text-muted list-none flex items-center gap-1.5">
+            <span>Mô tả</span>
+            <span className="group-open:rotate-180 transition-transform">▾</span>
+          </summary>
+          <p className="text-sm text-text-muted leading-relaxed whitespace-pre-line mt-2 max-w-2xl">
             {displayDesc}
           </p>
-        </div>
+        </details>
       )}
 
-      {/* chapter list */}
-      <div className="px-4 sm:px-6">
-        <div className="flex items-center justify-between mb-3 gap-3">
-          <h2 className="text-sm font-semibold text-text">
-            {manga.chapters.length} chương
-          </h2>
-          {isMultiLang && (
-            <LangPicker
-              value={language}
-              options={manga.availableLanguages ?? langs}
-              onChange={setLanguage}
-            />
-          )}
-        </div>
+      {/* Chapter toolbar — filter pills + lang picker. Sticky on
+          scroll for fast revisit while reading deep into the list. */}
+      <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur px-4 sm:px-6 py-2 border-b border-border-soft flex flex-wrap items-center gap-3">
+        <ChapterFilter
+          value={filter}
+          onChange={setFilter}
+          stats={stats}
+        />
+        <div className="flex-1" />
+        {isMultiLang && (
+          <LangPicker
+            value={language}
+            options={manga.availableLanguages ?? langs}
+            onChange={setLanguage}
+          />
+        )}
+      </div>
 
-        {manga.chapters.length === 0 ? (
+      {/* Chapter list */}
+      <div className="px-4 sm:px-6">
+        {filteredChapters.length === 0 ? (
           <EmptyState
             icon={BookOpen}
-            title="Chưa có chương đọc được"
-            hint={isMultiLang
-              ? `Không có chương ${language.toUpperCase()} đọc được tại nguồn. Có thể bản dịch được host ở site khác (đã mua bản quyền). Hãy thử ngôn ngữ khác.`
-              : 'Nguồn có thể chưa cập nhật hoặc đã đổi cấu trúc.'}
+            title={
+              filter === 'translated' ? 'Chưa có chương đã dịch' :
+              filter === 'raw'        ? 'Mọi chương đều đã có bản dịch' :
+                                        'Chưa có chương đọc được'
+            }
+            hint={
+              filter !== 'all'
+                ? 'Chuyển bộ lọc để xem toàn bộ.'
+                : isMultiLang
+                  ? `Không có chương ${language.toUpperCase()} đọc được tại nguồn. Hãy thử ngôn ngữ khác.`
+                  : 'Nguồn có thể chưa cập nhật hoặc đã đổi cấu trúc.'
+            }
           />
         ) : (
-          <ul className="rounded-md bg-surface divide-y divide-border-soft overflow-hidden">
-            {manga.chapters.map((c, i) => (
-              <ChapterRow
-                key={c.id}
-                manifestId={manifest.id}
-                mangaId={manga.url}
-                materialId={materialId}
-                chapter={c}
-                translatedLabel={useTr ? trLabels[i] : null}
-                targetLang={autoTarget}
-                scopeGuildId={scopeGuildId}
-                manga={manga}
-                overlay={overlay[c.url] ?? []}
-              />
-            ))}
+          <ul className="rounded-md bg-surface divide-y divide-border-soft overflow-hidden mt-2">
+            {filteredChapters.map((c) => {
+              const i = manga.chapters.indexOf(c)
+              return (
+                <ChapterRow
+                  key={c.id}
+                  manifestId={manifest.id}
+                  mangaId={manga.url}
+                  materialId={materialId}
+                  chapter={c}
+                  translatedLabel={useTr ? trLabels[i] : null}
+                  targetLang={autoTarget}
+                  scopeGuildId={scopeGuildId}
+                  manga={manga}
+                  overlay={overlay[c.url] ?? []}
+                />
+              )
+            })}
           </ul>
         )}
       </div>
+    </div>
+  )
+}
+
+
+// ── Chapter filter pills ─────────────────────────────────────────────
+
+function ChapterFilter({
+  value, onChange, stats,
+}: {
+  value:    'all' | 'translated' | 'raw'
+  onChange: (v: 'all' | 'translated' | 'raw') => void
+  stats:    { translated: number; raw: number; total: number }
+}) {
+  const items: Array<{
+    id: 'all' | 'translated' | 'raw'
+    label: string
+    count: number
+  }> = [
+    { id: 'all',        label: 'Tất cả',  count: stats.total      },
+    { id: 'translated', label: 'Đã dịch', count: stats.translated },
+    { id: 'raw',        label: 'Raw',     count: stats.raw        },
+  ]
+  return (
+    <div className="flex items-center gap-1">
+      {items.map((it) => {
+        const active = it.id === value
+        return (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onChange(it.id)}
+            className={cn(
+              'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-[11px] font-medium transition-colors cursor-pointer',
+              active
+                ? 'bg-text text-bg'
+                : 'bg-surface text-text-muted hover:bg-surface-2 hover:text-text',
+            )}
+          >
+            {it.label}
+            {it.count > 0 && (
+              <span className={cn(
+                'text-[10px] tabular',
+                active ? 'text-bg/70' : 'text-text-subtle',
+              )}>
+                {it.count}
+              </span>
+            )}
+          </button>
+        )
+      })}
     </div>
   )
 }
