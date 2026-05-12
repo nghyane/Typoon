@@ -145,6 +145,7 @@ def _build_provider(
                 "model": model,
                 "reasoning_effort": reasoning_effort,
                 "extra_headers": extra,
+                "api_kind": pcfg.api_kind,
             }
             if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens

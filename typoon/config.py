@@ -24,6 +24,13 @@ class ProviderConfig(BaseModel):
     endpoint: str = ""
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    # OpenAI-family endpoints expose two incompatible shapes:
+    #   "chat"      → POST /v1/chat/completions  (legacy, broadest support)
+    #   "responses" → POST /v1/responses          (current, image_url goes under input_image)
+    # Gateways like CF compat are "chat"; modern local servers (e.g.
+    # Bifrost/Packy proxies) often only speak "responses". Per-provider
+    # because it's an endpoint capability, not an agent choice.
+    api_kind: str = "chat"
     # Maximum concurrent in-flight requests against this provider,
     # shared across every agent that resolves to it (context, translate,
     # vision). Sized by Little's law: at ~3s/call latency, 24 in-flight

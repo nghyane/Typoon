@@ -97,6 +97,7 @@ class OpenAIProvider:
         reasoning_effort: str | None = None,
         extra_headers: dict[str, str] | None = None,
         max_tokens: int = 16384,
+        api_kind: str = "chat",
     ) -> None:
         kwargs: dict = {"api_key": api_key, "base_url": base_url, "timeout": _TIMEOUT}
         if extra_headers:
@@ -106,8 +107,16 @@ class OpenAIProvider:
         self._reasoning_effort = reasoning_effort
         self._max_tokens = max_tokens
         self._base_url = base_url
+        if api_kind not in ("chat", "responses"):
+            raise ValueError(f"api_kind must be 'chat' or 'responses', got {api_kind!r}")
+        self._api_kind = api_kind
 
     async def call(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
+        if self._api_kind == "responses":
+            return await self._call_responses(messages, tools)
+        return await self._call_chat(messages, tools)
+
+    async def _call_chat(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
         kwargs: dict = {
             "messages": [_serialize_message(m) for m in messages],
             "max_tokens": self._max_tokens,
@@ -151,6 +160,87 @@ class OpenAIProvider:
                 ))
 
         return CallResponse(tool_calls=tool_calls, text=choice.message.content)
+
+    async def _call_responses(self, messages: list[Message], tools: list[ToolDef]) -> CallResponse:
+        """OpenAI /v1/responses path.
+
+        The Responses API uses `input` (not `messages`), expects multimodal
+        content as `input_text` / `input_image` parts (not `text` / `image_url`),
+        and serializes tools/tool_calls differently from chat completions.
+
+        Always streams: some OpenAI-compatible proxies (e.g. Packy/Bifrost)
+        never populate `response.output` on non-stream calls — text only
+        arrives through SSE deltas. Streaming is also the documented
+        recommendation upstream, so we standardize on it.
+        """
+        input_items, instructions = _build_responses_input(messages)
+
+        kwargs: dict = {
+            "input": input_items,
+            "max_output_tokens": self._max_tokens,
+            "stream": True,
+        }
+        if self._model:
+            kwargs["model"] = self._model
+        if instructions:
+            kwargs["instructions"] = instructions
+        if tools:
+            kwargs["tools"] = [_serialize_tool_responses(t) for t in tools]
+            kwargs["parallel_tool_calls"] = True
+        if self._reasoning_effort:
+            kwargs["reasoning"] = {"effort": self._reasoning_effort}
+
+        try:
+            stream = await with_retry(
+                lambda: self._client.responses.create(**kwargs),
+                is_retryable=_is_retryable,
+                parse_retry_after=_parse_retry_after,
+                provider="openai",
+            )
+        except openai.APIStatusError as exc:
+            wrapped = _classify_status_error(exc)
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
+
+        text_parts: list[str] = []
+        # function_call args arrive as streamed deltas keyed by item_id.
+        fc_state: dict[str, dict] = {}
+
+        async for ev in stream:
+            etype = getattr(ev, "type", "") or ""
+            if etype == "response.output_text.delta":
+                delta = getattr(ev, "delta", None)
+                if delta:
+                    text_parts.append(delta)
+            elif etype == "response.output_item.added":
+                item = getattr(ev, "item", None)
+                if item is not None and getattr(item, "type", None) == "function_call":
+                    fc_state[item.id] = {
+                        "call_id": getattr(item, "call_id", None) or item.id,
+                        "name": getattr(item, "name", "") or "",
+                        "arguments": getattr(item, "arguments", "") or "",
+                    }
+            elif etype == "response.function_call_arguments.delta":
+                item_id = getattr(ev, "item_id", None)
+                delta = getattr(ev, "delta", "") or ""
+                if item_id and item_id in fc_state:
+                    fc_state[item_id]["arguments"] += delta
+            elif etype == "response.completed":
+                # Some proxies also drop a final assembled response here;
+                # nothing to do — our deltas already captured the content.
+                pass
+
+        tool_calls = [
+            ToolCallMsg(id=st["call_id"], name=st["name"], arguments=st["arguments"])
+            for st in fc_state.values()
+        ]
+        text = "".join(text_parts) or None
+        if not tool_calls and not text:
+            raise RuntimeError(
+                f"OpenAI Responses stream produced no content. model={self._model}"
+            )
+        return CallResponse(tool_calls=tool_calls, text=text)
 
 
 
@@ -205,3 +295,81 @@ def _serialize_tool(tool: ToolDef) -> dict:
         "description": tool.description,
         "parameters": tool.parameters,
     }}
+
+
+# ── IR → OpenAI Responses serialization ──────────────────────────────
+
+
+def _build_responses_input(messages: list[Message]) -> tuple[list[dict], str]:
+    """Translate chat-shaped IR into Responses `input` items + `instructions`.
+
+    Differences vs chat completions:
+      - System messages collapse into a top-level `instructions` string.
+      - User/assistant messages use `input_text` / `input_image` parts.
+      - Tool calls are top-level `function_call` items, tool results are
+        `function_call_output` items keyed by `call_id`.
+    """
+    instructions_parts: list[str] = []
+    items: list[dict] = []
+    for m in messages:
+        match m.role:
+            case Role.SYSTEM:
+                if m.text:
+                    instructions_parts.append(m.text)
+            case Role.USER:
+                items.append({
+                    "role": "user",
+                    "content": _serialize_parts_responses(m.parts, input=True),
+                })
+            case Role.ASSISTANT:
+                if m.text:
+                    items.append({
+                        "role": "assistant",
+                        "content": _serialize_parts_responses(m.parts, input=False),
+                    })
+                for tc in m.tool_calls:
+                    items.append({
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    })
+            case Role.TOOL_RESULT:
+                # Responses API expects the result body as a plain string.
+                # Collapse any multipart text into one; images in tool
+                # results are not part of the spec.
+                body = "\n".join(p.text for p in m.parts if p.text is not None)
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": m.tool_call_id,
+                    "output": body,
+                })
+
+    return items, "\n\n".join(instructions_parts)
+
+
+def _serialize_parts_responses(parts: list[ContentPart], *, input: bool) -> list[dict]:
+    text_type = "input_text" if input else "output_text"
+    out: list[dict] = []
+    for p in parts:
+        if p.text is not None:
+            out.append({"type": text_type, "text": p.text})
+        if p.image_data_uri is not None:
+            # Responses API: image goes under `input_image.image_url` as a
+            # plain URL string (data: URIs accepted). `detail` is optional.
+            out.append({
+                "type": "input_image",
+                "image_url": p.image_data_uri,
+                "detail": "low",
+            })
+    return out
+
+
+def _serialize_tool_responses(tool: ToolDef) -> dict:
+    """Responses API tool schema — flat shape, not nested under 'function'."""
+    return {
+        "type": "function",
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    }

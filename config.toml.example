@@ -41,6 +41,11 @@ extra_headers = { cf-aig-authorization = "Bearer <your-cf-aig-token>" }
 # value so 24 × ~3s ≈ 8 RPS stays under your CF window.
 # concurrency = 24
 
+# OpenAI endpoint shape — "chat" (default, /v1/chat/completions) or
+# "responses" (/v1/responses). Set "responses" for local proxies /
+# modern OpenAI-compatible servers that only speak the Responses API.
+# api_kind = "chat"
+
 [translation]
 provider = "cf"
 model = "dynamic/auto"   # Gateway auto-routes; requires endpoint compat path
