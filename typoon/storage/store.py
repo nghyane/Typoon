@@ -39,9 +39,17 @@ Glossary:
     user_glossary (per user) merged with community_glossary
     (system-curated) → glossary_fingerprint cache key.
 
-Quota / DMCA:
+Translator memory:
+    translator_memory (per user × material × target_lang) holds the
+    characters/world/style/glossary cards plus accumulated chapter
+    briefs (translator_memory_briefs). This is the v2 replacement
+    for the project-cũ settings page — long-lived context the agent
+    learns into across chapters.
+
+Quota / Moderation:
     chapter_consumes (only LLM-costing events, never cache hits).
-    dmca_takedowns with admin lifecycle.
+    reports          (user intake, open queue).
+    moderation_actions (admin audit; takedown/restore/delete).
 """
 
 from __future__ import annotations
@@ -61,7 +69,10 @@ DraftState       = Literal["pending", "running", "done", "error"]
 PipelineStage    = Literal["prepare", "scan", "translate", "render"]
 TaskTargetKind   = Literal["chapter", "draft", "translation"]
 LinkOrigin       = Literal["primary", "auto", "manual"]
-TakedownKind     = Literal["material", "chapter", "draft", "translation"]
+ReportTargetKind = Literal["material", "chapter", "draft", "translation"]
+ReportKind       = Literal["dmca", "abuse", "quality", "other"]
+ReportStatus     = Literal["open", "reviewing", "resolved", "dismissed"]
+ModerationAction = Literal["takedown", "restore", "delete"]
 
 
 class Store(Protocol):
@@ -544,6 +555,77 @@ class Store(Protocol):
         effective glossary produce the same fingerprint → cache hit."""
         ...
 
+    # ── Translator memory ────────────────────────────────────────
+    #
+    # Per (user, material, target_lang) knowledge bag — the v2 replacement
+    # for project-cũ settings. Cards (characters/world/style/glossary)
+    # are JSONB blobs the agent learns into; briefs accumulate per
+    # chapter and feed a sliding-window into the next translate spawn.
+
+    async def get_translator_memory(
+        self,
+        *,
+        user_id:     int,
+        material_id: int,
+        target_lang: str,
+    ) -> dict | None:
+        """Single row keyed by (user, material, target_lang) or None
+        when the user has not started translating yet."""
+        ...
+
+    async def upsert_translator_memory(
+        self,
+        *,
+        user_id:     int,
+        material_id: int,
+        source_lang: str,
+        target_lang: str,
+        characters:  list | None = None,
+        world:       dict | None = None,
+        style:       dict | None = None,
+        glossary:    list | None = None,
+        style_refs:  list | None = None,
+    ) -> dict:
+        """Create-or-update. `None` per field leaves the existing value
+        intact; an explicit `[]` / `{}` clears it. Returns the post-
+        write row."""
+        ...
+
+    async def append_memory_brief(
+        self,
+        *,
+        memory_id:  int,
+        chapter_id: int,
+        brief_json: dict,
+        summary:    str | None,
+    ) -> None:
+        """Insert-or-replace the brief for (memory, chapter). Repeated
+        translates of the same chapter overwrite the prior brief."""
+        ...
+
+    async def list_recent_memory_briefs(
+        self,
+        *,
+        memory_id:         int,
+        before_chapter_id: int | None = None,
+        limit:             int = 5,
+    ) -> list[dict]:
+        """Sliding window of briefs strictly before `before_chapter_id`
+        (by chapter.position), newest first. `limit` caps how many feed
+        the context agent on the next spawn."""
+        ...
+
+    async def delete_translator_memory(
+        self,
+        *,
+        user_id:     int,
+        material_id: int,
+        target_lang: str,
+    ) -> bool:
+        """Drop the memory row (and via CASCADE its briefs). Used by
+        the 'Bắt đầu lại' UI affordance."""
+        ...
+
     # ── Quota ────────────────────────────────────────────────────
     async def record_chapter_consume(
         self,
@@ -617,22 +699,67 @@ class Store(Protocol):
     ) -> "InboxHandle | None": ...
     async def clear_inbox_handle(self, chapter_id: int) -> None: ...
 
-    # ── DMCA ─────────────────────────────────────────────────────
-    async def record_dmca_takedown(
+    # ── Reports + moderation ─────────────────────────────────────
+    #
+    # Intake (user reports) and action (admin takedown / restore) are
+    # split into two tables. A single report can be acted on multiple
+    # times (takedown → restore → takedown again); an admin can also
+    # act without a triggering report (proactive cleanup). The two are
+    # joined by `report_id` on `moderation_actions`.
+
+    async def submit_report(
         self,
         *,
-        target_kind:    TakedownKind,
+        reporter_id:    int | None,
+        reporter_label: str,
+        target_kind:    ReportTargetKind,
         target_id:      int,
         scope_guild_id: str | None,
+        kind:           ReportKind,
         reason:         str,
-        reporter:       str,
     ) -> int:
-        """Inserts a takedown log + flips `takedown_at` on the target.
-        Restoration reverses both (see `restore_dmca_takedown`)."""
+        """Insert a `reports` row. Does NOT touch the target — admin
+        review decides whether to call `apply_moderation_action`."""
         ...
 
-    async def restore_dmca_takedown(self, takedown_id: int) -> bool: ...
+    async def get_report(self, report_id: int) -> dict | None: ...
 
-    async def list_dmca_takedowns(
-        self, *, active_only: bool = True, limit: int = 100,
+    async def list_reports(
+        self,
+        *,
+        status: ReportStatus | None = None,
+        limit:  int = 100,
+    ) -> list[dict]: ...
+
+    async def update_report_status(
+        self,
+        report_id:   int,
+        *,
+        status:      ReportStatus,
+        resolver_id: int | None,
+    ) -> bool: ...
+
+    async def apply_moderation_action(
+        self,
+        *,
+        report_id:   int | None,
+        target_kind: ReportTargetKind,
+        target_id:   int,
+        action:      ModerationAction,
+        reason:      str,
+        actor_id:    int | None,
+    ) -> int:
+        """Log + execute. Action semantics:
+          - `takedown` on draft/translation → set takedown_at + reason.
+          - `restore`  on draft/translation → clear takedown_at + reason.
+          - `delete`   on material/chapter  → hard delete (cascade).
+        Returns the moderation_actions row id."""
+        ...
+
+    async def list_moderation_actions_for_target(
+        self,
+        *,
+        target_kind: ReportTargetKind,
+        target_id:   int,
+        limit:       int = 50,
     ) -> list[dict]: ...

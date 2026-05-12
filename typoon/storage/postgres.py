@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "15"  # v5 material+translation architecture (RFC v5)
+SCHEMA_VERSION = "17"  # +reports / moderation_actions (drops dmca_takedowns)
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
@@ -80,6 +80,13 @@ def _ts(col: str) -> str:
     return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {col}"
 
 
+def _ts_as(col: str, alias: str) -> str:
+    """Like `_ts` but lets the caller pick the AS alias — needed when
+    the source column is qualified (e.g. `b.created_at`) but the result
+    name should be unqualified for dict consumption."""
+    return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {alias}"
+
+
 _TS_USERS = (
     "id, display_name, avatar_url, email, "
     f"{_ts('created_at')}, {_ts('last_login_at')}"
@@ -117,10 +124,35 @@ _TS_LIBRARY_ENTRY = (
     f"{_ts('last_read_at')}, last_chapter_ref, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
+_TS_TRANSLATOR_MEMORY = (
+    "id, user_id, material_id, source_lang, target_lang, "
+    "characters, world, style, glossary, style_refs, last_chapter_id, "
+    f"{_ts('created_at')}, {_ts('updated_at')}"
+)
 
 
 def _row_dict(row: asyncpg.Record | None) -> dict | None:
     return dict(row) if row else None
+
+
+def _hydrate_memory(d: dict | None) -> dict | None:
+    """asyncpg returns JSONB as either str (statement_cache_size=0) or
+    Python objects depending on driver mood — normalise to objects so
+    callers don't need to care."""
+    if d is None:
+        return None
+    for k in ("characters", "world", "style", "glossary", "style_refs"):
+        v = d.get(k)
+        if isinstance(v, str):
+            d[k] = json.loads(v)
+    return d
+
+
+def _hydrate_brief(d: dict) -> dict:
+    v = d.get("brief_json")
+    if isinstance(v, str):
+        d["brief_json"] = json.loads(v)
+    return d
 
 
 def _try_float(s: str) -> float | None:
@@ -2030,95 +2062,370 @@ class PostgresStore:
                 chapter_id,
             )
 
-    # ── DMCA ─────────────────────────────────────────────────────
+    # ── Translator memory ────────────────────────────────────────
+    #
+    # Per (user, material, target_lang) knowledge state. Reads merge the
+    # row with its sliding-window briefs at the route layer; this class
+    # only exposes raw row access + brief append/list.
 
-    async def record_dmca_takedown(
+    async def get_translator_memory(
         self,
         *,
+        user_id:     int,
+        material_id: int,
+        target_lang: str,
+    ) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {_TS_TRANSLATOR_MEMORY} FROM translator_memory "
+                "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
+                user_id, material_id, target_lang,
+            )
+        return _hydrate_memory(_row_dict(row))
+
+    async def upsert_translator_memory(
+        self,
+        *,
+        user_id:      int,
+        material_id:  int,
+        source_lang:  str,
+        target_lang:  str,
+        characters:   list | None = None,
+        world:        dict | None = None,
+        style:        dict | None = None,
+        glossary:     list | None = None,
+        style_refs:   list | None = None,
+    ) -> dict:
+        """Create or update memory cards. None values keep the existing
+        column; an empty list/dict explicitly clears the field. Callers
+        that want to *append* to characters/glossary should read,
+        mutate, write — the row is small enough that load-modify-store
+        is fine."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id FROM translator_memory "
+                "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
+                user_id, material_id, target_lang,
+            )
+            if existing is None:
+                await conn.execute(
+                    "INSERT INTO translator_memory ("
+                    "  user_id, material_id, source_lang, target_lang,"
+                    "  characters, world, style, glossary, style_refs"
+                    ") VALUES ("
+                    "  $1, $2, $3, $4,"
+                    "  $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb"
+                    ")",
+                    user_id, material_id, source_lang, target_lang,
+                    json.dumps(characters if characters is not None else [], ensure_ascii=False),
+                    json.dumps(world      if world      is not None else {}, ensure_ascii=False),
+                    json.dumps(style      if style      is not None else {}, ensure_ascii=False),
+                    json.dumps(glossary   if glossary   is not None else [], ensure_ascii=False),
+                    json.dumps(style_refs if style_refs is not None else [], ensure_ascii=False),
+                )
+            else:
+                sets: list[str] = []
+                args: list = []
+                # source_lang is intentionally immutable post-insert —
+                # changing src mid-stream would invalidate every brief.
+                if characters is not None:
+                    args.append(json.dumps(characters, ensure_ascii=False))
+                    sets.append(f"characters=${len(args)}::jsonb")
+                if world is not None:
+                    args.append(json.dumps(world, ensure_ascii=False))
+                    sets.append(f"world=${len(args)}::jsonb")
+                if style is not None:
+                    args.append(json.dumps(style, ensure_ascii=False))
+                    sets.append(f"style=${len(args)}::jsonb")
+                if glossary is not None:
+                    args.append(json.dumps(glossary, ensure_ascii=False))
+                    sets.append(f"glossary=${len(args)}::jsonb")
+                if style_refs is not None:
+                    args.append(json.dumps(style_refs, ensure_ascii=False))
+                    sets.append(f"style_refs=${len(args)}::jsonb")
+                if sets:
+                    args.extend([user_id, material_id, target_lang])
+                    await conn.execute(
+                        f"UPDATE translator_memory SET {', '.join(sets)} "
+                        f"WHERE user_id=${len(args)-2} "
+                        f"AND material_id=${len(args)-1} "
+                        f"AND target_lang=${len(args)}",
+                        *args,
+                    )
+            row = await conn.fetchrow(
+                f"SELECT {_TS_TRANSLATOR_MEMORY} FROM translator_memory "
+                "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
+                user_id, material_id, target_lang,
+            )
+        return _hydrate_memory(_row_dict(row))  # type: ignore[return-value]
+
+    async def append_memory_brief(
+        self,
+        *,
+        memory_id:  int,
+        chapter_id: int,
+        brief_json: dict,
+        summary:    str | None,
+    ) -> None:
+        """Insert-or-replace the brief for this chapter. Each (memory,
+        chapter) collapses to one row — repeated translates of the same
+        chapter overwrite the prior brief so the sliding window stays
+        coherent."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO translator_memory_briefs ("
+                "  memory_id, chapter_id, brief_json, summary"
+                ") VALUES ($1, $2, $3::jsonb, $4) "
+                "ON CONFLICT (memory_id, chapter_id) DO UPDATE SET "
+                "  brief_json = EXCLUDED.brief_json, "
+                "  summary    = EXCLUDED.summary, "
+                "  updated_at = NOW()",
+                memory_id, chapter_id,
+                json.dumps(brief_json, ensure_ascii=False), summary,
+            )
+            # Advance last_chapter_id when this chapter sits past the
+            # current high-water mark (compare by chapter.position).
+            await conn.execute(
+                """
+                UPDATE translator_memory tm
+                SET    last_chapter_id = c.id
+                FROM   chapters c, chapters cur
+                WHERE  tm.id = $1
+                  AND  c.id  = $2
+                  AND  cur.id = COALESCE(tm.last_chapter_id, c.id)
+                  AND  c.position >= cur.position
+                """,
+                memory_id, chapter_id,
+            )
+
+    async def list_recent_memory_briefs(
+        self,
+        *,
+        memory_id:    int,
+        before_chapter_id: int | None = None,
+        limit:        int = 5,
+    ) -> list[dict]:
+        """Most-recent briefs strictly before `before_chapter_id`
+        (when given), keyed by chapter.position. With limit=5 this is
+        the sliding-window the context agent injects when translating
+        the next chapter."""
+        sql = (
+            "SELECT b.chapter_id, c.position, c.number, c.label, "
+            "       b.brief_json, b.summary, "
+            f"      {_ts_as('b.created_at', 'created_at')}, "
+            f"      {_ts_as('b.updated_at', 'updated_at')} "
+            "FROM   translator_memory_briefs b "
+            "JOIN   chapters c ON c.id = b.chapter_id "
+            "WHERE  b.memory_id = $1"
+        )
+        args: list = [memory_id]
+        if before_chapter_id is not None:
+            args.append(before_chapter_id)
+            sql += (
+                f" AND c.position < (SELECT position FROM chapters "
+                f"                   WHERE id=${len(args)})"
+            )
+        args.append(limit)
+        sql += f" ORDER BY c.position DESC LIMIT ${len(args)}"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return [_hydrate_brief(dict(r)) for r in rows]
+
+    async def delete_translator_memory(
+        self,
+        *,
+        user_id:     int,
+        material_id: int,
+        target_lang: str,
+    ) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM translator_memory "
+                "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
+                user_id, material_id, target_lang,
+            )
+        return result.startswith("DELETE ") and not result.endswith("0")
+
+    # ── Reports + moderation ─────────────────────────────────────
+
+    async def submit_report(
+        self,
+        *,
+        reporter_id:    int | None,
+        reporter_label: str,
         target_kind:    str,
         target_id:      int,
         scope_guild_id: str | None,
+        kind:           str,
         reason:         str,
-        reporter:       str,
     ) -> int:
-        """Log + flip takedown_at on the target. Transactional so the
-        log and the takedown either both succeed or both fail."""
         if target_kind not in ("material", "chapter", "draft", "translation"):
             raise ValueError(f"invalid target_kind: {target_kind!r}")
-        table = {
-            "material":    None,   # no takedown_at column; row deleted
-            "chapter":     None,   # ditto
+        if kind not in ("dmca", "abuse", "quality", "other"):
+            raise ValueError(f"invalid report kind: {kind!r}")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO reports ("
+                "  reporter_id, reporter_label, "
+                "  target_kind, target_id, scope_guild_id, "
+                "  kind, reason"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                reporter_id, reporter_label,
+                target_kind, target_id, scope_guild_id,
+                kind, reason,
+            )
+        return row["id"]
+
+    async def get_report(self, report_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, reporter_id, reporter_label, "
+                "       target_kind, target_id, scope_guild_id, "
+                "       kind, reason, status, "
+                f"       {_ts('created_at')}, "
+                f"       {_ts('resolved_at')}, resolved_by "
+                "FROM reports WHERE id=$1",
+                report_id,
+            )
+        return _row_dict(row)
+
+    async def list_reports(
+        self,
+        *,
+        status: str | None = None,
+        limit:  int = 100,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        args: list = []
+        if status is not None:
+            args.append(status); clauses.append(f"status=${len(args)}")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        args.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, reporter_id, reporter_label, "
+                "       target_kind, target_id, scope_guild_id, "
+                "       kind, reason, status, "
+                f"       {_ts('created_at')}, "
+                f"       {_ts('resolved_at')}, resolved_by "
+                f"FROM reports {where} "
+                f"ORDER BY created_at DESC LIMIT ${len(args)}",
+                *args,
+            )
+        return [dict(r) for r in rows]
+
+    async def update_report_status(
+        self,
+        report_id:   int,
+        *,
+        status:      str,
+        resolver_id: int | None,
+    ) -> bool:
+        if status not in ("open", "reviewing", "resolved", "dismissed"):
+            raise ValueError(f"invalid report status: {status!r}")
+        terminal = status in ("resolved", "dismissed")
+        async with self._pool.acquire() as conn:
+            if terminal:
+                result = await conn.execute(
+                    "UPDATE reports "
+                    "SET status=$2, resolved_at=NOW(), resolved_by=$3 "
+                    "WHERE id=$1",
+                    report_id, status, resolver_id,
+                )
+            else:
+                result = await conn.execute(
+                    "UPDATE reports "
+                    "SET status=$2, resolved_at=NULL, resolved_by=NULL "
+                    "WHERE id=$1",
+                    report_id, status,
+                )
+        return result.startswith("UPDATE ") and not result.endswith("0")
+
+    async def apply_moderation_action(
+        self,
+        *,
+        report_id:   int | None,
+        target_kind: str,
+        target_id:   int,
+        action:      str,
+        reason:      str,
+        actor_id:    int | None,
+    ) -> int:
+        if target_kind not in ("material", "chapter", "draft", "translation"):
+            raise ValueError(f"invalid target_kind: {target_kind!r}")
+        if action not in ("takedown", "restore", "delete"):
+            raise ValueError(f"invalid action: {action!r}")
+        # Map (action, target_kind) → SQL effect.
+        soft_targets = {
             "draft":       "translation_drafts",
             "translation": "translations",
-        }[target_kind]
+        }
+        hard_targets = {
+            "material":    "materials",
+            "chapter":     "chapters",
+        }
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "INSERT INTO dmca_takedowns "
-                "  (target_kind, target_id, scope_guild_id, reason, reporter) "
-                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
-                target_kind, target_id, scope_guild_id, reason, reporter,
+                "INSERT INTO moderation_actions ("
+                "  report_id, target_kind, target_id, "
+                "  action, reason, actor_id"
+                ") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                report_id, target_kind, target_id,
+                action, reason, actor_id,
             )
-            if table is not None:
+            if action == "takedown":
+                table = soft_targets.get(target_kind)
+                if table is None:
+                    raise ValueError(
+                        f"takedown only applies to draft/translation; "
+                        f"got {target_kind!r}"
+                    )
                 await conn.execute(
-                    f"UPDATE {table} SET takedown_at=NOW(), takedown_reason=$2 "
+                    f"UPDATE {table} "
+                    "SET takedown_at=NOW(), takedown_reason=$2 "
                     "WHERE id=$1",
                     target_id, reason,
                 )
-            else:
-                # material / chapter: hard delete (no takedown_at marker)
-                if target_kind == "material":
-                    await conn.execute(
-                        "DELETE FROM materials WHERE id=$1", target_id,
+            elif action == "restore":
+                table = soft_targets.get(target_kind)
+                if table is None:
+                    raise ValueError(
+                        f"restore only applies to draft/translation; "
+                        f"got {target_kind!r}"
                     )
-                else:
-                    await conn.execute(
-                        "DELETE FROM chapters WHERE id=$1", target_id,
+                await conn.execute(
+                    f"UPDATE {table} "
+                    "SET takedown_at=NULL, takedown_reason=NULL "
+                    "WHERE id=$1",
+                    target_id,
+                )
+            else:  # delete — hard delete on material/chapter only
+                table = hard_targets.get(target_kind)
+                if table is None:
+                    raise ValueError(
+                        f"delete only applies to material/chapter; "
+                        f"got {target_kind!r}"
                     )
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE id=$1", target_id,
+                )
         return row["id"]
 
-    async def restore_dmca_takedown(self, takedown_id: int) -> bool:
-        """Clear takedown markers. For materials/chapters that were
-        hard-deleted, restoration is not possible — caller gets
-        False and must re-import."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT target_kind, target_id FROM dmca_takedowns "
-                "WHERE id=$1 AND restored_at IS NULL",
-                takedown_id,
-            )
-            if row is None:
-                return False
-            tk = row["target_kind"]
-            ti = row["target_id"]
-            table = {
-                "draft":       "translation_drafts",
-                "translation": "translations",
-            }.get(tk)
-            if table is None:
-                # material / chapter: already deleted; cannot restore.
-                return False
-            await conn.execute(
-                f"UPDATE {table} SET takedown_at=NULL, takedown_reason=NULL "
-                "WHERE id=$1",
-                ti,
-            )
-            await conn.execute(
-                "UPDATE dmca_takedowns SET restored_at=NOW() WHERE id=$1",
-                takedown_id,
-            )
-        return True
-
-    async def list_dmca_takedowns(
-        self, *, active_only: bool = True, limit: int = 100,
+    async def list_moderation_actions_for_target(
+        self,
+        *,
+        target_kind: str,
+        target_id:   int,
+        limit:       int = 50,
     ) -> list[dict]:
-        cond = "WHERE restored_at IS NULL" if active_only else ""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, target_kind, target_id, scope_guild_id, "
-                "       reason, reporter, "
-                f"       {_ts('taken_down_at')}, {_ts('restored_at')} "
-                f"FROM dmca_takedowns {cond} "
-                "ORDER BY taken_down_at DESC LIMIT $1",
-                limit,
+                "SELECT id, report_id, target_kind, target_id, "
+                "       action, reason, actor_id, "
+                f"       {_ts('created_at')} "
+                "FROM moderation_actions "
+                "WHERE target_kind=$1 AND target_id=$2 "
+                "ORDER BY created_at DESC LIMIT $3",
+                target_kind, target_id, limit,
             )
         return [dict(r) for r in rows]

@@ -13,8 +13,9 @@
 --   Pipeline (user)         translations, translation_edits
 --   Library (per-user)      library_entries, library_materials
 --   Glossary                user_glossary, community_glossary
+--   Translator memory       translator_memory, translator_memory_briefs
 --   Queue                   tasks
---   Quota / DMCA            chapter_consumes, dmca_takedowns
+--   Quota / Moderation      chapter_consumes, reports, moderation_actions
 --   Inbox (browser upload)  material_inbox
 --
 -- Conventions:
@@ -491,6 +492,79 @@ CREATE TABLE IF NOT EXISTS community_glossary (
 CREATE INDEX IF NOT EXISTS idx_community_glossary_lookup
     ON community_glossary(source_lang, target_lang, material_id);
 
+-- ── Translator memory ───────────────────────────────────────────────
+-- Per-user, per-material, per-target-lang knowledge cards + accumulating
+-- chapter briefs. Replaces the project-cũ idea of "project settings +
+-- glossary" without coupling to a project entity.
+--
+-- Mental model:
+--   characters / world / style / glossary cards are the long-lived
+--     facts the user (and the agent) build up across chapters.
+--   style_refs marks translations (or raw chapters at target_lang) the
+--     user wants the agent to imitate. Phase 1: schema-only field;
+--     UI + LLM context wiring lands later.
+--   translator_memory_briefs holds per-chapter ChapterBrief output
+--     so a sliding window of recent chapters can be injected when
+--     translating chapter N+1.
+--
+-- JSONB shapes (Phase 1 — flexible until UX settles):
+--   characters  [{name, aliases[], pronouns:{self,other}, role, notes, locked?}]
+--   world       {setting, factions, places, terminology, notes}
+--   style       {tone, formality, address_style, sfx, onomatopoeia, custom?}
+--   glossary    [{source_term, target_term, notes, locked?}]
+--   style_refs  [{kind: 'translation'|'chapter', id, label, weight}]
+--
+-- Suggestions queue (agent → user) lives inside `characters` /
+-- `glossary` rows themselves via a `pending` flag, not a separate
+-- table — keeps reads single-row.
+
+CREATE TABLE IF NOT EXISTS translator_memory (
+    id            BIGSERIAL PRIMARY KEY,
+    user_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    material_id   BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    source_lang   TEXT NOT NULL,
+    target_lang   TEXT NOT NULL,
+
+    characters    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    world         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    style         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    glossary      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    style_refs    JSONB NOT NULL DEFAULT '[]'::jsonb,
+
+    -- Highest chapter.position the agent has folded into this memory.
+    -- Used to gate "learn from chapter N" reruns and to decide which
+    -- briefs are still in the sliding window.
+    last_chapter_id  BIGINT REFERENCES chapters(id) ON DELETE SET NULL,
+
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, material_id, target_lang)
+);
+CREATE INDEX IF NOT EXISTS idx_translator_memory_user
+    ON translator_memory(user_id);
+CREATE INDEX IF NOT EXISTS idx_translator_memory_material
+    ON translator_memory(material_id);
+
+-- Sliding-window chapter briefs. One row per (memory, chapter).
+-- `brief_json` holds the full ChapterBrief shape (summary, glossary,
+-- address rules, style_notes, page_notes, noise). `summary` denormalised
+-- for list views + FTS.
+CREATE TABLE IF NOT EXISTS translator_memory_briefs (
+    memory_id    BIGINT NOT NULL REFERENCES translator_memory(id) ON DELETE CASCADE,
+    chapter_id   BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    brief_json   JSONB NOT NULL,
+    summary      TEXT,
+    summary_tsv  tsvector
+        GENERATED ALWAYS AS (to_tsvector('simple', coalesce(summary, ''))) STORED,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (memory_id, chapter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tm_briefs_chapter
+    ON translator_memory_briefs(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_tm_briefs_summary_tsv
+    ON translator_memory_briefs USING GIN (summary_tsv);
+
 -- ── Worker coordination ─────────────────────────────────────────────
 -- One queue table for the pipeline. `target_kind` is the discriminator:
 --   'chapter'     → prepare, scan (chapter-level work)
@@ -549,22 +623,70 @@ CREATE TABLE IF NOT EXISTS chapter_consumes (
 CREATE INDEX IF NOT EXISTS idx_chapter_consumes_user_time
     ON chapter_consumes(user_id, created_at DESC);
 
--- ── DMCA takedowns ──────────────────────────────────────────────────
--- Admin-driven log. Receiving a notice writes a row + flips
--- takedown_at on the target row. Restore reverses both.
+-- ── Reports ─────────────────────────────────────────────────────────
+-- User-submitted reports flow into `reports` (intake). Admin
+-- moderation is logged separately in `moderation_actions` (audit).
+-- The two are joined via `report_id`; one report can trigger many
+-- actions (takedown then restore then re-takedown) and one action
+-- can happen without a prior report (admin-initiated cleanup).
+--
+-- The visibility flip (target row's takedown_at / takedown_reason)
+-- still lives on `translation_drafts` / `translations` — those
+-- columns drive the actual read-path filter. `moderation_actions`
+-- is the audit log of how the flag got there.
 
-CREATE TABLE IF NOT EXISTS dmca_takedowns (
+CREATE TABLE IF NOT EXISTS reports (
     id              BIGSERIAL PRIMARY KEY,
+    reporter_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    -- Free-form label for the reporter — used when the reporter is
+    -- an anonymous DMCA agent (email/handle) instead of an app user.
+    -- For authenticated reports we still populate this with the
+    -- display_name snapshot at submit time so the admin queue stays
+    -- readable after account deletion.
+    reporter_label  TEXT NOT NULL,
+
     target_kind     TEXT NOT NULL
         CHECK (target_kind IN ('material','chapter','draft','translation')),
     target_id       BIGINT NOT NULL,
     scope_guild_id  TEXT,
+
+    kind            TEXT NOT NULL DEFAULT 'dmca'
+        CHECK (kind IN ('dmca','abuse','quality','other')),
     reason          TEXT NOT NULL,
-    reporter        TEXT NOT NULL,
-    taken_down_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    restored_at     TIMESTAMPTZ
+
+    status          TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open','reviewing','resolved','dismissed')),
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ,
+    resolved_by     BIGINT REFERENCES users(id) ON DELETE SET NULL
 );
-CREATE INDEX IF NOT EXISTS idx_dmca_target ON dmca_takedowns(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_reports_status
+    ON reports(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_target
+    ON reports(target_kind, target_id);
+
+CREATE TABLE IF NOT EXISTS moderation_actions (
+    id              BIGSERIAL PRIMARY KEY,
+    -- NULL when admin acted without a triggering report (proactive
+    -- cleanup) or when the report was hard-deleted.
+    report_id       BIGINT REFERENCES reports(id) ON DELETE SET NULL,
+
+    target_kind     TEXT NOT NULL
+        CHECK (target_kind IN ('material','chapter','draft','translation')),
+    target_id       BIGINT NOT NULL,
+
+    action          TEXT NOT NULL
+        CHECK (action IN ('takedown','restore','delete')),
+    reason          TEXT NOT NULL,
+
+    actor_id        BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_moderation_actions_target
+    ON moderation_actions(target_kind, target_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_moderation_actions_report
+    ON moderation_actions(report_id) WHERE report_id IS NOT NULL;
 
 -- ── updated_at maintenance ──────────────────────────────────────────
 -- Postgres has no "ON UPDATE" trigger sugar — keep them explicit.
@@ -607,6 +729,20 @@ CREATE TRIGGER translations_touch_updated_at
 DROP TRIGGER IF EXISTS library_entries_touch_updated_at ON library_entries;
 CREATE TRIGGER library_entries_touch_updated_at
     BEFORE UPDATE ON library_entries
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS translator_memory_touch_updated_at ON translator_memory;
+CREATE TRIGGER translator_memory_touch_updated_at
+    BEFORE UPDATE ON translator_memory
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS tm_briefs_touch_updated_at ON translator_memory_briefs;
+CREATE TRIGGER tm_briefs_touch_updated_at
+    BEFORE UPDATE ON translator_memory_briefs
     FOR EACH ROW
     WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
     EXECUTE FUNCTION touch_updated_at();
