@@ -18,4 +18,5 @@ Read this before coding in a new thread.
 
 ## Active handoff
 
+- [Auto-merge multi-source chapter list](handoff-auto-merge-chapters.md) — drop `activeMaterial`/`?src=`, union manifest fetches across every installed source on a Work
 - [Scan stage](handoff-scan-stage.md) — next task: `stages/scan.py`, RFC-003
