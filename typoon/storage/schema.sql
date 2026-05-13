@@ -258,6 +258,16 @@ CREATE TABLE IF NOT EXISTS chapters (
     label             TEXT,
     upstream_url      TEXT,                 -- chapter URL on source; NULL for upload
 
+    -- BCP-47 of the pixels this chapter carries. Source of truth for
+    -- `translation_drafts.source_lang` at spawn time. One material on
+    -- MangaDex / Bato can host chapters in many languages (Italian
+    -- material with an English-only chapter, etc.), so the chapter
+    -- row — not the material — owns the language tag. Manifest
+    -- ingestion fills from `mc.language` (chapter-specific) and
+    -- falls back to `material.languages[0]`; uploads receive it on
+    -- `upload-finalize`. NULL only for legacy rows pre-schema 26.
+    source_lang       TEXT,
+
     -- CAS for prepared.bnl. SHA256 hex string; NULL until prepare runs.
     prepared_hash     TEXT,
     prepared_backend  TEXT,
@@ -366,7 +376,7 @@ CREATE TABLE IF NOT EXISTS translation_drafts (
     takedown_reason    TEXT,
 
     state              TEXT NOT NULL DEFAULT 'pending'
-        CHECK (state IN ('pending','running','done','error')),
+        CHECK (state IN ('pending','running','done','error','blocked')),
     error_message      TEXT,
     progress_stage     TEXT,
     progress_index     INTEGER,
@@ -488,9 +498,20 @@ CREATE TABLE IF NOT EXISTS translation_edits (
 CREATE TABLE IF NOT EXISTS library_entries (
     id                  BIGSERIAL PRIMARY KEY,
     user_id             BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- Work-centric bookmark. One entry per (user, Work). When the user
+    -- later adds another material that auto-links to the same Work,
+    -- it slots into this entry via library_materials instead of
+    -- spawning a duplicate row.
+    work_id             BIGINT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     title               TEXT NOT NULL,
     cover_url           TEXT,
-    primary_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
+
+    -- User's reading-language preference for THIS Work. BCP-47, e.g.
+    -- 'vi', 'en'. Drives the chapter-list translation badges + the
+    -- manifest fetch (MangaDex API needs `translatedLanguage[]={lang}`).
+    -- Settable at entry creation, editable later via PATCH so the user
+    -- can switch reading lang without dropping their bookmark.
+    target_lang         TEXT NOT NULL DEFAULT 'vi',
 
     -- Reading status — the verb the user applies to the manga.
     --   reading   actively reading; default after first "Add".
@@ -507,6 +528,8 @@ CREATE TABLE IF NOT EXISTS library_entries (
 CREATE INDEX IF NOT EXISTS idx_library_user ON library_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_library_user_status
     ON library_entries(user_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_entries_user_work
+    ON library_entries(user_id, work_id);
 
 CREATE TABLE IF NOT EXISTS library_materials (
     entry_id     BIGINT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
@@ -514,7 +537,10 @@ CREATE TABLE IF NOT EXISTS library_materials (
     -- Denormalized owner for the per-user uniqueness constraint below.
     -- Kept in sync with library_entries.user_id at insert time.
     user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    link_origin  TEXT NOT NULL CHECK (link_origin IN ('primary','auto','manual')),
+    -- 'auto'   — server auto-linked when the material's Work matched
+    --            an existing entry (cross_refs / vote consensus).
+    -- 'manual' — user explicitly attached this material.
+    link_origin  TEXT NOT NULL CHECK (link_origin IN ('auto','manual')),
     linked_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (entry_id, material_id)
 );
@@ -700,6 +726,39 @@ CREATE TRIGGER tasks_notify_ready
     AFTER INSERT OR UPDATE ON tasks
     FOR EACH ROW
     EXECUTE FUNCTION notify_task_ready();
+
+-- ── Stage pause ─────────────────────────────────────────────────────
+-- One row per pipeline stage that the operator must inspect before
+-- workers may continue. Inserted when a stage raises
+-- `OperatorActionRequired` (model_not_found, credential pool empty,
+-- storage misconfig) — situations no amount of retry can fix on its
+-- own. `claim_task` filters paused stages out, so the task sits at
+-- `attempts=0, claimed_by=NULL` until the admin resumes the stage.
+-- Stable single-row-per-stage; PK enforces idempotent pause.
+
+CREATE TABLE IF NOT EXISTS stage_pause (
+    stage      TEXT PRIMARY KEY
+        CHECK (stage IN ('prepare','scan','translate','render')),
+    reason     TEXT NOT NULL,
+    paused_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    paused_by  TEXT
+);
+
+-- Resume notifies every stage pump that filtered-out claims may now
+-- be picked up. Same channel as `tasks_notify_ready` so workers wake
+-- up without polling.
+CREATE OR REPLACE FUNCTION notify_stage_resume() RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pg_notify('typoon_task_' || OLD.stage, 'resume');
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS stage_pause_notify_resume ON stage_pause;
+CREATE TRIGGER stage_pause_notify_resume
+    AFTER DELETE ON stage_pause
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_stage_resume();
 
 -- ── Quota usage log ─────────────────────────────────────────────────
 -- One row per LLM-costing event. Cache HITS do not insert; quota

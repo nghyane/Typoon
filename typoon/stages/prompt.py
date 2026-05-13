@@ -1,8 +1,20 @@
-"""Prompt templates and policy loading."""
+"""Prompt templates and policy loading.
+
+Templates live as markdown files under `prompts/`. We load lazily —
+the file read happens on first `.format()` call, not at module import
+— so a missing prompt file doesn't crash the import graph and tests
+that don't exercise the LLM path don't pay the I/O.
+
+`Template` is a small wrapper rather than `str` subclass: subclassing
+`str` to override `format` confuses type checkers and any code that
+expects `str` semantics (concatenation, slicing, etc.). The wrapper
+exposes `.format()` and `__str__()` and nothing else.
+"""
 
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -10,7 +22,10 @@ logger = logging.getLogger(__name__)
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+@lru_cache(maxsize=64)
 def load_policy(name: str) -> str:
+    """Read a prompt file relative to `prompts/`. Cached so repeated
+    calls during a long-running worker stay free after warmup."""
     path = _PROMPTS_DIR / name
     if not path.exists():
         logger.warning("prompt file not found: %s", path)
@@ -26,25 +41,22 @@ def load_target_policy(target_lang: str) -> str:
     return load_policy(f"targets/{target_lang}.md")
 
 
-def _lazy(name: str) -> str:
-    """Load on first use — not at import time."""
-    val = load_policy(name)
-    return val
+class Template:
+    """Lazy prompt template. `.format(**kwargs)` reads the file the
+    first time and reuses the cached content thereafter (per the
+    `load_policy` LRU)."""
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def format(self, **kwargs: object) -> str:
+        return load_policy(self._name).format(**kwargs)
+
+    def __repr__(self) -> str:
+        return f"Template({self._name!r})"
 
 
-class _LazyTemplate(str):
-    """String subclass that loads its content on first format() call."""
-    def __new__(cls, name: str) -> "_LazyTemplate":
-        obj = str.__new__(cls, "")
-        obj._name = name  # type: ignore[attr-defined]
-        obj._loaded: str | None = None  # type: ignore[attr-defined]
-        return obj
-
-    def format(self, **kwargs) -> str:  # type: ignore[override]
-        if self._loaded is None:
-            self._loaded = load_policy(self._name)
-        return self._loaded.format(**kwargs)
-
-
-STORYBOARD_SYSTEM = _LazyTemplate("agents/storyboard.md")
-PAGE_SYSTEM       = _LazyTemplate("agents/page.md")
+STORYBOARD_SYSTEM = Template("agents/storyboard.md")
+PAGE_SYSTEM       = Template("agents/page.md")

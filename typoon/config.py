@@ -190,16 +190,32 @@ class StorageConfig(BaseModel):
 class RateLimitConfig(BaseModel):
     """Per-user chapter quota for actions that consume LLM cost.
 
-    A "chapter slot" is consumed by upload-with-start, manual /start,
-    and /redo — never by idle upload or reads. Admins bypass entirely.
+    A "chapter slot" is consumed by draft-create and render-create —
+    never by idle upload, cache-hit reuse, or reads. Admins bypass
+    entirely.
 
     Counters are time-windowed (last hour, last day) over rows in
-    `chapter_consumes`; concurrent count is over chapters with a
-    live task in flight, owned by the user.
+    `chapter_consumes`. The concurrency limit was removed in the
+    material refactor — `projects.owner_id` is gone, so there's no
+    longer a coherent definition of "in-flight" chapters per user
+    without a non-trivial join through translations + tasks.
     """
-    chapters_per_hour:   int = 10
-    chapters_per_day:    int = 50
-    concurrent_chapters: int = 3
+    chapters_per_hour: int = 10
+    chapters_per_day:  int = 50
+
+
+class DatabaseConfig(BaseModel):
+    """Postgres pool sizing.
+
+    `statement_cache_size=0` is the historical default — asyncpg's
+    per-connection prepared-statement cache has occasionally surfaced
+    `_get_statement` failures under concurrent first requests. Leave
+    at 0 unless profiling justifies otherwise; bump via
+    `DB_STATEMENT_CACHE` env or `[database]` toml block.
+    """
+    pool_min_size:        int = 2
+    pool_max_size:        int = 10
+    statement_cache_size: int = 0
 
 
 class Config(BaseSettings):
@@ -230,6 +246,7 @@ class Config(BaseSettings):
     auth:   AuthConfig   = AuthConfig()
     storage: StorageConfig = StorageConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
+    database: DatabaseConfig = DatabaseConfig()
 
 
 # ── Loading ──────────────────────────────────────────────────────
@@ -336,6 +353,32 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
     if not config.database_url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError(
             f"DATABASE_URL must be postgresql://… — got {config.database_url!r}."
+        )
+
+    # Pool sizing env overrides — keep these flat so ops can tweak
+    # without dropping a toml block. Ignore invalid ints (fail loud).
+    def _env_int(name: str, current: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or raw == "":
+            return current
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be int, got {raw!r}") from exc
+
+    config.database.pool_min_size = _env_int(
+        "DB_POOL_MIN", config.database.pool_min_size,
+    )
+    config.database.pool_max_size = _env_int(
+        "DB_POOL_MAX", config.database.pool_max_size,
+    )
+    config.database.statement_cache_size = _env_int(
+        "DB_STATEMENT_CACHE", config.database.statement_cache_size,
+    )
+    if config.database.pool_min_size > config.database.pool_max_size:
+        raise RuntimeError(
+            "database.pool_min_size > pool_max_size: "
+            f"{config.database.pool_min_size} > {config.database.pool_max_size}"
         )
 
     # Auth: env vars take precedence over config.toml. Secrets should never

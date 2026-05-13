@@ -25,9 +25,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
-    auth, blobs, feed, glossary, library, material, me,
+    auth, blobs, community, glossary, library, material, me,
     memory, reports,
-    translate, translate_events, upload, workers,
+    translate, translate_events, upload, work, workers,
 )
 from typoon.config import load_config
 from typoon.storage import Store
@@ -45,13 +45,17 @@ async def _lifespan(app: FastAPI):
       observe (notably the SSE event stream) so they exit immediately
       when uvicorn starts a graceful shutdown rather than holding the
       process at "Waiting for connections to close".
+    - Singleton getters are pre-warmed in the single-threaded startup
+      context so the first concurrent user request never races on
+      lazy construction.
     - The EventBus listener task is started here so reconnects stay
       transparent to subscribers; without it the first /api/events
       hit would create the listener and a Postgres restart would leave
       the bus blind until a client reconnected.
     """
-    from typoon.api.deps import get_bus
+    from typoon.api.deps import get_bus, prewarm_singletons
     app.state.shutdown = asyncio.Event()
+    await prewarm_singletons()
     bus = await get_bus()
     if _serve_api:
         # Storage-only role doesn't host SSE, no need to listen.
@@ -131,13 +135,14 @@ if _serve_api:
     app.include_router(auth.router)
     app.include_router(me.router)
     app.include_router(material.router)
+    app.include_router(work.router)
     app.include_router(memory.router)
     app.include_router(upload.router)
     app.include_router(upload.local_router)
     app.include_router(translate.router)
     app.include_router(translate_events.router)
     app.include_router(library.router)
-    app.include_router(feed.router)
+    app.include_router(community.router)
     app.include_router(glossary.router)
     app.include_router(reports.router)
     app.include_router(reports.admin_router)

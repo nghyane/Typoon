@@ -9,7 +9,7 @@ from __future__ import annotations
 import openai
 
 from ._retry import parse_retry_after_header, with_retry
-from .errors import TransientCredentialError, UpstreamUnavailable
+from .errors import OperatorActionRequired, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -34,10 +34,31 @@ _CREDENTIAL_HINTS = (
     "authentication token has been invalidated",
 )
 
+# Substrings inside a 5xx body that mean retrying is hopeless — the
+# operator must change config (or the routing group) before any
+# request can succeed. Distinct from a real upstream outage which is
+# expected to clear on its own.
+_OPERATOR_5XX_HINTS = (
+    "model_not_found",
+    "model not found",
+    "no available channel",
+    "no available channels",
+    "distributor",                # Packy: "无可用渠道 (distributor)"
+    "billing_hard_limit",
+    "insufficient_quota",
+    "account is suspended",
+    "region not supported",
+)
+
 
 def _looks_like_credential_failure(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(hint.lower() in msg for hint in _CREDENTIAL_HINTS)
+
+
+def _looks_like_operator_5xx(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(hint.lower() in msg for hint in _OPERATOR_5XX_HINTS)
 
 
 def _classify_status_error(exc: openai.APIStatusError) -> Exception | None:
@@ -48,15 +69,20 @@ def _classify_status_error(exc: openai.APIStatusError) -> Exception | None:
     """
     status = getattr(exc, "status_code", None)
     if status in (401, 403):
-        return TransientCredentialError(str(exc))
+        return OperatorActionRequired(str(exc))
     if status is not None and 500 <= status < 600:
-        # 5xx that survived `with_retry` (budget exhausted). Treat as
-        # upstream-down so the chapter requeues instead of dying.
+        # 5xx that survived `with_retry`. Split into:
+        #   • operator: body says model/credential/quota — retrying
+        #     forever is pointless without a config change.
+        #   • transient: anything else is treated as upstream down,
+        #     waits on backoff and retries on its own.
+        if _looks_like_operator_5xx(exc) or _looks_like_credential_failure(exc):
+            return OperatorActionRequired(str(exc))
         return UpstreamUnavailable(str(exc))
     if _looks_like_credential_failure(exc):
         # Some proxies surface credential issues as 200/4xx with a JSON
         # error body — catch that path too.
-        return TransientCredentialError(str(exc))
+        return OperatorActionRequired(str(exc))
     return None
 
 

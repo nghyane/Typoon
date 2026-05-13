@@ -40,6 +40,11 @@ export interface UploadFinalizeBody {
    *  work_chapter row that dedups chapters across sources of the
    *  same Work. Engine generates a sequential fallback when omitted. */
   number_norm?: string
+  /** BCP-47 of the pixels in this upload. Server stamps it on the
+   *  chapter row so spawn-translate uses it as the source language
+   *  instead of falling back to `material.languages[0]` (wrong for
+   *  any material that hosts chapters in multiple languages). */
+  source_lang?: string
 }
 
 export interface UploadAbortBody {

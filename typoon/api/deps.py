@@ -35,7 +35,12 @@ async def get_store() -> Store:
         async with _lock:
             if _store is None:
                 config, _ = _config_and_paths()
-                _store = await PostgresStore.open(config.database_url)
+                _store = await PostgresStore.open(
+                    config.database_url,
+                    pool_min_size=config.database.pool_min_size,
+                    pool_max_size=config.database.pool_max_size,
+                    statement_cache_size=config.database.statement_cache_size,
+                )
     return _store
 
 
@@ -65,6 +70,13 @@ def get_storage() -> StorageRegistry:
     Workers use `storage.pipeline` to share prepared/masks across hosts.
     API URL build uses `storage.reader(row.archive_backend)` to
     dispatch chapter URLs through whichever public backend wrote them.
+
+    Pre-warmed by the API lifespan hook so the first user-facing
+    request never pays construction cost; a fallback double-check
+    handles late binding from CLI / test contexts that skip the
+    lifespan path. `build_storage` is sync and idempotent, so a
+    rare double-init under raw concurrency leaks at most one extra
+    registry instance (which holds no live file handles).
     """
     global _storage
     if _storage is None:
@@ -76,8 +88,9 @@ def get_storage() -> StorageRegistry:
 def get_inbox() -> ChapterInbox:
     """Browser-facing chapter zip inbox (S3-compatible or local dev).
 
-    Created lazily on first use; reused across requests so the boto3
-    HTTP pool stays warm.
+    Pre-warmed by the API lifespan hook (see `prewarm_singletons`),
+    so concurrent first hits see a fully constructed object. Same
+    idempotency caveat as `get_storage`.
     """
     global _inbox
     if _inbox is None:
@@ -88,6 +101,17 @@ def get_inbox() -> ChapterInbox:
             base_url=cfg.server.public_base_url,
         )
     return _inbox
+
+
+async def prewarm_singletons() -> None:
+    """Construct every lazily-initialised singleton once, from the
+    API lifespan's single-threaded startup context. After this
+    returns, subsequent `get_*` calls take the fast path with no
+    chance of racing on construction."""
+    await get_store()
+    await get_bus()
+    get_storage()
+    get_inbox()
 
 
 def get_auth_cfg() -> AuthConfig:

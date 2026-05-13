@@ -63,7 +63,7 @@ from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
 from typoon.adapters.vision_runtime import VisionRuntime
 from typoon.config import Config
-from typoon.llm import TransientCredentialError, UpstreamUnavailable
+from typoon.llm import OperatorActionRequired, UpstreamUnavailable
 from typoon.paths import Paths
 from typoon.runs.events import (
     CompositeHook, Event, Hook, LoggingHook, PageDone, StageDone,
@@ -202,6 +202,45 @@ async def _chapter_id_for_target(
         d = await db.get_draft(t["draft_id"])
         return d["chapter_id"] if d else None
     return None
+
+
+async def _affected_draft_id(
+    db: Store, target_kind: str, target_id: int,
+) -> int | None:
+    """Resolve the draft whose UI state should reflect a terminal
+    stage failure. Drafts own the `state` column the chapter list
+    reads; translation rows derive their visible state from the draft
+    they were rendered from (FK `translations.draft_id`)."""
+    if target_kind == "draft":
+        return target_id
+    if target_kind == "translation":
+        t = await db.get_translation(target_id)
+        return t.get("draft_id") if t else None
+    return None
+
+
+async def _mark_draft_state(
+    db: Store, target_kind: str, target_id: int,
+    *, state: str, error: str,
+) -> None:
+    """Flip the relevant draft's UI state so a stuck row escapes its
+    running spinner. Best-effort — a failure to mark the draft must
+    not mask the original stage exception in the logs.
+
+    `state` is one of the draft state-machine values:
+      • 'error'   — terminal failure; admin must inspect.
+      • 'blocked' — stage paused for operator action; resumes when
+                    the admin clears `stage_pause`.
+    """
+    draft_id = await _affected_draft_id(db, target_kind, target_id)
+    if draft_id is None:
+        return
+    try:
+        await db.update_draft_state(draft_id, state=state, error=error)
+    except Exception:
+        logger.exception(
+            "failed to mark draft %d as %s", draft_id, state,
+        )
 
 
 def _hash_file(path: Path) -> str:
@@ -627,12 +666,42 @@ async def _run_one(
             draft_id=draft_id, translation_id=translation_id,
             stage=stage,
         ))
-    except (TransientCredentialError, UpstreamUnavailable) as e:
-        logger.warning(
-            "%s requeue %s:%d (%s): %s",
-            stage, target_kind, target_id, type(e).__name__, e,
+    except OperatorActionRequired as e:
+        # The provider rejected us in a way no retry will fix. Pause
+        # the whole stage so other tasks don't burn against the same
+        # broken config; flip any affected draft to `blocked` so the
+        # UI surfaces the wait instead of a spinner; release this
+        # task's claim with attempts untouched. Once the admin
+        # resumes the stage, the same task picks back up from zero.
+        logger.error(
+            "[%s] operator-action-required %s:%d → pausing stage: %s",
+            stage, target_kind, target_id, e,
         )
-        await ctx.db.requeue_task(target_kind, target_id, stage, str(e))
+        await ctx.db.pause_stage(
+            stage, reason=str(e), paused_by=_worker_id(stage),
+        )
+        await ctx.db.release_task_for_transient(
+            target_kind, target_id, stage, str(e),
+        )
+        await _mark_draft_state(
+            ctx.db, target_kind, target_id, state="blocked", error=str(e),
+        )
+        ctx.hook.on(StageFailed(
+            chapter_id=chapter_id,
+            draft_id=draft_id, translation_id=translation_id,
+            stage=stage, error=e,
+        ))
+    except UpstreamUnavailable as e:
+        # Provider is down but expected to heal on its own. Release
+        # the claim without bumping attempts and back off so we don't
+        # hot-loop a struggling endpoint.
+        logger.warning(
+            "[%s] upstream-unavailable %s:%d (will retry): %s",
+            stage, target_kind, target_id, e,
+        )
+        await ctx.db.release_task_for_transient(
+            target_kind, target_id, stage, str(e),
+        )
         ctx.hook.on(StageFailed(
             chapter_id=chapter_id,
             draft_id=draft_id, translation_id=translation_id,
@@ -640,8 +709,13 @@ async def _run_one(
         ))
         await asyncio.sleep(_REQUEUE_BACKOFF_SECONDS)
     except Exception as e:
-        logger.exception("%s failed %s:%d", stage, target_kind, target_id)
+        # Bug or data error. One occurrence = dead-letter; the draft
+        # flips to `error` so the operator sees the trace.
+        logger.exception("[%s] failed %s:%d", stage, target_kind, target_id)
         await ctx.db.fail_task(target_kind, target_id, stage, str(e))
+        await _mark_draft_state(
+            ctx.db, target_kind, target_id, state="error", error=str(e),
+        )
         ctx.hook.on(StageFailed(
             chapter_id=chapter_id,
             draft_id=draft_id, translation_id=translation_id,

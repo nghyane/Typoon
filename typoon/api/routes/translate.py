@@ -109,11 +109,17 @@ async def spawn_translation(
     material = await db.get_material(chapter["material_id"])
     assert material is not None
 
-    # Source-language defaults to the first language the material lists
-    # (manifest already supplies this for source-backed material; ext /
-    # upload default to 'unknown' until the user sets one).
-    languages = material.get("languages") or []
-    source_lang = languages[0] if languages else "unknown"
+    # Source-language source of truth is the chapter row, populated
+    # at upload-finalize from the client's `version.lang`. Falls back
+    # to the material's primary language for legacy rows created
+    # before schema 26 (the backfill UPDATE seeded those from the
+    # same source, but new uploads must carry it explicitly).
+    chapter_lang = (chapter.get("source_lang") or "").strip().lower() or None
+    if chapter_lang:
+        source_lang = chapter_lang
+    else:
+        languages = material.get("languages") or []
+        source_lang = languages[0] if languages else "unknown"
     target_lang = body.target_lang
 
     # Glossary fingerprint — cache key over (chapter, src, tgt, fp).
@@ -234,8 +240,14 @@ async def _serialize_translation(
     material = (
         await db.get_material(chapter["material_id"]) if chapter else None
     )
+    # work_id from material; work_chapter_id from chapter (joined into
+    # `get_chapter`/`list_chapters` payloads alongside number_norm).
+    work_id = int((material or {}).get("work_id") or 0)
+    work_chapter_id = int(t.get("work_chapter_id") or 0)
     return TranslationOut(
         id=t["id"],
+        work_id=work_id,
+        work_chapter_id=work_chapter_id,
         chapter_id=(chapter or {}).get("id") or 0,
         material_id=(chapter or {}).get("material_id") or 0,
         owner_id=t["owner_id"],
@@ -247,6 +259,7 @@ async def _serialize_translation(
         chapter_number=(chapter or {}).get("number_norm"),
         chapter_label=(chapter or {}).get("label"),
         material_title=(material or {}).get("title"),
+        shared=bool(t.get("shared", True)),
         created_at=t.get("created_at"),
         updated_at=t.get("updated_at"),
     )

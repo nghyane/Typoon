@@ -10,7 +10,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from ._retry import parse_retry_after_header, with_retry
-from .errors import TransientCredentialError, UpstreamUnavailable
+from .errors import OperatorActionRequired, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -80,7 +80,7 @@ class GeminiProvider:
         except genai_errors.ClientError as exc:
             code = getattr(exc, "code", None)
             if code in (401, 403):
-                raise TransientCredentialError(str(exc)) from exc
+                raise OperatorActionRequired(str(exc)) from exc
             raise
         except genai_errors.ServerError as exc:
             raise UpstreamUnavailable(str(exc)) from exc

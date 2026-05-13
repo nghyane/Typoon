@@ -34,6 +34,11 @@ export interface UploadOptions {
    *  declarative spec. Server falls back to a sequential number
    *  when absent (ext / upload origin with no manifest). */
   numberNorm?:  string
+  /** BCP-47 of the pixels being uploaded. Required when the source
+   *  material hosts multiple languages (e.g. a MangaDex Italian
+   *  material with an English-only chapter). When absent, the
+   *  server defaults from `material.languages[0]`. */
+  sourceLang?:  string
   /** How many part PUTs to run in parallel. Default 4 — saturates a
    *  typical home upstream while staying inside R2 free-tier
    *  rate-limit guardrails. */
@@ -118,6 +123,7 @@ export async function uploadChapterZip(
       label:        opts.label,
       upstream_url: opts.upstreamUrl,
       number_norm:  opts.numberNorm,
+      source_lang:  opts.sourceLang,
     })
   } catch (err) {
     // Finalize failed (engine couldn't unpack/ingest, or quota tripped

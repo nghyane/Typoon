@@ -37,9 +37,8 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 class SubmitReportBody(BaseModel):
     target_kind:    ReportTargetKind
     target_id:      int
-    scope_guild_id: str | None = None
     # Free-form category. `dmca` is the legal route; `abuse` covers
-    # harassment / NSFW-in-SFW guild; `quality` lets users flag bad
+    # harassment / NSFW-in-SFW; `quality` lets users flag bad
     # translations without it being a takedown signal.
     kind:           ReportKind  = "dmca"
     reason:         str         = Field(min_length=4, max_length=4000)
@@ -58,7 +57,6 @@ async def submit(
         reporter_label=user.get("display_name") or f"user:{user['id']}",
         target_kind=body.target_kind,
         target_id=body.target_id,
-        scope_guild_id=body.scope_guild_id,
         kind=body.kind,
         reason=body.reason,
     )

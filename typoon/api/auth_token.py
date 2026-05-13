@@ -34,6 +34,26 @@ _PREFIX_LEN = 8        # chars after "typ_" used as DB index prefix
 _BODY_LEN = 32         # url-safe random chars total
 _BCRYPT_ROUNDS = 10
 
+# Background tasks we spawned for last_used bumps. Holding a strong
+# reference keeps the GC from collecting them mid-flight (a known
+# asyncio anti-pattern: tasks are only weakly held by the event loop).
+# We drop entries via done_callback so the set doesn't grow unbounded.
+_bg_tasks: set[asyncio.Task[None]] = set()
+
+
+def _spawn_background(coro: "asyncio.coroutines.Coroutine[object, object, None]") -> None:
+    """Schedule a fire-and-forget coroutine with strong-ref retention."""
+    try:
+        task = asyncio.create_task(coro)
+    except RuntimeError:
+        # No running loop (sync test context) — drop the coro and move
+        # on. Closing the coroutine prevents "coroutine was never
+        # awaited" warnings.
+        coro.close()
+        return
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
 
 def _generate_token() -> tuple[str, str]:
     """Return (plaintext, prefix). Plaintext starts with `typ_`."""
@@ -106,10 +126,6 @@ async def verify_api_token(db: Store, raw: str) -> dict | None:
             user["scopes"] = list(cand.get("scopes") or [])
             # Fire-and-forget last_used bump. Don't await — keeps
             # request latency at the bcrypt verify cost only.
-            try:
-                asyncio.create_task(db.touch_api_token(cand["id"]))
-            except RuntimeError:
-                # No running loop in some test contexts — skip silently.
-                pass
+            _spawn_background(db.touch_api_token(cand["id"]))
             return user
     return None

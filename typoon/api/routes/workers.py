@@ -23,4 +23,5 @@ async def workers(db: Store = Depends(get_store)):
             for stage, counts in raw["stages"].items()
         },
         active_workers=raw["active_workers"],
+        paused_stages=raw.get("paused_stages", []),
     )

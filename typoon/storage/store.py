@@ -13,7 +13,9 @@ Reading entities:
 
 Cross-source linking:
     material_link_votes — community-voted pairs (canonical a < b).
-    Suggestions surfaced by `find_library_suggestion`.
+    Library auto-link picks the entry by Work id (`find_entry_for_work`);
+    a future Commit will reintroduce a suggestion cascade for the
+    "manga này cũng ở các nguồn này" UI.
 
 Pipeline (3 layers):
     Layer 1 — chapter scope:    bubbles, geometry, masks. Shared by
@@ -66,7 +68,7 @@ MaterialOrigin   = Literal["source", "extension", "upload"]
 DraftState       = Literal["pending", "running", "done", "error"]
 PipelineStage    = Literal["prepare", "scan", "translate", "render"]
 TaskTargetKind   = Literal["chapter", "draft", "translation"]
-LinkOrigin       = Literal["primary", "auto", "manual"]
+LinkOrigin       = Literal["auto", "manual"]
 LibraryStatus    = Literal["reading", "plan", "done", "dropped"]
 
 # Runtime-checkable tuples mirroring the Literal aliases above.
@@ -155,6 +157,35 @@ class Store(Protocol):
 
     async def get_work_chapter(self, work_chapter_id: int) -> dict | None: ...
 
+    async def list_materials_for_work(self, work_id: int) -> list[dict]:
+        """All `materials` rows attached to a Work, sorted by created_at
+        ascending (oldest first — typically the source the importing
+        user added before community vote pulled siblings in)."""
+        ...
+
+    async def list_work_chapters_with_translations(
+        self,
+        work_id:   int,
+        *,
+        viewer_id: int,
+    ) -> list[dict]:
+        """Per-Work chapter list joined with every shared (or
+        viewer-owned) translation.
+
+        Each row carries the `work_chapter` plus a `translations` list
+        of dicts shaped like
+        ``{id, target_lang, owner_id, creator_name, state, draft_id,
+           draft_material_id, uses_default_render, shared}`` where
+        `draft_material_id` is the source whose pixels the draft was
+        rendered against (= the material the reader opens). Drives the
+        cross-source overlay on `GET /work/{id}`.
+
+        Empty list when the Work has no community-touched chapter yet
+        (no spawn / upload / raw history). The SPA augments with the
+        live manifest chapter list of the active source.
+        """
+        ...
+
     # ── Material ──────────────────────────────────────────────────
     async def get_or_create_source_material(
         self,
@@ -238,6 +269,56 @@ class Store(Protocol):
         staleness matters."""
         ...
 
+    async def cast_link_vote_with_merge(
+        self,
+        *,
+        voter_id:     int,
+        material_a_id: int,
+        material_b_id: int,
+        vote:         int,
+        threshold:    int = 3,
+    ) -> dict:
+        """Cast a +1 / -1 link vote on a material pair. When the
+        resulting score crosses `threshold`, the two Works are merged
+        inline within the same transaction (oldest Work id wins as
+        canonical). Merge is refused when both Works carry conflicting
+        `cross_refs` (same namespace, different value) — those are
+        hard identity signals that should never be overridden by
+        community votes.
+
+        Returns
+            ``{vote, score, merged, canonical_work_id, blocked_reason}``
+        where `blocked_reason` is one of:
+            None                  — vote stored, may or may not have
+                                    triggered a merge (see `merged`)
+            'same_work'           — already share a Work, idempotent
+            'cross_refs_conflict' — refused due to hard cross_refs
+                                    collision
+        """
+        ...
+
+    async def list_work_link_suggestions(
+        self, *, work_id: int,
+    ) -> list[dict]:
+        """Materials outside `work_id` that have a positive link-vote
+        score with any sibling material inside it. Drives the "Manga
+        này ở các nguồn khác — gợi ý" UI on the work page.
+
+        Rows: ``{candidate_material_id, candidate_title,
+                 candidate_source, candidate_cover, candidate_work_id,
+                 score, total_votes, own_material_id}``.
+        Sorted by score DESC.
+        """
+        ...
+
+    async def get_link_vote(
+        self, *, voter_id: int, material_a_id: int, material_b_id: int,
+    ) -> int | None:
+        """The viewer's own ±1 vote on a pair, or None when not voted.
+        Used by the suggestion UI to highlight which row the user
+        already agreed with."""
+        ...
+
     # ── Chapter ──────────────────────────────────────────────────
     async def create_chapter(
         self,
@@ -246,6 +327,7 @@ class Store(Protocol):
         number_norm:   str,
         label:         str | None = None,
         upstream_url:  str | None = None,
+        source_lang:   str | None = None,
     ) -> int:
         """Insert a pixel-bound chapter row.
 
@@ -441,18 +523,6 @@ class Store(Protocol):
         locators before the FK cascade drops the rows."""
         ...
 
-    async def list_translations_by_upstream(
-        self,
-        material_id:   int,
-        upstream_urls: list[str],
-    ) -> dict[str, list[dict]]:
-        """Manifest-side overlay: keyed by `chapter.upstream_url` so
-        the SPA can match it against the manifest chapter list without
-        needing internal chapter_ids. Returns same shape as
-        `list_translations_for_chapters`. Single global pool, no
-        visibility filtering."""
-        ...
-
     async def list_my_translations(
         self,
         user_id: int,
@@ -512,33 +582,42 @@ class Store(Protocol):
         self, entry_id: int, user_id: int,
     ) -> dict | None: ...
 
-    async def find_entry_for_material(
-        self, *, user_id: int, material_id: int,
+    async def find_entry_for_work(
+        self, *, user_id: int, work_id: int,
     ) -> dict | None:
-        """Return the viewer's library_entry row that links this
-        material, if any. Returns `{id, status}` shape — used by the
-        public-read material page to flip the follow CTA into a
-        "jump to library" link without a second request."""
+        """Return the viewer's library_entry row for a given Work,
+        if any. Shape: ``{id, status, target_lang}``. Used by the work
+        detail endpoint to flip the follow CTA into a "jump to library"
+        link without a second request.
+        """
         ...
 
     async def create_library_entry(
         self,
         *,
-        user_id:             int,
-        title:               str,
-        cover_url:           str | None,
-        primary_material_id: int,
-        status:              LibraryStatus = "reading",
+        user_id:     int,
+        work_id:     int,
+        title:       str,
+        cover_url:   str | None,
+        target_lang: str,
+        materials:   list[tuple[int, "LinkOrigin"]] | None = None,
+        status:      LibraryStatus = "reading",
     ) -> int:
-        """Create entry + link the primary material with link_origin='primary'."""
+        """Create the (user, Work) entry plus optional initial material
+        links. UNIQUE (user_id, work_id) is enforced at the schema
+        level; callers must check `find_entry_for_work` first.
+        `target_lang` is the user's reading-language preference for
+        this Work (drives manifest fetch + UI badges).
+        """
         ...
 
     async def update_library_entry(
         self,
         entry_id: int, user_id: int,
         *,
-        title:  str | None = None,
-        status: LibraryStatus | None = None,
+        title:       str | None = None,
+        status:      LibraryStatus | None = None,
+        target_lang: str | None = None,
     ) -> None: ...
 
     async def delete_library_entry(
@@ -567,34 +646,6 @@ class Store(Protocol):
         """Unlink + remove the voter's votes on pairs involving this
         material in this entry. If the entry has no materials left,
         the caller (route) deletes the entry."""
-        ...
-
-    async def find_library_suggestion(
-        self,
-        *,
-        user_id:     int,
-        material_id: int,
-    ) -> dict | None:
-        """Suggestion ranking per RFC §7.4.1:
-
-            1. cross_refs intersect with any entry's materials → high
-            2. material_links.score ≥ 3 with any entry's materials → high
-            3. title_native case-fold match within user's library     → medium
-            4. material_links.score in [1, 2]                          → low
-            5. otherwise                                                → None
-
-        Returns dict matching `LibrarySuggestionOut`, or None."""
-        ...
-
-    async def reject_library_suggestion(
-        self,
-        *,
-        voter_id:    int,
-        material_id: int,
-        candidate_material_id: int,
-    ) -> None:
-        """User clicks "Không phải cùng manga" — cast -1 vote on the
-        pair so we don't suggest it again."""
         ...
 
     # ── Reading history (per-user, system-recorded) ──────────────
@@ -796,11 +847,20 @@ class Store(Protocol):
         stage: PipelineStage, error: str,
     ) -> None: ...
 
-    async def requeue_task(
+    async def release_task_for_transient(
         self,
         target_kind: TaskTargetKind, target_id: int,
         stage: PipelineStage, error: str,
     ) -> None: ...
+
+    async def pause_stage(
+        self, stage: PipelineStage, *, reason: str,
+        paused_by: str | None = None,
+    ) -> bool: ...
+
+    async def resume_stage(self, stage: PipelineStage) -> bool: ...
+
+    async def list_paused_stages(self) -> list[dict]: ...
 
     async def release_claims_by_prefix(self, prefix: str) -> int: ...
 

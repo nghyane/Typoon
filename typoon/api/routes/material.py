@@ -1,20 +1,17 @@
 """Material routes.
 
-Materials are the unit a user "follows" — manga identity, source-
-agnostic. Source-backed materials are cross-user (idempotent import);
-ext / upload are per-row.
+A "material" is one source's manifestation of a manga — (source,
+upstream_ref) for plugin-backed rows, per-row for ext / upload. The
+user-facing manga page lives at `GET /work/{id}` (Work-centric); the
+material routes here exist only for create / edit / delete of the
+underlying source-bound row. Resolving the manga UI from a material
+goes through `materials.work_id`.
 
 Endpoints:
     POST   /api/material/import          source-backed lookup-or-create
     POST   /api/material                  ext / upload creation
-    GET    /api/material/{id}             detail + chapters + translations overlay
     PATCH  /api/material/{id}             editable fields (ext/upload owner only)
     DELETE /api/material/{id}             cascade (ext/upload owner only)
-
-The chapter list overlay embeds per-chapter translation summary the
-viewer is authorized to see (see Store.list_translations_for_chapters).
-The reader does not need a second round-trip to know which translations
-exist for a chapter.
 """
 
 from __future__ import annotations
@@ -26,9 +23,7 @@ from pydantic import BaseModel
 
 from typoon.adapters.storage_registry import StorageRegistry
 from typoon.api.deps import get_config, get_storage, get_store, require_user
-from typoon.api.models import (
-    ChapterOut, ChapterTranslationOverlay, MaterialOut,
-)
+from typoon.api.models import MaterialOut
 from typoon.api.routes._shared import (
     require_material, require_material_admin,
 )
@@ -141,85 +136,11 @@ async def create_local_material(
 
 
 # ── Read ──────────────────────────────────────────────────────────────
-
-
-class ViewerLibraryRef(BaseModel):
-    """The viewer's library entry that links this material, if any.
-
-    Lets `/material/$id` decide between "Theo dõi" (no entry yet) and
-    "Mở trong Library" (jump to the per-user `/title/$entryId` page)
-    without a second round-trip.
-    """
-    entry_id: int
-    status:   str  # LibraryStatus literal; kept loose for forward-compat
-
-
-class MaterialDetailOut(BaseModel):
-    """Detail + chapter list with translation overlay. Embedded so the
-    SPA renders the manga page in one round-trip."""
-    material:     MaterialOut
-    chapters:     list[ChapterOut]
-    viewer_entry: ViewerLibraryRef | None = None
-
-
-@router.get("/{material_id}", response_model=MaterialDetailOut)
-async def get_material_detail(
-    material_id: int,
-    user: dict  = Depends(require_user),
-    db:   Store = Depends(get_store),
-):
-    mat = await require_material(material_id, db)
-    viewer_entry_row = await db.find_entry_for_material(
-        user_id=user["id"], material_id=material_id,
-    )
-    viewer_entry = (
-        ViewerLibraryRef(
-            entry_id=viewer_entry_row["id"],
-            status=viewer_entry_row["status"],
-        )
-        if viewer_entry_row else None
-    )
-
-    chapters = await db.list_chapters(material_id)
-    if not chapters:
-        return MaterialDetailOut(
-            material=MaterialOut.from_row(mat),
-            chapters=[],
-            viewer_entry=viewer_entry,
-        )
-
-    chapter_ids = [c["id"] for c in chapters]
-    overlay = await db.list_translations_for_chapters(chapter_ids)
-
-    out_chapters: list[ChapterOut] = []
-    for ch in chapters:
-        trs = overlay.get(ch["id"], [])
-        out_chapters.append(ChapterOut(
-            id=ch["id"],
-            material_id=ch["material_id"],
-            position=ch["position"],
-            number=ch["number_norm"],
-            label=ch.get("label"),
-            upstream_url=ch.get("upstream_url"),
-            page_count=int(ch.get("page_count") or 0),
-            updated_at=ch.get("updated_at"),
-            translations=[
-                ChapterTranslationOverlay(
-                    id=t["id"],
-                    target_lang=t["target_lang"],
-                    creator_id=t.get("owner_id"),
-                    creator_name=t.get("creator_name"),
-                    state=t.get("state") or "done",
-                    from_cache=bool(t.get("uses_default_render")),
-                )
-                for t in trs
-            ],
-        ))
-    return MaterialDetailOut(
-        material=MaterialOut.from_row(mat),
-        chapters=out_chapters,
-        viewer_entry=viewer_entry,
-    )
+#
+# `GET /material/{id}` was removed in the schema 23 cutover; the canonical
+# detail page lives at `GET /work/{id}` now (Step 2 of the Work refactor
+# adds it). External callers should resolve material → work via the
+# import response or the work payload.
 
 
 # ── Edit ──────────────────────────────────────────────────────────────
@@ -247,51 +168,12 @@ async def patch_material(
     return MaterialOut.from_row(mat)
 
 
-# ── Manifest-side overlay ─────────────────────────────────────────────
-
-
-class TranslationOverlayBody(BaseModel):
-    upstream_urls: list[str]
-
-
-@router.post(
-    "/{material_id}/translation-overlay",
-    response_model=dict[str, list[ChapterTranslationOverlay]],
-)
-async def translation_overlay(
-    material_id: int,
-    body:        TranslationOverlayBody,
-    user: dict  = Depends(require_user),
-    db:   Store = Depends(get_store),
-):
-    """Bulk overlay query for the MangaPage chapter list.
-
-    The SPA has the manifest chapter list (upstream URLs); we return
-    which of those chapters already have visible translations so the
-    UI can render "[VN] @nghyane Đọc" instead of "Dịch" for cached
-    rows. Used POST so we can ship a long list without URL bloat;
-    semantics are still pure-read.
-    """
-    if not body.upstream_urls:
-        return {}
-    await require_material(material_id, db)
-    raw = await db.list_translations_by_upstream(
-        material_id, body.upstream_urls,
-    )
-    out: dict[str, list[ChapterTranslationOverlay]] = {}
-    for url, trs in raw.items():
-        out[url] = [
-            ChapterTranslationOverlay(
-                id=t["id"],
-                target_lang=t["target_lang"],
-                creator_id=t.get("owner_id"),
-                creator_name=t.get("creator_name"),
-                state=t.get("state") or "done",
-                from_cache=bool(t.get("uses_default_render")),
-            )
-            for t in trs
-        ]
-    return out
+# ── Translation overlay ───────────────────────────────────────────────
+#
+# The pre-Work `POST /material/{id}/translation-overlay` route is gone.
+# Cross-source translation discovery is now part of `GET /work/{id}`
+# (Step 2 of the Work refactor) — overlaying by upstream_url within a
+# single material was a workaround for the old per-material identity.
 
 
 # ── Delete ────────────────────────────────────────────────────────────

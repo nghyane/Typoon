@@ -26,20 +26,30 @@ from .constants import IMAGE_EXTS
 
 logger = logging.getLogger(__name__)
 
+_COPY_CHUNK = 1 << 20  # 1 MiB stream buffer for zip extraction
+
 
 class UnpackError(ValueError):
     """Raised when an upload doesn't contain any usable images."""
 
 
-def unpack_zip(data: bytes, dest: Path) -> int:
+def unpack_zip(source: bytes | Path, dest: Path) -> int:
     """Extract image entries to dest/. Returns count of pages written.
+
+    Accepts either an in-memory ZIP (bytes — small uploads, ext path)
+    or a filesystem path (large uploads — streamed from disk so peak
+    memory stays at ~one entry rather than 2× the archive size).
 
     Order: natural sort of in-archive paths (so 'page-2' < 'page-10').
     Hidden files (`__MACOSX`, leading dot) are ignored.
     """
     dest.mkdir(parents=True, exist_ok=True)
     try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
+        zf = (
+            zipfile.ZipFile(io.BytesIO(source))
+            if isinstance(source, (bytes, bytearray))
+            else zipfile.ZipFile(source)
+        )
     except zipfile.BadZipFile as e:
         raise UnpackError(f"Not a valid zip/cbz: {e}") from e
 
@@ -59,11 +69,20 @@ def unpack_zip(data: bytes, dest: Path) -> int:
     if not entries:
         raise UnpackError("Archive contained no images")
 
-    for i, (orig_name, info) in enumerate(entries):
-        suffix = "." + orig_name.rsplit(".", 1)[-1].lower()
-        out = dest / f"{i + 1:04d}{suffix}"
-        with zf.open(info) as src, out.open("wb") as dst:
-            dst.write(src.read())
+    # Stream each entry through a fixed-size copy buffer rather than
+    # `src.read()` — keeps peak RSS at ~CHUNK regardless of page size.
+    try:
+        for i, (orig_name, info) in enumerate(entries):
+            suffix = "." + orig_name.rsplit(".", 1)[-1].lower()
+            out = dest / f"{i + 1:04d}{suffix}"
+            with zf.open(info) as src, out.open("wb") as dst:
+                while True:
+                    chunk = src.read(_COPY_CHUNK)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+    finally:
+        zf.close()
     return len(entries)
 
 

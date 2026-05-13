@@ -114,3 +114,110 @@ def version():
     except Exception:
         sha = "unknown"
     console.print(f"typoon schema={SCHEMA_VERSION} commit={sha}")
+
+
+# ── stage (operator pause / resume) ───────────────────────────────────
+#
+# Pipeline stages auto-pause when a worker raises
+# `OperatorActionRequired` — model not found, credential revoked,
+# storage misconfigured. While paused, `claim_task` skips every task
+# under that stage. These commands let the operator see WHO paused
+# WHAT and resume once the underlying config is fixed.
+
+stage = typer.Typer(help="Inspect and control paused pipeline stages.")
+app.add_typer(stage, name="stage")
+
+
+_STAGES = ("prepare", "scan", "translate", "render")
+
+
+def _validate_stage(name: str) -> str:
+    if name not in _STAGES:
+        console.print(
+            f"[red]invalid stage: {name}[/] — use one of "
+            f"{', '.join(_STAGES)}"
+        )
+        raise typer.Exit(1)
+    return name
+
+
+@stage.command("list")
+def stage_list():
+    """Show every stage the workers have paused, with reason and
+    timestamp. Empty output = nothing paused, workers are healthy."""
+    asyncio.run(_stage_list())
+
+
+async def _stage_list() -> None:
+    from ..storage import PostgresStore
+    from ..config import load_config
+    cfg, _ = load_config()
+    db = await PostgresStore.open(cfg.database_url)
+    try:
+        rows = await db.list_paused_stages()
+    finally:
+        await db.close()
+    if not rows:
+        console.print("[green]no stages paused[/]")
+        return
+    for r in rows:
+        console.print(
+            f"[yellow]{r['stage']:<10}[/] "
+            f"paused_at={r['paused_at']:%Y-%m-%d %H:%M:%S} "
+            f"by={r['paused_by'] or '-'}"
+        )
+        console.print(f"  reason: {r['reason']}")
+
+
+@stage.command("pause")
+def stage_pause(
+    name:   str = typer.Argument(..., help="prepare | scan | translate | render"),
+    reason: str = typer.Option(..., "--reason", "-r",
+                                help="Why workers should stop claiming this stage"),
+):
+    """Manually pause a stage. Workers finish in-flight tasks then
+    stop claiming new ones until `stage resume`."""
+    _validate_stage(name)
+    asyncio.run(_stage_pause(name, reason))
+
+
+async def _stage_pause(name: str, reason: str) -> None:
+    import getpass
+    from ..storage import PostgresStore
+    from ..config import load_config
+    cfg, _ = load_config()
+    paused_by = f"cli:{getpass.getuser()}"
+    db = await PostgresStore.open(cfg.database_url)
+    try:
+        inserted = await db.pause_stage(name, reason=reason, paused_by=paused_by)
+    finally:
+        await db.close()
+    if inserted:
+        console.print(f"[yellow]paused[/] stage={name} by={paused_by}")
+    else:
+        console.print(f"stage={name} was already paused (no change)")
+
+
+@stage.command("resume")
+def stage_resume(
+    name: str = typer.Argument(..., help="prepare | scan | translate | render"),
+):
+    """Lift a pause. Workers wake up on the resume NOTIFY and start
+    claiming again immediately — no restart required."""
+    _validate_stage(name)
+    asyncio.run(_stage_resume(name))
+
+
+async def _stage_resume(name: str) -> None:
+    from ..storage import PostgresStore
+    from ..config import load_config
+    cfg, _ = load_config()
+    db = await PostgresStore.open(cfg.database_url)
+    try:
+        deleted = await db.resume_stage(name)
+    finally:
+        await db.close()
+    if deleted:
+        console.print(f"[green]resumed[/] stage={name}")
+    else:
+        console.print(f"stage={name} was not paused (no change)")

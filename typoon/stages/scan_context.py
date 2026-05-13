@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typoon.adapters.ctx import TranslateCtx
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain.scan import BubbleKey
-from typoon.llm.errors import TransientCredentialError, UpstreamUnavailable
+from typoon.llm.errors import OperatorActionRequired, UpstreamUnavailable
 from typoon.llm.ir import ContentPart, Message
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import LLMCall, LLMResponse
@@ -108,9 +108,9 @@ async def build_chapter_context(
 
     for r in results:
         if isinstance(r, BaseException):
-            # TransientCredentialError / UpstreamUnavailable bubble up;
+            # OperatorActionRequired / UpstreamUnavailable bubble up;
             # parse-level failures are absorbed (returned as empty chunk).
-            if isinstance(r, (TransientCredentialError, UpstreamUnavailable)):
+            if isinstance(r, (OperatorActionRequired, UpstreamUnavailable)):
                 raise r
             logger.warning("scan_context chunk failed: %s", r)
             continue

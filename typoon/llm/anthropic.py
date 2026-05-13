@@ -11,7 +11,7 @@ import json
 import anthropic
 
 from ._retry import parse_retry_after_header, with_retry
-from .errors import TransientCredentialError, UpstreamUnavailable
+from .errors import OperatorActionRequired, UpstreamUnavailable
 from .ir import (
     CallResponse,
     ContentPart,
@@ -92,9 +92,9 @@ class AnthropicProvider:
                 provider="anthropic",
             )
         except anthropic.AuthenticationError as exc:
-            raise TransientCredentialError(str(exc)) from exc
+            raise OperatorActionRequired(str(exc)) from exc
         except anthropic.PermissionDeniedError as exc:
-            raise TransientCredentialError(str(exc)) from exc
+            raise OperatorActionRequired(str(exc)) from exc
         except anthropic.APIStatusError as exc:
             status = getattr(exc, "status_code", None)
             if status is not None and 500 <= status < 600:

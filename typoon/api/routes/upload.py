@@ -164,6 +164,11 @@ class UploadFinalizeBody(BaseModel):
     # a stable slug client-side; an isolated upload still gets its
     # own work_chapter row that community vote can merge later.
     number_norm:  str | None = None
+    # BCP-47 of the pixels in this upload. Required for any source
+    # whose material hosts multiple languages (MangaDex, Bato); the
+    # client knows which chapter it picked, the server doesn't.
+    # NULL → `create_chapter` defaults from `material.languages[0]`.
+    source_lang:  str | None = None
 
 
 class UploadAbortBody(BaseModel):
@@ -285,6 +290,7 @@ async def upload_finalize(
             number_norm=number_norm,
             label=body.label,
             upstream_url=body.upstream_url,
+            source_lang=(body.source_lang or "").strip().lower() or None,
         )
 
     # Persist inbox handle so the prepare worker can complete the

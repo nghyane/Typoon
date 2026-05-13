@@ -322,3 +322,338 @@ async def test_reading_history_dedupes_per_work_chapter():
         assert recent[0]["material_id"] == mb["id"]
     finally:
         await store.close()
+
+
+# ── Work payload (GET /api/work/{id} backing store calls) ────────────
+
+
+@pytest.mark.asyncio
+async def test_work_payload_lists_siblings_and_translations():
+    """`list_materials_for_work` + `list_work_chapters_with_translations`
+    together drive the `/work/{id}` endpoint. Together they must:
+
+      - list every material attached to the Work (oldest-first),
+      - list every `work_chapter` the community has touched,
+      - attach every shared translation to the right chapter, including
+        translations spawned from a *different* sibling material than
+        the one a hypothetical viewer is currently looking at.
+    """
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        uid_a = await _user(store)
+        uid_b = await _user(store)
+        ref = f"mdex-{uuid.uuid4().hex[:8]}"
+        ma = await _material(
+            store, source="src-a",
+            cross_refs={"mdex_uuid": ref}, imported_by=uid_a,
+        )
+        mb = await _material(
+            store, source="src-b",
+            cross_refs={"mdex_uuid": ref}, imported_by=uid_b,
+        )
+        work_id = int(ma["work_id"])
+        assert work_id == int(mb["work_id"])
+
+        c_a = await store.create_chapter(
+            material_id=ma["id"], number_norm="40", label="Chương 40",
+            upstream_url=f"https://a.example/{uuid.uuid4().hex}",
+        )
+        ca = await store.get_chapter(c_a)
+        assert ca is not None
+        draft_id = await store.create_draft(
+            chapter_id=c_a,
+            source_lang="ko", target_lang="vi",
+            glossary_fp="fp" + uuid.uuid4().hex[:14],
+            llm_model="test-model",
+            created_by=uid_a,
+        )
+        trans_id = await store.get_or_create_translation(
+            work_chapter_id=int(ca["work_chapter_id"]),
+            owner_id=uid_a,
+            target_lang="vi",
+            draft_id=draft_id,
+            shared=True,
+        )
+
+        # Sibling materials list, oldest first.
+        mats = await store.list_materials_for_work(work_id)
+        assert [m["id"] for m in mats] == [ma["id"], mb["id"]]
+
+        # Viewer B sees user A's translation under the touched chapter.
+        chapters = await store.list_work_chapters_with_translations(
+            work_id, viewer_id=uid_b,
+        )
+        assert len(chapters) == 1
+        ch = chapters[0]
+        assert ch["id"] == int(ca["work_chapter_id"])
+        assert ch["number_norm"] == "40"
+        assert len(ch["translations"]) == 1
+        tr = ch["translations"][0]
+        assert tr["id"] == trans_id
+        assert tr["target_lang"] == "vi"
+        # draft_material_id surfaces the source whose pixels back the
+        # render — material A here, even though we're viewing as B.
+        assert tr["draft_material_id"] == ma["id"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_work_payload_filters_unshared_for_other_viewers():
+    """A private (`shared=False`) translation is visible to its owner
+    via `list_work_chapters_with_translations` but hidden from any
+    other viewer."""
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        uid_owner   = await _user(store)
+        uid_visitor = await _user(store)
+        ma = await _material(
+            store, source="src-a",
+            cross_refs={"mdex_uuid": f"mdex-{uuid.uuid4().hex[:8]}"},
+            imported_by=uid_owner,
+        )
+        c_a = await store.create_chapter(
+            material_id=ma["id"], number_norm="40",
+            upstream_url=f"https://a.example/{uuid.uuid4().hex}",
+        )
+        ca = await store.get_chapter(c_a)
+        assert ca is not None
+        draft_id = await store.create_draft(
+            chapter_id=c_a,
+            source_lang="ko", target_lang="vi",
+            glossary_fp="fp" + uuid.uuid4().hex[:14],
+            llm_model="test-model",
+            created_by=uid_owner,
+        )
+        await store.get_or_create_translation(
+            work_chapter_id=int(ca["work_chapter_id"]),
+            owner_id=uid_owner,
+            target_lang="vi",
+            draft_id=draft_id,
+            shared=False,  # private
+        )
+
+        work_id = int(ma["work_id"])
+        owner_view = await store.list_work_chapters_with_translations(
+            work_id, viewer_id=uid_owner,
+        )
+        visitor_view = await store.list_work_chapters_with_translations(
+            work_id, viewer_id=uid_visitor,
+        )
+        assert len(owner_view[0]["translations"]) == 1
+        assert len(visitor_view[0]["translations"]) == 0
+    finally:
+        await store.close()
+
+
+# ── Community link-vote merge ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_link_vote_below_threshold_stores_but_does_not_merge():
+    """Two distinct +1 votes (under the threshold of 3) leave the
+    two materials in separate Works. Suggestion appears in the list."""
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        v1 = await _user(store)
+        v2 = await _user(store)
+        ma = await _material(
+            store, source="src-a", cross_refs=None, imported_by=v1,
+        )
+        mb = await _material(
+            store, source="src-b", cross_refs=None, imported_by=v1,
+        )
+        assert ma["work_id"] != mb["work_id"]
+
+        r1 = await store.cast_link_vote_with_merge(
+            voter_id=v1,
+            material_a_id=ma["id"], material_b_id=mb["id"],
+            vote=1, threshold=3,
+        )
+        assert r1 == {
+            "vote": 1, "score": 1, "merged": False,
+            "canonical_work_id": None, "blocked_reason": None,
+        }
+        r2 = await store.cast_link_vote_with_merge(
+            voter_id=v2,
+            material_a_id=ma["id"], material_b_id=mb["id"],
+            vote=1, threshold=3,
+        )
+        assert r2["score"] == 2
+        assert r2["merged"] is False
+
+        # Re-fetch — Works still separate, vote score reflected in
+        # the suggestion list of either Work.
+        ma2 = await store.get_material(ma["id"])
+        mb2 = await store.get_material(mb["id"])
+        assert ma2["work_id"] != mb2["work_id"]
+
+        sug = await store.list_work_link_suggestions(work_id=int(ma2["work_id"]))
+        assert len(sug) == 1
+        assert sug[0]["candidate_material_id"] == mb["id"]
+        assert sug[0]["score"] == 2
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_link_vote_crosses_threshold_merges_inline():
+    """Three distinct +1 votes pass the threshold → the doomed Work
+    dissolves into the older canonical Work in the same call."""
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        v1, v2, v3 = (
+            await _user(store), await _user(store), await _user(store),
+        )
+        ma = await _material(
+            store, source="src-a", cross_refs=None, imported_by=v1,
+        )
+        mb = await _material(
+            store, source="src-b", cross_refs=None, imported_by=v1,
+        )
+        # ma is older → its work is canonical.
+        canonical = min(int(ma["work_id"]), int(mb["work_id"]))
+
+        for v in (v1, v2, v3):
+            r = await store.cast_link_vote_with_merge(
+                voter_id=v,
+                material_a_id=ma["id"], material_b_id=mb["id"],
+                vote=1, threshold=3,
+            )
+        assert r["merged"] is True
+        assert r["canonical_work_id"] == canonical
+
+        # Both materials now share the canonical Work.
+        ma2 = await store.get_material(ma["id"])
+        mb2 = await store.get_material(mb["id"])
+        assert int(ma2["work_id"]) == canonical
+        assert int(mb2["work_id"]) == canonical
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_link_vote_blocked_when_cross_refs_conflict():
+    """Two Works each carrying a different `mdex_uuid` are an identity
+    collision: even at 3+ positive votes the merge MUST be refused.
+    """
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        v1, v2, v3 = (
+            await _user(store), await _user(store), await _user(store),
+        )
+        ma = await _material(
+            store, source="src-a",
+            cross_refs={"mdex_uuid": "MDEX-AAA"},
+            imported_by=v1,
+        )
+        mb = await _material(
+            store, source="src-b",
+            cross_refs={"mdex_uuid": "MDEX-BBB"},
+            imported_by=v1,
+        )
+        for v in (v1, v2, v3):
+            r = await store.cast_link_vote_with_merge(
+                voter_id=v,
+                material_a_id=ma["id"], material_b_id=mb["id"],
+                vote=1, threshold=3,
+            )
+        assert r["merged"] is False
+        assert r["blocked_reason"] == "cross_refs_conflict"
+
+        ma2 = await store.get_material(ma["id"])
+        mb2 = await store.get_material(mb["id"])
+        assert ma2["work_id"] != mb2["work_id"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_merge_remaps_chapters_translations_and_history():
+    """When two Works merge, every dependent row on the doomed side
+    moves to the canonical side. Chapters that already exist on
+    canonical at the same `number_norm` collapse onto canonical's
+    row; their translations + reading_history follow."""
+    store = await PostgresStore.open(TEST_DSN)
+    try:
+        v1, v2, v3 = (
+            await _user(store), await _user(store), await _user(store),
+        )
+        ma = await _material(
+            store, source="src-a", cross_refs=None, imported_by=v1,
+        )
+        mb = await _material(
+            store, source="src-b", cross_refs=None, imported_by=v1,
+        )
+
+        # Each material gets a chapter at number_norm "40". Pre-merge
+        # they live on different work_chapters.
+        c_a = await store.create_chapter(
+            material_id=ma["id"], number_norm="40",
+            upstream_url=f"https://a.example/{uuid.uuid4().hex}",
+        )
+        c_b = await store.create_chapter(
+            material_id=mb["id"], number_norm="40",
+            upstream_url=f"https://b.example/{uuid.uuid4().hex}",
+        )
+        ca = await store.get_chapter(c_a)
+        cb = await store.get_chapter(c_b)
+        assert ca["work_chapter_id"] != cb["work_chapter_id"]
+
+        # Translation on the b side that must survive the merge.
+        draft_id = await store.create_draft(
+            chapter_id=c_b,
+            source_lang="ko", target_lang="vi",
+            glossary_fp="fp" + uuid.uuid4().hex[:14],
+            llm_model="test-model",
+            created_by=v1,
+        )
+        trans_id = await store.get_or_create_translation(
+            work_chapter_id=int(cb["work_chapter_id"]),
+            owner_id=v1,
+            target_lang="vi",
+            draft_id=draft_id,
+            shared=True,
+        )
+        # Reading history on the b side too.
+        await store.record_reading(
+            user_id=v1,
+            work_chapter_id=int(cb["work_chapter_id"]),
+            last_material_id=mb["id"],
+            translation_id=trans_id,
+        )
+
+        for v in (v1, v2, v3):
+            r = await store.cast_link_vote_with_merge(
+                voter_id=v,
+                material_a_id=ma["id"], material_b_id=mb["id"],
+                vote=1, threshold=3,
+            )
+        assert r["merged"] is True
+        canonical = int(r["canonical_work_id"])
+
+        # After merge: canonical Work has exactly one work_chapter
+        # at number_norm "40"; b's translation + history now point
+        # at it.
+        chapters = await store.list_work_chapters_with_translations(
+            canonical, viewer_id=v1,
+        )
+        assert len(chapters) == 1
+        merged_wc = chapters[0]["id"]
+        assert chapters[0]["number_norm"] == "40"
+        trs = chapters[0]["translations"]
+        assert len(trs) == 1
+        assert trs[0]["id"] == trans_id
+
+        # Chapter rows from both materials point to the merged WC.
+        ca2 = await store.get_chapter(c_a)
+        cb2 = await store.get_chapter(c_b)
+        assert int(ca2["work_chapter_id"]) == merged_wc
+        assert int(cb2["work_chapter_id"]) == merged_wc
+
+        # Reading history followed.
+        recent = await store.list_recent_reads(user_id=v1, limit=10)
+        assert len(recent) == 1
+        assert recent[0]["work_chapter_id"] == merged_wc
+    finally:
+        await store.close()

@@ -4,7 +4,7 @@
   "host":      "api.mangadex.org",
   "homepage":  "https://mangadex.org",
   "languages": ["en", "vi", "ja", "ko", "zh", "pt-br", "id", "th", "fr", "es"],
-  "version":   "2.0",
+  "version":   "2.2",
   "accent":    "orange",
   "icon":      "https://mangadex.org/pwa/icons/icon-180.png",
 
@@ -145,19 +145,20 @@
 
     "chaptersApi": {
       "method":  "GET",
-      "url":     "https://api.mangadex.org/manga/{mangaId}/feed?translatedLanguage[]={language}&limit=500&order[chapter]=desc&includes[]=scanlation_group",
+      "url":     "https://api.mangadex.org/manga/{mangaId}/feed?limit=500&order[chapter]=desc&includes[]=scanlation_group",
       "parse":   "json",
       "list":    "$.data[*]",
       "keepIf": {
         "hasPages": "@attributes.pages"
       },
       "fields": {
-        "id":       "@id",
-        "number":   "@attributes.chapter",
-        "title":    "@attributes.title",
-        "date":     "@attributes.publishAt",
-        "language": "@attributes.translatedLanguage",
-        "url":      "=https://mangadex.org/chapter/{id}"
+        "id":        "@id",
+        "number":    "@attributes.chapter",
+        "title":     "@attributes.title",
+        "date":      "@attributes.publishAt",
+        "language":  "@attributes.translatedLanguage",
+        "scanlator": "@relationships[?type=scanlation_group].attributes.name",
+        "url":       "=https://mangadex.org/chapter/{id}"
       }
     },
 

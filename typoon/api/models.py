@@ -94,7 +94,7 @@ class ChapterTranslationOverlay(BaseModel):
     target_lang:  str
     creator_id:   int | None
     creator_name: str | None
-    state:        str                    # pending | running | done | error
+    state:        str                    # pending | running | done | error | blocked
     from_cache:   bool                   # True if cache hit (no quota spent)
 
 
@@ -112,10 +112,130 @@ class ChapterOut(BaseModel):
     translations:  list[ChapterTranslationOverlay] = []
 
 
+# ── Work — global identity hub ────────────────────────────────────────
+
+
+class WorkOut(BaseModel):
+    """Minimal Work payload. Per "Cách 1 — danh bạ" decision, Works
+    carry identity only (cross_refs); per-source display lives on
+    each material. The SPA pulls metadata from the active material
+    (selected via `?src=`) when rendering the page header.
+    """
+    id:         int
+    cross_refs: dict | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class WorkChapterTranslation(BaseModel):
+    """One translation surfaced on a work_chapter row.
+
+    Cross-source by construction: a translation appears here for every
+    sibling material of the same Work, regardless of which material
+    the draft was spawned from. `draft_material_id` is the source
+    whose pixels the reader opens; `source_lang` is the BCP-47 of the
+    raw the draft was rendered from, so the UI can render
+    "@userA · từ Tiếng Anh MangaDex".
+    """
+    id:                  int
+    target_lang:         str
+    source_lang:         str | None = None
+    owner_id:            int
+    creator_name:        str | None = None
+    state:               str             # pending | running | done | error | blocked
+    error_message:       str | None = None
+    shared:              bool
+    draft_id:            int | None = None
+    draft_chapter_id:    int | None = None
+    draft_material_id:   int | None = None
+    uses_default_render: bool
+    updated_at:          str | None = None
+
+
+class WorkChapterOut(BaseModel):
+    """A logical chapter inside a Work plus every (shared or
+    viewer-owned) translation on it. Empty `translations` when no
+    one in the community has touched this chapter yet — the SPA
+    augments with the live manifest list of the active source.
+    """
+    id:            int
+    number_norm:   str
+    label:         str | None = None
+    translations:  list[WorkChapterTranslation] = []
+
+
+class WorkViewerEntry(BaseModel):
+    """The viewer's library entry for this Work, if any. Lets the UI
+    flip "Theo dõi" into the status dropdown without a second
+    round-trip.
+    """
+    entry_id:    int
+    status:      LibraryStatus
+    target_lang: str
+
+
+class WorkDetailOut(BaseModel):
+    """Full payload for GET /api/work/{id}. One round-trip drives the
+    canonical manga page: identity, sibling materials, every shared
+    chapter (cross-source), and the viewer's library state.
+    """
+    work:           WorkOut
+    materials:      list[MaterialOut]
+    chapters:       list[WorkChapterOut]
+    viewer_entry:   WorkViewerEntry | None = None
+
+
+class LinkSuggestionOut(BaseModel):
+    """One row in `GET /api/work/{id}/link-suggestions` — a candidate
+    material the community has positively voted to link with this
+    Work, but which still belongs to a different Work.
+
+    `own_material_id` is the sibling that triggered the suggestion;
+    it scopes which (a, b) pair the next vote attaches to.
+    `viewer_vote` reflects whether the viewer has already cast a vote
+    so the UI renders "Đã đồng ý" / "Đã từ chối" instead of the
+    buttons.
+    """
+    candidate_material_id: int
+    candidate_title:       str
+    candidate_source:      str | None = None
+    candidate_cover:       str | None = None
+    candidate_work_id:     int
+    own_material_id:       int
+    score:                 int
+    total_votes:           int
+    viewer_vote:           int | None = None     # -1 | 1 | None
+
+
+class LinkVoteResult(BaseModel):
+    """Outcome of POST /api/work/{id}/link-vote.
+
+    `merged` flips when the community vote crossed the inline-merge
+    threshold AND the two Works were compatible (no conflicting
+    cross_refs). `canonical_work_id` is the Work id the SPA should
+    redirect to after a successful merge; it may equal the request's
+    `work_id` (the request Work was the older sibling and stayed
+    canonical) or be different (the request Work was dissolved into
+    a sibling — the SPA should navigate there).
+
+    `blocked_reason`:
+      None                  — vote stored normally
+      'same_work'           — already merged, idempotent
+      'cross_refs_conflict' — merge refused due to hard cross_refs
+                              collision; the vote still recorded so
+                              moderation can review the history
+    """
+    vote:               int       # -1 | 1
+    score:              int
+    merged:             bool
+    canonical_work_id:  int | None = None
+    blocked_reason:     str | None = None
+
+
 # ── Translation Draft (Layer 2) ───────────────────────────────────────
 
 
-DraftState     = Literal["pending", "running", "done", "error"]
+DraftState     = Literal["pending", "running", "done", "error", "blocked"]
 
 
 class DraftProgress(BaseModel):
@@ -143,26 +263,29 @@ class TranslationDraftOut(BaseModel):
 
 
 class TranslationOut(BaseModel):
-    id:             int
-    chapter_id:     int
-    material_id:    int
-    owner_id:       int
-    target_lang:    str
-    draft_id:       int | None = None
-    state:          str               # mirrored from draft for convenience
-    archive_url:    str | None = None  # public render URL; None until done
-    has_edits:      bool = False
-    chapter_number: str | None = None
-    chapter_label:  str | None = None
-    material_title: str | None = None
-    created_at:     str | None = None
-    updated_at:     str | None = None
+    id:               int
+    work_id:          int
+    work_chapter_id:  int
+    chapter_id:       int               # draft's pixel chapter (= material the reader opens)
+    material_id:      int
+    owner_id:         int
+    target_lang:      str
+    draft_id:         int | None = None
+    state:            str               # mirrored from draft for convenience
+    archive_url:      str | None = None  # public render URL; None until done
+    has_edits:        bool = False
+    chapter_number:   str | None = None
+    chapter_label:    str | None = None
+    material_title:   str | None = None
+    shared:           bool = True
+    created_at:       str | None = None
+    updated_at:       str | None = None
 
 
 # ── Library entry ────────────────────────────────────────────────────
 
 
-LinkOrigin = Literal["primary", "auto", "manual"]
+LinkOrigin = Literal["auto", "manual"]
 
 
 class LibraryMaterialLink(BaseModel):
@@ -188,7 +311,9 @@ class LibraryEntryOut(BaseModel):
     id:                   int
     title:                str
     cover_url:            str | None = None
-    primary_material_id:  int | None = None
+    work_id:              int
+    # User's reading-language preference for this Work. BCP-47.
+    target_lang:          str
 
     # Reading state — drives both the filter UI and "Continue
     # reading" CTAs. Schema 19 simplified to four statuses; reading
@@ -199,26 +324,6 @@ class LibraryEntryOut(BaseModel):
     translation_summary:  TranslationSummary = TranslationSummary()
     created_at:           str | None = None
     updated_at:           str | None = None
-
-
-# ── Library suggestion (cross-source linking) ────────────────────────
-
-
-SuggestionSignal = Literal[
-    "cross_refs", "vote_high", "title_native", "vote_low", "author",
-]
-
-
-class LibrarySuggestionOut(BaseModel):
-    """Returned by GET /api/library/suggest. The frontend renders a
-    banner when one of these comes back; `signal` and `confidence`
-    drive the copy ("Có vẻ là cùng manga" vs "Có thể là cùng manga")."""
-
-    entry_id:    int
-    entry_title: str
-    confidence:  Literal["high", "medium", "low"]
-    signal:      SuggestionSignal
-    score:       int | None = None     # vote score when signal is vote_*
 
 
 # ── Glossary ──────────────────────────────────────────────────────────
@@ -240,16 +345,19 @@ class GlossaryTermOut(BaseModel):
 
 
 class CommunityFeedEntryOut(BaseModel):
-    """One row in /api/community/recent. A material surfaced for
-    discovery, represented by its most recent translated chapter so
-    repeated chapter updates don't duplicate the manga in the feed.
+    """One row in /api/community/recent. A Work surfaced for discovery,
+    represented by its most recent translated chapter so repeated
+    chapter updates don't duplicate the manga in the feed.
     `chapters_in_feed` lets the SPA show a "+N chương khác" affordance.
+    `material_id` is the source the surfacing translation came from
+    — used as the default `?src=` when navigating to /w/$workId.
     """
 
     translation_id:   int
     chapter_id:       int
     chapter_number:   str
     chapter_label:    str | None
+    work_id:          int
     material_id:      int
     material_title:   str
     material_cover:   str | None
@@ -285,11 +393,21 @@ class StageStatsOut(BaseModel):
     pending: int
     running: int
     stale:   int
+    # Tasks under a paused stage — waiting for operator action, not
+    # for a worker. Surfaced separately so the header chip can show a
+    # "Tạm ngưng" state instead of pretending these are normal pending.
+    blocked: int = 0
+    # Tasks past `MAX_TASK_ATTEMPTS` — dead-lettered, no worker will
+    # touch them again until the operator requeues manually.
+    failed:  int = 0
 
 
 class QueueStatsOut(BaseModel):
     stages:         dict[str, StageStatsOut]
     active_workers: list[str]
+    # Snapshot of `stage_pause` so the SPA can render a system-wide
+    # banner without a second round-trip.
+    paused_stages:  list[str] = []
 
 
 # ── Reports + moderation ─────────────────────────────────────────────
