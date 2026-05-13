@@ -3,6 +3,7 @@
   "name": "Anilist",
   "namespace": "anilist",
   "description": "GraphQL API at https://anilist.co — no auth required, ~90 req/min/IP.",
+  "url_template": "https://anilist.co/manga/{id}",
   "endpoints": {
     "search": {
       "url": "https://graphql.anilist.co",

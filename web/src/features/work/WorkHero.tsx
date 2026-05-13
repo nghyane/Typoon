@@ -31,16 +31,20 @@ import { cn } from '@shared/lib/cn'
 import { Cover } from '@shared/ui/Cover'
 import { Button } from '@shared/ui/Button'
 import type {
-  ApiMaterial, ApiRecentRead, ApiWorkViewerEntry,
+  ApiMaterial, ApiRecentRead, ApiWork, ApiWorkViewerEntry,
 } from '@shared/api/api'
 
 import { SourceChipRail } from './SourceChipRail'
 import { TargetLangPicker } from './TargetLangPicker'
 import { StatusPicker } from './StatusPicker'
+import { ReferrersStrip } from './ReferrersStrip'
+import { resolveWorkTitle } from './title'
 
 
 interface Props {
   workId:           number
+  /** Work payload — carries `cross_refs` for the Referrers strip. */
+  work:             ApiWork | null
   activeMaterial:   ApiMaterial | null
   materials:        ApiMaterial[]
   resumeFrom:       ApiRecentRead | null
@@ -54,11 +58,16 @@ interface Props {
 
 
 export function WorkHero({
-  workId, activeMaterial, materials, resumeFrom, viewerEntry,
+  workId, work, activeMaterial, materials, resumeFrom, viewerEntry,
   latestChapterNum, totalChapters,
   onSelectSource, onShare, onResume,
 }: Props) {
   const m = activeMaterial
+  // Canonical title comes from the WORK's siblings (deterministic
+  // across viewers), not from `activeMaterial` (per-viewer choice).
+  // Cover stays on the active material so swapping sources still
+  // shows the user the cover they expect.
+  const { title, titleNative } = resolveWorkTitle(materials)
 
   return (
     <div className="px-4 sm:px-6 pt-6 pb-4">
@@ -67,14 +76,14 @@ export function WorkHero({
         <div className="w-24 sm:w-40 shrink-0 aspect-[2/3] rounded-md overflow-hidden shadow-md">
           <Cover
             src={m?.cover_url ?? null}
-            title={m?.title ?? ''}
+            title={title}
             version={m?.updated_at}
             className="w-full h-full"
           />
         </div>
 
         <div className="flex-1 min-w-0 flex flex-col gap-2 sm:gap-2.5">
-          <TitleBlock material={m} />
+          <TitleBlock title={title} native={titleNative} />
 
           <MetaStrip material={m} />
 
@@ -100,6 +109,14 @@ export function WorkHero({
         />
       </div>
 
+      {/* Referrers — links out to the external identity services
+          (Anilist, MAL, MangaDex, …) the Work's cross_refs resolve to.
+          Auto-hides when cross_refs is empty; the auto-enrich hook
+          will populate this strip silently on next mount. */}
+      <div className="mt-2">
+        <ReferrersStrip crossRefs={work?.cross_refs ?? null} />
+      </div>
+
       {/* Stats strip — small, subtle metadata that wasn't worth a
           chip but the user might still want at a glance. */}
       <StatsStrip
@@ -120,9 +137,12 @@ export function WorkHero({
 // ── Sub-blocks ─────────────────────────────────────────────────
 
 
-function TitleBlock({ material }: { material: ApiMaterial | null }) {
-  const title  = material?.title ?? '—'
-  const native = material?.title_native
+function TitleBlock({
+  title, native,
+}: {
+  title:  string
+  native: string | null
+}) {
   // Only render the native title when it's actually different from
   // the romanized one (some sources duplicate the same string into
   // both fields).
