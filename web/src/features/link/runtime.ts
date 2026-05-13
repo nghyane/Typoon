@@ -29,11 +29,6 @@ export interface LinkPlugin {
   name:        string
   namespace:   string
   description?: string
-  /** URL template the SPA uses to deep-link to the external entry,
-   *  e.g. `"https://anilist.co/manga/{id}"`. `{id}` is substituted
-   *  with the value in `cross_refs[namespace]`. Optional — without
-   *  it, the Referrers UI skips the link. */
-  url_template?: string
   endpoints: {
     search: SearchEndpoint
   }

@@ -1,26 +1,34 @@
-// Work title — resolve the canonical display string for a Work from
-// its sibling materials.
+// Work title — resolve the display string for a Work from its
+// sibling materials, biased toward the viewer's reading language.
 //
-// Works don't carry their own title row (per the "Cách 1 — danh bạ"
-// decision: Work = identity only, materials = display). The picker
-// runs every viewer through the same priority chain so the title in
-// the URL bar matches what got shared:
+// Real use case: a Vietnamese reader opens a manga that the OTruyen
+// scanlation team translated and the same series is also indexed on
+// HappyMH as raw Japanese. They want to see the title THEY know
+// (VI), not a romanized English version they'd have to translate
+// back.
 //
-//   1. Material whose `languages` contains 'en'              ← universal
-//   2. Material whose `title_native` is populated (romanized
-//      title is the most reliable cross-language anchor we have
-//      on a non-English material)                            ← fallback
-//   3. `materials[0]` (oldest by id)                         ← default
+// Priority (highest first):
 //
-// `title_native` for the subtitle is the FIRST material that carries
-// one — Japanese / Korean / Chinese titles are the strongest
-// cross-source identity hint.
+//   1. The material the user explicitly picked via `?src=`
+//      (`activeMaterial`). Their choice is final — even if it's
+//      a non-target-lang source, respect it.
 //
-// We deliberately don't let viewer's `target_lang` reorder the
-// priority: showing a different title per viewer hides the canonical
-// identity and breaks the "share this link, friend sees same thing"
-// expectation. The user's reading language belongs in the chapter
-// list, not in the page header.
+//   2. Material whose `languages` covers the viewer's `target_lang`.
+//      The common path: a VI viewer lands on the VI source's title.
+//
+//   3. Material with a `title_native` set — kanji / hangul anchors
+//      identity when the previous tiers miss (rare).
+//
+//   4. `materials[0]` — oldest fallback so something always renders.
+//
+// The native subtitle (the small italic line under the h1) is the
+// first material's `title_native` regardless of which one supplied
+// the primary title — purely cosmetic, doesn't drive identity.
+//
+// Cross-viewer determinism: if a URL carries `?src=`, every viewer
+// gets the same title. Without `?src=`, the chain falls through to
+// the viewer's target_lang — that's the intent, not a bug. Sharing
+// a `/w/<id>?src=<X>` link is the way to pin a specific source.
 
 import type { ApiMaterial } from '@shared/api/api'
 
@@ -28,51 +36,56 @@ import type { ApiMaterial } from '@shared/api/api'
 export interface ResolvedWorkTitle {
   title:       string
   titleNative: string | null
-  /** Which material the chosen title came from — exposed so the UI
-   *  can show "title from MangaDex" if it ever wants attribution. */
+  /** Material the title came from. Exposed so callers can compose
+   *  attribution UI (e.g. "title from OTruyen") if needed. */
   sourceMaterialId: number | null
 }
 
 
 export function resolveWorkTitle(
-  materials: ApiMaterial[],
+  materials:      ApiMaterial[],
+  activeMaterial: ApiMaterial | null,
+  targetLang:     string | null,
 ): ResolvedWorkTitle {
   if (materials.length === 0) {
     return { title: '—', titleNative: null, sourceMaterialId: null }
   }
 
-  const pick = pickPrimary(materials)
-  const native = pickNative(materials)
+  const pick =
+       activeMaterial
+    ?? pickByLang(materials, targetLang)
+    ?? pickByNative(materials)
+    ?? materials[0]!
 
   return {
-    title:            pick?.title ?? '—',
-    titleNative:      native,
-    sourceMaterialId: pick?.id ?? null,
+    title:            pick.title,
+    titleNative:      firstNative(materials),
+    sourceMaterialId: pick.id,
   }
 }
 
 
-function pickPrimary(materials: ApiMaterial[]): ApiMaterial | null {
-  // English-publishing material first — the universal title every
-  // viewer can search externally. `languages` is BCP-47 list; we
-  // accept both bare 'en' and any 'en-*' variant.
-  const en = materials.find((m) =>
-    (m.languages ?? []).some((l) => l.toLowerCase().split(/[-_]/)[0] === 'en'),
-  )
-  if (en) return en
-
-  // Material with `title_native` — its romanized `title` is the
-  // canonical-name proxy when no English source is present.
-  const withNative = materials.find(
-    (m) => (m.title_native ?? '').trim().length > 0,
-  )
-  if (withNative) return withNative
-
-  return materials[0]!
+function pickByLang(
+  materials: ApiMaterial[],
+  lang:      string | null,
+): ApiMaterial | null {
+  if (!lang) return null
+  const norm = lang.toLowerCase().split(/[-_]/)[0]
+  if (!norm) return null
+  return materials.find((m) =>
+    (m.languages ?? []).some((l) => l.toLowerCase().split(/[-_]/)[0] === norm),
+  ) ?? null
 }
 
 
-function pickNative(materials: ApiMaterial[]): string | null {
+function pickByNative(materials: ApiMaterial[]): ApiMaterial | null {
+  return materials.find(
+    (m) => (m.title_native ?? '').trim().length > 0,
+  ) ?? null
+}
+
+
+function firstNative(materials: ApiMaterial[]): string | null {
   for (const m of materials) {
     const n = (m.title_native ?? '').trim()
     if (n) return n

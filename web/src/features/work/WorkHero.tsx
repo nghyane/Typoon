@@ -31,20 +31,17 @@ import { cn } from '@shared/lib/cn'
 import { Cover } from '@shared/ui/Cover'
 import { Button } from '@shared/ui/Button'
 import type {
-  ApiMaterial, ApiRecentRead, ApiWork, ApiWorkViewerEntry,
+  ApiMaterial, ApiRecentRead, ApiWorkViewerEntry,
 } from '@shared/api/api'
 
 import { SourceChipRail } from './SourceChipRail'
 import { TargetLangPicker } from './TargetLangPicker'
 import { StatusPicker } from './StatusPicker'
-import { ReferrersStrip } from './ReferrersStrip'
 import { resolveWorkTitle } from './title'
 
 
 interface Props {
   workId:           number
-  /** Work payload — carries `cross_refs` for the Referrers strip. */
-  work:             ApiWork | null
   activeMaterial:   ApiMaterial | null
   materials:        ApiMaterial[]
   resumeFrom:       ApiRecentRead | null
@@ -58,16 +55,18 @@ interface Props {
 
 
 export function WorkHero({
-  workId, work, activeMaterial, materials, resumeFrom, viewerEntry,
+  workId, activeMaterial, materials, resumeFrom, viewerEntry,
   latestChapterNum, totalChapters,
   onSelectSource, onShare, onResume,
 }: Props) {
   const m = activeMaterial
-  // Canonical title comes from the WORK's siblings (deterministic
-  // across viewers), not from `activeMaterial` (per-viewer choice).
-  // Cover stays on the active material so swapping sources still
-  // shows the user the cover they expect.
-  const { title, titleNative } = resolveWorkTitle(materials)
+  // Canonical title — biased toward the viewer's reading language.
+  // A VI reader opening a manga that exists in both OTruyen (VI) and
+  // HappyMH (raw JP) sees the OTruyen title, not a romanized JP one.
+  // The `?src=` URL param wins when present so shared links are
+  // reproducible across viewers.
+  const targetLang = viewerEntry?.target_lang ?? null
+  const { title, titleNative } = resolveWorkTitle(materials, m, targetLang)
 
   return (
     <div className="px-4 sm:px-6 pt-6 pb-4">
@@ -109,13 +108,6 @@ export function WorkHero({
         />
       </div>
 
-      {/* Referrers — links out to the external identity services
-          (Anilist, MAL, MangaDex, …) the Work's cross_refs resolve to.
-          Auto-hides when cross_refs is empty; the auto-enrich hook
-          will populate this strip silently on next mount. */}
-      <div className="mt-2">
-        <ReferrersStrip crossRefs={work?.cross_refs ?? null} />
-      </div>
 
       {/* Stats strip — small, subtle metadata that wasn't worth a
           chip but the user might still want at a glance. */}

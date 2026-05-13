@@ -173,7 +173,6 @@ function WorkPage() {
     <div className="pb-16">
       <WorkHero
         workId={workIdNum}
-        work={work.work}
         activeMaterial={activeMaterial}
         materials={materials}
         resumeFrom={resumeFrom}
