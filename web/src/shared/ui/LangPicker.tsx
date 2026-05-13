@@ -16,7 +16,7 @@ interface Props {
 
 export function LangPicker({ value, onChange, options, disabled }: Props) {
   return (
-    <div className="inline-flex flex-wrap gap-1.5">
+    <div className="inline-flex flex-wrap gap-2">
       {options.map((l) => {
         const active = value === l.code
         return (

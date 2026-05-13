@@ -1,16 +1,40 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../shared/lib/cn'
-import { FolderOpen, Settings, ChevronLeft, ChevronRight, Library } from 'lucide-react'
+import {
+  ChevronLeft, ChevronRight, Home, Library, Compass, Settings,
+  type LucideIcon,
+} from 'lucide-react'
 import { SidebarQuota } from './SidebarQuota'
 
-const NAV = [
-  { to: '/library', label: 'Thư viện', icon: Library, search: undefined },
-] as const
+// =============================================================================
+// Sidebar — 4-tab shell, Hội-first.
+//
+//   Hội Mê Truyện  — guild feed (default landing for guild members)
+//   Thư viện        — personal library
+//   Khám phá        — discover / search / sources
+//   Khác            — settings, my translations, profile, glossary
+//
+// Layout follows the legacy shape: brand row with toggle button on the
+// expanded state and click-to-expand on the collapsed brand tile;
+// primary nav block; flex-1 spacer; quota + foot nav at the bottom.
+// =============================================================================
 
-const NAV_FOOT = [
-  { to: '/settings', label: 'Cài đặt', icon: Settings, search: undefined },
-] as const
+interface NavItem {
+  to:     string
+  label:  string
+  icon:   LucideIcon
+}
+
+const NAV_PRIMARY: NavItem[] = [
+  { to: '/',        label: 'Trang chủ', icon: Home    },
+  { to: '/library', label: 'Thư viện',  icon: Library },
+  { to: '/explore', label: 'Khám phá',  icon: Compass },
+]
+
+const NAV_FOOT: NavItem[] = [
+  { to: '/settings', label: 'Cài đặt', icon: Settings },
+]
 
 const W_COLLAPSED = 60
 const W_EXPANDED  = 240
@@ -26,7 +50,8 @@ export function Sidebar({ brandName, brandIcon }: Props) {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
 
-  const isActive = (to: string) => location.pathname.startsWith(to)
+  const isActive = (to: string) =>
+    to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
 
   // Active item: surface-2 fill only. No floating bar — that pattern was
   // fragile (absolute positioning depending on container padding) and
@@ -40,18 +65,12 @@ export function Sidebar({ brandName, brandIcon }: Props) {
         : 'text-text-muted hover:bg-hover hover:text-text',
     )
 
-  const renderLink = (
-    to: string,
-    label: string,
-    Icon: typeof FolderOpen,
-    search?: Record<string, string>,
-  ) => {
+  const renderLink = ({ to, label, icon: Icon }: NavItem) => {
     const active = isActive(to)
     return (
       <Link
-        key={`${to}:${search?.filter ?? ''}:${label}`}
+        key={to}
         to={to}
-        search={search as never}
         title={collapsed ? label : undefined}
         className={linkCls(active)}
       >
@@ -59,7 +78,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
           <Icon size={16} className={cn(active && 'text-accent-text')} />
         </span>
         <span
-          className="flex-1 min-w-0 truncate pr-2.5 text-[13px] transition-opacity duration-150"
+          className="flex-1 min-w-0 truncate pr-2 text-sm transition-opacity duration-150"
           style={{ opacity: collapsed ? 0 : 1 }}
         >
           {label}
@@ -73,7 +92,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
       style={{ width: collapsed ? W_COLLAPSED : W_EXPANDED, transition: 'width 180ms ease-in-out' }}
       className="hidden sm:flex flex-col h-full shrink-0 overflow-hidden bg-surface"
     >
-      {/* brand */}
+      {/* brand row */}
       <div className="flex items-center h-bar shrink-0">
         <div
           style={{ width: W_COLLAPSED }}
@@ -86,7 +105,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
               'group relative size-7 rounded-sm flex items-center justify-center overflow-hidden',
               brandIcon
                 ? 'bg-surface-2'
-                : 'bg-accent text-accent-fg text-[13px] font-bold',
+                : 'bg-accent text-accent-fg text-sm font-bold',
               collapsed ? 'cursor-pointer' : 'cursor-default',
             )}
           >
@@ -136,17 +155,17 @@ export function Sidebar({ brandName, brandIcon }: Props) {
         </button>
       </div>
 
-      {/* main nav */}
+      {/* primary nav */}
       <nav className="px-2 py-2 flex flex-col gap-0.5">
-        {NAV.map(({ to, label, icon, search }) => renderLink(to, label, icon, search))}
+        {NAV_PRIMARY.map(renderLink)}
       </nav>
 
       <div className="flex-1" />
 
-      {/* footer nav */}
+      {/* footer: quota + secondary nav */}
       <div className="px-2 pb-2 pt-2 flex flex-col gap-0.5">
         <SidebarQuota collapsed={collapsed} />
-        {NAV_FOOT.map(({ to, label, icon, search }) => renderLink(to, label, icon, search))}
+        {NAV_FOOT.map(renderLink)}
       </div>
     </aside>
   )

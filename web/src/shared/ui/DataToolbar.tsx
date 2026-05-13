@@ -40,7 +40,7 @@ export function SearchInput({
       'transition-colors cursor-text min-w-0',
       className ?? 'w-56',
     )}>
-      <Search size={13} className="text-text-subtle shrink-0" />
+      <Search size={14} className="text-text-subtle shrink-0" />
       <input
         type="text"
         value={value}

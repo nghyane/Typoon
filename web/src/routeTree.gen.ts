@@ -12,9 +12,11 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as TitleEntryIdRouteImport } from './routes/title.$entryId'
+import { Route as WWorkIdRouteImport } from './routes/w.$workId'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as RWorkIdNumberNormRouteImport } from './routes/r.$workId.$numberNorm'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -31,14 +33,19 @@ const LibraryRoute = LibraryRouteImport.update({
   path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ExploreRoute = ExploreRouteImport.update({
+  id: '/explore',
+  path: '/explore',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TitleEntryIdRoute = TitleEntryIdRouteImport.update({
-  id: '/title/$entryId',
-  path: '/title/$entryId',
+const WWorkIdRoute = WWorkIdRouteImport.update({
+  id: '/w/$workId',
+  path: '/w/$workId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
@@ -46,66 +53,85 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RWorkIdNumberNormRoute = RWorkIdNumberNormRouteImport.update({
+  id: '/r/$workId/$numberNorm',
+  path: '/r/$workId/$numberNorm',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/explore': typeof ExploreRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
-  '/title/$entryId': typeof TitleEntryIdRoute
+  '/w/$workId': typeof WWorkIdRoute
+  '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/explore': typeof ExploreRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
-  '/title/$entryId': typeof TitleEntryIdRoute
+  '/w/$workId': typeof WWorkIdRoute
+  '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/explore': typeof ExploreRoute
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
   '/auth/callback': typeof AuthCallbackRoute
-  '/title/$entryId': typeof TitleEntryIdRoute
+  '/w/$workId': typeof WWorkIdRoute
+  '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/explore'
     | '/library'
     | '/login'
     | '/settings'
     | '/auth/callback'
-    | '/title/$entryId'
+    | '/w/$workId'
+    | '/r/$workId/$numberNorm'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/explore'
     | '/library'
     | '/login'
     | '/settings'
     | '/auth/callback'
-    | '/title/$entryId'
+    | '/w/$workId'
+    | '/r/$workId/$numberNorm'
   id:
     | '__root__'
     | '/'
+    | '/explore'
     | '/library'
     | '/login'
     | '/settings'
     | '/auth/callback'
-    | '/title/$entryId'
+    | '/w/$workId'
+    | '/r/$workId/$numberNorm'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ExploreRoute: typeof ExploreRoute
   LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
-  TitleEntryIdRoute: typeof TitleEntryIdRoute
+  WWorkIdRoute: typeof WWorkIdRoute
+  RWorkIdNumberNormRoute: typeof RWorkIdNumberNormRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -131,6 +157,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/explore': {
+      id: '/explore'
+      path: '/explore'
+      fullPath: '/explore'
+      preLoaderRoute: typeof ExploreRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -138,11 +171,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/title/$entryId': {
-      id: '/title/$entryId'
-      path: '/title/$entryId'
-      fullPath: '/title/$entryId'
-      preLoaderRoute: typeof TitleEntryIdRouteImport
+    '/w/$workId': {
+      id: '/w/$workId'
+      path: '/w/$workId'
+      fullPath: '/w/$workId'
+      preLoaderRoute: typeof WWorkIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/auth/callback': {
@@ -152,16 +185,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/r/$workId/$numberNorm': {
+      id: '/r/$workId/$numberNorm'
+      path: '/r/$workId/$numberNorm'
+      fullPath: '/r/$workId/$numberNorm'
+      preLoaderRoute: typeof RWorkIdNumberNormRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ExploreRoute: ExploreRoute,
   LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
   AuthCallbackRoute: AuthCallbackRoute,
-  TitleEntryIdRoute: TitleEntryIdRoute,
+  WWorkIdRoute: WWorkIdRoute,
+  RWorkIdNumberNormRoute: RWorkIdNumberNormRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

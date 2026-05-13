@@ -20,7 +20,7 @@ export function Header({ user }: Props) {
         {back ? (
           <Link
             to={back.to}
-            className="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text transition-colors"
+            className="inline-flex items-center gap-2 text-sm text-text-subtle hover:text-text transition-colors"
           >
             <ArrowLeft size={14} />
             {back.label}
@@ -38,9 +38,9 @@ export function Header({ user }: Props) {
         title="Tìm nhanh (⌘K)"
         className="hidden sm:flex items-center gap-2 h-8 px-2.5 w-56 rounded-sm bg-surface-2 text-text-subtle hover:bg-hover transition-colors cursor-pointer"
       >
-        <Search size={13} className="shrink-0" />
-        <span className="flex-1 text-left text-[13px] select-none">Tìm nhanh…</span>
-        <kbd className="text-[10px] font-mono bg-black/30 rounded-xs px-1.5 py-0.5 text-text-subtle leading-none">
+        <Search size={14} className="shrink-0" />
+        <span className="flex-1 text-left text-sm select-none">Tìm nhanh…</span>
+        <kbd className="text-xs font-mono bg-black/30 rounded-xs px-1.5 py-0.5 text-text-subtle leading-none">
           ⌘K
         </kbd>
       </button>
@@ -73,7 +73,7 @@ function UserMenu({ user }: { user: AuthUser }) {
         className="flex items-center gap-2 pl-1 pr-2 h-8 rounded-sm hover:bg-hover transition-colors cursor-pointer"
       >
         <Avatar user={user} />
-        <span className="text-[13px] text-text max-w-32 truncate hidden md:inline">
+        <span className="text-sm text-text max-w-32 truncate hidden md:inline">
           {user.display_name}
         </span>
       </button>
@@ -86,7 +86,7 @@ function UserMenu({ user }: { user: AuthUser }) {
               <p className="text-xs text-text-subtle truncate mt-0.5">{user.email}</p>
             )}
             {user.is_admin && (
-              <span className="inline-flex items-center gap-1 mt-1.5 text-[10px] font-semibold uppercase tracking-wider text-success-text bg-success-bg rounded px-1.5 py-0.5">
+              <span className="inline-flex items-center gap-1 mt-1.5 text-xs font-semibold uppercase tracking-wider text-success-text bg-success-bg rounded px-1.5 py-0.5">
                 <Shield size={9} />
                 Admin
               </span>
@@ -96,7 +96,7 @@ function UserMenu({ user }: { user: AuthUser }) {
             onClick={() => { setOpen(false); logout() }}
             className="w-full flex items-center gap-2 px-3.5 py-2.5 text-sm text-text hover:bg-hover cursor-pointer transition-colors"
           >
-            <LogOut size={13} className="text-text-subtle" />
+            <LogOut size={14} className="text-text-subtle" />
             Đăng xuất
           </button>
         </div>

@@ -98,7 +98,7 @@ export function SettingsSection({
           {action && <div className="shrink-0">{action}</div>}
         </div>
         {description && (
-          <p className="text-[13px] text-text-subtle leading-relaxed max-w-prose">
+          <p className="text-sm text-text-subtle leading-relaxed max-w-prose">
             {description}
           </p>
         )}
@@ -126,7 +126,7 @@ export function SettingsAction({
   return (
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-medium text-text">{title}</p>
+        <p className="text-sm font-medium text-text">{title}</p>
         {description && (
           <p className="text-xs text-text-subtle mt-0.5 leading-relaxed">{description}</p>
         )}
@@ -151,7 +151,7 @@ export function SettingsField({
   return (
     <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-8">
       <div className="sm:w-60 sm:shrink-0 sm:pt-1.5">
-        <p className="text-[13px] font-medium text-text">{label}</p>
+        <p className="text-sm font-medium text-text">{label}</p>
         {hint && <p className="text-xs text-text-subtle mt-1 leading-relaxed">{hint}</p>}
       </div>
       <div className="min-w-0 flex-1">{children}</div>
@@ -167,7 +167,7 @@ export function SettingsValue({
   className?: string
 }) {
   return (
-    <div className={cn('h-8 flex items-center text-[13px] text-text-muted font-mono min-w-0', className)}>
+    <div className={cn('h-8 flex items-center text-sm text-text-muted font-mono min-w-0', className)}>
       {children}
     </div>
   )

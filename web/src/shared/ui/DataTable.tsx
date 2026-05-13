@@ -23,7 +23,7 @@ export function DataTable({
 export function Th({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <th className={cn(
-      'h-9 px-3 text-left align-middle text-[11px] font-semibold uppercase tracking-wider text-text-subtle',
+      'h-9 px-3 text-left align-middle text-xs font-semibold uppercase tracking-wider text-text-subtle',
       className,
     )}>
       {children}

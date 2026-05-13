@@ -23,6 +23,7 @@ import {
   UserCircle2, Compass, Power, PowerOff, ExternalLink,
 } from 'lucide-react'
 import { api, type ApiTokenInfo } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { Button } from '@shared/ui/Button'
 import {
   Spinner, Tag, input as inputCls, label as labelCls,
@@ -93,7 +94,7 @@ function AccountTab() {
 
 function QuotaSection() {
   const { data, isLoading } = useQuery({
-    queryKey: ['quota'],
+    queryKey: qk.quota(),
     queryFn:  api.getQuota,
     refetchInterval: 30_000,
   })
@@ -113,7 +114,7 @@ function QuotaSection() {
         title="Quota"
         description="Tài khoản admin không bị giới hạn chương dịch."
       >
-        <div className="flex items-center gap-2 text-[13px] text-text-muted">
+        <div className="flex items-center gap-2 text-sm text-text-muted">
           <Zap size={14} className="text-success-text" />
           <span>Không giới hạn</span>
         </div>
@@ -143,8 +144,8 @@ function QuotaMeter({ label, used, limit }: { label: string; used: number; limit
   return (
     <div className="rounded-md bg-surface px-3 py-3">
       <div className="flex items-baseline justify-between">
-        <span className="text-[12px] text-text-subtle">{label}</span>
-        <span className="text-[13px] tabular">
+        <span className="text-xs text-text-subtle">{label}</span>
+        <span className="text-sm tabular">
           <span className="text-text font-medium">{used}</span>
           <span className="text-text-subtle">/{limit}</span>
         </span>
@@ -178,7 +179,7 @@ function SourcesTab() {
       description="Nguồn cung cấp manga cho mục Duyệt. Tắt nguồn không dùng đến để giảm nhiễu khi tìm kiếm. Tính năng cài thêm từ repo cộng đồng đang được phát triển."
       action={
         <Button disabled title="Sắp ra mắt — cài từ repo URL / JSON file">
-          <Plus size={13} />
+          <Plus size={14} />
           Thêm nguồn
         </Button>
       }
@@ -244,7 +245,7 @@ function SourceRow({ source }: { source: InstalledSource }) {
             <Tag tone="error" size="sm" uppercase>NSFW</Tag>
           )}
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-text-subtle">
+        <div className="flex items-center gap-2 text-xs text-text-subtle">
           <span className="truncate">{manifest.host}</span>
           <span aria-hidden>·</span>
           <span>v{manifest.version}</span>
@@ -265,7 +266,7 @@ function SourceRow({ source }: { source: InstalledSource }) {
           target="_blank"
           rel="noopener noreferrer"
           className={cn(
-            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-xs',
+            'inline-flex items-center gap-2 h-7 px-2.5 rounded-sm text-xs',
             'text-text-subtle hover:text-text hover:bg-hover transition-colors cursor-pointer',
           )}
           title="Mở trang gốc"
@@ -280,7 +281,7 @@ function SourceRow({ source }: { source: InstalledSource }) {
         title={enabled ? 'Tắt' : 'Bật'}
         aria-label={enabled ? 'Tắt nguồn' : 'Bật nguồn'}
         className={cn(
-          'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm text-xs cursor-pointer transition-colors',
+          'inline-flex items-center gap-2 h-7 px-2.5 rounded-sm text-xs cursor-pointer transition-colors',
           enabled
             ? 'text-accent-text bg-accent-bg hover:brightness-110'
             : 'text-text-subtle bg-surface-2 hover:bg-hover hover:text-text',
@@ -299,7 +300,7 @@ function SourceRow({ source }: { source: InstalledSource }) {
           title="Gỡ nguồn"
           className="text-text-subtle hover:text-error-text hover:bg-error/10"
         >
-          <Trash2 size={13} />
+          <Trash2 size={14} />
         </Button>
       )}
     </SettingsListRow>
@@ -315,14 +316,14 @@ function TokensTab() {
   const [wizardOpen, setWizardOpen] = useState(false)
 
   const { data: tokens = [], isLoading } = useQuery({
-    queryKey: ['tokens'],
+    queryKey: qk.tokens(),
     queryFn:  api.listTokens,
   })
 
   const revoke = useMutation({
     mutationFn: (id: number) => api.revokeToken(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tokens'] })
+      qc.invalidateQueries({ queryKey: qk.tokens() })
       toast.success('Đã thu hồi')
     },
     onError: (e: Error) => toast.error(e.message),
@@ -350,7 +351,7 @@ function TokensTab() {
         description="Token cho extension Typoon trên Chrome / Firefox truy cập tài khoản. Mỗi thiết bị nên dùng một token riêng để dễ thu hồi khi mất."
         action={
           <Button variant="primary" onClick={() => setWizardOpen(true)}>
-            <Plus size={13} />
+            <Plus size={14} />
             Tạo token
           </Button>
         }
@@ -384,7 +385,7 @@ function TokensTab() {
                     hint="Tạo token để dùng với extension Typoon. Token chỉ hiện 1 lần sau khi tạo."
                     action={
                       <Button variant="primary" onClick={() => setWizardOpen(true)}>
-                        <Plus size={13} />
+                        <Plus size={14} />
                         Tạo token đầu tiên
                       </Button>
                     }
@@ -423,7 +424,7 @@ function TokenRow({
 }) {
   return (
     <tr className="border-b border-border-soft last:border-0 group hover:bg-hover transition-colors">
-      <td className="px-3 py-2.5 text-[13px] font-medium text-text">
+      <td className="px-3 py-2.5 text-sm font-medium text-text">
         {t.name}
       </td>
       <td className="px-3 py-2.5 text-xs hidden sm:table-cell">
@@ -453,7 +454,7 @@ function TokenRow({
           title="Thu hồi"
           aria-label={`Thu hồi token ${t.name}`}
         >
-          {pending ? <Spinner /> : <Trash2 size={13} />}
+          {pending ? <Spinner /> : <Trash2 size={14} />}
         </Button>
       </td>
     </tr>
@@ -485,7 +486,7 @@ function CreateTokenWizard({
   const create = useMutation({
     mutationFn: (n: string) => api.createToken(n),
     onSuccess: (t) => {
-      qc.invalidateQueries({ queryKey: ['tokens'] })
+      qc.invalidateQueries({ queryKey: qk.tokens() })
       setCreated({ token: t.token, name: t.name })
     },
     onError: (e: Error) => toast.error(e.message),
@@ -583,7 +584,7 @@ function CreateStep({
           <p className={`text-xs leading-relaxed ${validation ? 'text-error-text' : 'text-text-subtle'}`}>
             {validation ?? 'Đặt tên để biết token này dùng cho công cụ nào. Chỉ bạn nhìn thấy.'}
           </p>
-          <span className={`text-[11px] font-mono shrink-0 tabular-nums ${
+          <span className={`text-xs font-mono shrink-0 tabular-nums ${
             remaining < 0 ? 'text-error-text' : 'text-text-subtle/60'
           }`}>
             {trimmed.length}/{TOKEN_NAME_MAX}
@@ -592,10 +593,10 @@ function CreateStep({
       </div>
 
       <div>
-        <p className="text-[11px] uppercase tracking-wider text-text-subtle font-medium mb-2">
+        <p className="text-xs uppercase tracking-wider text-text-subtle font-medium mb-2">
           Gợi ý
         </p>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-2">
           {SUGGESTIONS.map((s) => (
             <button
               type="button"
@@ -612,7 +613,7 @@ function CreateStep({
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" onClick={onCancel}>Huỷ</Button>
         <Button type="submit" variant="primary" disabled={!canSubmit}>
-          {pending ? <Spinner /> : <Plus size={13} />}
+          {pending ? <Spinner /> : <Plus size={14} />}
           Tạo token
         </Button>
       </div>
@@ -678,7 +679,7 @@ function RevealStep({
             className="flex-1 px-3 rounded-sm bg-bg text-xs font-mono text-text break-all select-all focus:outline-none border border-border-soft focus:border-accent transition-colors"
           />
           <Button onClick={copy} title="Copy" className="shrink-0">
-            {copied ? <Check size={13} className="text-success-text" /> : <Copy size={13} />}
+            {copied ? <Check size={14} className="text-success-text" /> : <Copy size={14} />}
             {copied ? 'Đã copy' : 'Copy'}
           </Button>
         </div>

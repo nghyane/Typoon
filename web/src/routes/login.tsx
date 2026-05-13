@@ -2,7 +2,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { AlertCircle, ExternalLink } from 'lucide-react'
 import {
-  buildAuthorizeUrl, discordActivityLogin, fetchAuthConfig, setToken,
+  buildAuthorizeUrl, discordActivityLogin, fetchAuthConfig,
+  sessionWasInvalidated, setToken,
   takeLoginError, useCurrentUser, type AuthConfig,
 } from '@features/auth/auth'
 import { isDiscordActivity } from '@shared/discord/sdk'
@@ -12,14 +13,18 @@ function LoginPage() {
   const nav = useNavigate()
   const { user, loading } = useCurrentUser()
 
-  const [error, setError] = useState<string | null>(null)
-  const [cfg,   setCfg]   = useState<AuthConfig | null>(null)
-  const [busy,  setBusy]  = useState(false)
+  const [error,       setError]       = useState<string | null>(null)
+  const [cfg,         setCfg]         = useState<AuthConfig | null>(null)
+  const [busy,        setBusy]        = useState(false)
+  /** True when DA flow should wait for an explicit click rather than
+   *  silently re-authorizing — set after a 401 invalidated the
+   *  previous session (see `sessionWasInvalidated`). */
+  const [reauth,      setReauth]      = useState(false)
 
   const doDALogin = (clientId: string) => {
     setBusy(true)
     discordActivityLogin(clientId)
-      .then((token) => { setToken(token); nav({ to: '/library' }) })
+      .then((token) => { setToken(token); window.location.replace('/') })
       .catch((e: Error) => { setError(e.message); setBusy(false) })
   }
 
@@ -28,16 +33,26 @@ function LoginPage() {
   // server's user row is dropped (token still in storage, but the
   // /library guard kicks back to /login on every load).
   useEffect(() => {
-    if (!loading && user) nav({ to: '/library' })
+    if (!loading && user) nav({ to: '/' })
   }, [loading, user, nav])
 
+  // Auto-DA-login fires ONLY on a fresh visit (no token in storage).
+  // After a 401 (server-side user vanished, token expired, etc.) we
+  // wait for the user to click "Đăng nhập lại" — auto-authorize with
+  // `prompt: 'none'` would silently log them in under whichever
+  // Discord account is currently active in the client, which is
+  // surprising when they were expecting their old session back.
   useEffect(() => {
     setError(takeLoginError())
+    const invalidated = sessionWasInvalidated()
+    setReauth(invalidated)
     fetchAuthConfig()
       .then((c) => {
         setCfg(c)
         if (c.guild_name) document.title = c.guild_name
-        if (isDiscordActivity) doDALogin(c.discord_client_id)
+        if (isDiscordActivity && !invalidated) {
+          doDALogin(c.discord_client_id)
+        }
       })
       .catch((e: Error) => setError(e.message))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -53,24 +68,36 @@ function LoginPage() {
     )
   }
 
-  // DA: show spinner while authorizing, error + retry on failure
+  // DA: spinner while auto-authorizing; explicit re-login card when
+  // the previous session was invalidated (drop DB / token expiry)
+  // OR when an authorize attempt errored. The card lets the user
+  // (or a different Discord account active in the same client) opt
+  // into the new session deliberately.
   if (isDiscordActivity) {
+    const showCard = error !== null || (reauth && !busy)
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
-        {busy || !error ? (
+        {!showCard ? (
           <Spinner size={24} />
         ) : (
           <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
-            <div className="flex items-center gap-2 text-error-text text-sm justify-center">
-              <AlertCircle size={14} />
-              <span>{error}</span>
-            </div>
+            {error && (
+              <div className="flex items-center gap-2 text-error-text text-sm justify-center">
+                <AlertCircle size={14} />
+                <span>{error}</span>
+              </div>
+            )}
+            {!error && reauth && (
+              <div className="text-sm text-text-muted">
+                Phiên cũ đã hết hạn. Đăng nhập lại để tiếp tục.
+              </div>
+            )}
             {cfg && (
               <button
                 onClick={() => doDALogin(cfg.discord_client_id)}
                 className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] cursor-pointer"
               >
-                Thử lại
+                {error ? 'Thử lại' : 'Đăng nhập lại'}
               </button>
             )}
           </div>
@@ -112,7 +139,7 @@ function LoginPage() {
               </div>
               {inviteFromError && (
                 <a href={inviteFromError} target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer">
+                  className="inline-flex items-center gap-2 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer">
                   Tham gia Discord <ExternalLink size={11} />
                 </a>
               )}

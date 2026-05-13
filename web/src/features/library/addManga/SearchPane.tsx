@@ -158,18 +158,18 @@ function UrlBadge({
 }) {
   const base =
     'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 ' +
-    'h-6 px-2 rounded-xs text-[11px] font-medium pointer-events-none'
+    'h-6 px-2 rounded-xs text-xs font-medium pointer-events-none'
   if (urlMatch) {
     return (
       <span className={cn(base, 'bg-success/15 text-success-text')}>
-        <CheckCircle2 size={10} />
+        <CheckCircle2 size={12} />
         {urlMatch.source.manifest.name}
       </span>
     )
   }
   return (
     <span className={cn(base, 'bg-warning/15 text-warning-text')}>
-      <AlertTriangle size={10} />
+      <AlertTriangle size={12} />
       Chưa hỗ trợ
     </span>
   )
@@ -196,7 +196,7 @@ function SourceListHint() {
     return (
       <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6 text-center">
         <p className="text-sm text-text-muted">Chưa cài nguồn nào</p>
-        <p className="text-[11px] text-text-subtle mt-1">
+        <p className="text-xs text-text-subtle mt-1">
           Mở Cài đặt để cài nguồn đầu tiên.
         </p>
       </div>
@@ -204,10 +204,10 @@ function SourceListHint() {
   }
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-text-subtle px-0.5">
+      <p className="text-xs text-text-subtle px-0.5">
         Bấm để bật/tắt nguồn cho fanout search
       </p>
-      <ul className="flex flex-wrap gap-1.5">
+      <ul className="flex flex-wrap gap-2">
         {sources.map((s) => {
           const searchable = hasSearch(s.manifest)
           const on = s.enabled && searchable
@@ -222,7 +222,7 @@ function SourceListHint() {
                   : `${s.manifest.name} chưa hỗ trợ tìm — dán link để thêm`
                 }
                 className={cn(
-                  'inline-flex items-center gap-2 h-8 pl-2 pr-3 rounded-sm text-[12px] transition-colors',
+                  'inline-flex items-center gap-2 h-8 pl-2 pr-3 rounded-sm text-xs transition-colors',
                   !searchable
                     ? 'bg-surface-2 text-text-subtle cursor-not-allowed border border-border-soft opacity-50'
                     : on
@@ -243,7 +243,7 @@ function SourceListHint() {
                 <span className="font-medium truncate max-w-[140px]">
                   {s.manifest.name}
                 </span>
-                <span className="text-[11px] text-text-subtle truncate">
+                <span className="text-xs text-text-subtle truncate">
                   {s.manifest.host}
                 </span>
               </button>

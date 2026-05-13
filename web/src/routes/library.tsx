@@ -1,14 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import {
-  Plus, Library, BookOpen, BookmarkCheck, Pause, CheckCircle2, Layers,
+  Plus, Library, BookOpen, BookmarkCheck, CheckCircle2, Layers,
   Loader2, AlertCircle,
 } from 'lucide-react'
 import { cn } from '@shared/lib/cn'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 import { Button } from '@shared/ui/Button'
-import { useHeaderStore } from '../store/header'
 import { useSources } from '@features/browse/sources'
 import { useUnifiedLibrary, type LibraryFilter } from '@features/library/unified'
 import { LibraryItemCard } from '@features/library/views/LibraryCard'
@@ -38,8 +37,7 @@ const STATUS_CHIPS: Array<{
 }> = [
   { id: 'all',     label: 'Tất cả',    icon: Layers        },
   { id: 'reading', label: 'Đang đọc',  icon: BookOpen      },
-  { id: 'plan',    label: 'Kế hoạch',  icon: BookmarkCheck },
-  { id: 'on_hold', label: 'Tạm dừng',  icon: Pause         },
+  { id: 'plan',    label: 'Để dành',   icon: BookmarkCheck },
   { id: 'done',    label: 'Đã xong',   icon: CheckCircle2  },
 ]
 
@@ -63,12 +61,8 @@ const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
     sub:   'Truyện vừa thêm sẽ tự vào đây',
   },
   plan: {
-    title: 'Chưa có truyện trong kế hoạch',
-    sub:   'Đánh dấu "Kế hoạch" để lưu lại đọc sau',
-  },
-  on_hold: {
-    title: 'Không có truyện tạm dừng',
-    sub:   'Đánh dấu "Tạm dừng" khi muốn quay lại sau',
+    title: 'Chưa có truyện để dành',
+    sub:   'Đánh dấu "Để dành" để lưu lại đọc sau',
   },
   done: {
     title: 'Chưa hoàn thành truyện nào',
@@ -93,13 +87,6 @@ function LibraryPage() {
   const nav = useNavigate()
 
   const { items, loading, counts } = useUnifiedLibrary(filter)
-
-  const setHeader   = useHeaderStore((s) => s.set)
-  const clearHeader = useHeaderStore((s) => s.clear)
-  useEffect(() => {
-    setHeader('Thư viện', [])
-    return () => clearHeader()
-  }, [setHeader, clearHeader])
 
   const ensureBundled = useSources((s) => s.ensureBundled)
   useEffect(() => { ensureBundled() }, [ensureBundled])
@@ -161,7 +148,8 @@ function LibraryPage() {
 
 function Toolbar({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="flex items-center justify-end mb-4">
+    <div className="flex items-center justify-between mb-4 gap-3">
+      <h1 className="text-lg font-semibold text-text tracking-tight">Thư viện</h1>
       <Button variant="primary" onClick={onAdd}>
         <Plus size={14} />
         Thêm manga
@@ -187,7 +175,7 @@ function FilterChips({
   const showActivity = counts.translating > 0 || counts.errored > 0
   return (
     <div
-      className="flex items-center gap-1.5 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
+      className="flex items-center gap-2 mb-5 -mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto"
       style={{ scrollbarWidth: 'none' }}
     >
       {STATUS_CHIPS.map(({ id, label, icon: Icon }) => {
@@ -259,7 +247,7 @@ function Chip({
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[13px] shrink-0',
+        'inline-flex items-center gap-2 h-8 px-3 rounded-full text-sm shrink-0',
         'transition-colors cursor-pointer',
         active
           ? 'bg-text text-bg font-medium'
@@ -269,7 +257,7 @@ function Chip({
       {children}
       {count > 0 && (
         <span className={cn(
-          'text-[11px] tabular',
+          'text-xs tabular',
           active ? 'text-bg/70' : 'opacity-70',
         )}>
           {count}
@@ -283,7 +271,7 @@ function Chip({
 // ── Route ────────────────────────────────────────────────────────────
 
 const VALID_FILTERS: ReadonlyArray<LibraryFilter> = [
-  'all', 'reading', 'plan', 'on_hold', 'done', 'dropped',
+  'all', 'reading', 'plan', 'done', 'dropped',
   'translating', 'errored',
 ]
 

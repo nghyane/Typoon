@@ -172,6 +172,12 @@ export interface ChapterFields {
    *  `{date}`, `{language}` interpolation if combining with other
    *  fields. */
   label?:   Selector
+  /** Scanlator group / publisher name. Surfaced on raw chapter rows
+   *  the way `creatorName` surfaces on Typoon translations — so the
+   *  reader sees "@Nhóm A · MangaDex" instead of an anonymous "Raw".
+   *  Sources without a scanlator concept (single-publisher sites)
+   *  should omit. */
+  scanlator?: Selector
 }
 
 /** Declarative chapter-number normalisation primitives.
@@ -353,6 +359,10 @@ export interface MangaChapterRef {
   title:     string | null
   date:      string | null
   language:  string | null
+  /** Scanlator group / publisher attribution for the raw — drives
+   *  the "@Nhóm A · MangaDex" badge on raw rows. Null when the
+   *  source doesn't expose it. */
+  scanlator: string | null
 }
 
 export interface MangaDetail extends MangaSummary {

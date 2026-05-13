@@ -77,7 +77,7 @@ function Tab({
       type="button"
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 h-8 px-3 rounded-sm text-[13px] shrink-0',
+        'inline-flex items-center gap-2 h-8 px-3 rounded-sm text-sm shrink-0',
         'transition-colors cursor-pointer',
         active
           ? 'bg-surface-2 text-text font-medium'
@@ -86,7 +86,7 @@ function Tab({
     >
       {label}
       <span className={cn(
-        'text-[11px] tabular',
+        'text-xs tabular',
         active ? 'text-text-subtle' : 'text-text-subtle/70',
       )}>
         {count}

@@ -35,7 +35,7 @@ export function Field({
 export type BadgeTone = 'success' | 'info' | 'warning' | 'neutral' | 'error'
 
 const BADGE_BASE =
-  'inline-flex items-center gap-1.5 h-[22px] px-2 rounded-full text-[11px] font-medium'
+  'inline-flex items-center gap-1.5 h-[22px] px-2 rounded-full text-xs font-medium'
 
 const BADGE_TONE: Record<BadgeTone, string> = {
   success: 'bg-success-bg text-success-text',
@@ -87,8 +87,8 @@ const TAG_TONE: Record<TagTone, string> = {
 }
 
 const TAG_SIZE = {
-  sm: 'h-5 px-1.5 text-[10px] gap-1',
-  md: 'h-6 px-2 text-[11px] gap-1.5',
+  sm: 'h-5 px-1.5 text-xs gap-1',
+  md: 'h-6 px-2 text-xs gap-1.5',
 } as const
 
 export function Tag({
@@ -186,7 +186,7 @@ export function Stat({
 }) {
   return (
     <div className={cn(card, 'p-4')}>
-      <p className="text-[11px] uppercase tracking-wider text-text-subtle font-medium">
+      <p className="text-xs uppercase tracking-wider text-text-subtle font-medium">
         {lbl}
       </p>
       <p className={cn('text-2xl font-semibold leading-tight mt-1.5', valueClass ?? 'text-text')}>

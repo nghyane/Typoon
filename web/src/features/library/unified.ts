@@ -13,9 +13,8 @@ import { useQuery } from '@tanstack/react-query'
 import {
   api, type ApiLibraryEntry, type ApiTranslationSummary, type LibraryStatus,
 } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { coverUrl } from '@shared/ui/Cover'
-import { useLibrary, hasNewChapter } from './store'
-import { useShallow } from 'zustand/react/shallow'
 
 /** Filter chip identities. `all` excludes `dropped`. Activity filters
  *  (`translating`, `errored`) cut across status — they're answered by
@@ -29,14 +28,12 @@ export type LibraryFilter =
 export interface LibraryItem {
   key:        string
   entryId:    number
-  materialId: number | null
+  workId:     number
 
   title:    string
   cover:    string | null
 
-  status:         LibraryStatus
-  targetLang:     string | null
-  autoTranslate:  boolean
+  status:    LibraryStatus
 
   /** Activity summary (only this user's translations). */
   summary:    ApiTranslationSummary
@@ -55,23 +52,21 @@ function fromEntry(
   hasNewFromLocal: boolean,
   chapterLabel:    string | null,
 ): LibraryItem {
-  const last    = e.last_read_at ? Date.parse(e.last_read_at) : 0
-  const created = e.created_at   ? Date.parse(e.created_at)   : 0
+  const updated = e.updated_at ? Date.parse(e.updated_at) : 0
+  const created = e.created_at ? Date.parse(e.created_at) : 0
   const summary: ApiTranslationSummary = e.translation_summary ?? {
     pending: 0, running: 0, done: 0, error: 0,
   }
   return {
     key:           `entry::${e.id}`,
     entryId:       e.id,
-    materialId:    e.primary_material_id,
+    workId:        e.work_id,
     title:         e.title,
     cover:         coverUrl(e.cover_url, e.updated_at),
     status:        e.status,
-    targetLang:    e.target_lang,
-    autoTranslate: e.auto_translate,
     summary,
     hasNew:        hasNewFromLocal,
-    activity:      Math.max(last, created),
+    activity:      Math.max(updated, created),
     chapterLabel,
   }
 }
@@ -102,34 +97,23 @@ export function useUnifiedLibrary(filter: LibraryFilter): {
   counts:  Record<LibraryFilter, number>
 } {
   const { data: entries = [], isPending } = useQuery({
-    queryKey:  ['library'],
+    queryKey:  qk.library.all(),
     queryFn:   () => api.listLibrary(),
     staleTime: 30_000,
   })
 
-  const rawLocal = useLibrary(useShallow((s) => Object.values(s.items)))
-
   return useMemo(() => {
-    const byMaterial = new Map<number, typeof rawLocal[number]>()
-    for (const e of rawLocal) {
-      const mid = (e as unknown as { materialId?: number }).materialId
-      if (mid != null) byMaterial.set(mid, e)
-    }
-
-    const items: LibraryItem[] = entries.map((e) => {
-      const local = e.primary_material_id != null
-        ? byMaterial.get(e.primary_material_id)
-        : undefined
-      return fromEntry(
-        e,
-        local ? hasNewChapter(local) : false,
-        local?.lastChapterRead?.label ?? local?.latestChapter?.label ?? null,
-      )
-    })
+    // Local reading-state lives under (source, mangaUrl) which doesn't
+    // map cleanly to a Work id; until we surface "last read" via the
+    // server reading_history, the local-derived `hasNew` falls back
+    // to false. Cover-overlay chapter label likewise empty.
+    const items: LibraryItem[] = entries.map((e) =>
+      fromEntry(e, false, null),
+    )
 
     const counts: Record<LibraryFilter, number> = {
       all: items.length,
-      reading: 0, plan: 0, on_hold: 0, done: 0, dropped: 0,
+      reading: 0, plan: 0, done: 0, dropped: 0,
       translating: 0, errored: 0,
     }
     for (const it of items) {
@@ -145,5 +129,5 @@ export function useUnifiedLibrary(filter: LibraryFilter): {
       loading: isPending,
       counts,
     }
-  }, [entries, rawLocal, filter, isPending])
+  }, [entries, filter, isPending])
 }

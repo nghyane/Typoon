@@ -5,6 +5,20 @@ import { discordSdk } from '@shared/discord/sdk'
 const TOKEN_KEY  = 'typoon_token'
 const ERROR_KEY  = 'typoon_login_error'
 const STATE_KEY  = 'typoon_oauth_state'
+/** Set by `useCurrentUser` when /api/auth/me 401s on a token we DID
+ *  have in storage. The /login page reads + clears it to decide
+ *  whether to auto-launch the Discord Activity flow:
+ *
+ *    - first visit / no prior token       → auto-login OK
+ *    - had a token, server rejected it    → wait for explicit click,
+ *      because a silent `prompt: 'none'` reauth would just hand the
+ *      app whichever Discord account is currently active in the
+ *      client (which may not be the one the user wants).
+ *
+ *  sessionStorage scope is right: it survives a same-tab reload (the
+ *  /login navigation triggered by the 401) but resets on new tabs /
+ *  app launches where auto-login is wanted. */
+const INVALIDATED_KEY = 'typoon_session_invalidated'
 
 // One public origin in production: the DA host fronts /api too.
 // Inside the DA iframe we use same-origin paths; outside (plain
@@ -48,6 +62,17 @@ export function setLoginError(msg: string) {
   sessionStorage.setItem(ERROR_KEY, msg)
 }
 
+/** Mark + read the "had-a-token-but-server-rejected-it" flag. */
+function markSessionInvalidated() {
+  sessionStorage.setItem(INVALIDATED_KEY, '1')
+}
+
+export function sessionWasInvalidated(): boolean {
+  const hit = sessionStorage.getItem(INVALIDATED_KEY) === '1'
+  if (hit) sessionStorage.removeItem(INVALIDATED_KEY)
+  return hit
+}
+
 // ── Current user ─────────────────────────────────────────────────────────────
 
 interface AuthState {
@@ -75,6 +100,12 @@ export function useCurrentUser(): AuthState {
       .then(async (r) => {
         if (r.status === 401) {
           clearToken()
+          // We DID have a token; server rejected it. The /login page
+          // uses this flag to skip Discord Activity's silent
+          // auto-authorize (which would log the user in under the
+          // currently-active Discord account, not the one that just
+          // expired).
+          markSessionInvalidated()
           setState({ user: null, loading: false, error: null })
           return
         }

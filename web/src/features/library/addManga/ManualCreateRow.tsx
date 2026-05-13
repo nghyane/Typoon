@@ -38,7 +38,7 @@ export function ManualCreateRow({
         'inline-flex items-center justify-center size-8 rounded-sm shrink-0',
         hits === 0 ? 'bg-accent text-accent-fg' : 'bg-surface text-text-muted',
       )}>
-        <Wand2 size={13} />
+        <Wand2 size={14} />
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-sm text-text">
@@ -47,7 +47,7 @@ export function ManualCreateRow({
             : `Không thấy "${seed}"? Tạo thủ công`
           }
         </p>
-        <p className="text-[11px] text-text-subtle mt-0.5">
+        <p className="text-xs text-text-subtle mt-0.5">
           Manga không thuộc nguồn nào · tải chương từ file zip/cbz
         </p>
       </div>

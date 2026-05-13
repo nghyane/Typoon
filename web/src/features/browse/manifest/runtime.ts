@@ -423,8 +423,9 @@ function buildChapter(
     numberNorm,
     title,
     label,
-    date:       f.date     ?? null,
-    language:   f.language ?? null,
+    date:       f.date      ?? null,
+    language:   f.language  ?? null,
+    scanlator:  f.scanlator ?? null,
   }
 }
 

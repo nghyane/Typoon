@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { cn } from '../shared/lib/cn'
 
 const W_COLLAPSED = 60
@@ -19,7 +20,7 @@ interface Props {
 // data is in cache (avoid a flash of "0/0" on first render).
 export function SidebarQuota({ collapsed }: Props) {
   const { data } = useQuery({
-    queryKey: ['quota'],
+    queryKey: qk.quota(),
     queryFn:  api.getQuota,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
@@ -58,7 +59,7 @@ export function SidebarQuota({ collapsed }: Props) {
         <Zap size={16} className={color} />
       </span>
       <span
-        className="flex-1 min-w-0 truncate pr-2.5 text-[12px] tabular-nums transition-opacity duration-150"
+        className="flex-1 min-w-0 truncate pr-2.5 text-xs tabular-nums transition-opacity duration-150"
         style={{ opacity: collapsed ? 0 : 1 }}
       >
         <span className={color}>{used_day}</span>

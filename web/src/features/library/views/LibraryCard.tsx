@@ -1,13 +1,11 @@
 import { Link } from '@tanstack/react-router'
 import {
-  BookmarkPlus, Check, Sparkles, Loader2, AlertCircle,
+  Sparkles, Loader2, AlertCircle,
 } from 'lucide-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Cover } from '@shared/ui/Cover'
 import { Tag, type TagTone } from '@shared/ui/primitives'
-import { cn } from '@shared/lib/cn'
 import { proxify } from '@features/browse/proxy'
-import { api, type LibraryStatus } from '@shared/api/api'
+import { type LibraryStatus } from '@shared/api/api'
 import { useLibrary, type LibraryEntry } from '../store'
 import type { LibraryItem } from '../unified'
 
@@ -28,16 +26,14 @@ import type { LibraryItem } from '../unified'
 
 const STATUS_LABEL: Record<LibraryStatus, string> = {
   reading: 'Đang đọc',
-  plan:    'Kế hoạch',
-  on_hold: 'Tạm dừng',
-  done:    'Đã xong',
+  plan:    'Để dành',
+  done:    'Đã đọc xong',
   dropped: 'Đã bỏ',
 }
 
 const STATUS_TONE: Record<LibraryStatus, TagTone> = {
   reading: 'success',
   plan:    'info',
-  on_hold: 'warning',
   done:    'neutral',
   dropped: 'error',
 }
@@ -47,8 +43,8 @@ interface Props { item: LibraryItem }
 export function LibraryItemCard({ item }: Props) {
   return (
     <Link
-      to="/title/$entryId"
-      params={{ entryId: String(item.entryId) }}
+      to="/w/$workId"
+      params={{ workId: String(item.workId) }}
       className="group flex flex-col gap-2"
     >
       <div className="relative w-full aspect-[2/3] rounded-md overflow-hidden">
@@ -83,7 +79,7 @@ export function LibraryItemCard({ item }: Props) {
               className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/85 via-black/40 to-transparent"
             />
             <div className="absolute inset-x-0 bottom-0 px-2 py-1.5">
-              <p className="text-[11px] font-semibold text-white/95 truncate">
+              <p className="text-xs font-semibold text-white/95 truncate">
                 {item.chapterLabel}
               </p>
             </div>
@@ -91,7 +87,7 @@ export function LibraryItemCard({ item }: Props) {
         )}
       </div>
 
-      <p className="text-[13px] font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
+      <p className="text-sm font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
         {item.title}
       </p>
     </Link>
@@ -135,83 +131,9 @@ function ActivityChips({
 }
 
 
-// =============================================================================
-// FollowButton — used by MaterialPage / hub hero (slice 13+).
-//
-// Toggles between `reading` and `dropped`. Other statuses (`plan`,
-// `on_hold`, `done`) are reachable through the status menu — kept in
-// a separate component once the hub ships.
-// =============================================================================
-
-interface FollowButtonProps {
-  size?:        'sm' | 'md'
-  entryId?:     number
-  materialId?:  number
-  title?:       string
-  cover?:       string | null
-  targetLang?:  string | null
-  status:       LibraryStatus | null
-}
-
-export function FollowButton({
-  size = 'md',
-  entryId, materialId, title, cover, targetLang, status,
-}: FollowButtonProps) {
-  const qc = useQueryClient()
-  const inLibrary = status !== null && status !== 'dropped'
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const next: LibraryStatus = inLibrary ? 'dropped' : 'reading'
-      if (entryId != null) {
-        await api.patchLibraryEntry(entryId, { status: next })
-        return
-      }
-      if (materialId != null) {
-        await api.createLibraryEntry({
-          material_id:  materialId,
-          title,
-          cover_url:    cover ?? null,
-          target_lang:  targetLang ?? null,
-          status:       'reading',
-        })
-        return
-      }
-      throw new Error('FollowButton: pass entryId or materialId')
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['library'] })
-    },
-  })
-
-  const dims = size === 'sm'
-    ? 'h-7 px-2.5 text-xs'
-    : 'h-8 px-3 text-[13px]'
-
-  return (
-    <button
-      type="button"
-      onClick={() => mutation.mutate()}
-      disabled={mutation.isPending}
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-sm cursor-pointer transition-colors',
-        dims,
-        inLibrary
-          ? 'bg-success/15 text-success-text hover:bg-success/25'
-          : 'bg-accent text-accent-fg hover:brightness-110',
-        mutation.isPending && 'opacity-60 cursor-wait',
-      )}
-      title={inLibrary ? 'Bỏ theo dõi' : 'Theo dõi truyện này'}
-    >
-      {inLibrary ? (
-        <Check size={size === 'sm' ? 11 : 13} />
-      ) : (
-        <BookmarkPlus size={size === 'sm' ? 11 : 13} />
-      )}
-      {inLibrary ? (status && STATUS_LABEL[status]) : 'Theo dõi'}
-    </button>
-  )
-}
+// FollowButton was removed when the per-user /title route folded
+// into the cross-user /w/$workId — `StatusPicker` in
+// features/work is the canonical bookmark + status surface now.
 
 
 // =============================================================================
@@ -244,14 +166,14 @@ export function LibraryRailCard({ entry }: RailProps) {
               className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-black/85 via-black/40 to-transparent"
             />
             <div className="absolute inset-x-0 bottom-0 px-2 py-1.5">
-              <p className="text-[11px] font-semibold text-white/95 truncate">
+              <p className="text-xs font-semibold text-white/95 truncate">
                 {entry.lastChapterRead.label}
               </p>
             </div>
           </>
         )}
       </div>
-      <p className="text-[13px] font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
+      <p className="text-sm font-medium text-text leading-snug line-clamp-2 group-hover:text-accent-text transition-colors">
         {entry.title}
       </p>
     </Link>

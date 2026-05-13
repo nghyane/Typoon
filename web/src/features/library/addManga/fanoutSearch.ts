@@ -14,6 +14,7 @@ import { useQueries, keepPreviousData } from '@tanstack/react-query'
 import {
   fetchBrowse, hasSearch,
 } from '@features/browse/manifest/runtime'
+import { qk } from '@shared/api/keys'
 import type {
   InstalledSource, MangaSummary,
 } from '@features/browse/manifest/types'
@@ -104,7 +105,7 @@ export function useFanoutSearch(
 
   const queries = useQueries({
     queries: queried.map((s) => ({
-      queryKey:  ['search', s.manifest.id, q.trim()],
+      queryKey:  qk.manifest.search(s.manifest.id, q.trim()),
       queryFn:   async () =>
         await fetchBrowse(s.manifest, { search: true }, { q: q.trim() }),
       enabled,

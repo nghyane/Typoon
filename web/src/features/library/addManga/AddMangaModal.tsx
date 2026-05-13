@@ -6,6 +6,7 @@ import { Button } from '@shared/ui/Button'
 import { Tag } from '@shared/ui/primitives'
 import { toast } from '@shared/ui/Toaster'
 import { api, type LibraryStatus } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { useEnabledSources } from '@features/browse/sources'
 import { ManualCreateForm } from './ManualCreateForm'
 import { SearchPane } from './SearchPane'
@@ -39,7 +40,6 @@ export function AddMangaModal({ open, onClose }: Props) {
   const [query,            setQuery]            = useState('')
 
   const [targetLang, setTargetLang] = useState('vi')
-  const [autoTr,     setAutoTr]     = useState(false)
   const [status,     setStatus]     = useState<LibraryStatus>('reading')
 
   useEffect(() => {
@@ -48,16 +48,8 @@ export function AddMangaModal({ open, onClose }: Props) {
     setManualSeed(null)
     setQuery('')
     setTargetLang('vi')
-    setAutoTr(false)
     setStatus('reading')
   }, [open])
-
-  useEffect(() => {
-    if (!picked) return
-    const native = picked.languages[0]
-    setTargetLang('vi')
-    setAutoTr(!(native && native === 'vi'))
-  }, [picked])
 
   const mode: Mode = manualSeed !== null ? 'manual'
                    : picked !== null     ? 'picked'
@@ -74,7 +66,6 @@ export function AddMangaModal({ open, onClose }: Props) {
         <ConfirmActions
           picked={picked}
           targetLang={targetLang}
-          autoTr={autoTr}
           status={status}
           onCancel={() => setPicked(null)}
           onDone={onClose}
@@ -95,8 +86,6 @@ export function AddMangaModal({ open, onClose }: Props) {
             picked={picked}
             targetLang={targetLang}
             setTargetLang={setTargetLang}
-            autoTr={autoTr}
-            setAutoTr={setAutoTr}
             status={status}
             setStatus={setStatus}
             onChangePick={() => setPicked(null)}
@@ -137,11 +126,10 @@ function FooterLeft({
 
 
 function ConfirmActions({
-  picked, targetLang, autoTr, status, onCancel, onDone,
+  picked, targetLang, status, onCancel, onDone,
 }: {
   picked:     Picked
   targetLang: string
-  autoTr:     boolean
   status:     LibraryStatus
   onCancel:   () => void
   onDone:     () => void
@@ -161,16 +149,15 @@ function ConfirmActions({
         nsfw:         picked.nsfw,
       })
       return await api.createLibraryEntry({
-        material_id:    material.id,
-        title:          picked.title,
-        cover_url:      picked.cover ?? null,
-        target_lang:    targetLang,
-        auto_translate: autoTr,
+        material_id: material.id,
+        target_lang: targetLang,
+        title:       picked.title,
+        cover_url:   picked.cover ?? null,
         status,
       })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['library'] })
+      qc.invalidateQueries({ queryKey: qk.library.all() })
       toast.success(`Đã thêm "${picked.title}" vào thư viện`)
       onDone()
     },

@@ -65,13 +65,13 @@ export function ResultsList({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 px-0.5">
-        <p className="text-[11px] uppercase tracking-wider text-text-subtle">
+        <p className="text-xs uppercase tracking-wider text-text-subtle">
           {hits.length} kết quả
           {loading && <span className="ml-1.5 normal-case">· đang tìm thêm…</span>}
         </p>
         {failures.length > 0 && (
-          <span className="text-[11px] text-warning-text inline-flex items-center gap-1">
-            <AlertTriangle size={10} />
+          <span className="text-xs text-warning-text inline-flex items-center gap-1">
+            <AlertTriangle size={12} />
             {failures.length} nguồn lỗi
           </span>
         )}
@@ -117,14 +117,14 @@ function SourceGroup({
       {!hideHeader && (
         <header className="flex items-baseline justify-between gap-2 px-1 mb-1.5">
           <div className="flex items-baseline gap-2 min-w-0">
-            <span className="text-[12px] font-medium text-text truncate">
+            <span className="text-xs font-medium text-text truncate">
               {manifest.name}
             </span>
-            <span className="text-[11px] text-text-subtle truncate">
+            <span className="text-xs text-text-subtle truncate">
               {manifest.host}
             </span>
           </div>
-          <span className="text-[11px] text-text-subtle shrink-0">
+          <span className="text-xs text-text-subtle shrink-0">
             {hits.length}
           </span>
         </header>
@@ -142,7 +142,7 @@ function SourceGroup({
             <button
               type="button"
               onClick={() => setExpanded(true)}
-              className="w-full inline-flex items-center justify-center gap-1.5 h-8 text-[12px] text-text-muted hover:bg-hover hover:text-text transition-colors cursor-pointer"
+              className="w-full inline-flex items-center justify-center gap-2 h-8 text-xs text-text-muted hover:bg-hover hover:text-text transition-colors cursor-pointer"
             >
               <ChevronDown size={12} />
               Xem thêm {more}
@@ -212,17 +212,17 @@ function ResultRow({
           fontSize="text-[9px]"
         />
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] text-text truncate leading-tight">
+          <p className="text-sm text-text truncate leading-tight">
             {manga.title}
           </p>
           {manifest.languages.length > 0 && (
-            <p className="text-[11px] text-text-subtle uppercase mt-0.5">
+            <p className="text-xs text-text-subtle uppercase mt-0.5">
               {manifest.languages.slice(0, 3).join('/')}
             </p>
           )}
         </div>
         {resolving && (
-          <Loader2 size={13} className="text-text-subtle animate-spin shrink-0" />
+          <Loader2 size={14} className="text-text-subtle animate-spin shrink-0" />
         )}
       </button>
     </li>

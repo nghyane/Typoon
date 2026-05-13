@@ -232,6 +232,38 @@ function evalJsonPath(root: unknown, path: string): unknown {
           evalJsonPath(item, `$${rest}`),
         )
       }
+      // Equality filter: `[?key=value]` keeps array items whose
+      // `.key` (single hop, no dots) equals the literal string
+      // `value`. Drops items where the field is missing. Returns
+      // the first surviving item (or its sub-projection when more
+      // path segments follow). Quotes around the value are stripped.
+      if (idx.startsWith('?')) {
+        const eq = idx.indexOf('=', 1)
+        if (eq < 0) return null
+        const key = idx.slice(1, eq).trim()
+        let val   = idx.slice(eq + 1).trim()
+        if ((val.startsWith("'") && val.endsWith("'"))
+            || (val.startsWith('"') && val.endsWith('"'))) {
+          val = val.slice(1, -1)
+        }
+        if (!Array.isArray(cur)) return null
+        const kept = (cur as unknown[]).filter((item) => {
+          if (item == null || typeof item !== 'object') return false
+          const v = (item as Record<string, unknown>)[key]
+          return v != null && String(v) === val
+        })
+        const rest = path.slice(close + 1)
+        if (!rest) return kept.length > 0 ? kept[0] : null
+        // Trailing path segments — branch on whether they start with
+        // a wildcard (project across every kept item) or a scalar
+        // step (project from the first match only).
+        const wildcard = rest.startsWith('[*]') || rest.startsWith('.*')
+        if (wildcard) {
+          return kept.map((item) => evalJsonPath(item, `$${rest}`))
+        }
+        if (kept.length === 0) return null
+        return evalJsonPath(kept[0], `$${rest}`)
+      }
       const n = Number(idx)
       if (!Array.isArray(cur) || !Number.isInteger(n)) return null
       cur = cur[n]

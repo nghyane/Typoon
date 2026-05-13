@@ -6,6 +6,7 @@ import { input, label } from '@shared/ui/primitives'
 import { toast } from '@shared/ui/Toaster'
 import { cn } from '@shared/lib/cn'
 import { api, type LibraryStatus } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 
 // =============================================================================
 // ManualCreateForm — for manga not in any installed source.
@@ -53,16 +54,14 @@ export function ManualCreateForm({ initialTitle, onCancel, onCreated }: Props) {
         nsfw,
       })
       await api.createLibraryEntry({
-        material_id:    material.id,
-        title:          material.title,
-        cover_url:      material.cover_url,
-        target_lang:    targetLang,
-        auto_translate: autoTr,
+        material_id: material.id,
+        title:       material.title,
+        cover_url:   material.cover_url,
         status,
       })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['library'] })
+      qc.invalidateQueries({ queryKey: qk.library.all() })
       toast.success(`Đã tạo "${title.trim()}". Tải chương ở trang truyện.`)
       onCreated()
     },
@@ -75,7 +74,7 @@ export function ManualCreateForm({ initialTitle, onCancel, onCreated }: Props) {
         <Wand2 size={14} className="text-info-text shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
           <p className="text-sm text-text">Tạo manga thủ công</p>
-          <p className="text-[11px] text-text-subtle mt-0.5">
+          <p className="text-xs text-text-subtle mt-0.5">
             Manga sẽ được tạo trống. Vào trang truyện để tải chương từ
             file zip/cbz hoặc ảnh.
           </p>
@@ -111,7 +110,7 @@ export function ManualCreateForm({ initialTitle, onCancel, onCreated }: Props) {
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className={cn(label, 'mb-0')}>Cover (link)</label>
-            <span className="text-[11px] text-text-subtle">Tuỳ chọn</span>
+            <span className="text-xs text-text-subtle">Tuỳ chọn</span>
           </div>
           <input
             type="url"
@@ -126,7 +125,7 @@ export function ManualCreateForm({ initialTitle, onCancel, onCreated }: Props) {
         <div className="col-span-2">
           <div className="flex items-center justify-between mb-1.5">
             <label className={cn(label, 'mb-0')}>Mô tả</label>
-            <span className="text-[11px] text-text-subtle">Tuỳ chọn</span>
+            <span className="text-xs text-text-subtle">Tuỳ chọn</span>
           </div>
           <textarea
             value={desc}
@@ -163,9 +162,8 @@ export function ManualCreateForm({ initialTitle, onCancel, onCreated }: Props) {
             disabled={create.isPending}
           >
             <option value="reading">Đang đọc</option>
-            <option value="plan">Kế hoạch</option>
-            <option value="on_hold">Tạm dừng</option>
-            <option value="done">Đã xong</option>
+            <option value="plan">Để dành</option>
+            <option value="done">Đã đọc xong</option>
           </select>
         </div>
 

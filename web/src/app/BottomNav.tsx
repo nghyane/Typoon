@@ -1,15 +1,28 @@
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Library, Settings } from 'lucide-react'
+import { Home, Library, Compass, Settings, type LucideIcon } from 'lucide-react'
 import { cn } from '../shared/lib/cn'
 
-const ITEMS = [
+// =============================================================================
+// BottomNav — mobile shell mirroring Sidebar. Mobile-only (sm:hidden).
+// =============================================================================
+
+interface Item {
+  to:    string
+  label: string
+  icon:  LucideIcon
+}
+
+const ITEMS: Item[] = [
+  { to: '/',         label: 'Nhà',      icon: Home     },
   { to: '/library',  label: 'Thư viện', icon: Library  },
+  { to: '/explore',  label: 'Khám phá', icon: Compass  },
   { to: '/settings', label: 'Cài đặt',  icon: Settings },
-] as const
+]
 
 export function BottomNav() {
   const { location } = useRouterState()
-  const isActive = (to: string) => location.pathname.startsWith(to)
+  const isActive = (to: string) =>
+    to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
 
   return (
     <nav
@@ -29,7 +42,7 @@ export function BottomNav() {
             key={to}
             to={to}
             className={cn(
-              'flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] transition-colors',
+              'flex-1 flex flex-col items-center justify-center gap-0.5 text-xs transition-colors',
               active ? 'text-accent-text' : 'text-text-subtle',
             )}
           >

@@ -42,13 +42,13 @@ function UnsupportedUrlCard({
         <AlertTriangle size={14} className="text-warning-text shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
           <p className="text-sm text-text">Không có nguồn quản lý site này</p>
-          <p className="text-[11px] text-text-subtle mt-0.5 break-all line-clamp-2">
+          <p className="text-xs text-text-subtle mt-0.5 break-all line-clamp-2">
             {url}
           </p>
           <button
             type="button"
             onClick={() => onManualCreate('')}
-            className="mt-2.5 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-sm bg-surface-2 text-[12px] text-text hover:bg-hover cursor-pointer transition-colors"
+            className="mt-2.5 inline-flex items-center gap-2 h-7 px-2.5 rounded-sm bg-surface-2 text-xs text-text hover:bg-hover cursor-pointer transition-colors"
           >
             <Wand2 size={12} />
             Tạo thủ công thay
@@ -101,7 +101,7 @@ function MatchedUrlCard({
           <AlertTriangle size={14} className="text-error-text shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <p className="text-sm text-text">Không tải được từ {manifest.name}</p>
-            <p className="text-[11px] text-error-text mt-0.5 line-clamp-2">{err}</p>
+            <p className="text-xs text-error-text mt-0.5 line-clamp-2">{err}</p>
           </div>
         </div>
       </div>
@@ -112,7 +112,7 @@ function MatchedUrlCard({
       <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm text-text">Đang tải từ {manifest.name}…</p>
-        <p className="text-[11px] text-text-subtle truncate mt-0.5">{upstreamRef}</p>
+        <p className="text-xs text-text-subtle truncate mt-0.5">{upstreamRef}</p>
       </div>
     </div>
   )
