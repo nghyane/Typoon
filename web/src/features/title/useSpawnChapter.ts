@@ -18,6 +18,7 @@
 import { useState, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { fetchChapterPages } from '@features/browse/manifest/runtime'
 import { useSources } from '@features/browse/sources'
 import { packPagesToZip } from '@typoon/upload-sdk'
@@ -58,7 +59,7 @@ export function useSpawnChapter(targetLang: string) {
     version: HubVersion,
     chapterLabel: string | null,
   ) => {
-    if (!version.upstreamUrl || !version.sourceId) return
+    if (!version.upstreamUrl || !version.sourceId || version.materialId == null) return
     const source = sources[version.sourceId]
     if (!source) {
       setProgress({ ...IDLE, phase: 'error', error: `Nguồn "${version.sourceId}" chưa được cài đặt.` })
@@ -108,6 +109,12 @@ export function useSpawnChapter(targetLang: string) {
         label:       chapterLabel ?? undefined,
         upstreamUrl: version.upstreamUrl,
         numberNorm:  version.numberNorm ?? undefined,
+        // Pin the chapter's source language to whatever the user
+        // actually clicked. A MangaDex Italian material can host an
+        // English-only chapter; without this, the server would
+        // record `source_lang='it'` and the LLM gets told to
+        // translate Italian text it can't see in the pixels.
+        sourceLang:  version.lang || undefined,
         onProgress: (p) => {
           const pct = p.bytesTotal > 0 ? Math.round((p.bytesSent / p.bytesTotal) * 100) : 0
           setProgress((prev) => ({ ...prev, pct }))
@@ -122,10 +129,10 @@ export function useSpawnChapter(targetLang: string) {
         target_lang: targetLang,
       })
 
-      // Refresh chapter list so the row flips from raw → running.
-      await qc.invalidateQueries({
-        queryKey: ['material', 'detail', version.materialId],
-      })
+      // Refresh work cache so the chapter list flips raw → running.
+      // We don't know the specific workId in this scope; invalidate
+      // every work entry (cheap at beta scale, one entry per open tab).
+      await qc.invalidateQueries({ queryKey: qk.work.all() })
 
       setProgress({ phase: 'done', current: pages.length, total: pages.length, pct: 100, error: null })
     } catch (err) {
