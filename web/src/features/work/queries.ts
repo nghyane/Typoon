@@ -26,7 +26,15 @@ export function useWork(workId: number | null) {
     queryKey: workId != null ? qk.work.byId(workId) : ['work', 'invalid'] as const,
     queryFn:  () => api.getWork(workId!),
     enabled:  workId != null && Number.isFinite(workId) && workId > 0,
-    staleTime: 30_000,
+    // Fresh for 2 minutes — navigating between work / reader / library
+    // within this window hits the cache. Background polling below
+    // overrides while there's in-flight work the user wants to see
+    // tick over.
+    staleTime: 2 * 60_000,
+    // Keep the in-memory entry alive long enough to outlive normal
+    // route switching. Pairs with IDB persistence so reload also
+    // skips refetch when the persisted snapshot is still fresh.
+    gcTime: 30 * 60_000,
     refetchInterval: (q) => {
       const data = q.state.data as ApiWorkDetail | undefined
       if (!data) return false

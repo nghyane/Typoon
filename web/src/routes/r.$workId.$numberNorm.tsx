@@ -74,61 +74,6 @@ function ReaderPage() {
     )
   }
 
-  if (reader.status === 'loading') {
-    return (
-      <div className="flex items-center justify-center min-h-dvh">
-        <Spinner size={20} />
-      </div>
-    )
-  }
-
-  if (reader.status === 'not-found') {
-    return (
-      <div className="px-4 py-16">
-        <EmptyState
-          icon={AlertTriangle}
-          title="Không tìm thấy chương"
-          hint={`Chương "${numberNorm}" không có trong manga này.`}
-        />
-      </div>
-    )
-  }
-
-  if (reader.status === 'pending-render') {
-    return (
-      <div className="px-6 py-16 text-center max-w-md mx-auto">
-        <p className="text-sm font-medium text-text">Chương chưa render xong</p>
-        <p className="text-xs text-text-subtle mt-1">
-          Bản dịch đang được hệ thống tạo ra — quay lại sau ít phút.
-        </p>
-      </div>
-    )
-  }
-
-  if (reader.status === 'no-source') {
-    return (
-      <div className="px-4 py-16">
-        <EmptyState
-          icon={AlertTriangle}
-          title="Nguồn chưa được cài"
-          hint="Vào Cài đặt → Nguồn để cài plugin tương ứng."
-        />
-      </div>
-    )
-  }
-
-  if (reader.status === 'error') {
-    return (
-      <div className="px-4 py-16">
-        <EmptyState
-          icon={AlertTriangle}
-          title="Không tải được chương"
-          hint={reader.error ?? 'Selector hoặc archive có thể đã hỏng.'}
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-dvh bg-bg">
       <ReaderToolbar
@@ -141,16 +86,99 @@ function ReaderPage() {
         totalPages={reader.pages.length}
         mode={mode}
         onModeChange={setMode}
-        onBack={() => window.history.back()}
+        onBack={() => nav({
+          // Always return to the Work page, not the previous history
+          // entry. History "back" lands on the prior chapter when the
+          // user got here via next/prev — confusing and not what
+          // clicking the manga title implies.
+          to:     '/w/$workId',
+          params: { workId: workIdStr },
+          search: { src },
+        })}
       />
 
-      <ReaderBody
-        source={reader}
-        mode={mode}
+      <ReaderContent
+        reader={reader}
+        numberNorm={numberNorm}
         page={page}
+        mode={mode}
         onChange={setPage}
       />
     </div>
+  )
+}
+
+
+/** Renders the body — pages OR a status placeholder. The toolbar
+ *  above stays mounted regardless of status so the user can navigate
+ *  back / to a sibling chapter while the current one is loading or
+ *  errored. */
+function ReaderContent({
+  reader, numberNorm, page, mode, onChange,
+}: {
+  reader:     ReturnType<typeof useReader>
+  numberNorm: string
+  page:       number
+  mode:       ViewMode
+  onChange:   (p: number) => void
+}) {
+  if (reader.status === 'loading') {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Spinner size={20} />
+      </div>
+    )
+  }
+  if (reader.status === 'not-found') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Không tìm thấy chương"
+          hint={`Chương "${numberNorm}" không có trong manga này.`}
+        />
+      </div>
+    )
+  }
+  if (reader.status === 'pending-render') {
+    return (
+      <div className="px-6 py-16 text-center max-w-md mx-auto">
+        <p className="text-sm font-medium text-text">Chương chưa render xong</p>
+        <p className="text-xs text-text-subtle mt-1">
+          Bản dịch đang được hệ thống tạo ra — quay lại sau ít phút.
+        </p>
+      </div>
+    )
+  }
+  if (reader.status === 'no-source') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Nguồn chưa được cài"
+          hint="Vào Cài đặt → Nguồn để cài plugin tương ứng."
+        />
+      </div>
+    )
+  }
+  if (reader.status === 'error') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Không tải được chương"
+          hint={reader.error ?? 'Selector hoặc archive có thể đã hỏng.'}
+        />
+      </div>
+    )
+  }
+  return (
+    <ReaderBody
+      source={reader}
+      mode={mode}
+      page={page}
+      onChange={onChange}
+    />
   )
 }
 

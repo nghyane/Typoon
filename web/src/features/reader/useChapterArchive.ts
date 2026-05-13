@@ -77,6 +77,11 @@ export function useChapterArchive(url: string | null | undefined): ChapterArchiv
             setProgress({ received, total })
           },
         })) {
+          // Stream iterators may yield a chunk that was in-flight at
+          // the moment abort() fired — check the flag before allocating
+          // a blob URL we'd otherwise leak (cleanup has already
+          // revoked everything in `localUrls`).
+          if (ctrl.signal.aborted) break
           const u = URL.createObjectURL(blob)
           localUrls.push(u)
           urlsRef.current.set(index, u)

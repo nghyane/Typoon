@@ -22,11 +22,17 @@
 //
 // Storage: IndexedDB via `idb-keyval` (one named store, single key for
 // the dehydrated cache blob). Survives 5+ MB without quota grief.
+//
+// Hydration is async by design (IDB is async). Consumers wrap their
+// app in `PersistQueryClientProvider` from
+// `@tanstack/react-query-persist-client` so React waits for hydration
+// before rendering children — without that wrapper, the first render
+// would fire fresh fetches even when IDB has data, defeating the
+// point of persisting.
 
 import { get, set, del, createStore } from 'idb-keyval'
-import { QueryClient } from '@tanstack/react-query'
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister'
-import { persistQueryClient } from '@tanstack/react-query-persist-client'
+import type { PersistedClient, Persister } from '@tanstack/react-query-persist-client'
 
 
 /** Domain prefixes whose entries are safe to persist. Matched against
@@ -41,7 +47,11 @@ const PERSIST_DOMAINS = new Set<string>([
 
 /** Bump when the persisted-cache shape changes incompatibly. The
  *  persister wipes old blobs that don't match. */
-const CACHE_BUSTER = 'v1'
+export const CACHE_BUSTER = 'v1'
+
+/** Drop persisted entries older than this on hydrate. Manifest data
+ *  goes stale fast enough that a day-old snapshot is rarely useful. */
+export const MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 const STORE = createStore('typoon-rq', 'cache')
 const STORAGE_KEY = 'rq-cache'
@@ -61,36 +71,26 @@ const idbStorage = {
 }
 
 
-/** Wire persistence onto a QueryClient. Call once during app boot.
- *  Returns a teardown for hot-reload safety, not used in prod. */
-export function installPersistence(qc: QueryClient): () => void {
-  const persister = createAsyncStoragePersister({
-    storage:      idbStorage,
-    // Throttle write-back so we don't hammer IDB on every query
-    // resolve. 1s is fast enough that a navigation away preserves
-    // the latest data without serialising on every fetch.
-    throttleTime: 1000,
-  })
+/** Persister instance the `<PersistQueryClientProvider>` consumes. */
+export const persister: Persister = createAsyncStoragePersister({
+  storage:      idbStorage,
+  // Throttle write-back so we don't hammer IDB on every query
+  // resolve. 1s is fast enough that a navigation away preserves
+  // the latest data without serialising on every fetch.
+  throttleTime: 1000,
+}) as Persister
 
-  const [unsubscribe] = persistQueryClient({
-    queryClient: qc,
-    persister,
-    // Drop persisted entries older than 24h. Manifest data goes
-    // stale fast enough that a day-old snapshot is rarely useful.
-    maxAge:      24 * 60 * 60 * 1000,
-    buster:      CACHE_BUSTER,
-    dehydrateOptions: {
-      shouldDehydrateQuery: (q) => {
-        // Persist only on success — failed queries write nothing,
-        // so a transient error doesn't pollute the next session.
-        if (q.state.status !== 'success') return false
-        const head = q.queryKey[0]
-        return typeof head === 'string' && PERSIST_DOMAINS.has(head)
-      },
-    },
-  })
 
-  return unsubscribe
+/** Dehydrate filter — only persist queries on the positive list and
+ *  only when they succeeded (failed queries write nothing, so a
+ *  transient error doesn't pollute the next session). */
+export function shouldDehydrateQuery(q: {
+  state: { status: string }
+  queryKey: readonly unknown[]
+}): boolean {
+  if (q.state.status !== 'success') return false
+  const head = q.queryKey[0]
+  return typeof head === 'string' && PERSIST_DOMAINS.has(head)
 }
 
 
@@ -98,3 +98,9 @@ export function installPersistence(qc: QueryClient): () => void {
 export async function clearPersistedCache(): Promise<void> {
   await del(STORAGE_KEY, STORE)
 }
+
+
+/** Re-export the PersistedClient type so the wrapper at boot can
+ *  reference it without dragging the whole persist-client module
+ *  into main.tsx. */
+export type { PersistedClient }

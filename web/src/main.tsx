@@ -2,9 +2,12 @@ import './index.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
-import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query'
+import { QueryClient, keepPreviousData } from '@tanstack/react-query'
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client'
 import { routeTree } from './routeTree.gen'
-import { installPersistence } from '@shared/api/persistence'
+import {
+  CACHE_BUSTER, MAX_AGE_MS, persister, shouldDehydrateQuery,
+} from '@shared/api/persistence'
 
 // Persist DA flag before router strips query params from the URL.
 if (new URLSearchParams(window.location.search).get('frame_id') != null) {
@@ -40,13 +43,6 @@ const queryClient = new QueryClient({
   },
 })
 
-// Persist a curated slice of the cache (manifest detail, chapter
-// pages, translation rows, work payloads) to IndexedDB so a reload
-// — or a temporary 3rd-party source outage — doesn't blank the UI.
-// See `persistence.ts` for the positive/negative list. Idempotent;
-// failures from quota-full or private mode degrade silently.
-installPersistence(queryClient)
-
 const router = createRouter({
   routeTree,
   // Cross-fade pending → resolved instead of blanking the route.
@@ -66,8 +62,21 @@ declare module '@tanstack/react-router' {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
+    {/* PersistQueryClientProvider waits for IDB hydration before
+        rendering children, so the first useQuery call after boot
+        sees the persisted cache instead of firing a redundant
+        network fetch. Without this wrapper RQ would refetch even
+        when IDB has fresh data — defeats the persistence layer. */}
+    <PersistQueryClientProvider
+      client={queryClient}
+      persistOptions={{
+        persister,
+        maxAge:           MAX_AGE_MS,
+        buster:           CACHE_BUSTER,
+        dehydrateOptions: { shouldDehydrateQuery },
+      }}
+    >
       <RouterProvider router={router} />
-    </QueryClientProvider>
+    </PersistQueryClientProvider>
   </StrictMode>,
 )
