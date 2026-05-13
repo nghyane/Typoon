@@ -979,6 +979,37 @@ class PostgresStore:
                 *args,
             )
 
+    async def merge_material_cross_refs(
+        self, material_id: int, refs: dict,
+    ) -> None:
+        """Additively merge `refs` into `materials.cross_refs`.
+
+        Same coercion rules as the linker's `_clean_refs` — strings,
+        numbers stringified, empties dropped. Existing namespaces win
+        on conflict (JSONB `||` is right-takes-precedence; we put
+        `refs` on the LEFT so existing values on the RIGHT prevail).
+        Caller-controlled writes never overwrite the source-manifest's
+        authoritative cross_refs.
+        """
+        cleaned: dict[str, str] = {}
+        for k, v in (refs or {}).items():
+            if not k or v is None:
+                continue
+            if isinstance(v, (str, int, float)):
+                s = str(v).strip()
+                if s:
+                    cleaned[str(k)] = s
+        if not cleaned:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE materials SET "
+                "  cross_refs = $1::jsonb "
+                "             || COALESCE(cross_refs, '{}'::jsonb) "
+                "WHERE id = $2",
+                cleaned, material_id,
+            )
+
     async def delete_material(self, material_id: int) -> None:
         """Cascades through chapters → drafts/translations → bubbles
         etc. via FK ON DELETE CASCADE. Blob cleanup is the caller's

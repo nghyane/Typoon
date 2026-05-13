@@ -1,0 +1,29 @@
+{
+  "id": "anilist",
+  "name": "Anilist",
+  "namespace": "anilist",
+  "description": "GraphQL API at https://anilist.co — no auth required, ~90 req/min/IP.",
+  "endpoints": {
+    "search": {
+      "url": "https://graphql.anilist.co",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept":       "application/json"
+      },
+      "bodyJson": {
+        "query": "query($search:String){Page(page:1,perPage:3){media(search:$search,type:MANGA){id title{romaji english native} synonyms coverImage{medium}}}}",
+        "variables": { "search": "{q}" }
+      },
+      "list":  "$.data.Page.media",
+      "fields": {
+        "id":           "$.id",
+        "title":        "$.title.romaji",
+        "title_alt":    "$.title.english",
+        "title_native": "$.title.native",
+        "synonyms":     "$.synonyms",
+        "cover":        "$.coverImage.medium"
+      }
+    }
+  }
+}

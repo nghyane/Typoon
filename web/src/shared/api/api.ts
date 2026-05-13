@@ -550,6 +550,25 @@ export const api = {
       method: 'PATCH', body: json(body),
     }),
 
+  /** Merge client-found cross_refs onto a material. Used by the
+   *  auto-enrich flow: when the SPA fans search out across link
+   *  plugins (Anilist, MAL, …) and finds the same manga on those
+   *  services, it POSTs the discovered IDs here so subsequent
+   *  imports of any sibling can auto-link via the existing
+   *  `cross_refs` linker. Idempotent; existing values are preserved
+   *  on conflict (additive merge). */
+  enrichMaterialRefs: (id: number, body: {
+    cross_refs:     Record<string, string | number>
+    source_signals?: Array<{
+      plugin:        string
+      confidence:    number
+      matched_title: string | null
+    }>
+  }) =>
+    request<ApiMaterial>(`/material/${id}/enrich-refs`, {
+      method: 'POST', body: json(body),
+    }),
+
   // ── Cross-source link voting ──────────────────────────────────
   // Community-driven `materials.work_id` merging. Each vote upserts
   // an entry in `material_link_votes`; once a (a, b) pair crosses

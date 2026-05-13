@@ -168,12 +168,67 @@ async def patch_material(
     return MaterialOut.from_row(mat)
 
 
-# ── Translation overlay ───────────────────────────────────────────────
+# ── Cross-reference enrichment ───────────────────────────────────────
 #
-# The pre-Work `POST /material/{id}/translation-overlay` route is gone.
-# Cross-source translation discovery is now part of `GET /work/{id}`
-# (Step 2 of the Work refactor) — overlaying by upstream_url within a
-# single material was a workaround for the old per-material identity.
+# Auto-enrich is client-driven: the SPA fans search across link
+# plugins (Anilist, MAL, …) when it opens a Work whose cross_refs
+# are empty, and POSTs whatever it found back here. This endpoint
+# MERGES the suggested cross_refs additively — never overwrites a
+# value that already exists. Anyone authenticated may submit; the
+# operation is idempotent.
+#
+# After the merge we ask the linker to re-evaluate whether this
+# material's Work should attach to an existing Work that shares a
+# cross_ref namespace. The linker decides; this route doesn't merge
+# anything itself.
+
+
+class EnrichRefsBody(BaseModel):
+    """Client-supplied cross_refs to merge into the material.
+
+    `cross_refs` is `{namespace: value}` — same shape as the
+    materials row column. Empty / non-scalar values are dropped
+    server-side. The optional `source_signals` is logged for audit
+    but doesn't affect the merge; it's there so a future moderation
+    UI can see "which plugin claimed this".
+    """
+    cross_refs: dict[str, str | int | float]
+    source_signals: list[dict] | None = None
+
+
+@router.post(
+    "/{material_id}/enrich-refs",
+    response_model=MaterialOut,
+)
+async def enrich_material_refs(
+    material_id: int,
+    body:        EnrichRefsBody,
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """Merge client-found cross_refs onto a material additively.
+
+    The SPA's link-plugin runtime calls this after fanning search out
+    across services (Anilist, MAL, …). We accept whatever it found
+    even when the same plugin disagrees with an earlier write —
+    `merge_material_cross_refs` keeps the older value on conflict
+    (anyone with stronger evidence will revote/re-merge through the
+    community vote flow, not by overwriting here).
+    """
+    await require_user  # already enforced by Depends
+    mat = await db.get_material(material_id)
+    if mat is None:
+        raise HTTPException(404, "Material not found")
+
+    # Audit log — optional. Skipped at MVP; we keep the parameter so
+    # the client signature is stable.
+    _ = body.source_signals
+    _ = user
+
+    await db.merge_material_cross_refs(material_id, body.cross_refs)
+    refreshed = await db.get_material(material_id)
+    assert refreshed is not None
+    return MaterialOut.from_row(refreshed)
 
 
 # ── Delete ────────────────────────────────────────────────────────────

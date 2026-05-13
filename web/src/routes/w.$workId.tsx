@@ -28,6 +28,7 @@ import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 
 import { useWorkData } from '@features/work/useWorkData'
+import { useAutoEnrichWork } from '@features/link/useAutoEnrichWork'
 import {
   WorkHero, ContinueReadingBar,
 } from '@features/work/WorkHero'
@@ -58,6 +59,13 @@ function WorkPage() {
     work, materials, activeMaterial, targetLang, chapters,
     workLoading, manifestLoading, workError,
   } = useWorkData(workIdNum, src ?? null)
+
+  // Silent cross-reference auto-enrich. When this Work has no
+  // `cross_refs` yet, the hook fans search across installed link
+  // plugins (Anilist, …), POSTs whatever it found back to the
+  // server, and the linker takes it from there. Fires at most once
+  // per (work, week); no UI surface for the user.
+  useAutoEnrichWork(work)
 
   // Recent-read row scoped to this Work — drives the "Tiếp tục"
   // affordance in the hero. Pulled out of the global recent feed by

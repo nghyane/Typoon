@@ -236,6 +236,15 @@ class Store(Protocol):
         nsfw:         bool | None = None,
     ) -> None: ...
 
+    async def merge_material_cross_refs(
+        self, material_id: int, refs: dict,
+    ) -> None:
+        """Additively merge `refs` into `materials.cross_refs`. Existing
+        namespaces keep their values; new namespaces are added. Empty
+        / non-scalar values are dropped. Used by the client-driven
+        auto-enrich flow."""
+        ...
+
     async def delete_material(self, material_id: int) -> None:
         """Cascade: chapters, drafts, translations, bubbles, geometry,
         masks. Used by ext / upload owners only — source-backed
