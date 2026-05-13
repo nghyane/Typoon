@@ -110,13 +110,13 @@ async def test_brief_sliding_window():
         )
         # Three chapters at increasing positions.
         c1 = await store.create_chapter(
-            material_id=mid, number="1",
+            material_id=mid, number_norm="1",
         )
         c2 = await store.create_chapter(
-            material_id=mid, number="2",
+            material_id=mid, number_norm="2",
         )
         c3 = await store.create_chapter(
-            material_id=mid, number="3",
+            material_id=mid, number_norm="3",
         )
         for cid, summary in ((c1, "Ch1"), (c2, "Ch2"), (c3, "Ch3")):
             await store.append_memory_brief(
@@ -151,7 +151,7 @@ async def test_brief_upsert_overwrites():
             source_lang="ko", target_lang="vi",
         )
         cid = await store.create_chapter(
-            material_id=mid, number="1",
+            material_id=mid, number_norm="1",
         )
         await store.append_memory_brief(
             memory_id=mem["id"], chapter_id=cid,
@@ -180,7 +180,7 @@ async def test_delete_memory_cascades_briefs():
             source_lang="ko", target_lang="vi",
         )
         cid = await store.create_chapter(
-            material_id=mid, number="1",
+            material_id=mid, number_norm="1",
         )
         await store.append_memory_brief(
             memory_id=mem["id"], chapter_id=cid,

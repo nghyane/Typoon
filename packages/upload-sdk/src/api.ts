@@ -29,10 +29,17 @@ export interface UploadFinalizeBody {
   tmp_id:    string
   upload_id: string
   parts:     FinalizePart[]
-  /** Display chapter number. Engine auto-generates when omitted. */
-  number?:   string
-  /** Free-form chapter label (e.g. "Extra: Volume 1 Cover"). */
+  /** Free-form chapter label (e.g. "Chương 040", "第106话",
+   *  "Extra: Volume Cover"). Stored verbatim for display. */
   label?:    string
+  /** Source manifest URL for this chapter. When provided, the engine
+   *  dedups against existing chapter rows (same material × upstream_url)
+   *  so multiple users uploading the same source chapter share one row. */
+  upstream_url?: string
+  /** Canonical chapter key (work_chapters.number_norm). Drives the
+   *  work_chapter row that dedups chapters across sources of the
+   *  same Work. Engine generates a sequential fallback when omitted. */
+  number_norm?: string
 }
 
 export interface UploadAbortBody {

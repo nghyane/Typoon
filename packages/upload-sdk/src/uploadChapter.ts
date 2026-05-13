@@ -22,9 +22,18 @@ import type {
 const DEFAULT_CONCURRENCY = 4
 
 export interface UploadOptions {
-  number?:      string
-  /** Free-form chapter label (e.g. "Extra: Volume 1 Cover"). */
+  /** Free-form chapter label (e.g. "Chương 040", "第106话",
+   *  "Extra: Volume 1 Cover"). Stored verbatim on the chapter row
+   *  for display. */
   label?:       string
+  /** Source manifest URL — enables server-side dedup against existing
+   *  chapter rows for the same upstream chapter. */
+  upstreamUrl?: string
+  /** Canonical chapter key (work_chapters.number_norm). SPA computes
+   *  via `applyChapterNumberNorm` using the source manifest's
+   *  declarative spec. Server falls back to a sequential number
+   *  when absent (ext / upload origin with no manifest). */
+  numberNorm?:  string
   /** How many part PUTs to run in parallel. Default 4 — saturates a
    *  typical home upstream while staying inside R2 free-tier
    *  rate-limit guardrails. */
@@ -103,11 +112,12 @@ export async function uploadChapterZip(
 
   try {
     return await client.uploadFinalize(materialId, {
-      tmp_id:    init.tmp_id,
-      upload_id: init.upload_id,
+      tmp_id:       init.tmp_id,
+      upload_id:    init.upload_id,
       parts,
-      number:    opts.number,
-      label:     opts.label,
+      label:        opts.label,
+      upstream_url: opts.upstreamUrl,
+      number_norm:  opts.numberNorm,
     })
   } catch (err) {
     // Finalize failed (engine couldn't unpack/ingest, or quota tripped

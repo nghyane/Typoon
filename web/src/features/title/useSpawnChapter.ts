@@ -16,6 +16,7 @@
 //   done / error
 
 import { useState, useCallback } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@shared/api/api'
 import { fetchChapterPages } from '@features/browse/manifest/runtime'
 import { useSources } from '@features/browse/sources'
@@ -51,8 +52,12 @@ const IDLE: SpawnProgress = {
 export function useSpawnChapter(targetLang: string) {
   const [progress, setProgress] = useState<SpawnProgress>(IDLE)
   const sources = useSources((s) => s.sources)
+  const qc      = useQueryClient()
 
-  const spawn = useCallback(async (version: HubVersion) => {
+  const spawn = useCallback(async (
+    version: HubVersion,
+    chapterLabel: string | null,
+  ) => {
     if (!version.upstreamUrl || !version.sourceId) return
     const source = sources[version.sourceId]
     if (!source) {
@@ -70,7 +75,6 @@ export function useSpawnChapter(targetLang: string) {
       // 2. Download pages — parallel with concurrency 4, fail fast.
       setProgress({ phase: 'downloading', current: 0, total: pages.length, pct: 0, error: null })
 
-      const downloaded: { source: string; bytes: Uint8Array }[] = []
       const CONCURRENCY = 4
       let done = 0
 
@@ -96,24 +100,31 @@ export function useSpawnChapter(targetLang: string) {
       setProgress({ phase: 'packing', current: pages.length, total: pages.length, pct: 0, error: null })
       const zip = packPagesToZip(results)
 
-      // 4. Upload.
+      // 4. Upload — server dedups by upstream_url so concurrent uploads
+      //    of the same source chapter share one chapter row.
       setProgress({ phase: 'uploading', current: pages.length, total: pages.length, pct: 0, error: null })
 
       const chapter = await uploadChapterZip(api, version.materialId, zip, {
-        number: version.chapterId ? undefined : undefined, // number comes from version
+        label:       chapterLabel ?? undefined,
+        upstreamUrl: version.upstreamUrl,
+        numberNorm:  version.numberNorm ?? undefined,
         onProgress: (p) => {
-          const pct = p.total > 0 ? Math.round((p.loaded / p.total) * 100) : 0
+          const pct = p.bytesTotal > 0 ? Math.round((p.bytesSent / p.bytesTotal) * 100) : 0
           setProgress((prev) => ({ ...prev, pct }))
         },
       })
 
-      // 5. Spawn translation.
+      // 5. Spawn translation against the materialized chapter row.
       setProgress({ phase: 'spawning', current: pages.length, total: pages.length, pct: 100, error: null })
 
       await api.spawnTranslate({
-        chapter_id:  chapter.chapter_id,
+        chapter_id:  chapter.id,
         target_lang: targetLang,
-        visibility:  'guild',
+      })
+
+      // Refresh chapter list so the row flips from raw → running.
+      await qc.invalidateQueries({
+        queryKey: ['material', 'detail', version.materialId],
       })
 
       setProgress({ phase: 'done', current: pages.length, total: pages.length, pct: 100, error: null })
@@ -124,7 +135,7 @@ export function useSpawnChapter(targetLang: string) {
         error: err instanceof Error ? err.message : 'Lỗi không xác định.',
       }))
     }
-  }, [sources, targetLang])
+  }, [sources, targetLang, qc])
 
   const reset = useCallback(() => setProgress(IDLE), [])
 

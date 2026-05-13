@@ -21,7 +21,7 @@ Pipeline (3 layers):
     Layer 2 — draft scope:      translation_drafts +
                                 translation_draft_bubbles + briefs.
                                 Keyed on (chapter, src, tgt, fp);
-                                shared by visibility scope.
+                                shared across the community.
     Layer 3 — translation:      Per (chapter, owner, lang). Points
                                 at a draft; carries sparse edits +
                                 user-facing flags.
@@ -63,13 +63,25 @@ if TYPE_CHECKING:
 # Type aliases. Kept as Literal[...] strings (not Enum) so the
 # protocol stays compatible with raw asyncpg dict rows.
 MaterialOrigin   = Literal["source", "extension", "upload"]
-PagesOrigin      = Literal["remote", "local"]
-DraftVisibility  = Literal["private", "guild", "all_guilds"]
 DraftState       = Literal["pending", "running", "done", "error"]
 PipelineStage    = Literal["prepare", "scan", "translate", "render"]
 TaskTargetKind   = Literal["chapter", "draft", "translation"]
 LinkOrigin       = Literal["primary", "auto", "manual"]
-LibraryStatus    = Literal["reading", "plan", "on_hold", "done", "dropped"]
+LibraryStatus    = Literal["reading", "plan", "done", "dropped"]
+
+# Runtime-checkable tuples mirroring the Literal aliases above.
+DRAFT_STATES: tuple[DraftState, ...] = (
+    "pending", "running", "done", "error",
+)
+PIPELINE_STAGES: tuple[PipelineStage, ...] = (
+    "prepare", "scan", "translate", "render",
+)
+TASK_TARGET_KINDS: tuple[TaskTargetKind, ...] = (
+    "chapter", "draft", "translation",
+)
+LIBRARY_STATUSES: tuple[LibraryStatus, ...] = (
+    "reading", "plan", "done", "dropped",
+)
 ReportTargetKind = Literal["material", "chapter", "draft", "translation"]
 ReportKind       = Literal["dmca", "abuse", "quality", "other"]
 ReportStatus     = Literal["open", "reviewing", "resolved", "dismissed"]
@@ -82,6 +94,15 @@ class Store(Protocol):
     # ── Lifecycle ─────────────────────────────────────────────────
     async def close(self) -> None: ...
     async def ping(self) -> None: ...
+
+    # ── Meta key/value ──────────────────────────────────────────
+    async def get_meta(self, key: str) -> str | None:
+        """Read a singleton string from the `meta` table. Used for
+        cross-process branding state (e.g. cached Discord guild icon)
+        and the engine's schema version sentinel."""
+        ...
+
+    async def set_meta(self, key: str, value: str) -> None: ...
 
     # ── Identity ──────────────────────────────────────────────────
     async def upsert_user_from_identity(
@@ -102,21 +123,6 @@ class Store(Protocol):
         self, user_id: int, provider: str = "discord",
     ) -> str | None: ...
 
-    # ── Guild memberships (Discord) ──────────────────────────────
-    async def upsert_user_guilds(
-        self, user_id: int, guilds: list[dict],
-    ) -> None:
-        """Replace cached guilds for this user. `guilds` items:
-        `{id, name?, icon_url?}`. Used during Discord OAuth exchange
-        and refreshed lazily on /me."""
-        ...
-
-    async def get_user_guilds(self, user_id: int) -> list[dict]: ...
-
-    async def user_in_guild(self, user_id: int, guild_id: str) -> bool:
-        """Membership check used by visibility gates + feed access."""
-        ...
-
     # ── API tokens (CLI / extension / worker) ────────────────────
     async def create_api_token(
         self, user_id: int, name: str, prefix: str, token_hash: str,
@@ -126,6 +132,28 @@ class Store(Protocol):
     async def candidates_by_prefix(self, prefix: str) -> list[dict]: ...
     async def touch_api_token(self, token_id: int) -> None: ...
     async def revoke_api_token(self, user_id: int, token_id: int) -> bool: ...
+
+    # ── Work (global identity) ────────────────────────────────────
+    async def get_work(self, work_id: int) -> dict | None: ...
+
+    async def find_or_create_work_chapter(
+        self,
+        *,
+        work_id:     int,
+        number_norm: str,
+        label:       str | None = None,
+    ) -> int:
+        """Materialise the logical chapter for (work, number_norm).
+
+        Idempotent: identical (work_id, number_norm) returns the same
+        id. `label` is first-write-wins — set only if the row is being
+        created. Called inline by spawn / upload / raw-history flows
+        (no batch pre-creation; manifest chapters live in the plugin
+        runtime, not in the DB).
+        """
+        ...
+
+    async def get_work_chapter(self, work_chapter_id: int) -> dict | None: ...
 
     # ── Material ──────────────────────────────────────────────────
     async def get_or_create_source_material(
@@ -214,13 +242,21 @@ class Store(Protocol):
     async def create_chapter(
         self,
         material_id:   int,
-        number:        str,
         *,
+        number_norm:   str,
         label:         str | None = None,
         upstream_url:  str | None = None,
-        pages_origin:  PagesOrigin = "remote",
     ) -> int:
-        """Inserts with server-managed sparse `position`."""
+        """Insert a pixel-bound chapter row.
+
+        `number_norm` is the canonical chapter key (computed by the
+        manifest runtime's declarative normaliser). The server uses
+        it both for the `work_chapters` materialisation and for the
+        chapter's sort `position`. `label` is the free-form per-source
+        display string (e.g. "Chương 040", "第106话"); UI renders it
+        verbatim. Server never normalises numbers itself — the
+        manifest's spec is the only authority.
+        """
         ...
 
     async def get_chapter(self, chapter_id: int) -> dict | None: ...
@@ -278,20 +314,17 @@ class Store(Protocol):
     async def find_reusable_draft(
         self,
         *,
-        chapter_id:    int,
-        source_lang:   str,
-        target_lang:   str,
-        glossary_fp:   str,
-        viewer_id:     int,
-        viewer_guilds: list[str],
+        chapter_id:  int,
+        source_lang: str,
+        target_lang: str,
+        glossary_fp: str,
     ) -> dict | None:
-        """Look up a non-private, non-taken-down draft matching the
-        cache key whose visibility lets `viewer_id` see it.
+        """Look up a non-taken-down draft matching the cache key.
 
-        Visibility check:
-          - 'guild'       → draft.scope_guild_id in viewer_guilds
-          - 'all_guilds'  → any of creator's guilds intersects viewer_guilds
-          - 'private'     → excluded (cache index doesn't include them)
+        Schema 19 dropped per-guild visibility: the community is a
+        single global pool, so any matching draft is reusable. The
+        unique index on (chapter, src, tgt, glossary_fp) excludes
+        taken-down rows so DMCA replacements don't collide.
         """
         ...
 
@@ -304,12 +337,10 @@ class Store(Protocol):
         glossary_fp:    str,
         llm_model:      str,
         created_by:     int,
-        visibility:     DraftVisibility,
-        scope_guild_id: str | None,
     ) -> int:
         """Insert a new draft in state='pending'. Unique constraint
-        on cache key (excl. private + taken-down) means callers MUST
-        check `find_reusable_draft` first or handle UniqueViolation."""
+        on the cache key (excl. taken-down) means callers MUST check
+        `find_reusable_draft` first or handle UniqueViolation."""
         ...
 
     async def get_draft(self, draft_id: int) -> dict | None: ...
@@ -340,43 +371,86 @@ class Store(Protocol):
         self, draft_id: int, reason: str,
     ) -> None: ...
 
+    async def update_draft_archive(
+        self,
+        draft_id: int,
+        *,
+        archive_backend: str,
+        archive_locator: str,
+    ) -> None:
+        """Persist the default render archive pointer on the draft row.
+        Also stamps `rendered_at=NOW()` so reuse and freshness checks
+        share one source of truth."""
+        ...
+
+    async def pending_drafts_for_chapter(
+        self, chapter_id: int,
+    ) -> list[int]:
+        """IDs of drafts in state='pending' for this chapter, ignoring
+        taken-down rows. Used by the scan stage to fan out into
+        translate tasks once shared OCR is ready."""
+        ...
+
     # ── Translations (Layer 3, per-user) ──────────────────────────
     async def get_or_create_translation(
         self,
         *,
-        chapter_id:  int,
-        owner_id:    int,
-        target_lang: str,
-        draft_id:    int | None,
+        work_chapter_id: int,
+        owner_id:        int,
+        target_lang:     str,
+        draft_id:        int,
+        shared:          bool = True,
     ) -> int:
-        """Insert or fetch. UNIQUE (chapter_id, owner_id, target_lang)
-        ensures one row per (chapter, owner, lang) tuple."""
+        """Insert or fetch. UNIQUE (work_chapter_id, owner_id, target_lang)
+        ensures one row per (Work-chapter, owner, lang) tuple — so
+        spawning from material A then again from material B of the
+        same Work returns the same translation row.
+
+        `draft_id` is required: every translation must point at the
+        pixel-bound draft whose render it serves.
+        `shared` defaults TRUE for community discovery; spawn route
+        passes FALSE when the source material is flagged NSFW.
+        """
         ...
 
     async def get_translation(self, translation_id: int) -> dict | None: ...
 
     async def list_translations_for_chapters(
         self,
-        chapter_ids:   list[int],
-        viewer_id:     int,
-        viewer_guilds: list[str],
+        chapter_ids: list[int],
     ) -> dict[int, list[dict]]:
-        """Bulk overlay: for each chapter id, return the translations
-        the viewer can see. Used by GET /api/material/{id} to embed
-        the per-chapter translation list."""
+        """Bulk overlay: for each chapter id, return every translation.
+        Used by GET /api/material/{id} to embed the per-chapter
+        translation list. Schema 19 made translations community-wide
+        (no visibility branch), so this is a flat join."""
+        ...
+
+    async def list_all_translations_for_chapter(
+        self, chapter_id: int,
+    ) -> list[dict]:
+        """Every translation row for a chapter, ignoring visibility and
+        takedown. Used by admin / cleanup paths (material delete) that
+        need to enumerate archive locators across all owners."""
+        ...
+
+    async def list_drafts_for_chapter(
+        self, chapter_id: int,
+    ) -> list[dict]:
+        """Every draft row for a chapter, ignoring takedown. Used by
+        admin / cleanup paths to enumerate default-render archive
+        locators before the FK cascade drops the rows."""
         ...
 
     async def list_translations_by_upstream(
         self,
         material_id:   int,
         upstream_urls: list[str],
-        viewer_id:     int,
-        viewer_guilds: list[str],
     ) -> dict[str, list[dict]]:
         """Manifest-side overlay: keyed by `chapter.upstream_url` so
         the SPA can match it against the manifest chapter list without
         needing internal chapter_ids. Returns same shape as
-        `list_translations_for_chapters`. Visibility rules identical."""
+        `list_translations_for_chapters`. Single global pool, no
+        visibility filtering."""
         ...
 
     async def list_my_translations(
@@ -396,17 +470,15 @@ class Store(Protocol):
         archive_locator: str,
     ) -> None: ...
 
-    async def update_translation_feed(
-        self,
-        translation_id: int,
-        *,
-        in_feed:        bool,
-        feed_guild_id:  str | None,
-    ) -> None: ...
-
     async def takedown_translation(
         self, translation_id: int, reason: str,
     ) -> None: ...
+
+    async def delete_translation(self, translation_id: int) -> None:
+        """Hard delete. The FK cascade drops translation_edits; caller
+        is responsible for any archive cleanup since archive backends
+        aren't part of the Store contract."""
+        ...
 
     async def upsert_translation_edit(
         self, translation_id: int,
@@ -421,7 +493,7 @@ class Store(Protocol):
         self, translation_id: int, page_index: int, bubble_idx: int,
     ) -> bool: ...
 
-    # ── Library entries ──────────────────────────────────────────
+    # ── Library entries (per-user bookmark) ──────────────────────
     async def list_library_entries(
         self,
         user_id: int,
@@ -440,6 +512,15 @@ class Store(Protocol):
         self, entry_id: int, user_id: int,
     ) -> dict | None: ...
 
+    async def find_entry_for_material(
+        self, *, user_id: int, material_id: int,
+    ) -> dict | None:
+        """Return the viewer's library_entry row that links this
+        material, if any. Returns `{id, status}` shape — used by the
+        public-read material page to flip the follow CTA into a
+        "jump to library" link without a second request."""
+        ...
+
     async def create_library_entry(
         self,
         *,
@@ -447,25 +528,17 @@ class Store(Protocol):
         title:               str,
         cover_url:           str | None,
         primary_material_id: int,
-        target_lang:         str | None = None,
-        auto_translate:      bool = False,
         status:              LibraryStatus = "reading",
     ) -> int:
-        """Create entry + link the primary material with link_origin='primary'.
-        `target_lang` may be None when the user hasn't picked yet — the
-        hub asks at first open."""
+        """Create entry + link the primary material with link_origin='primary'."""
         ...
 
     async def update_library_entry(
         self,
         entry_id: int, user_id: int,
         *,
-        title:            str | None = None,
-        status:           LibraryStatus | None = None,
-        target_lang:      str | None = None,
-        auto_translate:   bool | None = None,
-        last_read_at:     str | None = None,        # ISO; pass None to leave alone
-        last_chapter_ref: dict | None = None,
+        title:  str | None = None,
+        status: LibraryStatus | None = None,
     ) -> None: ...
 
     async def delete_library_entry(
@@ -524,20 +597,44 @@ class Store(Protocol):
         pair so we don't suggest it again."""
         ...
 
-    # ── Feed (Hội Mê Truyện, guild-scoped) ──────────────────────
-    async def list_feed_entries(
+    # ── Reading history (per-user, system-recorded) ──────────────
+    async def record_reading(
+        self, *,
+        user_id:          int,
+        work_chapter_id:  int,
+        last_material_id: int | None,
+        translation_id:   int | None,
+    ) -> None:
+        """UPSERT a reading_history row, bumping `last_read_at` to NOW().
+        Called from the reader on chapter open. Keyed by (user,
+        work_chapter) so re-reading the same Work chapter from any
+        material is idempotent — last_material_id records which
+        material's pixels the user opened most recently.
+        """
+        ...
+
+    async def list_recent_reads(
+        self, *, user_id: int, limit: int = 30,
+    ) -> list[dict]:
+        """Recent unique Works the user has read, newest first. Dedupes
+        per Work (the most-recent chapter wins). Drives the home
+        "Tiếp tục đọc" section; resolves the surfaced material via
+        `last_material_id` so the row links back to the source the
+        user was last viewing."""
+        ...
+
+    # ── Community recent feed (cross-user, no guild scope) ───────
+    async def list_recent_community(
         self,
         *,
-        guild_id: str,
         viewer_id: int,
-        limit:    int = 50,
-        before:   str | None = None,   # ISO timestamp; cursor pagination
+        limit:     int = 60,
+        before:    str | None = None,
     ) -> list[dict]:
-        """Translations with `in_feed=TRUE`, scoped to the guild via
-        `feed_guild_id = guild_id` OR (feed_guild_id IS NULL AND the
-        translation's creator belongs to this guild). Joins material
-        + chapter for display. Viewer must be in the guild — caller
-        enforces."""
+        """Recent translations across the whole community, dedupe by
+        material (most-recent chapter wins). `viewer_id` is recorded
+        but no longer gates visibility — schema 19 made every non-
+        takedown translation part of the global pool."""
         ...
 
     # ── Glossary ─────────────────────────────────────────────────
@@ -731,7 +828,6 @@ class Store(Protocol):
         reporter_label: str,
         target_kind:    ReportTargetKind,
         target_id:      int,
-        scope_guild_id: str | None,
         kind:           ReportKind,
         reason:         str,
     ) -> int:

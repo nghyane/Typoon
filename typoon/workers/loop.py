@@ -55,6 +55,7 @@ import asyncpg
 from typoon.adapters.channel_bus import ChannelBus, ChannelHook
 from typoon.adapters.chapter_archive import masks_key, prepared_key
 from typoon.adapters.ctx import make_ctx
+from typoon.adapters.inbox import ChapterInbox, build_inbox
 from typoon.adapters.loader import (
     load_scanned, load_translated_with_geometry, open_prepared_reader,
 )
@@ -168,7 +169,7 @@ class StageContext:
     config:       Config
     archive_salt: bytes
     runtime:      VisionRuntime | None = None
-    inbox:        object | None = None
+    inbox:        ChapterInbox | None = None
 
 
 # Stage handler signature: receives the context + (target_kind, target_id).
@@ -185,9 +186,9 @@ async def _chapter_id_for_target(
     """Resolve the chapter that a (kind, id) ultimately belongs to.
 
     prepare/scan tasks key on chapter directly; translate keys on
-    draft → draft.chapter_id; render's target depends on edits but
-    always traces back to a chapter via draft.chapter_id or
-    translation.chapter_id.
+    draft → draft.chapter_id; render targets a translation but its
+    pixels still live on the draft's chapter (translation rows sit
+    at Work-chapter scope, not per-pixel).
     """
     if target_kind == "chapter":
         return target_id
@@ -196,7 +197,10 @@ async def _chapter_id_for_target(
         return d["chapter_id"] if d else None
     if target_kind == "translation":
         t = await db.get_translation(target_id)
-        return t["chapter_id"] if t else None
+        if t is None or t.get("draft_id") is None:
+            return None
+        d = await db.get_draft(t["draft_id"])
+        return d["chapter_id"] if d else None
     return None
 
 
@@ -224,6 +228,9 @@ async def _handle_prepare(
     """
     assert target_kind == "chapter", \
         f"prepare requires target_kind=chapter, got {target_kind}"
+    assert ctx.inbox is not None, \
+        "prepare requires ChapterInbox; build_inbox returned None"
+    inbox = ctx.inbox
     chapter_id = target_id
 
     from typoon.sources.upload import UnpackError, unpack_zip
@@ -249,7 +256,7 @@ async def _handle_prepare(
         # complete_multipart is idempotent: if a prior attempt already
         # completed it, S3 returns NoSuchUpload and we proceed to fetch.
         try:
-            await ctx.inbox.complete_multipart(  # type: ignore[union-attr]
+            await inbox.complete_multipart(
                 tmp_id=handle.tmp_id,
                 upload_id=handle.upload_id,
                 parts=list(handle.parts),
@@ -259,13 +266,13 @@ async def _handle_prepare(
                 raise
 
         zip_path = tmp / "chapter.zip"
-        size = await ctx.inbox.fetch(  # type: ignore[union-attr]
+        size = await inbox.fetch(
             tmp_id=handle.tmp_id, dest=zip_path,
         )
         if size <= 0:
             raise RuntimeError(f"prepare {chapter_id}: empty zip from inbox")
         try:
-            n_unpacked = unpack_zip(zip_path.read_bytes(), pages_dir)
+            n_unpacked = unpack_zip(zip_path, pages_dir)
         except UnpackError as e:
             raise RuntimeError(
                 f"prepare {chapter_id}: unpack failed: {e}",
@@ -306,7 +313,7 @@ async def _handle_prepare(
     await ctx.db.clear_inbox_handle(chapter_id)
 
     try:
-        await ctx.inbox.delete(  # type: ignore[union-attr]
+        await inbox.delete(
             tmp_id=handle.tmp_id,
         )
     except Exception as e:
@@ -365,21 +372,16 @@ async def _handle_scan(
         )
 
     # Fan out to every pending draft for this chapter.
-    async with ctx.db._pool.acquire() as conn:  # type: ignore[attr-defined]
-        drafts = await conn.fetch(
-            "SELECT id FROM translation_drafts "
-            "WHERE chapter_id=$1 AND state='pending' AND takedown_at IS NULL",
-            chapter_id,
-        )
-    if not drafts:
+    draft_ids = await ctx.db.pending_drafts_for_chapter(chapter_id)
+    if not draft_ids:
         # No draft waiting on us — possible after a delete race. Drop
         # the scan task; subsequent spawns will re-enqueue.
         await ctx.db.complete_task("chapter", chapter_id, "scan")
         return
     await ctx.db.complete_task("chapter", chapter_id, "scan")
-    for d in drafts:
+    for did in draft_ids:
         await ctx.db.enqueue_task(
-            target_kind="draft", target_id=d["id"], stage="translate",
+            target_kind="draft", target_id=did, stage="translate",
         )
 
 
@@ -503,14 +505,21 @@ async def _handle_render(
                 "render: translation %d vanished, skipping", translation_id,
             )
             return
-        chapter_id = t["chapter_id"]
-        draft_id   = t.get("draft_id")
+        draft_id = t.get("draft_id")
         if not draft_id:
             await ctx.db.fail_task(
                 target_kind, target_id, "render",
                 "translation has no draft_id (cannot render bubbles)",
             )
             return
+        d = await ctx.db.get_draft(int(draft_id))
+        if d is None:
+            await ctx.db.fail_task(
+                target_kind, target_id, "render",
+                f"translation draft {draft_id} missing",
+            )
+            return
+        chapter_id = int(d["chapter_id"])
     else:
         raise AssertionError(
             f"render target_kind must be draft|translation, got {target_kind}",
@@ -561,13 +570,11 @@ async def _handle_render(
         # Default draft render — every translation pointing at this
         # draft with no edits will read this archive. Persist on the
         # draft row so the translate route can serve it.
-        async with ctx.db._pool.acquire() as conn:  # type: ignore[attr-defined]
-            await conn.execute(
-                "UPDATE translation_drafts SET "
-                "  archive_backend=$1, archive_locator=$2, rendered_at=NOW() "
-                "WHERE id=$3",
-                public.backend_name, locator, draft_id,
-            )
+        await ctx.db.update_draft_archive(
+            draft_id,
+            archive_backend=public.backend_name,
+            archive_locator=locator,
+        )
     else:
         await ctx.db.update_translation_archive(
             translation_id,
@@ -710,12 +717,16 @@ async def run_workers(
 ) -> None:
     """Start every stage pump for `role` and block until shutdown."""
     from typoon.config import load_config
-    from typoon.adapters.inbox import build_inbox
 
     config, paths = load_config() if config is None else (config, Paths())
     paths.ensure()
 
-    db    = await PostgresStore.open(config.database_url)
+    db    = await PostgresStore.open(
+        config.database_url,
+        pool_min_size=config.database.pool_min_size,
+        pool_max_size=config.database.pool_max_size,
+        statement_cache_size=config.database.statement_cache_size,
+    )
     stores = build_storage(config, paths)
     archive_salt = config.storage.archive_path_salt.encode()
     loop  = asyncio.get_running_loop()

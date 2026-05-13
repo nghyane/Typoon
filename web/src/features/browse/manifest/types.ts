@@ -2,7 +2,8 @@
 // JSON validation, and the contributor README.
 //
 // One manifest = one upstream site. Manifests are *declarative* — no
-// JavaScript runs from them, only selectors + URL templates.
+// JavaScript runs from them, only selectors, URL templates, and a
+// small set of typed normalisation primitives.
 //
 // Three sites drive the schema's shape:
 //
@@ -128,6 +129,10 @@ export interface ChaptersApiEndpoint extends HttpRequest {
   pagination?: Pagination
   list:        Selector
   fields:      ChapterFields
+  /** Per-endpoint override of `manifest.chapterNumberNorm`. Use when
+   *  this endpoint emits chapters in a different shape than the rest
+   *  of the source. */
+  chapterNumberNorm?: ChapterNumberNorm
   /** Optional predicate fields evaluated per-row. The row is kept
    *  only when every predicate returns a truthy, non-empty value.
    *  Use for filtering out external chapters, locked previews, etc.
@@ -141,6 +146,8 @@ export interface ChaptersApiEndpoint extends HttpRequest {
 export interface ChapterListSpec {
   list:   Selector
   fields: ChapterFields
+  /** Per-endpoint override of `manifest.chapterNumberNorm`. */
+  chapterNumberNorm?: ChapterNumberNorm
 }
 
 export interface ChapterFields {
@@ -165,6 +172,39 @@ export interface ChapterFields {
    *  `{date}`, `{language}` interpolation if combining with other
    *  fields. */
   label?:   Selector
+}
+
+/** Declarative chapter-number normalisation primitives.
+ *
+ *  Maps the raw `number` (and/or `label`) a source publishes to the
+ *  canonical `work_chapter.number_norm` used to dedupe chapters
+ *  across sources of the same Work. No JavaScript runs — every
+ *  primitive is a typed transform the runtime knows how to evaluate.
+ *
+ *  Evaluation order (per chapter row):
+ *    1. Pick the input string from `input` (default: `number`).
+ *    2. Walk `patterns` in priority order. First regex that matches
+ *       wins; capture group 1 (if present) is used, else the whole
+ *       match.
+ *    3. If no pattern matched, fall back to `default`.
+ *    4. Apply every step in `postprocess` to the resulting string.
+ *
+ *  Sources that need only the global default (extract first
+ *  number-like substring, strip leading zeros, lowercase, slug
+ *  fallback) may omit this field entirely. */
+export interface ChapterNumberNorm {
+  /** Which raw field to read. `number` (default) is almost always
+   *  right; pick `label` only when the source publishes the canonical
+   *  number inside the long label (e.g. HappyMH's `chapterName`). */
+  input?:       'number' | 'label'
+  /** Regex strings tried top-down. Compile-time-validated by the
+   *  loader; invalid regex rejects the whole manifest. Capture group
+   *  1, when present, is the extracted number. */
+  patterns?:    string[]
+  /** What to emit when no pattern matched. Defaults to `'slug'`. */
+  default?:     'slug' | 'empty' | 'verbatim'
+  /** Post-processing applied in order to the extracted string. */
+  postprocess?: ('lowercase' | 'trim' | 'stripLeadingZeros')[]
 }
 
 /** Chapter-pages endpoint. Returns the upstream URLs of every page.
@@ -242,6 +282,13 @@ export interface SourceManifest {
   /** Filters/sorts shown in the source feed bar. */
   filters?: Filter[]
 
+  /** Source-wide chapter number normalisation. The runtime applies
+   *  this spec to every `ChapterFields.number` it extracts (unless
+   *  the endpoint overrides via `ChaptersApiEndpoint.chapterNumberNorm`
+   *  or `ChapterListSpec.chapterNumberNorm`). Omit to inherit the
+   *  global default — see runtime.ts `DEFAULT_CHAPTER_NUMBER_NORM`. */
+  chapterNumberNorm?: ChapterNumberNorm
+
   /** Required for `kind: 'external'`. Internal sources branch in
    *  runtime and ignore this field — leave a stub `{ shelves: [] }`
    *  in the JSON to satisfy schema validation, or omit if the
@@ -296,6 +343,13 @@ export interface MangaChapterRef {
    *  full label). */
   label:     string
   number:    string
+  /** Canonical key used to dedupe this chapter against sibling
+   *  sources of the same Work. Computed at fetch time by the
+   *  manifest runtime — applies the source's `chapterNumberNorm`
+   *  spec (or the global default when absent). Server treats this
+   *  value as opaque; it must be deterministic per (manifest,
+   *  raw number) so the same chapter always maps to the same key. */
+  numberNorm: string
   title:     string | null
   date:      string | null
   language:  string | null

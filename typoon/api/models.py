@@ -36,6 +36,7 @@ class MaterialOut(BaseModel):
 
     id:            int
     origin:        MaterialOrigin
+    work_id:       int                     # global Work identity (cross-source)
     source:        str | None = None       # NULL for ext / upload
     upstream_ref:  str | None = None       # NULL for ext / upload
 
@@ -61,6 +62,7 @@ class MaterialOut(BaseModel):
         return cls(
             id=row["id"],
             origin=row["origin"],
+            work_id=int(row["work_id"]),
             source=row.get("source"),
             upstream_ref=row.get("upstream_ref"),
             title=row["title"],
@@ -82,20 +84,17 @@ class MaterialOut(BaseModel):
 # ── Chapter + per-chapter translations overlay ────────────────────────
 
 
-PagesOrigin = Literal["remote", "local"]
-
-
 class ChapterTranslationOverlay(BaseModel):
-    """A single translation existing for this chapter, as surfaced in
-    the chapter list response. Excludes private translations the
-    viewer cannot access — the API filters before serialization."""
+    """A single translation existing for this chapter, surfaced in the
+    chapter list response. Schema 19 made every non-takedown
+    translation community-readable, so there's no per-viewer filtering
+    here — the row is what it is."""
 
     id:           int
     target_lang:  str
     creator_id:   int | None
     creator_name: str | None
     state:        str                    # pending | running | done | error
-    in_feed:      bool
     from_cache:   bool                   # True if cache hit (no quota spent)
 
 
@@ -103,10 +102,11 @@ class ChapterOut(BaseModel):
     id:            int
     material_id:   int
     position:      int
+    # Canonical chapter key joined from the chapter's work_chapter.
+    # Same value across sibling materials of the same Work.
     number:        str
     label:         str | None = None
     upstream_url:  str | None = None
-    pages_origin:  PagesOrigin
     page_count:    int
     updated_at:    str | None = None
     translations:  list[ChapterTranslationOverlay] = []
@@ -116,7 +116,6 @@ class ChapterOut(BaseModel):
 
 
 DraftState     = Literal["pending", "running", "done", "error"]
-DraftVisibility = Literal["private", "guild", "all_guilds"]
 
 
 class DraftProgress(BaseModel):
@@ -132,8 +131,6 @@ class TranslationDraftOut(BaseModel):
     target_lang:     str
     glossary_fp:     str
     llm_model:       str
-    visibility:      DraftVisibility
-    scope_guild_id:  str | None = None
     state:           DraftState
     error_message:   str | None = None
     progress:        DraftProgress | None = None
@@ -148,14 +145,16 @@ class TranslationDraftOut(BaseModel):
 class TranslationOut(BaseModel):
     id:             int
     chapter_id:     int
+    material_id:    int
     owner_id:       int
     target_lang:    str
     draft_id:       int | None = None
     state:          str               # mirrored from draft for convenience
-    in_feed:        bool
-    feed_guild_id:  str | None = None
     archive_url:    str | None = None  # public render URL; None until done
     has_edits:      bool = False
+    chapter_number: str | None = None
+    chapter_label:  str | None = None
+    material_title: str | None = None
     created_at:     str | None = None
     updated_at:     str | None = None
 
@@ -172,7 +171,7 @@ class LibraryMaterialLink(BaseModel):
     linked_at:    str | None = None
 
 
-LibraryStatus = Literal["reading", "plan", "on_hold", "done", "dropped"]
+LibraryStatus = Literal["reading", "plan", "done", "dropped"]
 
 
 class TranslationSummary(BaseModel):
@@ -191,15 +190,11 @@ class LibraryEntryOut(BaseModel):
     cover_url:            str | None = None
     primary_material_id:  int | None = None
 
-    # Reading state — drives both the filter UI and the hub's
-    # "translate?" gate. `target_lang` is None until the user picks
-    # at the Add-manga modal.
+    # Reading state — drives both the filter UI and "Continue
+    # reading" CTAs. Schema 19 simplified to four statuses; reading
+    # history lives in its own table now.
     status:               LibraryStatus
-    target_lang:          str | None = None
-    auto_translate:       bool       = False
 
-    last_read_at:         str | None = None
-    last_chapter_ref:     dict | None = None
     materials:            list[LibraryMaterialLink] = []
     translation_summary:  TranslationSummary = TranslationSummary()
     created_at:           str | None = None
@@ -241,23 +236,46 @@ class GlossaryTermOut(BaseModel):
 # ── Feed (Hội Mê Truyện, guild-scoped) ──────────────────────────────
 
 
-class FeedEntryOut(BaseModel):
-    """One row in /api/feed/guild/{id}. A translation surfaced for
-    discovery; the SPA renders it as a manga-card variant with
-    translator credit."""
+# ── Community feed (cross-user recent translations) ────────────────
 
-    translation_id:  int
-    chapter_id:      int
-    chapter_number:  str
-    chapter_label:   str | None
-    material_id:     int
-    material_title:  str
-    material_cover:  str | None
-    target_lang:     str
-    creator_id:      int | None
-    creator_name:    str | None
-    created_at:      str | None = None
-    archive_url:     str | None = None
+
+class CommunityFeedEntryOut(BaseModel):
+    """One row in /api/community/recent. A material surfaced for
+    discovery, represented by its most recent translated chapter so
+    repeated chapter updates don't duplicate the manga in the feed.
+    `chapters_in_feed` lets the SPA show a "+N chương khác" affordance.
+    """
+
+    translation_id:   int
+    chapter_id:       int
+    chapter_number:   str
+    chapter_label:    str | None
+    material_id:      int
+    material_title:   str
+    material_cover:   str | None
+    target_lang:      str
+    creator_id:       int | None
+    creator_name:     str | None
+    created_at:       str | None = None
+    archive_url:      str | None = None
+    chapters_in_feed: int = 1
+
+
+class RecentReadOut(BaseModel):
+    """One row in /api/me/recent-reads — the home "Tiếp tục đọc" surface.
+    Drawn from `reading_history`, deduped per Work so each manga
+    surfaces once with its most recent chapter. `material_id` is the
+    source the user last opened (deep-link target on click)."""
+
+    work_id:          int
+    material_id:      int
+    material_title:   str
+    material_cover:   str | None = None
+    work_chapter_id:  int
+    chapter_number:   str
+    chapter_label:    str | None = None
+    translation_id:   int | None
+    last_read_at:     str | None = None
 
 
 # ── Workers / queue ───────────────────────────────────────────────────
@@ -289,7 +307,6 @@ class ReportOut(BaseModel):
     reporter_label:  str
     target_kind:     ReportTargetKind
     target_id:       int
-    scope_guild_id:  str | None
     kind:            ReportKind
     reason:          str
     status:          ReportStatus
@@ -312,14 +329,7 @@ class ModerationActionOut(BaseModel):
 # ── User / identity ──────────────────────────────────────────────────
 
 
-class GuildOut(BaseModel):
-    id:           str
-    name:         str | None = None
-    icon_url:     str | None = None
-
-
 class MeOut(BaseModel):
     id:            int
     display_name:  str
     avatar_url:    str | None = None
-    guilds:        list[GuildOut] = []

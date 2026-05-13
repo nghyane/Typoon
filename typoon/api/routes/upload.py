@@ -1,17 +1,14 @@
-"""Chapter ingestion for ext / upload materials via browser-direct multipart.
+"""Chapter ingestion — browser-direct multipart.
 
-Source-backed materials (HappyMH, MangaDex, OTruyen) do not use this
-route — their chapters come from the manifest runtime at read time
-(pages_origin='remote', no prepared.bnl). This route exists for the
-two origins that need server-side storage:
-
-  origin='upload'    user uploaded a zip
-  origin='extension' browser ext captured pages
+Supports ext / upload AND source-backed materials.
+Source-backed materials (HappyMH, MangaDex, OTruyen) normally pull
+chapters from the manifest at read time, but when the client pre-downloads
+pages (CORS / auth workarounds) and uploads a ZIP, this route handles it.
 
 Flow:
 
   1. client → POST /material/{id}/chapter/upload-init { byte_size }
-     server → ownership gate (imported_by = user)
+     server → ownership gate (ext/upload: imported_by = user)
             → quota check
             → inbox.create_multipart → presigned PUT URLs
      server → returns { tmp_id, upload_id, parts, part_size, expires_in }
@@ -20,12 +17,12 @@ Flow:
 
   3. client → POST /material/{id}/chapter/upload-finalize {
                   tmp_id, upload_id, parts, number?, label?,
+                  upstream_url?
               }
-     server → creates chapter (pages_origin='local')
+     server → dedup existing manifest chapter (upstream_url) or create new
             → persists inbox handle
-            → enqueues prepare task target=(chapter, id)
-            → quota consume
-            → returns ChapterOut (state='pending')
+            → enqueues prepare task
+            → returns chapter id
 
   X. /upload-abort drops a half-finished multipart upload. Idempotent.
 
@@ -114,18 +111,19 @@ def _rewrite_presigned_for_public(url: str, public_origin: str) -> str:
 async def _gate_for_chapter_upload(
     material_id: int, user: dict, db: Store,
 ) -> dict:
-    """Allow ext / upload material owners to add chapters; refuse
-    source-backed (chapters come from the manifest runtime, not the
-    inbox)."""
+    """Allow chapter uploads for ext / upload materials (owner-gated) and
+    source-backed materials (any authenticated user, since source pages
+    are fetched client-side before upload due to CORS / auth constraints)."""
     mat = await require_material(material_id, db)
-    if mat["origin"] == "source":
-        raise HTTPException(
-            400,
-            "Source-backed material gets its chapters from the manifest. "
-            "Upload routes are for origin='extension' / 'upload' only.",
-        )
-    if mat.get("imported_by") != user["id"]:
-        raise HTTPException(403, "Only the importer can add chapters")
+    if mat["origin"] in ("extension", "upload"):
+        # ext/upload: only the importer may add chapters.
+        if mat.get("imported_by") != user["id"]:
+            raise HTTPException(403, "Only the importer can add chapters")
+    elif mat["origin"] == "source":
+        # Source-backed: any logged-in user may upload pre-downloaded pages.
+        pass
+    else:
+        raise HTTPException(400, f"Unsupported material origin: {mat['origin']!r}")
     return mat
 
 
@@ -155,11 +153,17 @@ class FinalizePart(BaseModel):
 
 
 class UploadFinalizeBody(BaseModel):
-    tmp_id:    str = Field(min_length=8, max_length=64)
-    upload_id: str = Field(min_length=1, max_length=512)
-    parts:     list[FinalizePart] = Field(min_length=1, max_length=_MAX_PARTS)
-    number:    str | None = None
-    label:     str | None = None
+    tmp_id:       str = Field(min_length=8, max_length=64)
+    upload_id:    str = Field(min_length=1, max_length=512)
+    parts:        list[FinalizePart] = Field(min_length=1, max_length=_MAX_PARTS)
+    label:        str | None = None
+    upstream_url: str | None = None
+    # Manifest-supplied normalised chapter key. The only chapter
+    # identity field — display strings live on `label`. For ext /
+    # upload origins without a manifest spec, the client may compute
+    # a stable slug client-side; an isolated upload still gets its
+    # own work_chapter row that community vote can merge later.
+    number_norm:  str | None = None
 
 
 class UploadAbortBody(BaseModel):
@@ -253,16 +257,35 @@ async def upload_finalize(
     if not body.parts:
         raise HTTPException(400, "Empty parts list")
 
-    raw_number = (body.number or "").strip() or await _next_sequential_number(
-        db, material_id,
-    )
+    # Dedup: if a chapter with this upstream_url already exists for the
+    # material (e.g. another user uploaded the same source chapter, or
+    # a manifest-coordinated translate created the row first), reuse it
+    # so we don't fork the chapter into duplicate rows. The prepare
+    # worker's CAS dedup on prepared_hash handles content-level dedup
+    # too, but row-level dedup keeps the cache key (chapter_id, ...)
+    # consistent across users.
+    chapter_id: int | None = None
+    if body.upstream_url:
+        existing = await db.find_chapter_by_upstream(
+            material_id, body.upstream_url,
+        )
+        if existing is not None:
+            chapter_id = existing["id"]
 
-    # Create chapter with local pages origin — the prepare worker will
-    # fetch the zip and pack prepared.bnl.
-    chapter_id = await db.create_chapter(
-        material_id, raw_number,
-        label=body.label, pages_origin="local",
-    )
+    if chapter_id is None:
+        # `number_norm` is the canonical identity. Caller (SPA / SDK)
+        # computes it via the manifest's declarative normaliser.
+        # When absent (ext / upload origin with no manifest spec),
+        # generate a sequential fallback so an upload still lands.
+        number_norm = (body.number_norm or "").strip() or await _next_sequential_number(
+            db, material_id,
+        )
+        chapter_id = await db.create_chapter(
+            material_id,
+            number_norm=number_norm,
+            label=body.label,
+            upstream_url=body.upstream_url,
+        )
 
     # Persist inbox handle so the prepare worker can complete the
     # multipart upload + fetch the zip.
@@ -298,10 +321,9 @@ async def upload_finalize(
         id=chapter["id"],
         material_id=chapter["material_id"],
         position=chapter["position"],
-        number=chapter["number"],
+        number=chapter["number_norm"],
         label=chapter.get("label"),
         upstream_url=chapter.get("upstream_url"),
-        pages_origin=chapter["pages_origin"],
         page_count=int(chapter.get("page_count") or 0),
         updated_at=chapter.get("updated_at"),
         translations=[],
@@ -388,18 +410,19 @@ _NUMBER_RE = re.compile(r"(?:^|[^\d])(\d+(?:\.\d+)?)")
 
 
 async def _next_sequential_number(db: Store, material_id: int) -> str:
-    """Return `floor(max numeric number) + 1`, or "1" when the material
-    is empty or contains only label-only chapters (Extra/Oneshot).
+    """Return `floor(max numeric number_norm) + 1`, or "1" when the
+    material is empty or contains only label-only chapters (Extra/
+    Oneshot).
 
-    Last-resort default when client did not supply a number — better
-    to land at "1", "2", "3"… than to bounce a valid pile of pages
-    with a 400.
+    Last-resort default when the client (manifest plugin or upload
+    UI) didn't supply a number_norm — better to land at "1", "2", "3"
+    than to bounce a valid pile of pages with a 400.
     """
     rows = await db.list_chapters(material_id)
     max_num = 0.0
     for r in rows:
         try:
-            n = float(r["number"])
+            n = float(r["number_norm"])
         except (TypeError, ValueError):
             continue
         if n > max_num:

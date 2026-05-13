@@ -60,17 +60,18 @@ export interface HubVersion {
    *  translation: null. */
   upstreamUrl:    string | null
 
+  /** raw: manifest-normalised chapter key (see ChapterNumberNorm).
+   *  Required when spawning translate or recording raw history so
+   *  the server materialises the right work_chapter row. null for
+   *  translations (already pinned to work_chapter via the API). */
+  numberNorm:     string | null
+
   /** translation only — id + state + creator. */
   translationId:  number | null
   state:          DraftState | null
   creatorName:    string | null
   /** Whether the translation reuses the shared draft's render. */
   fromCache:      boolean
-
-  /** DB chapter id when materialized. Always present for translations;
-   *  present for raws only when a user has touched the chapter (spawn
-   *  / upload). */
-  chapterId:      number | null
 }
 
 export interface HubChapter {
@@ -103,7 +104,9 @@ export function mergeChapters(bundles: MaterialBundle[]): HubChapter[] {
     const seenDbIds = new Set<number>()
     if (b.manifest) {
       for (const mc of b.manifest.chapters) {
-        const num = normalizeNumber(mc.number)
+        // numberNorm is the canonical key the manifest runtime
+        // already computed via the declarative normaliser.
+        const num = mc.numberNorm
         const ch  = ensureChapter(byNumber, num, mc.label)
 
         const dbHit = dbByUrl.get(mc.url)
@@ -117,16 +120,16 @@ export function mergeChapters(bundles: MaterialBundle[]): HubChapter[] {
           sourceId:       m.source,
           sourceName:     b.source?.manifest.name ?? m.source,
           upstreamUrl:    mc.url,
+          numberNorm:     mc.numberNorm,
           translationId:  null,
           state:          null,
           creatorName:    null,
           fromCache:      false,
-          chapterId:      dbHit?.id ?? null,
         })
 
         if (dbHit) {
           for (const t of dbHit.translations) {
-            ch.versions.push(translationVersion(t, m, b.source, dbHit.id))
+            ch.versions.push(translationVersion(t, m, b.source))
           }
           ch.updatedAt = newer(ch.updatedAt, dbHit.updated_at)
         }
@@ -138,7 +141,10 @@ export function mergeChapters(bundles: MaterialBundle[]): HubChapter[] {
     //    when an upstream_url exists, otherwise translation-only.
     for (const c of b.detail.chapters) {
       if (seenDbIds.has(c.id)) continue
-      const num = normalizeNumber(c.number)
+      // c.number from the server is already the canonical key
+      // (work_chapters.number_norm); no client-side normalisation
+      // needed.
+      const num = c.number
       const ch  = ensureChapter(byNumber, num, c.label)
 
       if (c.upstream_url) {
@@ -150,15 +156,18 @@ export function mergeChapters(bundles: MaterialBundle[]): HubChapter[] {
           sourceId:       m.source,
           sourceName:     b.source?.manifest.name ?? m.source,
           upstreamUrl:    c.upstream_url,
+          // Server-side canonical key — keep it consistent so the
+          // spawn flow on this DB-only chapter still passes the
+          // same number_norm back to the upload finalize endpoint.
+          numberNorm:     c.number,
           translationId:  null,
           state:          null,
           creatorName:    null,
           fromCache:      false,
-          chapterId:      c.id,
         })
       }
       for (const t of c.translations) {
-        ch.versions.push(translationVersion(t, m, b.source, c.id))
+        ch.versions.push(translationVersion(t, m, b.source))
       }
       ch.updatedAt = newer(ch.updatedAt, c.updated_at)
     }
@@ -208,7 +217,6 @@ function translationVersion(
   t: ApiMaterialDetail['chapters'][number]['translations'][number],
   material: ApiMaterial,
   source:   InstalledSource | null,
-  chapterId: number,
 ): HubVersion {
   return {
     key:            `tr::${t.id}`,
@@ -218,11 +226,11 @@ function translationVersion(
     sourceId:       material.source,
     sourceName:     source?.manifest.name ?? material.source,
     upstreamUrl:    null,
+    numberNorm:     null,
     translationId:  t.id,
     state:          t.state,
     creatorName:    t.creator_name,
     fromCache:      t.from_cache,
-    chapterId,
   }
 }
 
@@ -265,12 +273,6 @@ export function stripChapterPrefix(
   return stripped.length > 0 ? stripped : null
 }
 
-
-function normalizeNumber(n: string): string {
-  const trimmed = n.trim()
-  // Strip leading zeros from the integer part: '001' → '1', '01.5' → '1.5'.
-  return trimmed.replace(/^0+(?=\d)/, '')
-}
 
 function parseSortKey(num: string): number {
   const v = parseFloat(num)
@@ -348,4 +350,50 @@ export function lastError(ch: HubChapter, targetLang: string | null): HubVersion
   return ch.versions.find(
     (v) => v.kind === 'translation' && v.lang === tgt && v.state === 'error',
   ) ?? null
+}
+
+
+// ── Status / sort vocabulary ──────────────────────────────────────
+//
+// Shared between every chapter-list surface (`/title/$entryId`,
+// `/material/$id`, future explore/feed dives). Owning the vocabulary
+// in the domain module instead of one panel keeps callers in sync
+// when we add a status (e.g. 'queued') or sort (e.g. 'creator').
+
+export type ChapterStatus = 'translated' | 'running' | 'error' | 'raw'
+export type StatusFilter  = 'all' | ChapterStatus
+export type ChapterSort   = 'chapter_desc' | 'chapter_asc' | 'updated_desc'
+
+export function chapterStatus(
+  c:          HubChapter,
+  targetLang: string | null,
+): ChapterStatus {
+  const tgt = targetLang?.toLowerCase() ?? null
+  if (!tgt) return 'raw'
+  if (preferredReadable(c, tgt)) return 'translated'
+  if (inFlight(c, tgt))          return 'running'
+  if (lastError(c, tgt))         return 'error'
+  return 'raw'
+}
+
+export function countByStatus(
+  chapters:   HubChapter[],
+  targetLang: string | null,
+): Record<StatusFilter, number> {
+  const out: Record<StatusFilter, number> = {
+    all: chapters.length, translated: 0, running: 0, error: 0, raw: 0,
+  }
+  for (const c of chapters) out[chapterStatus(c, targetLang)]++
+  return out
+}
+
+export function compareChapters(
+  s: ChapterSort,
+): (a: HubChapter, b: HubChapter) => number {
+  switch (s) {
+    case 'chapter_desc': return (a, b) => b.sortKey - a.sortKey
+    case 'chapter_asc':  return (a, b) => a.sortKey - b.sortKey
+    case 'updated_desc': return (a, b) =>
+      (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')
+  }
 }

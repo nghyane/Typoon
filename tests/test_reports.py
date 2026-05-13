@@ -45,12 +45,11 @@ async def _bootstrap_chapter_and_draft(store: PostgresStore) -> tuple[int, int, 
         upstream_ref=f"m-{uuid.uuid4().hex[:8]}",
         title="X", languages=["ko"], imported_by=owner["id"],
     )
-    cid = await store.create_chapter(material_id=mid, number="1")
+    cid = await store.create_chapter(material_id=mid, number_norm="1")
     draft_id = await store.create_draft(
         chapter_id=cid, source_lang="ko", target_lang="vi",
         glossary_fp="00", llm_model="test/echo",
         created_by=owner["id"],
-        visibility="guild", scope_guild_id="g-1",
     )
     return reporter["id"], owner["id"], cid, draft_id
 
@@ -64,7 +63,6 @@ async def test_report_intake_does_not_touch_target():
             reporter_id=reporter_id,
             reporter_label="Reporter",
             target_kind="draft", target_id=draft_id,
-            scope_guild_id="g-1",
             kind="dmca", reason="not licensed",
         )
         # Status is open, target untouched.
@@ -86,7 +84,6 @@ async def test_takedown_then_restore_via_actions():
         rid = await store.submit_report(
             reporter_id=reporter_id, reporter_label="Reporter",
             target_kind="draft", target_id=draft_id,
-            scope_guild_id="g-1",
             kind="dmca", reason="not licensed",
         )
 
@@ -191,12 +188,12 @@ async def test_list_reports_filtered_by_status():
         r1 = await store.submit_report(
             reporter_id=reporter_id, reporter_label="R",
             target_kind="draft", target_id=draft_id,
-            scope_guild_id=None, kind="dmca", reason="a",
+            kind="dmca", reason="a",
         )
         r2 = await store.submit_report(
             reporter_id=reporter_id, reporter_label="R",
             target_kind="draft", target_id=draft_id,
-            scope_guild_id=None, kind="abuse", reason="b",
+            kind="abuse", reason="b",
         )
         await store.update_report_status(
             r1, status="dismissed", resolver_id=owner_id,

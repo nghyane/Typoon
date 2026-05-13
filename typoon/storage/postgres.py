@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "18"  # library_entries: target_lang + auto_translate + status enum
+SCHEMA_VERSION = "22"  # drop chapters.number — display via label, sort via work_chapters.number_norm
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
@@ -76,15 +76,45 @@ def _clean_query(q: str) -> str:
 _ISO_FMT = "YYYY-MM-DD\"T\"HH24:MI:SS\"Z\""
 
 
-def _ts(col: str) -> str:
-    return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {col}"
+def _ts(col: str, alias: str | None = None) -> str:
+    """Render a `to_char(... AT TIME ZONE 'UTC') AS <alias>` clause for
+    an ISO-8601 timestamp column.
 
-
-def _ts_as(col: str, alias: str) -> str:
-    """Like `_ts` but lets the caller pick the AS alias — needed when
-    the source column is qualified (e.g. `b.created_at`) but the result
-    name should be unqualified for dict consumption."""
+    When `col` is qualified (e.g. `t.created_at`), `alias` MUST be
+    supplied — Postgres rejects dotted identifiers in `AS …`. Plain
+    unqualified columns default the alias to the column name.
+    """
+    if alias is None:
+        if "." in col:
+            raise ValueError(
+                f"_ts: qualified column {col!r} requires explicit alias"
+            )
+        alias = col
     return f"to_char(({col}) AT TIME ZONE 'UTC', '{_ISO_FMT}') AS {alias}"
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Per-connection init hook for the pool.
+
+    Registers a JSONB codec so every JSON-shaped column comes back as a
+    Python object (dict/list) rather than the raw string. Without this
+    asyncpg returns JSONB as `str` whenever `statement_cache_size=0`
+    bypasses its type introspection — which used to force every read
+    site to defensively `json.loads(...)` on a `isinstance(v, str)`
+    branch. One codec, one source of truth.
+    """
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=lambda v: json.dumps(v, ensure_ascii=False),
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+    await conn.set_type_codec(
+        "json",
+        encoder=lambda v: json.dumps(v, ensure_ascii=False),
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
 
 
 _TS_USERS = (
@@ -92,36 +122,44 @@ _TS_USERS = (
     f"{_ts('created_at')}, {_ts('last_login_at')}"
 )
 _TS_MATERIAL = (
-    "id, imported_by, origin, source, upstream_ref, title, cover_url, "
+    "id, imported_by, origin, work_id, source, upstream_ref, title, cover_url, "
     "description, author, status, languages, title_native, title_alt, "
     "cross_refs, nsfw, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_CHAPTER = (
-    "id, material_id, position, number, label, upstream_url, "
-    "pages_origin, prepared_hash, prepared_backend, prepared_locator, "
+    "id, material_id, work_chapter_id, position, label, upstream_url, "
+    "prepared_hash, prepared_backend, prepared_locator, "
     "masks_backend, masks_locator, page_count, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
+# Same column list as `_TS_CHAPTER` but qualified with the `c` alias
+# so it can sit beside `wc.*` columns without an `id` collision.
+_TS_CHAPTER_C = (
+    "c.id, c.material_id, c.work_chapter_id, c.position, c.label, "
+    "c.upstream_url, c.prepared_hash, c.prepared_backend, c.prepared_locator, "
+    "c.masks_backend, c.masks_locator, c.page_count, "
+    f"{_ts('c.created_at', 'created_at')}, "
+    f"{_ts('c.updated_at', 'updated_at')}"
+)
 _TS_DRAFT = (
     "id, chapter_id, source_lang, target_lang, glossary_fp, llm_model, "
-    "created_by, visibility, scope_guild_id, state, error_message, "
+    "created_by, state, error_message, "
     "progress_stage, progress_index, progress_total, "
+    "archive_backend, archive_locator, "
+    f"{_ts('rendered_at')}, "
     f"{_ts('takedown_at')}, takedown_reason, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_TRANSLATION = (
-    "id, chapter_id, owner_id, target_lang, draft_id, "
+    "id, work_chapter_id, owner_id, target_lang, draft_id, shared, "
     "archive_backend, archive_locator, "
     f"{_ts('rendered_at')}, "
-    "in_feed, feed_guild_id, "
     f"{_ts('takedown_at')}, takedown_reason, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_LIBRARY_ENTRY = (
-    "id, user_id, title, cover_url, primary_material_id, "
-    "target_lang, auto_translate, status, "
-    f"{_ts('last_read_at')}, last_chapter_ref, "
+    "id, user_id, title, cover_url, primary_material_id, status, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_TRANSLATOR_MEMORY = (
@@ -133,26 +171,6 @@ _TS_TRANSLATOR_MEMORY = (
 
 def _row_dict(row: asyncpg.Record | None) -> dict | None:
     return dict(row) if row else None
-
-
-def _hydrate_memory(d: dict | None) -> dict | None:
-    """asyncpg returns JSONB as either str (statement_cache_size=0) or
-    Python objects depending on driver mood — normalise to objects so
-    callers don't need to care."""
-    if d is None:
-        return None
-    for k in ("characters", "world", "style", "glossary", "style_refs"):
-        v = d.get(k)
-        if isinstance(v, str):
-            d[k] = json.loads(v)
-    return d
-
-
-def _hydrate_brief(d: dict) -> dict:
-    v = d.get("brief_json")
-    if isinstance(v, str):
-        d["brief_json"] = json.loads(v)
-    return d
 
 
 def _try_float(s: str) -> float | None:
@@ -178,26 +196,33 @@ def _progress_or_none(row: dict) -> dict | None:
 
 
 async def _resolve_chapter_position(
-    conn: asyncpg.Connection, material_id: int, number: str,
+    conn: asyncpg.Connection, material_id: int, number_norm: str,
 ) -> int:
     """Compute the `position` for a new chapter being inserted.
 
     Caller must hold the material's advisory xact lock.
 
+    Sort key is the canonical `number_norm` from the chapter's
+    `work_chapter`, joined back via `chapters.work_chapter_id`. Using
+    the canonical key means "Chương 040" and "Chapter 40" land at
+    the same position across sibling materials.
+
     Strategy:
-      - "Extra"/"Oneshot"/anything not parseable as a float → append at
-        max(position) + INITIAL_GAP.
-      - Numeric `number` → place between the last sibling whose number
-        parses to ≤ target and the first sibling > target. Equality
-        goes to `prev` so a later upload of the same `number` lands
-        AFTER the existing one (first-come stays first).
+      - "extra" / "oneshot" / anything not parseable as a float
+        → append at max(position) + INITIAL_GAP.
+      - Numeric norm → place between the last sibling ≤ target and
+        the first sibling > target. Equality goes to `prev` so a
+        later upload of the same chapter lands AFTER the existing
+        one (first-come stays first).
       - When the chosen gap is below REBALANCE_MIN_GAP, redistribute
         the whole material to INITIAL_GAP spacing and retry once.
     """
-    target = _try_float(number)
+    target = _try_float(number_norm)
     rows = await conn.fetch(
-        "SELECT position, number FROM chapters "
-        "WHERE material_id=$1 ORDER BY position",
+        "SELECT c.position, wc.number_norm "
+        "FROM chapters c "
+        "JOIN work_chapters wc ON wc.id = c.work_chapter_id "
+        "WHERE c.material_id=$1 ORDER BY c.position",
         material_id,
     )
     if not rows:
@@ -209,7 +234,7 @@ async def _resolve_chapter_position(
     prev_pos: int | None = None
     next_pos: int | None = None
     for r in rows:
-        n = _try_float(r["number"])
+        n = _try_float(r["number_norm"])
         if n is None:
             continue  # non-numeric siblings ignored for ordering
         if n <= target:
@@ -227,7 +252,7 @@ async def _resolve_chapter_position(
 
     if next_pos - prev_pos < REBALANCE_MIN_GAP:
         await _rebalance_positions(conn, material_id)
-        return await _resolve_chapter_position(conn, material_id, number)
+        return await _resolve_chapter_position(conn, material_id, number_norm)
     return (prev_pos + next_pos) // 2
 
 
@@ -292,17 +317,23 @@ class PostgresStore:
         self._pool = pool
 
     @staticmethod
-    async def open(dsn: str) -> "PostgresStore":
+    async def open(
+        dsn: str,
+        *,
+        pool_min_size:        int = 2,
+        pool_max_size:        int = 10,
+        statement_cache_size: int = 0,
+    ) -> "PostgresStore":
         if not dsn or not dsn.startswith(("postgresql://", "postgres://")):
             raise RuntimeError(
                 f"DATABASE_URL must be a postgresql:// DSN, got: {dsn!r}"
             )
-        # statement_cache_size=0 disables asyncpg's per-connection
-        # prepared-statement cache. Sporadic "_get_statement" failures
-        # under concurrent first requests — the cache was a small win
-        # not worth the flake. Re-enable later if profiling justifies.
         pool = await asyncpg.create_pool(
-            dsn, min_size=2, max_size=10, statement_cache_size=0,
+            dsn,
+            min_size=pool_min_size,
+            max_size=pool_max_size,
+            statement_cache_size=statement_cache_size,
+            init=_init_connection,
         )
         async with pool.acquire() as conn:
             # Verify schema version BEFORE applying schema.sql — a stale
@@ -324,6 +355,22 @@ class PostgresStore:
     async def ping(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
+
+    # ── Meta key/value (singletons: schema version, guild branding) ─
+
+    async def get_meta(self, key: str) -> str | None:
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT value FROM meta WHERE key=$1", key,
+            )
+
+    async def set_meta(self, key: str, value: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO meta (key, value) VALUES ($1, $2) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+                key, value,
+            )
 
     # ── Identity ──────────────────────────────────────────────────
 
@@ -355,7 +402,7 @@ class PostgresStore:
                     await conn.execute(
                         "UPDATE identities SET metadata=$1::jsonb "
                         "WHERE provider=$2 AND external_id=$3",
-                        json.dumps(metadata, ensure_ascii=False),
+                        metadata,
                         provider, external_id,
                     )
             else:
@@ -369,7 +416,7 @@ class PostgresStore:
                     "INSERT INTO identities (user_id, provider, external_id, metadata) "
                     "VALUES ($1,$2,$3,$4::jsonb)",
                     user_id, provider, external_id,
-                    json.dumps(metadata or {}, ensure_ascii=False),
+                    metadata or {},
                 )
         user = await self.get_user(user_id)
         assert user is not None
@@ -402,49 +449,6 @@ class PostgresStore:
                 user_id, provider,
             )
         return row["external_id"] if row else None
-
-    # ── Guild memberships ─────────────────────────────────────────
-
-    async def upsert_user_guilds(
-        self, user_id: int, guilds: list[dict],
-    ) -> None:
-        """Replace cached guilds for this user. Items: `{id, name?, icon_url?}`.
-        Replace strategy keeps user_guilds in sync with the current
-        Discord state — if user leaves a guild, the row goes away on
-        next login."""
-        async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
-                "DELETE FROM user_guilds WHERE user_id=$1", user_id,
-            )
-            if not guilds:
-                return
-            await conn.executemany(
-                "INSERT INTO user_guilds (user_id, guild_id, guild_name, guild_icon) "
-                "VALUES ($1, $2, $3, $4)",
-                [
-                    (user_id, g["id"], g.get("name"), g.get("icon_url"))
-                    for g in guilds
-                ],
-            )
-
-    async def get_user_guilds(self, user_id: int) -> list[dict]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT guild_id AS id, guild_name AS name, "
-                "       guild_icon AS icon_url "
-                "FROM user_guilds WHERE user_id=$1 "
-                "ORDER BY refreshed_at DESC",
-                user_id,
-            )
-        return [dict(r) for r in rows]
-
-    async def user_in_guild(self, user_id: int, guild_id: str) -> bool:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT 1 FROM user_guilds WHERE user_id=$1 AND guild_id=$2",
-                user_id, guild_id,
-            )
-        return row is not None
 
     # ── API tokens ────────────────────────────────────────────────
 
@@ -498,6 +502,61 @@ class PostgresStore:
             )
         return result.startswith("UPDATE ") and not result.endswith("0")
 
+    # ── Work (global identity) ────────────────────────────────────
+
+    async def get_work(self, work_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                "SELECT id, cross_refs, "
+                f"{_ts('created_at')}, {_ts('updated_at')} "
+                "FROM works WHERE id=$1",
+                work_id,
+            ))
+
+    async def find_or_create_work_chapter(
+        self,
+        *,
+        work_id:     int,
+        number_norm: str,
+        label:       str | None = None,
+    ) -> int:
+        """Idempotent insert keyed on (work_id, number_norm).
+
+        Advisory xact lock on the work scopes serialization so two
+        concurrent spawns of the same (work, chapter) collapse to one
+        row. `label` is first-write-wins; updates after creation are
+        a no-op here (admin can rename via a dedicated path).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Negative offset distinguishes work locks from material
+            # locks (`_resolve_chapter_position` already uses positive
+            # material_id values for its own advisory_xact_lock).
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", -work_id,
+            )
+            existing = await conn.fetchrow(
+                "SELECT id FROM work_chapters "
+                "WHERE work_id=$1 AND number_norm=$2",
+                work_id, number_norm,
+            )
+            if existing is not None:
+                return int(existing["id"])
+            row = await conn.fetchrow(
+                "INSERT INTO work_chapters (work_id, number_norm, label) "
+                "VALUES ($1, $2, $3) RETURNING id",
+                work_id, number_norm, label,
+            )
+            return int(row["id"])
+
+    async def get_work_chapter(self, work_chapter_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                "SELECT id, work_id, number_norm, label, "
+                f"{_ts('created_at')} "
+                "FROM work_chapters WHERE id=$1",
+                work_chapter_id,
+            ))
+
     # ── Material ──────────────────────────────────────────────────
 
     async def get_or_create_source_material(
@@ -519,23 +578,45 @@ class PostgresStore:
     ) -> int:
         """Cross-user dedup on (source, upstream_ref). Display snapshot
         is first-write-wins; ON CONFLICT DO NOTHING leaves existing
-        rows untouched. A later background job may refresh metadata."""
-        async with self._pool.acquire() as conn:
+        rows untouched. A later background job may refresh metadata.
+
+        Auto-links the material to its canonical Work in the same
+        transaction (see :mod:`typoon.adapters.work_linker`). When a
+        row already exists we keep its current `work_id` and only
+        merge in any new cross_refs namespaces the caller brought
+        along.
+        """
+        from typoon.adapters.work_linker import link_or_create_work
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id, work_id FROM materials "
+                "WHERE source=$1 AND upstream_ref=$2",
+                source, upstream_ref,
+            )
+            if existing is not None:
+                # Augment the existing Work with any new cross_refs
+                # the caller surfaced. Keeps the row's work_id stable.
+                if cross_refs:
+                    from typoon.adapters.work_linker import _merge_refs, _clean_refs
+                    refs = _clean_refs(cross_refs)
+                    if refs:
+                        await _merge_refs(conn, int(existing["work_id"]), refs)
+                return int(existing["id"])
+
+            work_id = await link_or_create_work(conn, cross_refs)
             row = await conn.fetchrow(
                 "INSERT INTO materials ("
-                "  imported_by, origin, source, upstream_ref, "
+                "  imported_by, origin, work_id, source, upstream_ref, "
                 "  title, cover_url, description, author, status, "
                 "  languages, title_native, title_alt, cross_refs, nsfw"
-                ") VALUES ($1, 'source', $2, $3, $4, $5, $6, $7, $8, "
-                "          $9, $10, $11, $12::jsonb, $13) "
-                "ON CONFLICT (source, upstream_ref) "
-                "  WHERE source IS NOT NULL DO UPDATE "
-                "  SET source = EXCLUDED.source "  # no-op, just to return id
+                ") VALUES ($1, 'source', $2, $3, $4, $5, $6, $7, $8, $9, "
+                "          $10, $11, $12, $13::jsonb, $14) "
                 "RETURNING id",
-                imported_by, source, upstream_ref, title, cover_url,
+                imported_by, work_id, source, upstream_ref, title, cover_url,
                 description, author, status,
                 list(languages or []), title_native, list(title_alt or []),
-                json.dumps(cross_refs) if cross_refs else None, nsfw,
+                cross_refs if cross_refs else None, nsfw,
             )
         return row["id"]
 
@@ -552,13 +633,19 @@ class PostgresStore:
     ) -> int:
         if origin not in ("extension", "upload"):
             raise ValueError(f"create_local_material origin invalid: {origin!r}")
-        async with self._pool.acquire() as conn:
+        from typoon.adapters.work_linker import link_or_create_work
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Ext / upload have no cross_refs at creation — every
+            # row gets an isolated Work, link votes can merge later.
+            work_id = await link_or_create_work(conn, None)
             row = await conn.fetchrow(
                 "INSERT INTO materials ("
-                "  imported_by, origin, title, cover_url, description, "
+                "  imported_by, origin, work_id, title, cover_url, description, "
                 "  author, nsfw"
-                ") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-                imported_by, origin, title, cover_url, description, author, nsfw,
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+                imported_by, origin, work_id, title, cover_url,
+                description, author, nsfw,
             )
         return row["id"]
 
@@ -666,43 +753,88 @@ class PostgresStore:
     async def create_chapter(
         self,
         material_id:  int,
-        number:       str,
         *,
+        number_norm:  str,
         label:        str | None = None,
         upstream_url: str | None = None,
-        pages_origin: str = "remote",
     ) -> int:
-        if pages_origin not in ("remote", "local"):
-            raise ValueError(
-                f"pages_origin must be remote|local, got {pages_origin!r}"
-            )
+        """Insert a pixel-bound chapter row. Resolves the material's
+        Work id, materialises the matching `work_chapters` row keyed
+        on the caller-supplied `number_norm`, then creates the
+        chapter under the material's advisory lock.
+
+        `number_norm` is the only chapter-identity field — display
+        strings live on `label` (per-source verbatim) and on
+        `work_chapters.label` (first-write-wins across sources).
+        Position is derived from `number_norm` so sibling materials
+        of the same Work sort to the same order.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
-            # Advisory xact lock on material to serialize position
-            # assignment within a single material's chapters.
+            mat = await conn.fetchrow(
+                "SELECT work_id FROM materials WHERE id=$1",
+                material_id,
+            )
+            if mat is None:
+                raise ValueError(f"create_chapter: material {material_id} not found")
+            work_id = int(mat["work_id"])
+
+            # Materialise work_chapter under a work-scoped lock (negative
+            # so it can't collide with the material lock below).
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", -work_id,
+            )
+            wc_row = await conn.fetchrow(
+                "SELECT id FROM work_chapters "
+                "WHERE work_id=$1 AND number_norm=$2",
+                work_id, number_norm,
+            )
+            if wc_row is None:
+                wc_row = await conn.fetchrow(
+                    "INSERT INTO work_chapters "
+                    "  (work_id, number_norm, label) "
+                    "VALUES ($1, $2, $3) RETURNING id",
+                    work_id, number_norm, label,
+                )
+            work_chapter_id = int(wc_row["id"])
+
+            # Material-scoped position assignment based on canonical key.
             await conn.execute(
                 "SELECT pg_advisory_xact_lock($1)", material_id,
             )
-            pos = await _resolve_chapter_position(conn, material_id, number)
+            pos = await _resolve_chapter_position(conn, material_id, number_norm)
             row = await conn.fetchrow(
                 "INSERT INTO chapters ("
-                "  material_id, position, number, label, upstream_url, pages_origin"
-                ") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                material_id, pos, number, label, upstream_url, pages_origin,
+                "  material_id, work_chapter_id, position, label, upstream_url"
+                ") VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                material_id, work_chapter_id, pos, label, upstream_url,
             )
         return row["id"]
 
     async def get_chapter(self, chapter_id: int) -> dict | None:
+        """Single chapter row joined with `work_chapters.number_norm`
+        so callers see the canonical chapter key without a second
+        round-trip — mirrors `list_chapters`."""
         async with self._pool.acquire() as conn:
             return _row_dict(await conn.fetchrow(
-                f"SELECT {_TS_CHAPTER} FROM chapters WHERE id=$1",
+                f"SELECT {_TS_CHAPTER_C}, wc.number_norm "
+                "FROM chapters c "
+                "JOIN work_chapters wc ON wc.id = c.work_chapter_id "
+                "WHERE c.id=$1",
                 chapter_id,
             ))
 
     async def list_chapters(self, material_id: int) -> list[dict]:
+        """Per-material chapter rows ordered by position. Includes
+        `number_norm` (joined from `work_chapters`) so callers don't
+        need a second round-trip just to read the canonical key —
+        this is the closest substitute for the dropped `chapters.number`
+        column. `label` carries the source's display string."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT {_TS_CHAPTER} FROM chapters "
-                "WHERE material_id=$1 ORDER BY position",
+                f"SELECT {_TS_CHAPTER_C}, wc.number_norm "
+                "FROM chapters c "
+                "JOIN work_chapters wc ON wc.id = c.work_chapter_id "
+                "WHERE c.material_id=$1 ORDER BY c.position",
                 material_id,
             )
         return [dict(r) for r in rows]
@@ -811,8 +943,8 @@ class PostgresStore:
         self, chapter_id: int, pages: list[dict],
     ) -> None:
         """`pages` items: { page_index, width, height, bubbles: [...] }
-        where each bubble has page_index, bubble_idx, polygon, fit_box,
-        erase_box, text_box. Atomic replace per chapter."""
+        where each bubble has bubble_idx, polygon, fit_box, erase_box,
+        text_box. Atomic replace per chapter."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM bubble_geometry WHERE chapter_id=$1", chapter_id,
@@ -837,11 +969,11 @@ class PostgresStore:
                         "VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, "
                         "        $6::jsonb, $7::jsonb)",
                         [
-                            (chapter_id, b["page_index"], b["bubble_idx"],
-                             json.dumps(b["polygon"]),
-                             json.dumps(b["fit_box"]),
-                             json.dumps(b["erase_box"]),
-                             json.dumps(b["text_box"]))
+                            (chapter_id, page["page_index"], b["bubble_idx"],
+                             b["polygon"],
+                             b["fit_box"],
+                             b["erase_box"],
+                             b["text_box"])
                             for b in bubbles
                         ],
                     )
@@ -866,9 +998,6 @@ class PostgresStore:
         by_page: dict[int, list[dict]] = {}
         for b in bubbles:
             d = dict(b)
-            for k in ("polygon", "fit_box", "erase_box", "text_box"):
-                if isinstance(d[k], str):
-                    d[k] = json.loads(d[k])
             by_page.setdefault(d["page_index"], []).append(d)
         return [
             {
@@ -885,21 +1014,15 @@ class PostgresStore:
     async def find_reusable_draft(
         self,
         *,
-        chapter_id:    int,
-        source_lang:   str,
-        target_lang:   str,
-        glossary_fp:   str,
-        viewer_id:     int,
-        viewer_guilds: list[str],
+        chapter_id:  int,
+        source_lang: str,
+        target_lang: str,
+        glossary_fp: str,
     ) -> dict | None:
-        """Cache lookup with visibility gate. Returns None if no draft
-        matches the key, or if all matches are private/taken-down/
-        out-of-scope for the viewer.
-
-        Visibility rules:
-          - 'guild':      scope_guild_id in viewer_guilds
-          - 'all_guilds': creator shares ≥1 guild with viewer
-          - 'private':    excluded by unique-cache index
+        """Cache lookup against the global community pool. Returns None
+        when no draft matches the key, or the only matches are taken
+        down. Schema 19 removed per-guild visibility — every alive
+        draft on the cache key is reusable.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -910,52 +1033,33 @@ class PostgresStore:
                   AND  d.source_lang=$2
                   AND  d.target_lang=$3
                   AND  d.glossary_fp=$4
-                  AND  d.visibility != 'private'
                   AND  d.takedown_at IS NULL
-                  AND  (
-                      -- viewer is creator
-                      d.created_by = $5
-                      -- guild scope matches viewer's guilds
-                      OR (d.visibility = 'guild'
-                          AND d.scope_guild_id = ANY($6::text[]))
-                      -- all_guilds: creator shares a guild with viewer
-                      OR (d.visibility = 'all_guilds' AND EXISTS (
-                          SELECT 1 FROM user_guilds ug
-                          WHERE ug.user_id = d.created_by
-                            AND ug.guild_id = ANY($6::text[])
-                      ))
-                  )
                 ORDER BY d.state = 'done' DESC, d.created_at DESC
                 LIMIT 1
                 """,
                 chapter_id, source_lang, target_lang, glossary_fp,
-                viewer_id, viewer_guilds,
             )
         return _row_dict(row)
 
     async def create_draft(
         self,
         *,
-        chapter_id:     int,
-        source_lang:    str,
-        target_lang:    str,
-        glossary_fp:    str,
-        llm_model:      str,
-        created_by:     int,
-        visibility:     str,
-        scope_guild_id: str | None,
+        chapter_id:  int,
+        source_lang: str,
+        target_lang: str,
+        glossary_fp: str,
+        llm_model:   str,
+        created_by:  int,
     ) -> int:
-        if visibility not in ("private", "guild", "all_guilds"):
-            raise ValueError(f"invalid visibility: {visibility!r}")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO translation_drafts ("
                 "  chapter_id, source_lang, target_lang, glossary_fp, "
-                "  llm_model, created_by, visibility, scope_guild_id, state"
-                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') "
+                "  llm_model, created_by, state"
+                ") VALUES ($1, $2, $3, $4, $5, $6, 'pending') "
                 "RETURNING id",
                 chapter_id, source_lang, target_lang, glossary_fp,
-                llm_model, created_by, visibility, scope_guild_id,
+                llm_model, created_by,
             )
         return row["id"]
 
@@ -1039,7 +1143,7 @@ class PostgresStore:
                 "  facts_text=EXCLUDED.facts_text, "
                 "  rules_text=EXCLUDED.rules_text, "
                 "  updated_at=NOW()",
-                draft_id, json.dumps(brief, ensure_ascii=False),
+                draft_id, brief,
                 brief.get("summary"), brief.get("terms_text"),
                 brief.get("facts_text"), brief.get("rules_text"),
             )
@@ -1052,8 +1156,7 @@ class PostgresStore:
             )
         if row is None:
             return None
-        raw = row["brief_json"]
-        return json.loads(raw) if isinstance(raw, str) else raw
+        return row["brief_json"]
 
     async def takedown_draft(
         self, draft_id: int, reason: str,
@@ -1066,25 +1169,55 @@ class PostgresStore:
                 draft_id, reason,
             )
 
+    async def update_draft_archive(
+        self,
+        draft_id: int,
+        *,
+        archive_backend: str,
+        archive_locator: str,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE translation_drafts "
+                "SET archive_backend=$1, archive_locator=$2, "
+                "    rendered_at=NOW() "
+                "WHERE id=$3",
+                archive_backend, archive_locator, draft_id,
+            )
+
+    async def pending_drafts_for_chapter(
+        self, chapter_id: int,
+    ) -> list[int]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id FROM translation_drafts "
+                "WHERE chapter_id=$1 "
+                "  AND state='pending' "
+                "  AND takedown_at IS NULL",
+                chapter_id,
+            )
+        return [r["id"] for r in rows]
+
     # ── Translations (Layer 3, per-user) ──────────────────────────
 
     async def get_or_create_translation(
         self,
         *,
-        chapter_id:  int,
-        owner_id:    int,
-        target_lang: str,
-        draft_id:    int | None,
+        work_chapter_id: int,
+        owner_id:        int,
+        target_lang:     str,
+        draft_id:        int,
+        shared:          bool = True,
     ) -> int:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO translations "
-                "  (chapter_id, owner_id, target_lang, draft_id) "
-                "VALUES ($1, $2, $3, $4) "
-                "ON CONFLICT (chapter_id, owner_id, target_lang) DO UPDATE "
-                "  SET draft_id=COALESCE(EXCLUDED.draft_id, translations.draft_id) "
+                "  (work_chapter_id, owner_id, target_lang, draft_id, shared) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (work_chapter_id, owner_id, target_lang) DO UPDATE "
+                "  SET draft_id = EXCLUDED.draft_id "
                 "RETURNING id",
-                chapter_id, owner_id, target_lang, draft_id,
+                work_chapter_id, owner_id, target_lang, draft_id, shared,
             )
         return row["id"]
 
@@ -1097,94 +1230,108 @@ class PostgresStore:
 
     async def list_translations_for_chapters(
         self,
-        chapter_ids:   list[int],
-        viewer_id:     int,
-        viewer_guilds: list[str],
+        chapter_ids: list[int],
     ) -> dict[int, list[dict]]:
-        """Bulk overlay for chapter list views.
+        """Bulk overlay for chapter list views. Joins per-material
+        chapter rows to translations via the shared work_chapter so
+        a translation spawned from a sibling material of the same
+        Work surfaces on every material's chapter list.
 
-        Visibility filter mirrors `find_reusable_draft` but for whole
-        translations: viewer sees their own + guild-shared via the
-        draft pointer + drafts with all_guilds visibility whose creator
-        shares a guild with the viewer.
+        Schema 19 made translations community-wide, so this is a flat
+        join — no visibility branch beyond `shared` + takedown.
         """
         if not chapter_ids:
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
+                """
                 SELECT
-                    t.id, t.chapter_id, t.owner_id, t.target_lang,
-                    t.draft_id, t.in_feed, t.feed_guild_id,
+                    c.id AS chapter_id,
+                    t.id, t.work_chapter_id, t.owner_id, t.target_lang,
+                    t.draft_id, t.shared,
                     COALESCE(d.state, 'done') AS state,
                     u.display_name AS creator_name,
                     (t.archive_locator IS NULL AND t.draft_id IS NOT NULL) AS uses_default_render
-                FROM translations t
+                FROM chapters c
+                JOIN translations t ON t.work_chapter_id = c.work_chapter_id
                 LEFT JOIN translation_drafts d ON d.id = t.draft_id
                 LEFT JOIN users u ON u.id = t.owner_id
-                WHERE t.chapter_id = ANY($1::bigint[])
+                WHERE c.id = ANY($1::bigint[])
                   AND t.takedown_at IS NULL
-                  AND (
-                      t.owner_id = $2
-                      OR d.visibility = 'guild' AND d.scope_guild_id = ANY($3::text[])
-                      OR d.visibility = 'all_guilds' AND EXISTS (
-                          SELECT 1 FROM user_guilds ug
-                          WHERE ug.user_id = d.created_by
-                            AND ug.guild_id = ANY($3::text[])
-                      )
-                  )
-                ORDER BY t.chapter_id, t.created_at DESC
+                ORDER BY c.id, t.created_at DESC
                 """,
-                chapter_ids, viewer_id, viewer_guilds,
+                chapter_ids,
             )
         out: dict[int, list[dict]] = {cid: [] for cid in chapter_ids}
         for r in rows:
-            out[r["chapter_id"]].append(dict(r))
+            d = dict(r)
+            cid = d.pop("chapter_id")
+            out[cid].append(d)
         return out
+
+    async def list_all_translations_for_chapter(
+        self, chapter_id: int,
+    ) -> list[dict]:
+        """All translations on the Work chapter this pixel chapter
+        belongs to. Used by admin cleanup (material delete) to
+        enumerate archive locators across owners regardless of
+        visibility/takedown."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT t.id, t.owner_id, t.archive_backend, t.archive_locator "
+                "FROM translations t "
+                "JOIN chapters c ON c.work_chapter_id = t.work_chapter_id "
+                "WHERE c.id=$1",
+                chapter_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_drafts_for_chapter(
+        self, chapter_id: int,
+    ) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, archive_backend, archive_locator "
+                "FROM translation_drafts "
+                "WHERE chapter_id=$1",
+                chapter_id,
+            )
+        return [dict(r) for r in rows]
 
     async def list_translations_by_upstream(
         self,
         material_id:   int,
         upstream_urls: list[str],
-        viewer_id:     int,
-        viewer_guilds: list[str],
     ) -> dict[str, list[dict]]:
-        """Manifest-coord overlay. Same visibility logic as
-        `list_translations_for_chapters`; key shape is upstream_url
-        so callers can join against the manifest chapter list before
-        any server chapter row exists for the URL.
+        """Manifest-coord overlay. Keyed by `chapter.upstream_url` so
+        callers can join against the manifest chapter list. The chapter
+        row for the URL must already exist (spawn / upload created it);
+        rows are matched via `chapters.work_chapter_id` so a translation
+        spawned from a sibling material of the same Work shows up here.
+        Single global pool — no visibility filtering beyond `shared`.
         """
         if not upstream_urls:
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
+                """
                 SELECT
                     c.upstream_url,
-                    t.id, t.chapter_id, t.owner_id, t.target_lang,
-                    t.draft_id, t.in_feed, t.feed_guild_id,
+                    t.id, t.work_chapter_id, t.owner_id, t.target_lang,
+                    t.draft_id, t.shared,
                     COALESCE(d.state, 'done') AS state,
                     u.display_name AS creator_name,
                     (t.archive_locator IS NULL AND t.draft_id IS NOT NULL) AS uses_default_render
-                FROM translations t
-                JOIN chapters c ON c.id = t.chapter_id
+                FROM chapters c
+                JOIN translations t ON t.work_chapter_id = c.work_chapter_id
                 LEFT JOIN translation_drafts d ON d.id = t.draft_id
                 LEFT JOIN users u ON u.id = t.owner_id
                 WHERE c.material_id = $1
                   AND c.upstream_url = ANY($2::text[])
                   AND t.takedown_at IS NULL
-                  AND (
-                      t.owner_id = $3
-                      OR d.visibility = 'guild' AND d.scope_guild_id = ANY($4::text[])
-                      OR d.visibility = 'all_guilds' AND EXISTS (
-                          SELECT 1 FROM user_guilds ug
-                          WHERE ug.user_id = d.created_by
-                            AND ug.guild_id = ANY($4::text[])
-                      )
-                  )
                 ORDER BY c.upstream_url, t.created_at DESC
                 """,
-                material_id, upstream_urls, viewer_id, viewer_guilds,
+                material_id, upstream_urls,
             )
         out: dict[str, list[dict]] = {u: [] for u in upstream_urls}
         for r in rows:
@@ -1196,8 +1343,11 @@ class PostgresStore:
     async def list_my_translations(
         self, user_id: int,
     ) -> list[dict]:
-        """Translations owned by `user_id`, joined with chapter +
-        material for `/translate` index. Newest activity first.
+        """Translations owned by `user_id`. The translation row sits at
+        Work-chapter scope (cross-source), but for the /translate index
+        we surface a single representative material/chapter — the one
+        the user spawned from (via translation_drafts.chapter_id).
+        Newest activity first.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1205,12 +1355,12 @@ class PostgresStore:
                 SELECT
                     t.id              AS translation_id,
                     t.target_lang,
-                    {_ts('t.updated_at')},
+                    {_ts('t.updated_at', 'updated_at')},
                     COALESCE(d.state, 'done') AS state,
                     (t.archive_locator IS NOT NULL
                      OR d.archive_locator IS NOT NULL) AS has_archive,
                     c.id              AS chapter_id,
-                    c.number          AS chapter_number,
+                    wc.number_norm    AS chapter_number,
                     c.label           AS chapter_label,
                     c.position        AS chapter_position,
                     c.upstream_url    AS chapter_upstream_url,
@@ -1220,8 +1370,9 @@ class PostgresStore:
                     m.source          AS material_source,
                     m.upstream_ref    AS material_upstream_ref
                 FROM translations t
-                LEFT JOIN translation_drafts d ON d.id = t.draft_id
-                JOIN chapters  c ON c.id = t.chapter_id
+                JOIN translation_drafts d ON d.id = t.draft_id
+                JOIN chapters  c ON c.id = d.chapter_id
+                JOIN work_chapters wc ON wc.id = c.work_chapter_id
                 JOIN materials m ON m.id = c.material_id
                 WHERE t.owner_id = $1
                   AND t.takedown_at IS NULL
@@ -1246,21 +1397,6 @@ class PostgresStore:
                 archive_backend, archive_locator, translation_id,
             )
 
-    async def update_translation_feed(
-        self,
-        translation_id: int,
-        *,
-        in_feed:        bool,
-        feed_guild_id:  str | None,
-    ) -> None:
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE translations "
-                "SET in_feed=$1, feed_guild_id=$2 "
-                "WHERE id=$3",
-                in_feed, feed_guild_id, translation_id,
-            )
-
     async def takedown_translation(
         self, translation_id: int, reason: str,
     ) -> None:
@@ -1270,6 +1406,13 @@ class PostgresStore:
                 "SET takedown_at=NOW(), takedown_reason=$2 "
                 "WHERE id=$1",
                 translation_id, reason,
+            )
+
+    async def delete_translation(self, translation_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM translations WHERE id=$1",
+                translation_id,
             )
 
     async def upsert_translation_edit(
@@ -1327,7 +1470,7 @@ class PostgresStore:
             entries = await conn.fetch(
                 f"SELECT {_TS_LIBRARY_ENTRY} FROM library_entries "
                 f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY COALESCE(last_read_at, created_at) DESC",
+                "ORDER BY updated_at DESC",
                 *args,
             )
             if not entries:
@@ -1350,7 +1493,7 @@ class PostgresStore:
                        COUNT(*) AS n
                 FROM   library_materials lm
                 JOIN   chapters c          ON c.material_id = lm.material_id
-                JOIN   translations t      ON t.chapter_id  = c.id
+                JOIN   translations t      ON t.work_chapter_id = c.work_chapter_id
                                           AND t.owner_id   = $2
                 JOIN   translation_drafts td ON td.id = t.draft_id
                 WHERE  lm.entry_id = ANY($1::bigint[])
@@ -1379,9 +1522,6 @@ class PostgresStore:
         out: list[dict] = []
         for e in entries:
             d = dict(e)
-            raw = d.get("last_chapter_ref")
-            if isinstance(raw, str):
-                d["last_chapter_ref"] = json.loads(raw)
             d["materials"] = by_entry.get(d["id"], [])
             d["translation_summary"] = summary_by_entry.get(
                 d["id"],
@@ -1415,7 +1555,7 @@ class PostgresStore:
                 SELECT td.state, COUNT(*) AS n
                 FROM   library_materials lm
                 JOIN   chapters c          ON c.material_id = lm.material_id
-                JOIN   translations t      ON t.chapter_id  = c.id
+                JOIN   translations t      ON t.work_chapter_id = c.work_chapter_id
                                           AND t.owner_id   = $2
                 JOIN   translation_drafts td ON td.id = t.draft_id
                 WHERE  lm.entry_id = $1
@@ -1425,9 +1565,6 @@ class PostgresStore:
                 entry_id, user_id,
             )
         d = dict(entry)
-        raw = d.get("last_chapter_ref")
-        if isinstance(raw, str):
-            d["last_chapter_ref"] = json.loads(raw)
         d["materials"] = [dict(l) for l in links]
         summary = {"pending": 0, "running": 0, "done": 0, "error": 0}
         for r in summary_rows:
@@ -1437,6 +1574,24 @@ class PostgresStore:
         d["translation_summary"] = summary
         return d
 
+    async def find_entry_for_material(
+        self, *, user_id: int, material_id: int,
+    ) -> dict | None:
+        """Resolve the viewer's library entry that links a material,
+        if any. Used by `/api/material/{id}` to tell the SPA whether
+        to show "Theo dõi" or "Mở trong Library" without a second
+        round-trip."""
+        async with self._pool.acquire() as conn:
+            return _row_dict(await conn.fetchrow(
+                "SELECT le.id, le.status "
+                "FROM   library_entries le "
+                "JOIN   library_materials lm ON lm.entry_id = le.id "
+                "WHERE  lm.user_id     = $1 "
+                "  AND  lm.material_id = $2 "
+                "LIMIT 1",
+                user_id, material_id,
+            ))
+
     async def create_library_entry(
         self,
         *,
@@ -1444,20 +1599,16 @@ class PostgresStore:
         title:               str,
         cover_url:           str | None,
         primary_material_id: int,
-        target_lang:         str | None = None,
-        auto_translate:      bool = False,
         status:              str = "reading",
     ) -> int:
-        if status not in ("reading", "plan", "on_hold", "done", "dropped"):
+        if status not in ("reading", "plan", "done", "dropped"):
             raise ValueError(f"invalid library status: {status!r}")
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO library_entries "
-                "  (user_id, title, cover_url, primary_material_id, "
-                "   target_lang, auto_translate, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-                user_id, title, cover_url, primary_material_id,
-                target_lang, auto_translate, status,
+                "  (user_id, title, cover_url, primary_material_id, status) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                user_id, title, cover_url, primary_material_id, status,
             )
             entry_id = row["id"]
             await conn.execute(
@@ -1472,31 +1623,17 @@ class PostgresStore:
         self,
         entry_id: int, user_id: int,
         *,
-        title:            str | None = None,
-        status:           str | None = None,
-        target_lang:      str | None = None,
-        auto_translate:   bool | None = None,
-        last_read_at:     str | None = None,
-        last_chapter_ref: dict | None = None,
+        title:  str | None = None,
+        status: str | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
         if title is not None:
             args.append(title); sets.append(f"title=${len(args)}")
         if status is not None:
-            if status not in ("reading", "plan", "on_hold", "done", "dropped"):
+            if status not in ("reading", "plan", "done", "dropped"):
                 raise ValueError(f"invalid library status: {status!r}")
             args.append(status); sets.append(f"status=${len(args)}")
-        if target_lang is not None:
-            args.append(target_lang); sets.append(f"target_lang=${len(args)}")
-        if auto_translate is not None:
-            args.append(auto_translate); sets.append(f"auto_translate=${len(args)}")
-        if last_read_at is not None:
-            args.append(last_read_at)
-            sets.append(f"last_read_at=${len(args)}::timestamptz")
-        if last_chapter_ref is not None:
-            args.append(json.dumps(last_chapter_ref))
-            sets.append(f"last_chapter_ref=${len(args)}::jsonb")
         if not sets:
             return
         args.extend([entry_id, user_id])
@@ -1616,8 +1753,6 @@ class PostgresStore:
             # Signal 1: cross_refs intersect
             if m["cross_refs"]:
                 refs = m["cross_refs"]
-                if isinstance(refs, str):
-                    refs = json.loads(refs)
                 if isinstance(refs, dict) and refs:
                     row = await conn.fetchrow(
                         "SELECT le.id AS entry_id, le.title AS entry_title "
@@ -1628,7 +1763,7 @@ class PostgresStore:
                         "  AND m2.cross_refs IS NOT NULL "
                         "  AND m2.cross_refs @> $2::jsonb "
                         "LIMIT 1",
-                        user_id, json.dumps(refs),
+                        user_id, refs,
                     )
                     if row:
                         return {
@@ -1720,71 +1855,147 @@ class PostgresStore:
             voter_id, material_id, candidate_material_id, vote=-1,
         )
 
-    # ── Feed (Hội Mê Truyện, guild-scoped) ───────────────────────
+    # ── Community recent feed (cross-user, no guild scope) ───────
 
-    async def list_feed_entries(
+    async def list_recent_community(
         self,
         *,
-        guild_id:  str,
         viewer_id: int,
-        limit:     int = 50,
+        limit:     int = 60,
         before:    str | None = None,
     ) -> list[dict]:
-        """Translations with in_feed=TRUE scoped to the guild. Caller
-        already enforced viewer is a member of guild_id.
+        """Recent translations across the community, deduped per
+        material (latest chapter per manga wins). `viewer_id` is
+        accepted for API symmetry but no longer gates visibility —
+        schema 19 made every non-takedown translation public.
 
-        Two visibility paths feed the result:
-          - feed_guild_id = guild_id (explicit publish to this guild)
-          - feed_guild_id IS NULL  AND the translation's draft has
-            visibility='all_guilds' AND the creator belongs to guild_id
-            (publish to every guild creator is in).
+        Cursor pagination via ISO `before` filters on the per-material
+        latest `created_at` so a manga doesn't reappear on later pages
+        once its newest chapter is consumed.
         """
+        del viewer_id  # reserved for future personalisation
         cond_before = ""
-        args: list = [guild_id, limit]
+        args: list = [limit]
         if before is not None:
             args.append(before)
-            cond_before = f"AND t.created_at < ${len(args)}::timestamptz"
-
+            cond_before = (
+                f"AND latest_created_at < ${len(args)}::timestamptz"
+            )
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT
-                    t.id              AS translation_id,
-                    t.chapter_id,
-                    c.number          AS chapter_number,
-                    c.label           AS chapter_label,
-                    m.id              AS material_id,
-                    m.title           AS material_title,
-                    m.cover_url       AS material_cover,
-                    t.target_lang,
-                    t.owner_id        AS creator_id,
-                    u.display_name    AS creator_name,
-                    {_ts('t.created_at')}
-                FROM translations t
-                JOIN chapters  c ON c.id = t.chapter_id
-                JOIN materials m ON m.id = c.material_id
-                LEFT JOIN users u ON u.id = t.owner_id
-                LEFT JOIN translation_drafts d ON d.id = t.draft_id
-                WHERE t.in_feed = TRUE
-                  AND t.takedown_at IS NULL
-                  AND (
-                    t.feed_guild_id = $1
-                    OR (
-                      t.feed_guild_id IS NULL
-                      AND d.visibility = 'all_guilds'
-                      AND EXISTS (
-                        SELECT 1 FROM user_guilds ug
-                        WHERE ug.user_id = t.owner_id AND ug.guild_id = $1
-                      )
-                    )
-                  )
+                WITH visible AS (
+                    SELECT
+                        t.id              AS translation_id,
+                        c.id              AS chapter_id,
+                        wc.number_norm    AS chapter_number,
+                        c.label           AS chapter_label,
+                        c.position        AS chapter_position,
+                        m.id              AS material_id,
+                        m.title           AS material_title,
+                        m.cover_url       AS material_cover,
+                        t.target_lang,
+                        t.owner_id        AS creator_id,
+                        u.display_name    AS creator_name,
+                        t.created_at,
+                        COUNT(*) OVER (PARTITION BY m.id) AS chapters_in_feed,
+                        MAX(t.created_at) OVER (PARTITION BY m.id) AS latest_created_at
+                    FROM translations t
+                    JOIN translation_drafts d ON d.id = t.draft_id
+                    JOIN chapters  c ON c.id = d.chapter_id
+                    JOIN work_chapters wc ON wc.id = c.work_chapter_id
+                    JOIN materials m ON m.id = c.material_id
+                    LEFT JOIN users u ON u.id = t.owner_id
+                    WHERE t.takedown_at IS NULL
+                      AND t.shared = TRUE
+                )
+                SELECT DISTINCT ON (material_id)
+                    translation_id, chapter_id, chapter_number, chapter_label,
+                    material_id, material_title, material_cover,
+                    target_lang, creator_id, creator_name,
+                    to_char(
+                        created_at AT TIME ZONE 'UTC',
+                        '{_ISO_FMT}'
+                    ) AS created_at,
+                    chapters_in_feed
+                FROM visible
+                WHERE TRUE
                 {cond_before}
-                ORDER BY t.created_at DESC
-                LIMIT $2
+                ORDER BY material_id, created_at DESC
+                LIMIT $1
                 """,
                 *args,
             )
-        return [dict(r) for r in rows]
+        # `DISTINCT ON (material_id) ORDER BY material_id, …` returns
+        # rows sorted by material_id; the SPA wants newest-first across
+        # materials, so re-sort in Python (page size is bounded by
+        # `limit` ≤ 200).
+        out = [dict(r) for r in rows]
+        out.sort(key=lambda r: r["created_at"] or "", reverse=True)
+        return out
+
+    # ── Reading history (per-user, system-recorded) ──────────────
+
+    async def record_reading(
+        self, *,
+        user_id:          int,
+        work_chapter_id:  int,
+        last_material_id: int | None,
+        translation_id:   int | None,
+    ) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO reading_history "
+                "  (user_id, work_chapter_id, last_material_id, "
+                "   translation_id, last_read_at) "
+                "VALUES ($1, $2, $3, $4, NOW()) "
+                "ON CONFLICT (user_id, work_chapter_id) DO UPDATE SET "
+                "  last_material_id = COALESCE(EXCLUDED.last_material_id, "
+                "                              reading_history.last_material_id), "
+                "  translation_id   = COALESCE(EXCLUDED.translation_id, "
+                "                              reading_history.translation_id), "
+                "  last_read_at     = NOW()",
+                user_id, work_chapter_id, last_material_id, translation_id,
+            )
+
+    async def list_recent_reads(
+        self, *, user_id: int, limit: int = 30,
+    ) -> list[dict]:
+        """Recent unique Works the user has read, newest first. Dedupes
+        per Work (so reading three chapters of one manga collapses to
+        one row). Surfaces the most-recent (material, chapter) the
+        user actually opened so the row can deep-link back to the
+        same source.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT DISTINCT ON (m.work_id)
+                    m.work_id         AS work_id,
+                    m.id              AS material_id,
+                    m.title           AS material_title,
+                    m.cover_url       AS material_cover,
+                    wc.id             AS work_chapter_id,
+                    wc.number_norm    AS chapter_number,
+                    wc.label          AS chapter_label,
+                    rh.translation_id,
+                    to_char(
+                        rh.last_read_at AT TIME ZONE 'UTC',
+                        '{_ISO_FMT}'
+                    ) AS last_read_at
+                FROM reading_history rh
+                JOIN work_chapters wc ON wc.id = rh.work_chapter_id
+                JOIN materials m ON m.id = rh.last_material_id
+                WHERE rh.user_id = $1
+                  AND rh.last_material_id IS NOT NULL
+                ORDER BY m.work_id, rh.last_read_at DESC
+                LIMIT $2
+                """,
+                user_id, limit,
+            )
+        out = [dict(r) for r in rows]
+        out.sort(key=lambda r: r["last_read_at"] or "", reverse=True)
+        return out
 
     # ── Glossary ─────────────────────────────────────────────────
 
@@ -2095,9 +2306,9 @@ class PostgresStore:
     # ── Chapter inbox (deferred prepare handle) ───────────────────
 
     async def set_inbox_handle(self, handle: "InboxHandle") -> None:
-        parts_json = json.dumps(
-            [{"number": p.number, "etag": p.etag} for p in handle.parts],
-        )
+        parts_payload = [
+            {"number": p.number, "etag": p.etag} for p in handle.parts
+        ]
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO material_inbox "
@@ -2122,16 +2333,14 @@ class PostgresStore:
             )
         if row is None:
             return None
-        raw = row["parts"]
-        if isinstance(raw, str):
-            raw = json.loads(raw)
+        raw_parts = row["parts"]
         return InboxHandle(
             chapter_id=chapter_id,
             tmp_id=row["tmp_id"],
             upload_id=row["upload_id"],
             parts=tuple(
                 CompletedPart(number=int(p["number"]), etag=str(p["etag"]))
-                for p in raw
+                for p in raw_parts
             ),
             title=row["title"],
         )
@@ -2162,7 +2371,7 @@ class PostgresStore:
                 "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
                 user_id, material_id, target_lang,
             )
-        return _hydrate_memory(_row_dict(row))
+        return _row_dict(row)
 
     async def upsert_translator_memory(
         self,
@@ -2198,11 +2407,11 @@ class PostgresStore:
                     "  $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb"
                     ")",
                     user_id, material_id, source_lang, target_lang,
-                    json.dumps(characters if characters is not None else [], ensure_ascii=False),
-                    json.dumps(world      if world      is not None else {}, ensure_ascii=False),
-                    json.dumps(style      if style      is not None else {}, ensure_ascii=False),
-                    json.dumps(glossary   if glossary   is not None else [], ensure_ascii=False),
-                    json.dumps(style_refs if style_refs is not None else [], ensure_ascii=False),
+                    characters if characters is not None else [],
+                    world      if world      is not None else {},
+                    style      if style      is not None else {},
+                    glossary   if glossary   is not None else [],
+                    style_refs if style_refs is not None else [],
                 )
             else:
                 sets: list[str] = []
@@ -2210,19 +2419,19 @@ class PostgresStore:
                 # source_lang is intentionally immutable post-insert —
                 # changing src mid-stream would invalidate every brief.
                 if characters is not None:
-                    args.append(json.dumps(characters, ensure_ascii=False))
+                    args.append(characters)
                     sets.append(f"characters=${len(args)}::jsonb")
                 if world is not None:
-                    args.append(json.dumps(world, ensure_ascii=False))
+                    args.append(world)
                     sets.append(f"world=${len(args)}::jsonb")
                 if style is not None:
-                    args.append(json.dumps(style, ensure_ascii=False))
+                    args.append(style)
                     sets.append(f"style=${len(args)}::jsonb")
                 if glossary is not None:
-                    args.append(json.dumps(glossary, ensure_ascii=False))
+                    args.append(glossary)
                     sets.append(f"glossary=${len(args)}::jsonb")
                 if style_refs is not None:
-                    args.append(json.dumps(style_refs, ensure_ascii=False))
+                    args.append(style_refs)
                     sets.append(f"style_refs=${len(args)}::jsonb")
                 if sets:
                     args.extend([user_id, material_id, target_lang])
@@ -2238,7 +2447,7 @@ class PostgresStore:
                 "WHERE user_id=$1 AND material_id=$2 AND target_lang=$3",
                 user_id, material_id, target_lang,
             )
-        return _hydrate_memory(_row_dict(row))  # type: ignore[return-value]
+        return _row_dict(row)  # type: ignore[return-value]
 
     async def append_memory_brief(
         self,
@@ -2262,7 +2471,7 @@ class PostgresStore:
                 "  summary    = EXCLUDED.summary, "
                 "  updated_at = NOW()",
                 memory_id, chapter_id,
-                json.dumps(brief_json, ensure_ascii=False), summary,
+                brief_json, summary,
             )
             # Advance last_chapter_id when this chapter sits past the
             # current high-water mark (compare by chapter.position).
@@ -2291,12 +2500,13 @@ class PostgresStore:
         the sliding-window the context agent injects when translating
         the next chapter."""
         sql = (
-            "SELECT b.chapter_id, c.position, c.number, c.label, "
+            "SELECT b.chapter_id, c.position, wc.number_norm AS number, c.label, "
             "       b.brief_json, b.summary, "
-            f"      {_ts_as('b.created_at', 'created_at')}, "
-            f"      {_ts_as('b.updated_at', 'updated_at')} "
+            f"      {_ts('b.created_at', 'created_at')}, "
+            f"      {_ts('b.updated_at', 'updated_at')} "
             "FROM   translator_memory_briefs b "
             "JOIN   chapters c ON c.id = b.chapter_id "
+            "JOIN   work_chapters wc ON wc.id = c.work_chapter_id "
             "WHERE  b.memory_id = $1"
         )
         args: list = [memory_id]
@@ -2310,7 +2520,7 @@ class PostgresStore:
         sql += f" ORDER BY c.position DESC LIMIT ${len(args)}"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *args)
-        return [_hydrate_brief(dict(r)) for r in rows]
+        return [dict(r) for r in rows]
 
     async def delete_translator_memory(
         self,
@@ -2336,7 +2546,6 @@ class PostgresStore:
         reporter_label: str,
         target_kind:    str,
         target_id:      int,
-        scope_guild_id: str | None,
         kind:           str,
         reason:         str,
     ) -> int:
@@ -2348,11 +2557,11 @@ class PostgresStore:
             row = await conn.fetchrow(
                 "INSERT INTO reports ("
                 "  reporter_id, reporter_label, "
-                "  target_kind, target_id, scope_guild_id, "
+                "  target_kind, target_id, "
                 "  kind, reason"
-                ") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                ") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
                 reporter_id, reporter_label,
-                target_kind, target_id, scope_guild_id,
+                target_kind, target_id,
                 kind, reason,
             )
         return row["id"]
@@ -2361,7 +2570,7 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, reporter_id, reporter_label, "
-                "       target_kind, target_id, scope_guild_id, "
+                "       target_kind, target_id, "
                 "       kind, reason, status, "
                 f"       {_ts('created_at')}, "
                 f"       {_ts('resolved_at')}, resolved_by "
@@ -2385,7 +2594,7 @@ class PostgresStore:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, reporter_id, reporter_label, "
-                "       target_kind, target_id, scope_guild_id, "
+                "       target_kind, target_id, "
                 "       kind, reason, status, "
                 f"       {_ts('created_at')}, "
                 f"       {_ts('resolved_at')}, resolved_by "

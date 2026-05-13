@@ -5,7 +5,8 @@
 -- drop-recreate the DB whenever shape changes. No migration tooling.
 --
 -- Layering (top-down):
---   Identity                users, identities, user_guilds, api_tokens
+--   Identity                users, identities, api_tokens
+--   Work (global)           works, work_chapters
 --   Reading entity          materials, chapters, material_link_votes
 --   Pipeline (chapter)      bubbles, bubble_geometry, page_geometry
 --   Pipeline (lang+gloss)   translation_drafts, translation_draft_bubbles,
@@ -59,19 +60,9 @@ CREATE TABLE IF NOT EXISTS identities (
 );
 CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
 
--- Cached Discord guild memberships. Refreshed at login + lazily on
--- spawn/feed access. Drives the `scope_guild_id` resolution for
--- translation drafts and the `/api/feed/guild/{id}` membership check.
-
-CREATE TABLE IF NOT EXISTS user_guilds (
-    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    guild_id     TEXT NOT NULL,                 -- Discord snowflake
-    guild_name   TEXT,
-    guild_icon   TEXT,                          -- discord cdn url
-    refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (user_id, guild_id)
-);
-CREATE INDEX IF NOT EXISTS idx_user_guilds_guild ON user_guilds(guild_id);
+-- Cached Discord guild memberships were removed in schema 19 —
+-- single global community pool, no per-guild authz. Discord is now
+-- only an OAuth identity provider.
 
 -- API tokens (CLI / extension / worker). Web SPA uses Discord JWT, not tokens.
 
@@ -93,6 +84,50 @@ CREATE INDEX IF NOT EXISTS idx_api_tokens_user_active
 CREATE INDEX IF NOT EXISTS idx_api_tokens_prefix_active
     ON api_tokens(prefix) WHERE revoked_at IS NULL;
 
+-- ── Work (global identity hub) ──────────────────────────────────────
+-- A Work is the canonical identity of a manga across sources. Cách 1
+-- ("danh bạ"): the Work row carries identity (cross_refs) only — no
+-- display metadata of its own. Title / cover / description for the
+-- MangaPage come from whichever material the user is viewing. Later
+-- enrichment (MangaDex / AniList adapters) may cache canonical
+-- metadata in a sidecar table, but `works` itself stays minimal so it
+-- never "lies" about a manga.
+--
+-- Two Work rows MUST NOT both claim the same cross_ref namespace
+-- value (e.g. mdex_uuid). Conflict on auto-link spawns a fresh Work
+-- and flags the material for admin review (handled in adapter code).
+
+CREATE TABLE IF NOT EXISTS works (
+    id            BIGSERIAL PRIMARY KEY,
+    -- {"mdex_uuid":"…","anilist":12345,"mal":67890}. Drives auto-link.
+    cross_refs    JSONB,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_works_cross_refs
+    ON works USING GIN (cross_refs)
+    WHERE cross_refs IS NOT NULL;
+
+-- A logical chapter inside a Work. Number is normalised (strip
+-- leading zeros, lowercase common prefixes) so the same chapter can
+-- be matched across sources even when one writes "040" and another
+-- "Chapter 40".
+--
+-- One Work has at most one row per `number_norm`. Multiple `chapters`
+-- (per-material, pixel-bound) may point at the same `work_chapter`
+-- when their numbers normalise to the same string.
+
+CREATE TABLE IF NOT EXISTS work_chapters (
+    id            BIGSERIAL PRIMARY KEY,
+    work_id       BIGINT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    number_norm   TEXT NOT NULL,        -- "40", "40.5", "extra", ""
+    label         TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (work_id, number_norm)
+);
+CREATE INDEX IF NOT EXISTS idx_work_chapters_work
+    ON work_chapters(work_id);
+
 -- ── Material ────────────────────────────────────────────────────────
 -- A manga identity. Source-backed materials are cross-user (unique on
 -- (source, upstream_ref)); two users importing the same HappyMH manga
@@ -107,6 +142,12 @@ CREATE TABLE IF NOT EXISTS materials (
     id            BIGSERIAL PRIMARY KEY,
     imported_by   BIGINT REFERENCES users(id) ON DELETE SET NULL,
     origin        TEXT NOT NULL CHECK (origin IN ('source','extension','upload')),
+
+    -- Cross-source identity. Every material attaches to exactly one Work
+    -- — auto-linked via cross_refs at create time, isolated (1-1 Work)
+    -- when no cross_ref match exists. Community vote may later merge
+    -- isolated Works (see material_link_votes).
+    work_id       BIGINT NOT NULL REFERENCES works(id),
 
     -- Source-backed identity. NULL for ext + upload.
     source        TEXT,
@@ -143,6 +184,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_materials_source_ref
     WHERE source IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_materials_imported_by ON materials(imported_by);
+CREATE INDEX IF NOT EXISTS idx_materials_work ON materials(work_id);
 CREATE INDEX IF NOT EXISTS idx_materials_title_native
     ON materials(title_native) WHERE title_native IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_materials_cross_refs
@@ -196,15 +238,24 @@ CREATE TABLE IF NOT EXISTS chapters (
     id                BIGSERIAL PRIMARY KEY,
     material_id       BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
 
+    -- Cross-source identity. Pinned at chapter-row creation so every
+    -- pixel-bound chapter row maps back to the logical Work chapter
+    -- (work_id, number_norm). Translations + reading_history reference
+    -- this column to dedupe across materials of the same Work.
+    work_chapter_id   BIGINT NOT NULL REFERENCES work_chapters(id),
+
     -- Sparse server-managed sort key (see _resolve_chapter_position in
     -- postgres.py). Same INITIAL_GAP / REBALANCE_MIN_GAP policy as the
-    -- old projects schema.
+    -- old projects schema. Computed from the work_chapter's
+    -- number_norm so chapters sort the same across sibling materials
+    -- of the same Work.
     position          INTEGER NOT NULL,
 
-    -- Display string. Free-form: "4", "4.5", "Extra", "Oneshot",
-    -- "v2 ch.1", "". Not unique within a material.
-    number            TEXT NOT NULL,
-    label             TEXT,                 -- full label as the source presents
+    -- Free-form display string the source publishes ("Chương 040",
+    -- "第106话", "Extra: Volume Cover"). UI renders this verbatim.
+    -- The canonical / sortable chapter key lives on
+    -- `work_chapters.number_norm`; this column is display-only.
+    label             TEXT,
     upstream_url      TEXT,                 -- chapter URL on source; NULL for upload
 
     -- CAS for prepared.bnl. SHA256 hex string; NULL until prepare runs.
@@ -221,10 +272,17 @@ CREATE TABLE IF NOT EXISTS chapters (
 
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (material_id, position)
+    UNIQUE (material_id, position),
+    -- One row per (material, upstream_url) for source-backed chapters.
+    -- Upload/ext chapters have NULL upstream_url — they're excluded here
+    -- so duplicate uploads of the same chapter number still get separate
+    -- positions.
+    UNIQUE (material_id, upstream_url)
 );
 CREATE INDEX IF NOT EXISTS idx_chapters_material
     ON chapters(material_id, position);
+CREATE INDEX IF NOT EXISTS idx_chapters_work_chapter
+    ON chapters(work_chapter_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_prepared_hash
     ON chapters(prepared_hash) WHERE prepared_hash IS NOT NULL;
 
@@ -284,9 +342,10 @@ CREATE TABLE IF NOT EXISTS page_geometry (
 
 -- ── Translation drafts — lang + glossary level (Layer 2) ────────────
 -- LLM output keyed on (chapter, source_lang, target_lang, glossary_fp).
--- Visibility controls who can reuse the draft as cache. The unique
--- index excludes 'private' drafts so the same user/key can spawn a
--- fresh private draft alongside a guild-shared one.
+-- Cross-user cache pool: any translation matching the key reuses the
+-- existing draft regardless of who spawned it. The schema-19 cleanup
+-- removed per-guild visibility — the community is a single global
+-- pool, so there's no longer a private/guild/all_guilds branch.
 --
 -- DMCA: when `takedown_at` is set, the draft is invisible to readers
 -- and cache lookup; any translation referencing it shows a takedown
@@ -301,13 +360,6 @@ CREATE TABLE IF NOT EXISTS translation_drafts (
 
     llm_model          TEXT NOT NULL,
     created_by         BIGINT REFERENCES users(id) ON DELETE SET NULL,
-
-    visibility         TEXT NOT NULL DEFAULT 'guild'
-        CHECK (visibility IN ('private','guild','all_guilds')),
-    -- The guild this draft was spawned from. NULL when visibility is
-    -- 'all_guilds' (creator publishes across every guild they belong
-    -- to) or 'private' (no guild scope).
-    scope_guild_id     TEXT,
 
     -- DMCA. Set by admin takedown; cascades visibility off.
     takedown_at        TIMESTAMPTZ,
@@ -329,11 +381,11 @@ CREATE TABLE IF NOT EXISTS translation_drafts (
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- Cache key uniqueness. Excludes private + taken-down drafts so a
--- private spawn can coexist and a takedown can be replaced.
+-- Cache key uniqueness. Excludes taken-down drafts so a takedown can
+-- be replaced by a fresh spawn.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_drafts_cache
     ON translation_drafts (chapter_id, source_lang, target_lang, glossary_fp)
-    WHERE visibility != 'private' AND takedown_at IS NULL;
+    WHERE takedown_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_drafts_creator ON translation_drafts(created_by);
 CREATE INDEX IF NOT EXISTS idx_drafts_chapter ON translation_drafts(chapter_id);
 
@@ -371,20 +423,26 @@ CREATE INDEX IF NOT EXISTS idx_draft_briefs_search_tsv
     ON draft_briefs USING GIN (search_tsv);
 
 -- ── Translation — per-user wrapper (Layer 3) ────────────────────────
--- One row per (chapter, owner, target_lang). Points at a draft (Layer
--- 2) and optionally carries sparse edits + a per-user render archive
--- (when the user's edits diverge from the draft's default render).
+-- One row per (work_chapter, owner, target_lang). Cross-source: the
+-- translation lives at Work scope, not material scope, so user B can
+-- discover user A's translation when user A spawned from a different
+-- material of the same Work. The actual pixels (and the draft that
+-- generated the render) still live at the material/chapter level via
+-- the `draft_id` FK.
 --
--- `in_feed` controls Hội Mê Truyện feed inclusion — independent from
--- draft visibility: a private draft can yield a non-feed translation;
--- a guild-shared draft can be excluded from feed by its owner.
+-- `shared` defaults TRUE for non-NSFW materials (set by the spawn
+-- route based on material.nsfw); user can toggle later. Cross-source
+-- visibility filters by `shared=TRUE OR owner_id=viewer`.
 
 CREATE TABLE IF NOT EXISTS translations (
     id                 BIGSERIAL PRIMARY KEY,
-    chapter_id         BIGINT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    work_chapter_id    BIGINT NOT NULL REFERENCES work_chapters(id) ON DELETE CASCADE,
     owner_id           BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     target_lang        TEXT NOT NULL,
-    draft_id           BIGINT REFERENCES translation_drafts(id) ON DELETE SET NULL,
+    -- Draft drives pixel + bubble translation. NOT NULL because every
+    -- translation must point at the draft whose render it serves.
+    draft_id           BIGINT NOT NULL REFERENCES translation_drafts(id) ON DELETE CASCADE,
+    shared             BOOLEAN NOT NULL DEFAULT TRUE,
 
     -- Render archive. NULL means "fall back to draft's default render"
     -- — used when the user has no edits and shares the draft's archive.
@@ -392,23 +450,20 @@ CREATE TABLE IF NOT EXISTS translations (
     archive_locator    TEXT,
     rendered_at        TIMESTAMPTZ,
 
-    -- Feed flag — guild-scoped via feed_guild_id. NULL feed_guild_id
-    -- with in_feed=TRUE means "publish in every guild owner belongs to".
-    in_feed            BOOLEAN NOT NULL DEFAULT TRUE,
-    feed_guild_id      TEXT,
-
     takedown_at        TIMESTAMPTZ,
     takedown_reason    TEXT,
 
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (chapter_id, owner_id, target_lang)
+    UNIQUE (work_chapter_id, owner_id, target_lang)
 );
 CREATE INDEX IF NOT EXISTS idx_translations_owner ON translations(owner_id);
-CREATE INDEX IF NOT EXISTS idx_translations_chapter ON translations(chapter_id);
-CREATE INDEX IF NOT EXISTS idx_translations_feed
-    ON translations(feed_guild_id, created_at DESC)
-    WHERE in_feed = TRUE AND takedown_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_translations_work_chapter
+    ON translations(work_chapter_id);
+CREATE INDEX IF NOT EXISTS idx_translations_draft ON translations(draft_id);
+CREATE INDEX IF NOT EXISTS idx_translations_recent
+    ON translations(created_at DESC)
+    WHERE takedown_at IS NULL;
 
 -- Sparse edits over the shared draft. Reader loads draft bubbles +
 -- overlays edits at render-time. Only edited bubbles get rows.
@@ -421,10 +476,14 @@ CREATE TABLE IF NOT EXISTS translation_edits (
     PRIMARY KEY (translation_id, page_index, bubble_idx)
 );
 
--- ── Library (per-user grouping of materials) ────────────────────────
--- A library_entry is the user's "this is the manga I'm tracking" —
--- bookmark, last-read position, "Continue reading" hang here. Each
--- entry links one or more materials (cross-source).
+-- ── Library (per-user bookmark) ─────────────────────────────────────
+-- A library_entry is the user's explicit bookmark — "I am tracking
+-- this manga". History ("what chapter did I last open") lives in the
+-- separate `reading_history` table so casual previews don't pollute
+-- the user's curated shelf.
+--
+-- Cross-region link support ("link the KR raw of a JP manga") sits in
+-- the companion `library_materials` table.
 
 CREATE TABLE IF NOT EXISTS library_entries (
     id                  BIGSERIAL PRIMARY KEY,
@@ -433,30 +492,15 @@ CREATE TABLE IF NOT EXISTS library_entries (
     cover_url           TEXT,
     primary_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
 
-    -- Reading language preference. Drives the hub's chapter list:
-    -- chapters whose only available version is `target_lang` show
-    -- "Read"; others show "Translate" + spawn-on-click. NULL means
-    -- "user has not chosen yet" — the hub asks at first open.
-    target_lang         TEXT,
-    -- When TRUE, the watcher auto-spawns a translation as soon as a
-    -- new chapter lands and `target_lang` differs from the source's
-    -- native langs. Defaults to FALSE so casual users don't burn
-    -- LLM quota on every new chapter.
-    auto_translate      BOOLEAN NOT NULL DEFAULT FALSE,
-
     -- Reading status — the verb the user applies to the manga.
     --   reading   actively reading; default after first "Add".
     --   plan      saved to read later.
-    --   on_hold   paused mid-series.
     --   done      finished reading the available run.
     --   dropped   no longer interested; hidden from default views.
-    -- Replaces the legacy boolean `bookmarked` flag entirely; the
-    -- library UI filters by status enum.
+    -- Schema 19 dropped `on_hold` (folded into `plan`).
     status              TEXT NOT NULL DEFAULT 'reading'
-                          CHECK (status IN ('reading','plan','on_hold','done','dropped')),
+                          CHECK (status IN ('reading','plan','done','dropped')),
 
-    last_read_at        TIMESTAMPTZ,
-    last_chapter_ref    JSONB,    -- {material_id, chapter_id, label, position}
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -478,6 +522,30 @@ CREATE TABLE IF NOT EXISTS library_materials (
 -- users may each have their own entry referencing the same material.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_library_material_per_user
     ON library_materials (user_id, material_id);
+
+-- ── Reading history (per-user, system-recorded) ─────────────────────
+-- Separate from `library_entries` so casual previews don't pollute the
+-- user's bookmark list. Written on reader open; read by the home
+-- "Continue reading" surface and the per-manga "Tiếp tục Ch.X" CTA.
+--
+-- Keyed by (user, work_chapter) so reading chapter 40 of a manga is
+-- a single history entry regardless of which source's pixels the
+-- user opened. `last_material_id` records which source surfaced the
+-- chapter last, so the home shelf can deep-link back to the same
+-- pixel set on revisit. `translation_id` is set when the user opened
+-- a translated reader; NULL when they read raw.
+
+CREATE TABLE IF NOT EXISTS reading_history (
+    user_id          BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    work_chapter_id  BIGINT NOT NULL REFERENCES work_chapters(id) ON DELETE CASCADE,
+    last_material_id BIGINT REFERENCES materials(id) ON DELETE SET NULL,
+    translation_id   BIGINT REFERENCES translations(id) ON DELETE SET NULL,
+    last_read_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, work_chapter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reading_history_user_time
+    ON reading_history (user_id, last_read_at DESC);
+
 
 -- ── Glossary ────────────────────────────────────────────────────────
 -- Per-user glossary: replaces the old per-project glossary. User
@@ -673,7 +741,6 @@ CREATE TABLE IF NOT EXISTS reports (
     target_kind     TEXT NOT NULL
         CHECK (target_kind IN ('material','chapter','draft','translation')),
     target_id       BIGINT NOT NULL,
-    scope_guild_id  TEXT,
 
     kind            TEXT NOT NULL DEFAULT 'dmca'
         CHECK (kind IN ('dmca','abuse','quality','other')),
@@ -726,6 +793,13 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS materials_touch_updated_at ON materials;
 CREATE TRIGGER materials_touch_updated_at
     BEFORE UPDATE ON materials
+    FOR EACH ROW
+    WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
+    EXECUTE FUNCTION touch_updated_at();
+
+DROP TRIGGER IF EXISTS works_touch_updated_at ON works;
+CREATE TRIGGER works_touch_updated_at
+    BEFORE UPDATE ON works
     FOR EACH ROW
     WHEN (OLD.updated_at IS NOT DISTINCT FROM NEW.updated_at)
     EXECUTE FUNCTION touch_updated_at();

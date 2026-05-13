@@ -19,11 +19,13 @@ exist for a chapter.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from typoon.adapters.storage_registry import StorageRegistry
-from typoon.api.deps import get_storage, get_store, require_user
+from typoon.api.deps import get_config, get_storage, get_store, require_user
 from typoon.api.models import (
     ChapterOut, ChapterTranslationOverlay, MaterialOut,
 )
@@ -31,6 +33,8 @@ from typoon.api.routes._shared import (
     require_material, require_material_admin,
 )
 from typoon.storage import Store
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -139,11 +143,23 @@ async def create_local_material(
 # ── Read ──────────────────────────────────────────────────────────────
 
 
+class ViewerLibraryRef(BaseModel):
+    """The viewer's library entry that links this material, if any.
+
+    Lets `/material/$id` decide between "Theo dõi" (no entry yet) and
+    "Mở trong Library" (jump to the per-user `/title/$entryId` page)
+    without a second round-trip.
+    """
+    entry_id: int
+    status:   str  # LibraryStatus literal; kept loose for forward-compat
+
+
 class MaterialDetailOut(BaseModel):
     """Detail + chapter list with translation overlay. Embedded so the
     SPA renders the manga page in one round-trip."""
-    material: MaterialOut
-    chapters: list[ChapterOut]
+    material:     MaterialOut
+    chapters:     list[ChapterOut]
+    viewer_entry: ViewerLibraryRef | None = None
 
 
 @router.get("/{material_id}", response_model=MaterialDetailOut)
@@ -153,19 +169,27 @@ async def get_material_detail(
     db:   Store = Depends(get_store),
 ):
     mat = await require_material(material_id, db)
+    viewer_entry_row = await db.find_entry_for_material(
+        user_id=user["id"], material_id=material_id,
+    )
+    viewer_entry = (
+        ViewerLibraryRef(
+            entry_id=viewer_entry_row["id"],
+            status=viewer_entry_row["status"],
+        )
+        if viewer_entry_row else None
+    )
+
     chapters = await db.list_chapters(material_id)
     if not chapters:
         return MaterialDetailOut(
             material=MaterialOut.from_row(mat),
             chapters=[],
+            viewer_entry=viewer_entry,
         )
 
     chapter_ids = [c["id"] for c in chapters]
-    guilds_rows = await db.get_user_guilds(user["id"])
-    viewer_guilds = [g["id"] for g in guilds_rows]
-    overlay = await db.list_translations_for_chapters(
-        chapter_ids, viewer_id=user["id"], viewer_guilds=viewer_guilds,
-    )
+    overlay = await db.list_translations_for_chapters(chapter_ids)
 
     out_chapters: list[ChapterOut] = []
     for ch in chapters:
@@ -174,10 +198,9 @@ async def get_material_detail(
             id=ch["id"],
             material_id=ch["material_id"],
             position=ch["position"],
-            number=ch["number"],
+            number=ch["number_norm"],
             label=ch.get("label"),
             upstream_url=ch.get("upstream_url"),
-            pages_origin=ch["pages_origin"],
             page_count=int(ch.get("page_count") or 0),
             updated_at=ch.get("updated_at"),
             translations=[
@@ -187,7 +210,6 @@ async def get_material_detail(
                     creator_id=t.get("owner_id"),
                     creator_name=t.get("creator_name"),
                     state=t.get("state") or "done",
-                    in_feed=bool(t.get("in_feed")),
                     from_cache=bool(t.get("uses_default_render")),
                 )
                 for t in trs
@@ -196,6 +218,7 @@ async def get_material_detail(
     return MaterialDetailOut(
         material=MaterialOut.from_row(mat),
         chapters=out_chapters,
+        viewer_entry=viewer_entry,
     )
 
 
@@ -252,10 +275,8 @@ async def translation_overlay(
     if not body.upstream_urls:
         return {}
     await require_material(material_id, db)
-    guilds = [g["id"] for g in await db.get_user_guilds(user["id"])]
     raw = await db.list_translations_by_upstream(
         material_id, body.upstream_urls,
-        viewer_id=user["id"], viewer_guilds=guilds,
     )
     out: dict[str, list[ChapterTranslationOverlay]] = {}
     for url, trs in raw.items():
@@ -266,7 +287,6 @@ async def translation_overlay(
                 creator_id=t.get("owner_id"),
                 creator_name=t.get("creator_name"),
                 state=t.get("state") or "done",
-                in_feed=bool(t.get("in_feed")),
                 from_cache=bool(t.get("uses_default_render")),
             )
             for t in trs
@@ -293,19 +313,88 @@ async def delete_material(
     locator pointers vanish first and we orphan blobs on remote
     storage.
     """
-    from typoon.adapters.chapter_archive import (
-        masks_key, prepared_key, render_key,
-    )
+    from typoon.adapters.chapter_archive import masks_key, prepared_key
 
     await require_material_admin(material_id, user, db)
+    cfg = get_config()
+    salt = cfg.storage.archive_path_salt.encode()
     chapters = await db.list_chapters(material_id)
     for ch in chapters:
         await stores.pipeline.delete(prepared_key(ch["id"]))
         await stores.pipeline.delete(masks_key(ch["id"]))
-        # TODO(slice 3): delete per-translation render archives too.
-        # Requires listing translations for the chapter + dispatching
-        # by archive_backend. Skipped here — orphaned blobs are
-        # tolerable for ext/upload deletes; pipeline keys are the
-        # priority because they're large.
+        # Per-draft default renders + per-translation overrides each
+        # live on whichever backend wrote them. Dispatch by backend so
+        # multi-backend coexistence (e.g. mid-migration) doesn't leak
+        # blobs.
+        await _drop_archives_for_chapter(db, stores, ch["id"], salt=salt)
 
     await db.delete_material(material_id)
+
+
+# ── Cleanup helpers ──────────────────────────────────────────────────
+
+
+async def _drop_archives_for_chapter(
+    db:      Store,
+    stores:  StorageRegistry,
+    chapter_id: int,
+    *,
+    salt:    bytes,
+) -> None:
+    """Remove every render archive for a chapter — draft defaults and
+    per-translation overrides — across whichever backends wrote them.
+
+    Failures are logged but not raised: an unreachable backend or
+    already-gone blob must not block the DB cascade. The pipeline
+    blobs (prepared/masks) are handled by the caller because their
+    backend (always `stores.pipeline`) is fixed.
+    """
+    from typoon.adapters.chapter_archive import render_key
+
+    drafts = await db.list_drafts_for_chapter(chapter_id)
+    for d in drafts:
+        await _drop_archive(
+            stores,
+            backend=d.get("archive_backend"),
+            locator=d.get("archive_locator")
+                    or render_key("draft", d["id"], salt),
+            label=f"draft={d['id']}",
+        )
+
+    translations = await db.list_all_translations_for_chapter(chapter_id)
+    for t in translations:
+        await _drop_archive(
+            stores,
+            backend=t.get("archive_backend"),
+            locator=t.get("archive_locator")
+                    or render_key("translation", t["id"], salt),
+            label=f"translation={t['id']}",
+        )
+
+
+async def _drop_archive(
+    stores:  StorageRegistry,
+    *,
+    backend: str | None,
+    locator: str | None,
+    label:   str,
+) -> None:
+    """Best-effort delete of a single archive blob. Used by chapter /
+    material cleanup; tolerates missing backend or stale locator."""
+    if not backend or not locator:
+        return
+    try:
+        reader = stores.reader(backend)
+    except RuntimeError:
+        logger.warning(
+            "skip %s archive cleanup: backend %r not configured",
+            label, backend,
+        )
+        return
+    try:
+        await reader.delete(locator)
+    except Exception:
+        logger.exception(
+            "archive cleanup failed for %s (backend=%s locator=%s)",
+            label, backend, locator,
+        )

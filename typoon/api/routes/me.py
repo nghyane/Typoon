@@ -1,9 +1,8 @@
-"""User self-service endpoints — identity, API tokens, quota.
+"""User self-service endpoints — identity, API tokens, quota,
+reading history.
 
-The /projects alias is gone — its replacement is /api/library and the
-list of the user's own translations is implicit (each user's
-translations table rows). Discord guild memberships are exposed here
-so the SPA can resolve current activity context (scope_guild_id).
+Schema 19 removed Discord guild scoping — `/me` no longer carries a
+guild list because the community is a single global pool.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from typoon.api.auth_token import issue_api_token
 from typoon.api.deps import get_auth_cfg, get_config, get_store, require_user
-from typoon.api.models import GuildOut, MeOut
+from typoon.api.models import MeOut, RecentReadOut
 from typoon.api.quota import get_quota_snapshot
 from typoon.config import AuthConfig, Config
 from typoon.storage import Store
@@ -30,6 +29,26 @@ router = APIRouter(
 
 class CreateTokenBody(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+
+
+class RecordTranslatedReadingBody(BaseModel):
+    """Reader opened a translation. The translation already pins a
+    Work chapter and a representative material (via translation_drafts
+    → chapters), so we only need the translation_id.
+    """
+    translation_id: int
+
+
+class RecordRawReadingBody(BaseModel):
+    """Reader opened a raw chapter. No DB chapter row may exist yet —
+    we materialise the Work chapter on demand using the material id
+    plus the manifest-supplied normalised number so the history entry
+    can dedup across sources of the same Work.
+    """
+    material_id: int
+    number:      str
+    number_norm: str
+    label:       str | None = None
 
 
 # ── Response models ──────────────────────────────────────────────────
@@ -52,28 +71,82 @@ class TokenCreated(TokenInfo):
 
 
 @router.get("", response_model=MeOut)
-async def me(
-    user: dict  = Depends(require_user),
-    db:   Store = Depends(get_store),
-):
-    """Current user + cached guild memberships.
-
-    Guild list drives the visibility scope picker in the spawn modal
-    and the Hội Mê Truyện guild picker in the browse hub. Refreshed
-    by the auth/exchange endpoint at login; this read is a simple
-    cache lookup.
-    """
-    guilds = await db.get_user_guilds(user["id"])
+async def me(user: dict = Depends(require_user)):
+    """Current user identity. Slim — no guild list, no settings
+    payload; clients ask `/api/me/quota` etc. as needed."""
     return MeOut(
         id=user["id"],
         display_name=user["display_name"],
         avatar_url=user.get("avatar_url"),
-        guilds=[
-            GuildOut(
-                id=g["id"], name=g.get("name"), icon_url=g.get("icon_url"),
-            )
-            for g in guilds
-        ],
+    )
+
+
+# ── Reading history ──────────────────────────────────────────────────
+
+
+@router.get("/recent-reads", response_model=list[RecentReadOut])
+async def list_recent_reads(
+    user:  dict       = Depends(require_user),
+    db:    Store      = Depends(get_store),
+    limit: int        = 30,
+):
+    """Recently-read manga, newest first. Drives the home
+    "Tiếp tục đọc" surface."""
+    rows = await db.list_recent_reads(user_id=user["id"], limit=limit)
+    return [RecentReadOut(**r) for r in rows]
+
+
+@router.post("/reading/translated", status_code=204)
+async def record_translated_reading(
+    body: RecordTranslatedReadingBody,
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """Record a translated read. Resolves the (work_chapter, material)
+    pair via the translation's draft → chapter so the history row can
+    dedupe across sources of the same Work.
+    """
+    trans = await db.get_translation(body.translation_id)
+    if trans is None:
+        raise HTTPException(404, "Translation not found")
+    draft = await db.get_draft(trans["draft_id"])
+    if draft is None:
+        raise HTTPException(500, "Translation draft missing")
+    chapter = await db.get_chapter(draft["chapter_id"])
+    if chapter is None:
+        raise HTTPException(500, "Draft chapter missing")
+    await db.record_reading(
+        user_id=user["id"],
+        work_chapter_id=int(trans["work_chapter_id"]),
+        last_material_id=int(chapter["material_id"]),
+        translation_id=body.translation_id,
+    )
+
+
+@router.post("/reading/raw", status_code=204)
+async def record_raw_reading(
+    body: RecordRawReadingBody,
+    user: dict  = Depends(require_user),
+    db:   Store = Depends(get_store),
+):
+    """Record a raw read. Materialises the Work chapter on demand so
+    history entries collapse per (user, Work chapter) regardless of
+    which source the user opened. The caller-supplied `number_norm`
+    is the manifest runtime's declarative normalisation output.
+    """
+    material = await db.get_material(body.material_id)
+    if material is None:
+        raise HTTPException(404, "Material not found")
+    work_chapter_id = await db.find_or_create_work_chapter(
+        work_id=int(material["work_id"]),
+        number_norm=body.number_norm,
+        label=body.label,
+    )
+    await db.record_reading(
+        user_id=user["id"],
+        work_chapter_id=work_chapter_id,
+        last_material_id=body.material_id,
+        translation_id=None,
     )
 
 

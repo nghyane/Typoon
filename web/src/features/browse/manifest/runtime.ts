@@ -11,6 +11,9 @@ import { pfetch } from '../proxy'
 import {
   queryHtmlOne, queryHtmlAll, queryJsonOne, queryJsonAll,
 } from './selectors'
+import {
+  applyChapterNumberNorm, compileChapterNumberNorm,
+} from './normalize'
 import type {
   BrowseEndpoint, ChapterListSpec, ChaptersApiEndpoint,
   ChapterFields, ChapterPages, HttpRequest, MangaChapterRef, MangaDetail,
@@ -305,11 +308,12 @@ export async function fetchMangaDetail(
   let chapters: MangaChapterRef[] = []
   if (endpoint.chapters) {
     chapters = collectChapters(parsed, endpoint.parse, endpoint.chapters,
-                               baseUrl, { ...vars, ...extras })
+                               baseUrl, { ...vars, ...extras }, manifest)
   } else if (manifest.endpoints?.chaptersApi) {
     chapters = await fetchChaptersExternal(
       manifest.endpoints.chaptersApi,
       { ...vars, ...extras },
+      manifest,
     )
   }
 
@@ -354,16 +358,21 @@ function collectChapters(
   spec: ChapterListSpec,
   baseUrl: string,
   globals: Vars,
+  manifest: SourceManifest,
 ): MangaChapterRef[] {
   const rows = rowsFrom(parsed, spec.list, parseMode)
+  const norm = compileChapterNumberNorm(
+    spec.chapterNumberNorm ?? manifest.chapterNumberNorm,
+  )
   return rows
-    .map((r) => buildChapter(r, spec.fields, baseUrl, globals))
+    .map((r) => buildChapter(r, spec.fields, baseUrl, globals, norm))
     .filter((c): c is MangaChapterRef => c !== null)
 }
 
 async function fetchChaptersExternal(
   endpoint: ChaptersApiEndpoint,
   vars: Vars,
+  manifest: SourceManifest,
 ): Promise<MangaChapterRef[]> {
   // Single-page fetch for now. Pagination support is trivial to add
   // when a source needs it: loop until rows < pageSize.
@@ -372,8 +381,11 @@ async function fetchChaptersExternal(
   const kept = endpoint.keepIf
     ? rows.filter((r) => passesPredicates(r, endpoint.keepIf!, vars))
     : rows
+  const norm = compileChapterNumberNorm(
+    endpoint.chapterNumberNorm ?? manifest.chapterNumberNorm,
+  )
   return kept
-    .map((r) => buildChapter(r, endpoint.fields, url, vars))
+    .map((r) => buildChapter(r, endpoint.fields, url, vars, norm))
     .filter((c): c is MangaChapterRef => c !== null)
 }
 
@@ -395,20 +407,24 @@ function passesPredicates(
 
 function buildChapter(
   row: Row, fields: ChapterFields, baseUrl: string, globals: Vars,
+  norm: ReturnType<typeof compileChapterNumberNorm>,
 ): MangaChapterRef | null {
   const f = resolveFields(row, fields as unknown as Record<string, string>, globals)
   const url = absolutise(f.url, baseUrl)
   if (!url) return null
   const number = f.number ?? ''
   const title  = f.title  ?? null
+  const label  = f.label  ?? composeChapterLabel(number, title)
+  const numberNorm = applyChapterNumberNorm(norm, { number, label })
   return {
-    id:       url,
+    id:         url,
     url,
     number,
+    numberNorm,
     title,
-    label:    f.label ?? composeChapterLabel(number, title),
-    date:     f.date     ?? null,
-    language: f.language ?? null,
+    label,
+    date:       f.date     ?? null,
+    language:   f.language ?? null,
   }
 }
 

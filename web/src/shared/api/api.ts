@@ -39,14 +39,13 @@ function authHeaders(): Record<string, string> {
 // ── Types ────────────────────────────────────────────────────────────
 
 export type MaterialOrigin = 'source' | 'extension' | 'upload'
-export type PagesOrigin    = 'remote' | 'local'
 export type DraftState     = 'pending' | 'running' | 'done' | 'error'
-export type DraftVisibility = 'private' | 'guild' | 'all_guilds'
 export type LinkOrigin     = 'primary' | 'auto' | 'manual'
 
 export interface ApiMaterial {
   id:            number
   origin:        MaterialOrigin
+  work_id:       number                 // global Work identity (cross-source)
   source:        string | null         // NULL for ext / upload
   upstream_ref:  string | null
 
@@ -75,7 +74,6 @@ export interface ApiChapterTranslation {
   creator_id:   number | null
   creator_name: string | null
   state:        DraftState
-  in_feed:      boolean
   /** True if the translation reuses the draft's default render (no edits). */
   from_cache:   boolean
 }
@@ -84,18 +82,31 @@ export interface ApiChapter {
   id:            number
   material_id:   number
   position:      number
+  /** Canonical chapter key — same value across sibling materials of
+   *  the same Work. Aliased from `work_chapters.number_norm` on the
+   *  server side. Use `label` for the source's free-form display
+   *  string ("Chương 040", "第106话"). */
   number:        string
   label:         string | null
   upstream_url:  string | null
-  pages_origin:  PagesOrigin
   page_count:    number
   updated_at:    string | null
   translations:  ApiChapterTranslation[]
 }
 
+export interface ApiViewerLibraryRef {
+  entry_id: number
+  status:   LibraryStatus
+}
+
 export interface ApiMaterialDetail {
-  material: ApiMaterial
-  chapters: ApiChapter[]
+  material:     ApiMaterial
+  chapters:     ApiChapter[]
+  /** Viewer's library entry that links this material, if any. Lets
+   *  the SPA flip the follow CTA into a "Open in Library" jump
+   *  without a second round-trip. Null when viewer hasn't added
+   *  this manga to their library yet. */
+  viewer_entry: ApiViewerLibraryRef | null
 }
 
 export interface ApiBubbleEdit {
@@ -128,14 +139,16 @@ export interface ApiMyTranslation {
 export interface ApiTranslation {
   id:             number
   chapter_id:     number
+  material_id:    number
   owner_id:       number
   target_lang:    string
   draft_id:       number | null
   state:          DraftState
-  in_feed:        boolean
-  feed_guild_id:  string | null
   archive_url:    string | null
   has_edits:      boolean
+  chapter_number: string | null
+  chapter_label:  string | null
+  material_title: string | null
   created_at:     string | null
   updated_at:     string | null
 }
@@ -147,7 +160,7 @@ export interface ApiLibraryMaterialLink {
 }
 
 export type LibraryStatus =
-  | 'reading' | 'plan' | 'on_hold' | 'done' | 'dropped'
+  | 'reading' | 'plan' | 'done' | 'dropped'
 
 export interface ApiTranslationSummary {
   pending: number
@@ -162,20 +175,11 @@ export interface ApiLibraryEntry {
   cover_url:            string | null
   primary_material_id:  number | null
 
-  /** Reading state. Replaces the legacy `bookmarked` flag entirely;
-   *  the library UI filters by status. `dropped` is hidden from the
-   *  default list view. */
+  /** Reading state — what verb the user applies. `dropped` is hidden
+   *  from the default list view. Schema 19 simplified to four
+   *  statuses; reading history lives in its own table. */
   status:               LibraryStatus
-  /** Preferred read language for this entry. NULL = ask on first
-   *  open (the hub modal prompts before showing the chapter list). */
-  target_lang:          string | null
-  /** When TRUE, watcher auto-spawns a translation as soon as a new
-   *  chapter lands and `target_lang` differs from the source's
-   *  native langs. */
-  auto_translate:       boolean
 
-  last_read_at:         string | null
-  last_chapter_ref:     Record<string, unknown> | null
   materials:            ApiLibraryMaterialLink[]
   /** Counts of this user's translations by draft state — drives the
    *  card's "Đang dịch / Lỗi" activity chip. */
@@ -196,19 +200,35 @@ export interface ApiLibrarySuggestion {
   score:       number | null
 }
 
-export interface ApiFeedEntry {
-  translation_id:  number
-  chapter_id:      number
-  chapter_number:  string
-  chapter_label:   string | null
+export interface ApiCommunityFeedEntry {
+  translation_id:   number
+  chapter_id:       number
+  chapter_number:   string
+  chapter_label:    string | null
+  material_id:      number
+  material_title:   string
+  material_cover:   string | null
+  target_lang:      string
+  creator_id:       number | null
+  creator_name:     string | null
+  created_at:       string | null
+  archive_url:      string | null
+  /** Total translated chapters surfaced for this material in the
+   *  community feed. Cards may render a "+N chương khác" hint when
+   *  more than one chapter is available. */
+  chapters_in_feed: number
+}
+
+export interface ApiRecentRead {
+  work_id:         number
   material_id:     number
   material_title:  string
   material_cover:  string | null
-  target_lang:     string
-  creator_id:      number | null
-  creator_name:    string | null
-  created_at:      string | null
-  archive_url:     string | null
+  work_chapter_id: number
+  chapter_number:  string
+  chapter_label:   string | null
+  translation_id:  number | null
+  last_read_at:    string | null
 }
 
 export interface ApiGlossaryTerm {
@@ -220,17 +240,10 @@ export interface ApiGlossaryTerm {
   notes:       string | null
 }
 
-export interface ApiGuild {
-  id:        string
-  name:      string | null
-  icon_url:  string | null
-}
-
 export interface ApiMe {
   id:           number
   display_name: string
   avatar_url:   string | null
-  guilds:       ApiGuild[]
 }
 
 export interface ApiTokenInfo {
@@ -319,24 +332,9 @@ export interface ApiMemoryBrief {
 // ── Translate spawn ──────────────────────────────────────────────────
 
 export interface SpawnTranslateBody {
-  /** Internal chapter row id. Use when the row already exists
-   *  (ext / upload after finalize, redo). */
-  chapter_id?:    number
-  /** Manifest coords — backend materializes the row on first use.
-   *  Use when spawning from a source-backed manga detail page where
-   *  no local chapter row exists yet. */
-  chapter_ref?:   {
-    material_id:  number
-    upstream_url: string
-    number:       string
-    label?:       string | null
-  }
-  target_lang:    string
-  force_private?: boolean
-  /** Visibility scope when not private. Defaults server-side to 'guild'. */
-  visibility?:    DraftVisibility
-  /** Required when visibility='guild'. */
-  scope_guild_id?: string | null
+  /** Internal chapter row id. */
+  chapter_id:  number
+  target_lang: string
 }
 
 export interface SpawnTranslateResult {
@@ -443,7 +441,9 @@ export const api = {
   uploadFinalize: (materialId: number, body: {
     tmp_id: string; upload_id: string;
     parts: { number: number; etag: string }[];
-    number?: string; label?: string;
+    label?: string;
+    upstream_url?: string;
+    number_norm?: string;
   }) =>
     request<ApiChapter>(
       `/material/${materialId}/chapter/upload-finalize`,
@@ -472,16 +472,14 @@ export const api = {
   listTranslationBubbles: (id: number) =>
     request<ApiBubbleEdit[]>(`/translate/${id}/bubbles`),
 
-  patchTranslation: (id: number, body: Partial<{
-    in_feed: boolean; feed_guild_id: string | null;
-  }>) =>
+  patchTranslation: (id: number, body: Partial<Record<string, never>>) =>
     request<ApiTranslation>(`/translate/${id}`, {
       method: 'PATCH', body: json(body),
     }),
 
-  redoTranslation: (id: number, body: { force_private?: boolean } = {}) =>
+  redoTranslation: (id: number) =>
     request<SpawnTranslateResult>(`/translate/${id}/redo`, {
-      method: 'POST', body: json(body),
+      method: 'POST',
     }),
 
   deleteTranslation: (id: number) =>
@@ -515,24 +513,18 @@ export const api = {
     request<ApiLibraryEntry>(`/library/entry/${id}`),
 
   createLibraryEntry: (body: {
-    material_id:     number
-    title?:          string
-    cover_url?:      string | null
-    target_lang?:    string | null
-    auto_translate?: boolean
-    status?:         LibraryStatus
+    material_id: number
+    title?:      string
+    cover_url?:  string | null
+    status?:     LibraryStatus
   }) =>
     request<ApiLibraryEntry>('/library/entry', {
       method: 'POST', body: json(body),
     }),
 
   patchLibraryEntry: (id: number, body: Partial<{
-    title:            string
-    status:           LibraryStatus
-    target_lang:      string | null
-    auto_translate:   boolean
-    last_read_at:     string
-    last_chapter_ref: Record<string, unknown>
+    title:  string
+    status: LibraryStatus
   }>) =>
     request<ApiLibraryEntry>(`/library/entry/${id}`, {
       method: 'PATCH', body: json(body),
@@ -565,19 +557,39 @@ export const api = {
       method: 'POST', body: json(body),
     }),
 
-  // ── Feed (Hội Mê Truyện, guild-scoped) ─────────────────────────
-  listFeed: (
-    guildId: string,
-    opts: { before?: string; limit?: number } = {},
-  ) => {
+  // ── Community (cross-user recent translations) ─────────────────
+  listCommunityRecent: (opts: { before?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams()
-    if (opts.before) qs.set('before', opts.before)
-    if (opts.limit  != null) qs.set('limit',  String(opts.limit))
+    if (opts.before)        qs.set('before', opts.before)
+    if (opts.limit != null) qs.set('limit',  String(opts.limit))
     const q = qs.toString()
-    return request<ApiFeedEntry[]>(
-      `/feed/guild/${encodeURIComponent(guildId)}${q ? `?${q}` : ''}`,
+    return request<ApiCommunityFeedEntry[]>(
+      `/community/recent${q ? `?${q}` : ''}`,
     )
   },
+
+  // ── Reading history ────────────────────────────────────────────
+  listRecentReads: (limit?: number) => {
+    const q = limit != null ? `?limit=${limit}` : ''
+    return request<ApiRecentRead[]>(`/me/recent-reads${q}`)
+  },
+
+  // Translated reader: the translation already pins (Work chapter,
+  // representative material) on the server side.
+  recordTranslatedReading: (body: { translation_id: number }) =>
+    request<void>('/me/reading/translated', { method: 'POST', body: json(body) }),
+
+  // Raw reader: server materialises the Work chapter on demand from
+  // (material, number_norm) so history dedupes per (user, Work chapter)
+  // across sources. `number_norm` comes from the manifest runtime's
+  // declarative normaliser.
+  recordRawReading: (body: {
+    material_id: number;
+    number:      string;
+    number_norm: string;
+    label?:      string | null;
+  }) =>
+    request<void>('/me/reading/raw', { method: 'POST', body: json(body) }),
 
   // ── Glossary (per-user) ─────────────────────────────────────────
   listGlossary: (opts: {

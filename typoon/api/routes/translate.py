@@ -3,13 +3,12 @@
 The spawn endpoint is the heart of the cache flow:
 
   1. Compute glossary_fp from user + community + (optionally) user_glossary
-  2. Lookup `find_reusable_draft` filtered by viewer's guild memberships
+  2. Lookup `find_reusable_draft` — schema 19 made the cache pool
+     global, so any matching draft is reusable
   3. Hit  → create translation row pointing at the existing draft;
             no quota spent; return cache_hit=True
-  4. Miss → create draft (visibility=guild|all_guilds|private) + enqueue
-            prepare → scan → translate → render; record consume
-
-NSFW material forces visibility='private' regardless of opt-out.
+  4. Miss → create draft + enqueue prepare → scan → translate → render;
+            record consume
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from typoon.adapters.chapter_archive import archive_token
 from typoon.adapters.storage_registry import StorageRegistry
 from typoon.api.deps import (
     get_auth_cfg, get_config, get_storage, get_store, require_user,
@@ -26,6 +24,7 @@ from typoon.api.models import TranslationOut
 from typoon.api.quota import enforce_chapter_quota, record_consume
 from typoon.api.routes._shared import (
     require_chapter, require_material, require_translation_owner,
+    resolve_archive_url,
 )
 from typoon.config import AuthConfig, Config
 from typoon.storage import Store
@@ -40,32 +39,12 @@ router = APIRouter(
 # ── Spawn ─────────────────────────────────────────────────────────────
 
 
-class ChapterRef(BaseModel):
-    """Manifest-coordinated chapter reference used when the chapter
-    row doesn't exist server-side yet."""
-    material_id:  int
-    upstream_url: str
-    number:       str
-    label:        str | None = None
-
-
 class SpawnBody(BaseModel):
-    """Spawn body. Either `chapter_id` (already-known internal row) or
-    `chapter_ref` (manifest coords — auto-create the chapter row on
-    first spawn) must be provided.
-
-    Manifest-coord spawn is the common path for source-backed manga:
-    the SPA has the upstream chapter URL from the manifest runtime
-    and has not yet created any local chapter row. The first user to
-    translate a chapter materializes it; subsequent users hit the
-    cache lookup on (chapter_id, …) directly.
+    """Spawn body. `chapter_id` must refer to an existing chapter row.
+    Use the upload finalize endpoint to create a chapter row first.
     """
-    chapter_id:    int | None = None
-    chapter_ref:   ChapterRef | None = None
-    target_lang:   str
-    force_private: bool = False
-    visibility:    str = "guild"
-    scope_guild_id: str | None = None
+    chapter_id:  int
+    target_lang: str
 
 
 class SpawnResult(BaseModel):
@@ -120,51 +99,15 @@ async def spawn_translation(
 ):
     """Spawn or reuse a translation for a chapter.
 
-    Two entry shapes:
-      • `chapter_id` — caller already has the internal row id (ext /
-                       upload after finalize, or a re-translate flow).
-      • `chapter_ref` — manifest coords; we materialize the chapter row
-                        on first use. Common case for source-backed
-                        spawns triggered directly from the manga page.
+    `chapter_id` must refer to an existing chapter row. Use the upload
+    finalize endpoint to create a chapter row before calling this.
     """
-    chapter: dict | None = None
-
-    if body.chapter_id is not None:
-        chapter = await db.get_chapter(body.chapter_id)
-        if chapter is None:
-            raise HTTPException(404, "Chapter not found")
-    elif body.chapter_ref is not None:
-        ref = body.chapter_ref
-        material = await db.get_material(ref.material_id)
-        if material is None:
-            raise HTTPException(404, "Material not found")
-        # Try dedup first — many users translating the same source
-        # chapter share one row.
-        chapter = await db.find_chapter_by_upstream(
-            material["id"], ref.upstream_url,
-        )
-        if chapter is None:
-            chapter_id = await db.create_chapter(
-                material["id"], ref.number,
-                label=ref.label,
-                upstream_url=ref.upstream_url,
-                pages_origin="remote",
-            )
-            chapter = await db.get_chapter(chapter_id)
-        if chapter is None:
-            raise HTTPException(500, "Failed to materialize chapter row")
-    else:
-        raise HTTPException(
-            400,
-            "Provide either chapter_id or chapter_ref",
-        )
+    chapter = await db.get_chapter(body.chapter_id)
+    if chapter is None:
+        raise HTTPException(404, "Chapter not found")
 
     material = await db.get_material(chapter["material_id"])
     assert material is not None
-
-    # NSFW gate — overrides any opt-out preference.
-    is_nsfw = bool(material.get("nsfw"))
-    force_private = body.force_private or is_nsfw
 
     # Source-language defaults to the first language the material lists
     # (manifest already supplies this for source-backed material; ext /
@@ -181,29 +124,22 @@ async def spawn_translation(
         material_id=material["id"],
     )
 
-    viewer_guilds = [
-        g["id"] for g in await db.get_user_guilds(user["id"])
-    ]
-
-    # Cache lookup unless the user forced a private spawn.
-    draft = None
-    if not force_private:
-        draft = await db.find_reusable_draft(
-            chapter_id=chapter["id"],
-            source_lang=source_lang,
-            target_lang=target_lang,
-            glossary_fp=glossary_fp,
-            viewer_id=user["id"],
-            viewer_guilds=viewer_guilds,
-        )
+    # Cache lookup against the global community pool.
+    draft = await db.find_reusable_draft(
+        chapter_id=chapter["id"],
+        source_lang=source_lang,
+        target_lang=target_lang,
+        glossary_fp=glossary_fp,
+    )
 
     if draft is not None:
         # Cache hit. No quota; no pipeline enqueue.
         translation_id = await db.get_or_create_translation(
-            chapter_id=chapter["id"],
+            work_chapter_id=chapter["work_chapter_id"],
             owner_id=user["id"],
             target_lang=target_lang,
             draft_id=draft["id"],
+            shared=not bool(material.get("nsfw")),
         )
         return SpawnResult(
             translation_id=translation_id,
@@ -216,19 +152,11 @@ async def spawn_translation(
     # Cache miss — quota check + create draft + enqueue prepare.
     await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
 
-    visibility = "private" if force_private else body.visibility
-    if visibility not in ("private", "guild", "all_guilds"):
-        raise HTTPException(400, f"invalid visibility: {visibility!r}")
-    scope_guild_id = (
-        body.scope_guild_id if visibility == "guild" else None
-    )
-    if visibility == "guild" and not scope_guild_id:
-        raise HTTPException(
-            400,
-            "scope_guild_id is required when visibility='guild'",
-        )
-
-    llm_model = cfg.llm.default_model if hasattr(cfg, "llm") else "claude-3.5"
+    # Cache key dimension — the draft is keyed on (chapter, src, tgt,
+    # glossary_fp, llm_model), so the model string must come from
+    # config rather than a fallback string that drifts silently when
+    # the actual LLM is upgraded.
+    llm_model = cfg.translation.model
     draft_id = await db.create_draft(
         chapter_id=chapter["id"],
         source_lang=source_lang,
@@ -236,14 +164,13 @@ async def spawn_translation(
         glossary_fp=glossary_fp,
         llm_model=llm_model,
         created_by=user["id"],
-        visibility=visibility,
-        scope_guild_id=scope_guild_id,
     )
     translation_id = await db.get_or_create_translation(
-        chapter_id=chapter["id"],
+        work_chapter_id=chapter["work_chapter_id"],
         owner_id=user["id"],
         target_lang=target_lang,
         draft_id=draft_id,
+        shared=not bool(material.get("nsfw")),
     )
     await record_consume(
         user, db, auth,
@@ -279,26 +206,50 @@ async def spawn_translation(
 # ── Detail / state ────────────────────────────────────────────────────
 
 
-def _build_archive_url(
+async def _serialize_translation(
+    t:      dict,
     *,
-    target_kind: str,
-    target_id:   int,
-    salt:        bytes,
-    backend:     str | None,
-    locator:     str | None,
-    rendered_at: str | None,
-    stores:      StorageRegistry,
-) -> str | None:
-    """Returns the public CDN URL for a render archive, or None when
-    the archive isn't ready. We dispatch by backend so multi-backend
-    coexistence works without migration."""
-    if not backend or not locator:
-        return None
-    try:
-        reader = stores.reader(backend)
-    except RuntimeError:
-        return None
-    return reader.url(locator, version=rendered_at or "")
+    db:     Store,
+    stores: StorageRegistry,
+) -> TranslationOut:
+    """Compose the full TranslationOut from a translation row.
+
+    Pulls the archive URL (with draft-default fallback), the per-row
+    edit count, and the chapter/material denormalisation that the SPA
+    needs to render a card without a second round-trip. Routes use
+    this so the serialisation rule is owned in one place — patch
+    handlers don't re-enter the GET route just to rebuild a response.
+    """
+    archive_url = await resolve_archive_url(t, db=db, stores=stores)
+    edits = await db.get_translation_edits(t["id"])
+    # Translations live at Work-chapter scope; the representative
+    # per-source chapter is reached via the draft pointer (the pixel
+    # the translation actually serves).
+    draft = (
+        await db.get_draft(t["draft_id"]) if t.get("draft_id") else None
+    )
+    chapter = (
+        await db.get_chapter(draft["chapter_id"]) if draft else None
+    )
+    material = (
+        await db.get_material(chapter["material_id"]) if chapter else None
+    )
+    return TranslationOut(
+        id=t["id"],
+        chapter_id=(chapter or {}).get("id") or 0,
+        material_id=(chapter or {}).get("material_id") or 0,
+        owner_id=t["owner_id"],
+        target_lang=t["target_lang"],
+        draft_id=t.get("draft_id"),
+        state="done" if archive_url else "pending",
+        archive_url=archive_url,
+        has_edits=len(edits) > 0,
+        chapter_number=(chapter or {}).get("number_norm"),
+        chapter_label=(chapter or {}).get("label"),
+        material_title=(material or {}).get("title"),
+        created_at=t.get("created_at"),
+        updated_at=t.get("updated_at"),
+    )
 
 
 @router.get("/{translation_id}", response_model=TranslationOut)
@@ -312,75 +263,27 @@ async def get_translation(
     t = await db.get_translation(translation_id)
     if t is None:
         raise HTTPException(404, "Translation not found")
-    # Read access: owner OR via draft visibility scope.
-    if t["owner_id"] != user["id"]:
-        # Cross-user read — gate by draft visibility.
-        draft = await db.get_draft(t["draft_id"]) if t.get("draft_id") else None
-        if draft is None or draft.get("takedown_at"):
-            raise HTTPException(404, "Translation not found")
-        viewer_guilds = [
-            g["id"] for g in await db.get_user_guilds(user["id"])
-        ]
-        if draft["visibility"] == "private":
-            raise HTTPException(404, "Translation not found")
-        if draft["visibility"] == "guild":
-            if draft.get("scope_guild_id") not in viewer_guilds:
-                raise HTTPException(404, "Translation not found")
-        # 'all_guilds' relies on creator sharing a guild with viewer;
-        # we approximate by requiring at least one shared guild via DB.
-
-    # Build public archive URL. If translation has no per-row archive,
-    # fall back to the draft's default render (target_kind='draft').
-    if t.get("archive_locator"):
-        archive_url = _build_archive_url(
-            target_kind="translation", target_id=t["id"],
-            salt=cfg.storage.archive_path_salt.encode(),
-            backend=t.get("archive_backend"),
-            locator=t.get("archive_locator"),
-            rendered_at=t.get("rendered_at"),
-            stores=stores,
-        )
-    elif t.get("draft_id"):
-        # Default render shared across all translations referencing
-        # this draft. The render worker writes it to the draft target.
-        draft = await db.get_draft(t["draft_id"])
-        archive_url = (
-            _build_archive_url(
-                target_kind="draft", target_id=t["draft_id"],
-                salt=cfg.storage.archive_path_salt.encode(),
-                backend=(draft or {}).get("archive_backend") if draft else None,
-                locator=(draft or {}).get("archive_locator") if draft else None,
-                rendered_at=t.get("rendered_at"),
-                stores=stores,
-            )
-            if draft else None
-        )
-    else:
-        archive_url = None
-
-    edits = await db.get_translation_edits(translation_id)
-    return TranslationOut(
-        id=t["id"],
-        chapter_id=t["chapter_id"],
-        owner_id=t["owner_id"],
-        target_lang=t["target_lang"],
-        draft_id=t.get("draft_id"),
-        state="done" if archive_url else "pending",
-        in_feed=bool(t.get("in_feed")),
-        feed_guild_id=t.get("feed_guild_id"),
-        archive_url=archive_url,
-        has_edits=len(edits) > 0,
-        created_at=t.get("created_at"),
-        updated_at=t.get("updated_at"),
-    )
+    if t.get("takedown_at"):
+        # DMCA / moderator takedown — invisible to everyone.
+        raise HTTPException(404, "Translation not found")
+    # Schema 19: every alive translation is community-readable. The
+    # only gate left is "is this translation taken down?" — anyone
+    # logged in can open any non-taken-down translation.
+    return await _serialize_translation(t, db=db, stores=stores)
 
 
-# ── Patch (feed flag, ownership-only) ─────────────────────────────────
+# ── Patch (ownership-only) ───────────────────────────────────────────
 
 
 class PatchTranslationBody(BaseModel):
-    in_feed:        bool | None = None
-    feed_guild_id:  str | None = None
+    """Patch surface left for forward-compat (rename, future flags).
+
+    Schema 19 dropped the `in_feed` / `feed_guild_id` toggles —
+    every translation is community-visible by default; to hide one,
+    the owner deletes it.
+    """
+    # Reserved for future fields; currently no-op patch is allowed
+    # so the SPA can keep its existing PATCH plumbing.
 
 
 @router.patch("/{translation_id}", response_model=TranslationOut)
@@ -389,22 +292,11 @@ async def patch_translation(
     body:           PatchTranslationBody,
     user:   dict            = Depends(require_user),
     db:     Store           = Depends(get_store),
-    cfg:    Config          = Depends(get_config),
     stores: StorageRegistry = Depends(get_storage),
 ):
+    del body  # no patchable fields today; kept for API stability
     t = await require_translation_owner(translation_id, user, db)
-    if body.in_feed is not None or body.feed_guild_id is not None:
-        await db.update_translation_feed(
-            translation_id,
-            in_feed=body.in_feed if body.in_feed is not None
-                   else bool(t.get("in_feed")),
-            feed_guild_id=body.feed_guild_id
-                if body.feed_guild_id is not None
-                else t.get("feed_guild_id"),
-        )
-    return await get_translation(
-        translation_id, user=user, db=db, cfg=cfg, stores=stores,
-    )
+    return await _serialize_translation(t, db=db, stores=stores)
 
 
 # ── Edits (sparse override) ───────────────────────────────────────────
@@ -437,13 +329,16 @@ async def list_translation_bubbles(
     """Per-bubble view for the editor: source OCR + draft text +
     optional user edit. Owner-only — sparse edits are personal."""
     t = await require_translation_owner(translation_id, user, db)
-    chapter_id = t["chapter_id"]
-    draft_id   = t.get("draft_id")
+    draft_id = t["draft_id"]
+    # Pixel-bound bubbles live on the draft's chapter, not the
+    # translation (which sits at Work-chapter scope).
+    draft = await db.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(500, "Translation draft missing")
+    chapter_id = draft["chapter_id"]
 
     source_bubbles = await db.get_bubbles(chapter_id)
-    draft_bubbles  = (
-        await db.get_draft_bubbles(draft_id) if draft_id else []
-    )
+    draft_bubbles  = await db.get_draft_bubbles(draft_id)
     edits = await db.get_translation_edits(translation_id)
 
     src_by_pos = {
@@ -507,37 +402,36 @@ async def delete_edit(
 # ── Redo (force fresh draft) ──────────────────────────────────────────
 
 
-class RedoBody(BaseModel):
-    force_private: bool = False
-
-
 @router.post("/{translation_id}/redo", response_model=SpawnResult)
 async def redo_translation(
     translation_id: int,
-    body:           RedoBody,
     user: dict        = Depends(require_user),
     db:   Store       = Depends(get_store),
     cfg:  Config      = Depends(get_config),
     auth: AuthConfig  = Depends(get_auth_cfg),
 ):
-    """Re-run pipeline with a fresh draft. Spends quota.
+    """Re-run pipeline for an owned translation.
 
-    The current translation row stays but points at the new draft once
-    pipeline completes; old draft is left for cache hits from other
-    users (it isn't deleted just because owner redid it).
+    Schema 19 made the draft cache pool global, so "redo" no longer
+    has a clean way to side-step the cache — the unique key is
+    (chapter, src, tgt, glossary_fp). If your glossary changed,
+    redo will naturally miss; otherwise the existing community
+    draft is the canonical output and a redo is a no-op cache hit.
+
+    For a true rebuild path (e.g. retry after error), use
+    `/api/admin/redo` which can take down the existing draft first.
     """
     t = await require_translation_owner(translation_id, user, db)
-    # Construct a SpawnBody and reuse spawn logic. force_private=True
-    # bypasses cache so we definitely create a new draft.
+    # Reuse the original draft's chapter as the spawn target so the
+    # "redo" reads from the same pixel scope; the cache key still
+    # collapses to the same draft when the glossary hasn't changed.
+    draft = await db.get_draft(t["draft_id"])
+    if draft is None:
+        raise HTTPException(500, "Translation draft missing")
     spawn_body = SpawnBody(
-        chapter_id=t["chapter_id"],
+        chapter_id=int(draft["chapter_id"]),
         target_lang=t["target_lang"],
-        force_private=body.force_private,
-        # Inherit current scope from the existing draft when possible.
-        visibility="guild",  # default; UI may pass through PATCH later
-        scope_guild_id=None,
     )
-    # Run cache-bypass spawn explicitly by clearing the cache option.
     return await spawn_translation(
         spawn_body, user=user, db=db, cfg=cfg, auth=auth,
     )
@@ -568,8 +462,4 @@ async def delete_translation(
             pass  # backend no longer configured; orphan, nothing to do
 
     # Cascade via FK drops translation_edits.
-    async with db._pool.acquire() as conn:                # type: ignore[attr-defined]
-        await conn.execute(
-            "DELETE FROM translations WHERE id=$1",
-            translation_id,
-        )
+    await db.delete_translation(translation_id)
