@@ -39,8 +39,8 @@ function authHeaders(): Record<string, string> {
 // ── Types ────────────────────────────────────────────────────────────
 
 export type MaterialOrigin = 'source' | 'extension' | 'upload'
-export type DraftState     = 'pending' | 'running' | 'done' | 'error'
-export type LinkOrigin     = 'primary' | 'auto' | 'manual'
+export type DraftState     = 'pending' | 'running' | 'done' | 'error' | 'blocked'
+export type LinkOrigin     = 'auto' | 'manual'
 
 export interface ApiMaterial {
   id:            number
@@ -94,19 +94,97 @@ export interface ApiChapter {
   translations:  ApiChapterTranslation[]
 }
 
-export interface ApiViewerLibraryRef {
-  entry_id: number
-  status:   LibraryStatus
+export interface ApiWork {
+  id:         number
+  cross_refs: Record<string, unknown> | null
+  created_at: string | null
+  updated_at: string | null
 }
 
-export interface ApiMaterialDetail {
-  material:     ApiMaterial
-  chapters:     ApiChapter[]
-  /** Viewer's library entry that links this material, if any. Lets
-   *  the SPA flip the follow CTA into a "Open in Library" jump
-   *  without a second round-trip. Null when viewer hasn't added
-   *  this manga to their library yet. */
-  viewer_entry: ApiViewerLibraryRef | null
+export interface ApiWorkChapterTranslation {
+  id:                  number
+  target_lang:         string
+  /** Source language of the draft (BCP-47), e.g. "en" / "ja" / "ko".
+   *  null when the draft predates schema 24 or was created from an
+   *  ext / upload material without a recorded source lang. UI uses
+   *  this to render "@userA · từ Tiếng Anh MangaDex". */
+  source_lang:         string | null
+  owner_id:            number
+  creator_name:        string | null
+  state:               DraftState
+  /** When `state === 'error' | 'blocked'`, the human-readable cause
+   *  the worker stamped on the draft. UI surfaces this inline so the
+   *  reader sees WHY a translation isn't progressing without having
+   *  to ask an admin. Null while pending/running/done. */
+  error_message:       string | null
+  shared:              boolean
+  draft_id:            number | null
+  draft_chapter_id:    number | null
+  /** Source material whose pixels back the draft render. The reader
+   *  opens this material when the user clicks the translation. */
+  draft_material_id:   number | null
+  uses_default_render: boolean
+  /** RFC 3339 UTC. When the translation row was last touched —
+   *  drives the "3 ngày trước" hint on translation rows. */
+  updated_at:          string | null
+}
+
+export interface ApiWorkChapter {
+  id:           number
+  number_norm:  string
+  label:        string | null
+  translations: ApiWorkChapterTranslation[]
+}
+
+export interface ApiWorkViewerEntry {
+  entry_id:    number
+  status:      LibraryStatus
+  target_lang: string
+}
+
+export interface ApiWorkDetail {
+  work:         ApiWork
+  /** Sibling materials, oldest-first. The SPA picks one as the
+   *  "active source" (via `?src=` URL state) and fetches its
+   *  manifest chapter list live; the others render as switch
+   *  targets without manifest fetches. */
+  materials:    ApiMaterial[]
+  /** Work chapters the community has touched (spawn / upload / raw
+   *  history). Empty when no one has translated or read anything
+   *  yet — the SPA still renders the manifest's full chapter list,
+   *  just without any translation overlay. */
+  chapters:     ApiWorkChapter[]
+  viewer_entry: ApiWorkViewerEntry | null
+}
+
+
+// ── Cross-source link voting ──────────────────────────────────────
+
+
+export interface ApiLinkSuggestion {
+  candidate_material_id: number
+  candidate_title:       string
+  candidate_source:      string | null
+  candidate_cover:       string | null
+  candidate_work_id:     number
+  own_material_id:       number
+  score:                 number
+  total_votes:           number
+  viewer_vote:           -1 | 1 | null
+}
+
+
+export interface ApiLinkVoteResult {
+  vote:               -1 | 1
+  score:              number
+  merged:             boolean
+  /** Set when `merged` is true. The SPA navigates to /w/$canonical
+   *  so the user lands on the surviving Work id. May equal the
+   *  request's workId (when this Work was already canonical) or
+   *  differ (when this Work dissolved into a sibling). */
+  canonical_work_id:  number | null
+  /** 'same_work' | 'cross_refs_conflict' | null. */
+  blocked_reason:     string | null
 }
 
 export interface ApiBubbleEdit {
@@ -137,20 +215,23 @@ export interface ApiMyTranslation {
 }
 
 export interface ApiTranslation {
-  id:             number
-  chapter_id:     number
-  material_id:    number
-  owner_id:       number
-  target_lang:    string
-  draft_id:       number | null
-  state:          DraftState
-  archive_url:    string | null
-  has_edits:      boolean
-  chapter_number: string | null
-  chapter_label:  string | null
-  material_title: string | null
-  created_at:     string | null
-  updated_at:     string | null
+  id:               number
+  work_id:          number
+  work_chapter_id:  number
+  chapter_id:       number      // draft's pixel chapter (= material the reader opens)
+  material_id:      number
+  owner_id:         number
+  target_lang:      string
+  draft_id:         number | null
+  state:            DraftState
+  archive_url:      string | null
+  has_edits:        boolean
+  chapter_number:   string | null
+  chapter_label:    string | null
+  material_title:   string | null
+  shared:           boolean
+  created_at:       string | null
+  updated_at:       string | null
 }
 
 export interface ApiLibraryMaterialLink {
@@ -173,7 +254,15 @@ export interface ApiLibraryEntry {
   id:                   number
   title:                string
   cover_url:            string | null
-  primary_material_id:  number | null
+  /** Canonical Work this entry bookmarks. SPA navigates `/w/${work_id}`
+   *  to open the manga page; multiple materials of the same Work
+   *  appear under `materials`. */
+  work_id:              number
+  /** User's reading-language preference for this Work. Drives the
+   *  manifest fetch (e.g. MangaDex API needs `translatedLanguage[]=
+   *  {lang}`) and the chapter list overlay badges. Editable inline
+   *  via PATCH `/library/entry/{id}`. */
+  target_lang:          string
 
   /** Reading state — what verb the user applies. `dropped` is hidden
    *  from the default list view. Schema 19 simplified to four
@@ -189,22 +278,12 @@ export interface ApiLibraryEntry {
   updated_at:           string | null
 }
 
-export type SuggestionSignal =
-  | 'cross_refs' | 'vote_high' | 'title_native' | 'vote_low' | 'author'
-
-export interface ApiLibrarySuggestion {
-  entry_id:    number
-  entry_title: string
-  confidence:  'high' | 'medium' | 'low'
-  signal:      SuggestionSignal
-  score:       number | null
-}
-
 export interface ApiCommunityFeedEntry {
   translation_id:   number
   chapter_id:       number
   chapter_number:   string
   chapter_label:    string | null
+  work_id:          number
   material_id:      number
   material_title:   string
   material_cover:   string | null
@@ -213,7 +292,7 @@ export interface ApiCommunityFeedEntry {
   creator_name:     string | null
   created_at:       string | null
   archive_url:      string | null
-  /** Total translated chapters surfaced for this material in the
+  /** Total translated chapters surfaced for this work in the
    *  community feed. Cards may render a "+N chương khác" hint when
    *  more than one chapter is available. */
   chapters_in_feed: number
@@ -270,8 +349,18 @@ export interface ApiQuota {
 }
 
 export interface ApiQueueStats {
-  stages: Record<string, { pending: number; running: number; stale: number }>
+  stages: Record<string, {
+    pending: number
+    running: number
+    stale:   number
+    /** Tasks under a paused stage — waiting for admin, not workers. */
+    blocked: number
+    /** Dead-lettered tasks past `MAX_TASK_ATTEMPTS`. */
+    failed:  number
+  }>
   active_workers: string[]
+  /** Stages currently in `stage_pause`. Drives the system banner. */
+  paused_stages:  string[]
 }
 
 // ── Translator memory ───────────────────────────────────────────────
@@ -400,8 +489,13 @@ export const api = {
   }) =>
     request<ApiMaterial>('/material', { method: 'POST', body: json(body) }),
 
-  getMaterial: (id: number) =>
-    request<ApiMaterialDetail>(`/material/${id}`),
+  // ── Work (canonical manga page) ───────────────────────────────
+  // Drives /w/$workId — sibling materials + cross-source chapter
+  // overlay + viewer library state in one round-trip. The active
+  // source (`?src=`) is a URL-only concept; the server is identity-
+  // only.
+  getWork: (id: number) =>
+    request<ApiWorkDetail>(`/work/${id}`),
 
   patchMaterial: (id: number, body: Partial<{
     title: string; cover_url: string | null;
@@ -411,13 +505,29 @@ export const api = {
       method: 'PATCH', body: json(body),
     }),
 
-  translationOverlay: (
-    materialId: number, upstreamUrls: string[],
+  // ── Cross-source link voting ──────────────────────────────────
+  // Community-driven `materials.work_id` merging. Each vote upserts
+  // an entry in `material_link_votes`; once a (a, b) pair crosses
+  // the server-side threshold (3 distinct users) AND the two Works
+  // don't carry conflicting `cross_refs`, they merge inline.
+  listWorkLinkSuggestions: (workId: number) =>
+    request<ApiLinkSuggestion[]>(`/work/${workId}/link-suggestions`),
+
+  castWorkLinkVote: (
+    workId: number,
+    body: { target_material_id: number; vote: 1 | -1; own_material_id?: number },
   ) =>
-    request<Record<string, ApiChapterTranslation[]>>(
-      `/material/${materialId}/translation-overlay`,
-      { method: 'POST', body: json({ upstream_urls: upstreamUrls }) },
-    ),
+    request<ApiLinkVoteResult>(`/work/${workId}/link-vote`, {
+      method: 'POST', body: json(body),
+    }),
+
+  proposeWorkLink: (
+    workId: number,
+    body: { target_material_id: number; own_material_id?: number },
+  ) =>
+    request<ApiLinkVoteResult>(`/work/${workId}/propose-link`, {
+      method: 'POST', body: json(body),
+    }),
 
   deleteMaterial: (id: number) =>
     request<void>(`/material/${id}`, { method: 'DELETE' }),
@@ -444,6 +554,7 @@ export const api = {
     label?: string;
     upstream_url?: string;
     number_norm?: string;
+    source_lang?: string;
   }) =>
     request<ApiChapter>(
       `/material/${materialId}/chapter/upload-finalize`,
@@ -513,18 +624,20 @@ export const api = {
     request<ApiLibraryEntry>(`/library/entry/${id}`),
 
   createLibraryEntry: (body: {
-    material_id: number
-    title?:      string
-    cover_url?:  string | null
-    status?:     LibraryStatus
+    material_id:  number
+    target_lang?: string
+    title?:       string
+    cover_url?:   string | null
+    status?:      LibraryStatus
   }) =>
     request<ApiLibraryEntry>('/library/entry', {
       method: 'POST', body: json(body),
     }),
 
   patchLibraryEntry: (id: number, body: Partial<{
-    title:  string
-    status: LibraryStatus
+    title:       string
+    status:      LibraryStatus
+    target_lang: string
   }>) =>
     request<ApiLibraryEntry>(`/library/entry/${id}`, {
       method: 'PATCH', body: json(body),
@@ -542,18 +655,6 @@ export const api = {
 
   unlinkMaterial: (entryId: number, body: { material_id: number }) =>
     request<void>(`/library/entry/${entryId}/unlink`, {
-      method: 'POST', body: json(body),
-    }),
-
-  suggestLink: (materialId: number) =>
-    request<ApiLibrarySuggestion | null>(
-      `/library/suggest?material_id=${materialId}`,
-    ),
-
-  rejectSuggestion: (body: {
-    material_id: number; candidate_material_id: number;
-  }) =>
-    request<void>('/library/suggest/reject', {
       method: 'POST', body: json(body),
     }),
 

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider, keepPreviousData } from '@tanstack/react-query'
 import { routeTree } from './routeTree.gen'
+import { installPersistence } from '@shared/api/persistence'
 
 // Persist DA flag before router strips query params from the URL.
 if (new URLSearchParams(window.location.search).get('frame_id') != null) {
@@ -38,6 +39,13 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+// Persist a curated slice of the cache (manifest detail, chapter
+// pages, translation rows, work payloads) to IndexedDB so a reload
+// — or a temporary 3rd-party source outage — doesn't blank the UI.
+// See `persistence.ts` for the positive/negative list. Idempotent;
+// failures from quota-full or private mode degrade silently.
+installPersistence(queryClient)
 
 const router = createRouter({
   routeTree,
