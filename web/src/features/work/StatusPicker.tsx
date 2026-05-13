@@ -1,25 +1,28 @@
-// StatusPicker — viewer's reading status on a Work.
+// StatusPicker — viewer's bookmark + reading status on a Work.
 //
-// Single control covering both states:
+// Bookmark and status are two concerns; this control surfaces them
+// in priority order:
 //
-//   no entry yet     "+ Theo dõi" trigger. Dropdown picks the
-//                    initial status; the click POSTs a fresh
-//                    library entry with that status.
+//   no entry yet    "+ Theo dõi" single button. Click POSTs a fresh
+//                   library entry with status='reading' — no menu,
+//                   no choice; the most common path is one tap.
 //
-//   have entry       "<icon> <label> ▾" trigger reflecting the
-//                    current status. Dropdown PATCHes to the new
-//                    one. `dropped` means "không theo dõi nữa" —
-//                    no separate remove action, no separate
-//                    bookmark button.
+//   has entry       "<icon> <label> ▾" dropdown reflecting the
+//                   current status. Menu offers the four status
+//                   transitions plus an "Bỏ theo dõi" destructive
+//                   item that DELETEs the entry. `dropped` here
+//                   means "I've abandoned this story but want to
+//                   remember I read it"; "Bỏ theo dõi" is the
+//                   actual untrack action.
 //
-// `material.status` (publication state, e.g. "Completed") is a
-// different signal and renders as a passive chip elsewhere.
+// Every viewer sees their OWN bookmark — the entry is keyed on
+// (user, Work). Two readers can disagree on status, and that's fine.
 
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen, BookmarkPlus, Check, CheckCircle2, ChevronDown,
-  Loader2, Plus, XCircle,
+  Loader2, Star, Trash2, XCircle,
 } from 'lucide-react'
 
 import { api } from '@shared/api/api'
@@ -44,13 +47,13 @@ const OPTIONS: Option[] = [
 
 interface Props {
   workId:   number
-  /** Null → no library entry yet for this Work. Trigger renders
-   *  "Theo dõi"; selecting a status creates the entry. */
+  /** Null → no library entry yet for this Work. Trigger collapses
+   *  to a single "+ Theo dõi" action. */
   entryId:  number | null
   status:   LibraryStatus | null
-  /** Material currently shown — used to create the library entry
-   *  (server resolves work_id from material_id and dedupes per
-   *  user+Work). Required when `entryId` is null. */
+  /** Material currently shown — required to create the library entry
+   *  when `entryId` is null (server resolves work_id from material_id
+   *  and dedupes per user+Work). */
   material: { id: number; title: string; cover_url: string | null } | null
 }
 
@@ -82,16 +85,16 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
   }
 
   const create = useMutation({
-    mutationFn: (next: LibraryStatus) => {
+    mutationFn: () => {
       if (!material) throw new Error('material required to create entry')
       return api.createLibraryEntry({
         material_id: material.id,
         title:       material.title,
         cover_url:   material.cover_url,
-        status:      next,
+        status:      'reading',
       })
     },
-    onSuccess: () => { invalidate(); setOpen(false) },
+    onSuccess: () => invalidate(),
   })
 
   const patch = useMutation({
@@ -100,57 +103,83 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
     onSuccess: () => { invalidate(); setOpen(false) },
   })
 
-  const pending = create.isPending || patch.isPending
+  const remove = useMutation({
+    mutationFn: () => api.deleteLibraryEntry(entryId!),
+    onSuccess: () => { invalidate(); setOpen(false) },
+  })
+
+  const pending = create.isPending || patch.isPending || remove.isPending
   const hasEntry = entryId != null
   const current  = hasEntry
     ? OPTIONS.find((o) => o.code === status) ?? OPTIONS[0]!
     : null
 
-  // Disable when this Work has no material the entry can attach
-  // to (rare — only happens before the active source resolves).
-  const disabled = !hasEntry && !material
+  // ── No entry: single-button bookmark action ─────────────────
+  //
+  // No dropdown — the common path is one tap to start tracking with
+  // status='reading'. The user can change status later through the
+  // picker the entry exposes.
+  if (!hasEntry) {
+    return (
+      <button
+        type="button"
+        onClick={() => create.mutate()}
+        disabled={pending || !material}
+        className={cn(
+          'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-sm',
+          'bg-accent text-accent-fg hover:brightness-110',
+          'cursor-pointer transition-[filter]',
+          (pending || !material) && 'opacity-60 cursor-wait',
+        )}
+        title="Thêm vào Thư viện"
+      >
+        {pending
+          ? <Loader2 size={13} className="animate-spin" />
+          : <BookmarkPlus size={13} />}
+        <span>Theo dõi</span>
+      </button>
+    )
+  }
 
+  // ── Has entry: status dropdown + destructive untrack ────────
   return (
     <div className="relative inline-block" ref={wrap}>
       <button
         type="button"
-        onClick={() => !disabled && setOpen((v) => !v)}
-        disabled={pending || disabled}
+        onClick={() => setOpen((v) => !v)}
+        disabled={pending}
         className={cn(
           'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-sm',
+          'bg-surface-2 text-text hover:bg-hover',
           'cursor-pointer transition-colors',
-          hasEntry
-            ? 'bg-surface-2 text-text hover:bg-hover'
-            : 'bg-accent text-accent-fg hover:brightness-110',
-          (pending || disabled) && 'opacity-60 cursor-wait',
+          pending && 'opacity-60 cursor-wait',
         )}
-        title={hasEntry ? 'Đổi trạng thái đọc' : 'Thêm vào Thư viện'}
+        title="Đã theo dõi — đổi trạng thái hoặc bỏ theo dõi"
       >
         {pending
           ? <Loader2 size={13} className="animate-spin" />
-          : current?.icon ?? <Plus size={13} />}
-        <span>{current?.label ?? 'Theo dõi'}</span>
+          : <Star size={13} className="text-accent fill-accent" />}
+        <span>{current!.label}</span>
         <ChevronDown size={12} className="opacity-70" />
       </button>
 
       {open && (
         <div
-          role="listbox"
+          role="menu"
           className={cn(
-            'absolute left-0 top-full mt-1 z-30 min-w-[180px]',
+            'absolute left-0 top-full mt-1 z-30 min-w-[200px]',
             'rounded-sm bg-surface border border-border shadow-md py-1',
           )}
         >
           {OPTIONS.map((opt) => {
-            const active = hasEntry && opt.code === status
+            const active = opt.code === status
             return (
               <button
                 key={opt.code}
                 type="button"
                 onClick={() => {
                   if (active) { setOpen(false); return }
-                  if (hasEntry) patch.mutate(opt.code)
-                  else          create.mutate(opt.code)
+                  patch.mutate(opt.code)
                 }}
                 className={cn(
                   'w-full text-left px-3 py-1.5 text-sm cursor-pointer',
@@ -164,6 +193,22 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
               </button>
             )
           })}
+
+          <div className="my-1 border-t border-border-soft" />
+
+          <button
+            type="button"
+            onClick={() => remove.mutate()}
+            disabled={remove.isPending}
+            className={cn(
+              'w-full text-left px-3 py-1.5 text-sm cursor-pointer',
+              'flex items-center gap-2 hover:bg-rose-500/10',
+              'text-rose-400 hover:text-rose-300',
+            )}
+          >
+            <Trash2 size={12} />
+            <span>Bỏ theo dõi</span>
+          </button>
         </div>
       )}
     </div>
