@@ -98,11 +98,28 @@ export function WorkChapterList({
   }, [chapters, tgt])
 
   // Active lang filter — single-select. `null` = "Tất cả" (every
-  // lang). Default to the viewer's target_lang so they land on the
-  // version they actually read.
-  const [activeLang, setActiveLang] = useState<string | null>(() => (
-    tgt || null
-  ))
+  // lang). The initial pick is "let me see something useful": if
+  // the work has done translations in the viewer's target_lang we
+  // default to that filter (read experience); otherwise we default
+  // to "Tất cả" so the user actually sees the raws and can spawn a
+  // translation. A work that's all-raw with target_lang preselected
+  // = empty list = confusing.
+  const [activeLang, setActiveLang] = useState<string | null>(null)
+  const [userPickedLang, setUserPickedLang] = useState(false)
+  // Reconcile the default once the chapters payload lands. We don't
+  // override an explicit user pick — `setUserPickedLang` flips on the
+  // first manual change, and from there `activeLang` is the user's.
+  useEffect(() => {
+    if (userPickedLang) return
+    if (chapters.length === 0) return
+    if (!tgt) return
+    const hasTargetDone = chapters.some((c) =>
+      c.versions.some(
+        (v) => v.kind === 'translation' && v.lang === tgt && v.state === 'done',
+      ),
+    )
+    setActiveLang(hasTargetDone ? tgt : null)
+  }, [chapters, tgt, userPickedLang])
   const [q,      setQ]      = useState('')
   const [sortBy, setSortBy] = useState<SortBy>('newest')
 
@@ -196,7 +213,7 @@ export function WorkChapterList({
         setSortBy={setSortBy}
         langCounts={langCounts}
         activeLang={activeLang}
-        setActiveLang={setActiveLang}
+        setActiveLang={(v) => { setUserPickedLang(true); setActiveLang(v) }}
         tgt={tgt}
         count={mainRows.length}
       />

@@ -27,7 +27,7 @@ Community link voting:
     GET  /api/work/{id}/link-suggestions
     POST /api/work/{id}/link-vote        body: {target_material_id, vote: ±1}
 
-Votes cross the `LINK_MERGE_THRESHOLD` (default 3 distinct users) →
+Votes cross the `LINK_MERGE_THRESHOLD` (default 2 distinct users) →
 inline merge of the two Works, refused when both Works carry
 conflicting `cross_refs`. The threshold is intentionally a constant,
 not user-tunable.
@@ -56,9 +56,17 @@ router = APIRouter(
 )
 
 
-# Distinct-user vote threshold for inline Work merging. Kept here as a
-# constant; tuning this is a moderation-level decision, not per-user.
-LINK_MERGE_THRESHOLD = 3
+# Distinct-user vote threshold for inline Work merging. Kept here as
+# a constant; tuning this is a moderation-level decision, not
+# per-user.
+#
+# Beta scale: a 2-user vote is enough to merge. The deployment is a
+# Discord-guild closed community (~tens of users); requiring three
+# distinct votes meant cross-language links never materialized in
+# practice because users would link once and forget. Two votes still
+# guards against a single bad actor merging unrelated manga but
+# closes the "I linked it and nothing happened" gap.
+LINK_MERGE_THRESHOLD = 2
 
 
 @router.get("/{work_id}", response_model=WorkDetailOut)
