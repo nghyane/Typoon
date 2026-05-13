@@ -16,9 +16,10 @@ import { AddMangaModal } from '@features/library/addManga/AddMangaModal'
 // =============================================================================
 // /library — unified grid.
 //
-// One list, one filter row. Chips combine reading status (5 enum
-// values: reading / plan / on_hold / done / dropped) with two
-// activity buckets sourced from translation_summary:
+// One list, one filter row. Chips combine reading status (3 visible
+// values: reading / plan / done — see StatusPicker for why `dropped`
+// is omitted) with two activity buckets sourced from
+// translation_summary:
 //
 //   • Đang dịch   running > 0 OR pending > 0
 //   • Lỗi          error > 0
@@ -67,10 +68,6 @@ const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
   done: {
     title: 'Chưa hoàn thành truyện nào',
     sub:   'Đánh dấu "Đã xong" khi đọc xong một bộ',
-  },
-  dropped: {
-    title: 'Không có truyện đã bỏ',
-    sub:   'Truyện bị bỏ theo dõi sẽ hiện ở đây',
   },
   translating: {
     title: 'Không có bản dịch đang xử lý',
@@ -271,7 +268,7 @@ function Chip({
 // ── Route ────────────────────────────────────────────────────────────
 
 const VALID_FILTERS: ReadonlyArray<LibraryFilter> = [
-  'all', 'reading', 'plan', 'done', 'dropped',
+  'all', 'reading', 'plan', 'done',
   'translating', 'errored',
 ]
 

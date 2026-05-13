@@ -16,12 +16,17 @@ import {
 import { qk } from '@shared/api/keys'
 import { coverUrl } from '@shared/ui/Cover'
 
-/** Filter chip identities. `all` excludes `dropped`. Activity filters
- *  (`translating`, `errored`) cut across status — they're answered by
- *  translation_summary not the enum. */
+/** Filter chip identities. `all` shows every visible entry. Activity
+ *  filters (`translating`, `errored`) cut across status — they're
+ *  answered by translation_summary not the enum.
+ *
+ *  `dropped` isn't a UI status anymore: the StatusPicker only offers
+ *  reading / plan / done plus a destructive "Bỏ theo dõi" that deletes
+ *  the entry. Legacy entries with status='dropped' still load but
+ *  filter under `all` only — no dedicated chip. */
 export type LibraryFilter =
   | 'all'
-  | LibraryStatus
+  | 'reading' | 'plan' | 'done'
   | 'translating'
   | 'errored'
 
@@ -113,11 +118,15 @@ export function useUnifiedLibrary(filter: LibraryFilter): {
 
     const counts: Record<LibraryFilter, number> = {
       all: items.length,
-      reading: 0, plan: 0, done: 0, dropped: 0,
+      reading: 0, plan: 0, done: 0,
       translating: 0, errored: 0,
     }
     for (const it of items) {
-      counts[it.status]++
+      // Legacy 'dropped' entries don't have a chip; they still
+      // count toward `all` so the user can find them.
+      if (it.status === 'reading' || it.status === 'plan' || it.status === 'done') {
+        counts[it.status]++
+      }
       if (it.summary.running > 0 || it.summary.pending > 0) counts.translating++
       if (it.summary.error   > 0)                            counts.errored++
     }

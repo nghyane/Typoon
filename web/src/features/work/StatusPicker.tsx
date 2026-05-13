@@ -8,12 +8,12 @@
 //                   no choice; the most common path is one tap.
 //
 //   has entry       "<icon> <label> ▾" dropdown reflecting the
-//                   current status. Menu offers the four status
-//                   transitions plus an "Bỏ theo dõi" destructive
-//                   item that DELETEs the entry. `dropped` here
-//                   means "I've abandoned this story but want to
-//                   remember I read it"; "Bỏ theo dõi" is the
-//                   actual untrack action.
+//                   current status. Menu offers the three reading
+//                   states (Đang đọc / Để dành / Đã đọc) plus a
+//                   destructive "Bỏ theo dõi" item that DELETEs the
+//                   entry. There is no "đã bỏ" status here on
+//                   purpose: untrack is the explicit destructive
+//                   action, not a status alias.
 //
 // Every viewer sees their OWN bookmark — the entry is keyed on
 // (user, Work). Two readers can disagree on status, and that's fine.
@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen, BookmarkPlus, Check, CheckCircle2, ChevronDown,
-  Loader2, Star, Trash2, XCircle,
+  Loader2, Star, Trash2,
 } from 'lucide-react'
 
 import { api } from '@shared/api/api'
@@ -41,7 +41,10 @@ const OPTIONS: Option[] = [
   { code: 'reading', label: 'Đang đọc', icon: <BookOpen     size={13} /> },
   { code: 'plan',    label: 'Để dành',  icon: <BookmarkPlus size={13} /> },
   { code: 'done',    label: 'Đã đọc',   icon: <CheckCircle2 size={13} /> },
-  { code: 'dropped', label: 'Đã bỏ',    icon: <XCircle      size={13} /> },
+  // No 'dropped' — "Bỏ theo dõi" (delete entry) is the explicit
+  // untrack action. A separate "đã bỏ" status overlapped with that
+  // intent and confused the model. Schema still allows the value
+  // for legacy entries; library filter degrades gracefully.
 ]
 
 
