@@ -108,6 +108,47 @@ CREATE INDEX IF NOT EXISTS idx_works_cross_refs
     ON works USING GIN (cross_refs)
     WHERE cross_refs IS NOT NULL;
 
+-- Redirects from dissolved Works to their canonical replacement.
+--
+-- When community vote merges Work B into Work A (`_merge_works`),
+-- every reference is re-pointed (materials, work_chapters, drafts,
+-- library_entries, …) and Work B's row gets DELETEd. But any client
+-- that already has `/w/<B>` open — or shared a `/r/<B>/...` link —
+-- needs a way to discover A's new id without seeing a 404. We log
+-- the redirect here; `GET /work/{id}` consults this table when the
+-- direct lookup misses, and the SPA replaces the URL in-place.
+--
+-- Transitivity: if A→B existed and later B→C merges, the trigger
+-- below collapses A→C as well, so chained merges never bounce a
+-- client through multiple hops.
+CREATE TABLE IF NOT EXISTS work_redirects (
+    old_id     BIGINT PRIMARY KEY,
+    new_id     BIGINT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    merged_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (old_id <> new_id)
+);
+CREATE INDEX IF NOT EXISTS idx_work_redirects_new
+    ON work_redirects(new_id);
+
+-- Collapse transitive redirects on insert. Any existing redirect
+-- pointing at NEW.old_id is rewritten to NEW.new_id, so a later
+-- `get_work_redirect(A)` returns C directly when A→B and B→C exist.
+CREATE OR REPLACE FUNCTION collapse_work_redirects() RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE work_redirects
+    SET    new_id = NEW.new_id
+    WHERE  new_id = NEW.old_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS work_redirects_collapse ON work_redirects;
+CREATE TRIGGER work_redirects_collapse
+    AFTER INSERT ON work_redirects
+    FOR EACH ROW
+    EXECUTE FUNCTION collapse_work_redirects();
+
+
 -- A logical chapter inside a Work. Number is normalised (strip
 -- leading zeros, lowercase common prefixes) so the same chapter can
 -- be matched across sources even when one writes "040" and another

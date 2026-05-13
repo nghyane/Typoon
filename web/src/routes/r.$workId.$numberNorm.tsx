@@ -19,10 +19,12 @@
 //   error             EmptyState
 //   ready             toolbar + body
 
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect as routerRedirect } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { AlertTriangle } from 'lucide-react'
 
+import { api, WorkRedirectedError } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
 import { Spinner } from '@shared/ui/primitives'
 import { EmptyState } from '@shared/ui/EmptyState'
 
@@ -65,7 +67,6 @@ function ReaderPage() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' })
   }, [workIdStr, numberNorm])
-
   if (!validWorkId) {
     return (
       <div className="px-4 py-16">
@@ -190,6 +191,32 @@ export const Route = createFileRoute('/r/$workId/$numberNorm')({
     lang: typeof s.lang === 'string' ? s.lang : undefined,
     src:  typeof s.src  === 'number' ? s.src  : undefined,
   }),
+  // Intercept Work merge redirect BEFORE rendering. Same pattern as
+  // `/w/$workId`: ensure-fetch surfaces `WorkRedirectedError` and we
+  // throw a router redirect carrying every search param so the
+  // reader resumes on the same chapter under the canonical Work id.
+  beforeLoad: async ({ params, search, context }) => {
+    const workId = Number(params.workId)
+    if (!Number.isInteger(workId) || workId <= 0) return
+    try {
+      await context.queryClient.ensureQueryData({
+        queryKey: qk.work.byId(workId),
+        queryFn:  () => api.getWork(workId),
+      })
+    } catch (err) {
+      if (err instanceof WorkRedirectedError) {
+        throw routerRedirect({
+          to:     '/r/$workId/$numberNorm',
+          params: {
+            workId:     String(err.newId),
+            numberNorm: params.numberNorm,
+          },
+          search,
+          replace: true,
+        })
+      }
+    }
+  },
   component: ReaderPage,
   staticData: { chrome: 'bare' },
 })

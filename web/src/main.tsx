@@ -48,6 +48,11 @@ const router = createRouter({
   // Cross-fade pending → resolved instead of blanking the route.
   defaultPendingMs: 200,
   defaultPendingMinMs: 0,
+  // Expose the QueryClient on `route.context` so route-level
+  // `beforeLoad` can pre-fetch and intercept typed errors (e.g.
+  // `WorkRedirectedError`) before the component mounts. No
+  // useEffect-based redirect in components.
+  context: { queryClient },
 })
 
 declare module '@tanstack/react-router' {

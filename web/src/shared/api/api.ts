@@ -23,6 +23,22 @@ export class BackendUnavailableError extends Error {
   }
 }
 
+
+/** Thrown when a `GET /work/{id}` (or any endpoint that resolves a
+ *  Work through `require_work`) hits a Work id that was merged away
+ *  by community vote. Carries the canonical id so the route layer
+ *  can replace the URL in-place. */
+export class WorkRedirectedError extends Error {
+  readonly oldId: number
+  readonly newId: number
+  constructor(oldId: number, newId: number) {
+    super(`Work ${oldId} merged into ${newId}`)
+    this.name = 'WorkRedirectedError'
+    this.oldId = oldId
+    this.newId = newId
+  }
+}
+
 async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(input, init)
@@ -155,6 +171,12 @@ export interface ApiWorkDetail {
    *  just without any translation overlay. */
   chapters:     ApiWorkChapter[]
   viewer_entry: ApiWorkViewerEntry | null
+  /** When non-null, the URL the client requested (`/w/<old>`) was
+   *  for a Work that has since been merged into `work.id`. The
+   *  payload reflects the CANONICAL Work; the route layer replaces
+   *  the URL in-place so the user sees `/w/<canonical>` and any
+   *  shared link keeps working. Null on the common path. */
+  redirected_from: number | null
 }
 
 
@@ -451,6 +473,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     throw new BackendUnavailableError()
+  }
+  if (res.status === 410) {
+    // Structured 410 from `require_work`: the requested Work id has
+    // been dissolved into another via community-vote merge. Surface
+    // as a typed error so the route layer can redirect.
+    const body = await res.json().catch(() => null) as
+      | { detail?: { kind?: string; requested_id?: number; redirected_to?: number } }
+      | null
+    const d = body?.detail
+    if (d?.kind === 'work_redirected'
+        && typeof d.requested_id === 'number'
+        && typeof d.redirected_to === 'number') {
+      throw new WorkRedirectedError(d.requested_id, d.redirected_to)
+    }
   }
   if (!res.ok) {
     const text = await res.text().catch(() => '')

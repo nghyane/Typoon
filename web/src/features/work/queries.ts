@@ -6,7 +6,7 @@
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
-import { api, type ApiWorkDetail } from '@shared/api/api'
+import { api, type ApiWorkDetail, WorkRedirectedError } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
 import { fetchMangaDetail } from '@features/browse/manifest/runtime'
 import type { InstalledSource } from '@features/browse/manifest/types'
@@ -44,6 +44,13 @@ export function useWork(workId: number | null) {
         ),
       )
       return running ? 5_000 : false
+    },
+    // Don't retry a `WorkRedirectedError` — the routing layer needs
+    // it bubbled up immediately so the URL can be rewritten. Other
+    // failures still get the global default retry policy.
+    retry: (count, err) => {
+      if (err instanceof WorkRedirectedError) return false
+      return count < 1
     },
   })
 }

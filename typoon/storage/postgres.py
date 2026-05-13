@@ -445,7 +445,25 @@ async def _merge_works(
             losers,
         )
 
-    # 5. Drop the doomed work.
+    # 5. Log the redirect BEFORE dropping the doomed row — clients
+    # holding `/w/<doomed>` URLs (open tabs, shared links) hit the
+    # work_redirects table on their next GET and learn the canonical
+    # id without seeing a 404. The schema-level trigger
+    # `work_redirects_collapse` rewrites any older redirect that
+    # pointed at `doomed` to point at `canonical` instead, so
+    # multi-step merges (A→B then B→C) don't force clients through
+    # extra hops.
+    await conn.execute(
+        "INSERT INTO work_redirects (old_id, new_id) VALUES ($1, $2) "
+        "ON CONFLICT (old_id) DO UPDATE SET new_id = EXCLUDED.new_id, "
+        "  merged_at = NOW()",
+        doomed, canonical,
+    )
+
+    # 6. Drop the doomed work. `work_redirects.new_id` has a
+    # CASCADE FK, but the only row referencing `doomed` after the
+    # trigger collapse is the one we just inserted (whose new_id is
+    # `canonical`, not `doomed`), so CASCADE removes nothing extra.
     await conn.execute("DELETE FROM works WHERE id=$1", doomed)
 
 
@@ -674,6 +692,22 @@ class PostgresStore:
                 "FROM works WHERE id=$1",
                 work_id,
             ))
+
+    async def get_work_redirect(self, old_id: int) -> int | None:
+        """Resolve a dissolved Work id to its canonical replacement.
+
+        Returns the live `works.id` the client should switch to, or
+        `None` when `old_id` was never merged (either it's still a
+        valid Work or it never existed). Transitive merges are
+        already collapsed on insert (see `collapse_work_redirects`
+        trigger), so one lookup is enough.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT new_id FROM work_redirects WHERE old_id=$1",
+                old_id,
+            )
+        return int(row["new_id"]) if row else None
 
     async def find_or_create_work_chapter(
         self,

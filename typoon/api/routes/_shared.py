@@ -35,11 +35,28 @@ async def require_material(material_id: int, db: Store) -> dict:
 
 async def require_work(work_id: int, db: Store) -> dict:
     """Resolve a Work by id or 404. Works are cross-user identity hubs
-    (no ownership), so the gate is "exists" only."""
+    (no ownership), so the gate is "exists" only.
+
+    If the requested id has been merged into another Work via
+    community-vote (`work_redirects`), raise a structured 410 so the
+    client can replace the URL in-place. Every route that touches a
+    Work flows through here, so redirect handling is uniform —
+    no per-endpoint plumbing.
+    """
     work = await db.get_work(work_id)
-    if work is None:
-        raise HTTPException(404, "Work not found")
-    return work
+    if work is not None:
+        return work
+    new_id = await db.get_work_redirect(work_id)
+    if new_id is not None:
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "kind":           "work_redirected",
+                "requested_id":   work_id,
+                "redirected_to":  new_id,
+            },
+        )
+    raise HTTPException(404, "Work not found")
 
 
 async def require_material_admin(

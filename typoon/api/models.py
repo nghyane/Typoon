@@ -179,10 +179,10 @@ class WorkDetailOut(BaseModel):
     canonical manga page: identity, sibling materials, every shared
     chapter (cross-source), and the viewer's library state.
     """
-    work:           WorkOut
-    materials:      list[MaterialOut]
-    chapters:       list[WorkChapterOut]
-    viewer_entry:   WorkViewerEntry | None = None
+    work:         WorkOut
+    materials:    list[MaterialOut]
+    chapters:     list[WorkChapterOut]
+    viewer_entry: WorkViewerEntry | None = None
 
 
 class LinkSuggestionOut(BaseModel):

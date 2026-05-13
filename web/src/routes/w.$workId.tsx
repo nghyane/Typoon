@@ -17,12 +17,12 @@
 
 import { useCallback, useMemo } from 'react'
 import {
-  createFileRoute, useNavigate,
+  createFileRoute, useNavigate, redirect as routerRedirect,
 } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 
-import { api } from '@shared/api/api'
+import { api, WorkRedirectedError } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
@@ -204,5 +204,32 @@ export const Route = createFileRoute('/w/$workId')({
   validateSearch: (s: Record<string, unknown>): SearchParams => ({
     src: typeof s.src === 'number' ? s.src : undefined,
   }),
+  // Intercept the Work merge redirect BEFORE rendering the page. If
+  // the URL points at a dissolved Work, ensure-fetch surfaces
+  // `WorkRedirectedError` carrying the canonical id; we throw a
+  // router `redirect()` so the navigation happens at the routing
+  // layer (no flash, no useEffect, no cache pollution under the
+  // stale key).
+  beforeLoad: async ({ params, search, context }) => {
+    const workId = Number(params.workId)
+    if (!Number.isInteger(workId) || workId <= 0) return
+    try {
+      await context.queryClient.ensureQueryData({
+        queryKey: qk.work.byId(workId),
+        queryFn:  () => api.getWork(workId),
+      })
+    } catch (err) {
+      if (err instanceof WorkRedirectedError) {
+        throw routerRedirect({
+          to:      '/w/$workId',
+          params:  { workId: String(err.newId) },
+          search,
+          replace: true,
+        })
+      }
+      // Other errors propagate to the component, which renders the
+      // existing error UI from `workError`.
+    }
+  },
   component: WorkPage,
 })

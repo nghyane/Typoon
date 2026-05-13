@@ -138,6 +138,8 @@ class Store(Protocol):
     # ── Work (global identity) ────────────────────────────────────
     async def get_work(self, work_id: int) -> dict | None: ...
 
+    async def get_work_redirect(self, old_id: int) -> int | None: ...
+
     async def find_or_create_work_chapter(
         self,
         *,
