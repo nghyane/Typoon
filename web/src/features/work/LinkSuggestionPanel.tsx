@@ -140,8 +140,7 @@ function SuggestionRow({
           {suggestion.candidate_title}
         </div>
         <div className="text-xs text-text-subtle truncate">
-          {sourceLabel} · {suggestion.total_votes} người vote
-          {' · score '}{suggestion.score}
+          {sourceLabel} · {describeSignal(suggestion)}
         </div>
         {blocked && (
           <div className="text-[11px] text-amber-400 mt-0.5">
@@ -192,4 +191,29 @@ function SuggestionRow({
       )}
     </li>
   )
+}
+
+
+/** Render the "why this row showed up" meta line. Voted candidates
+ *  surface the community score; ranker candidates surface the signal
+ *  the ranker latched onto (matching Japanese title, alt-title
+ *  overlap, or fuzzy similarity) so the user knows what to verify
+ *  before voting. */
+function describeSignal(s: ApiLinkSuggestion): string {
+  if (s.kind === 'voted') {
+    return `${s.total_votes} người vote · score ${s.score}`
+  }
+  const conf = s.confidence != null
+    ? `${Math.round(s.confidence * 100)}%`
+    : ''
+  switch (s.reason) {
+    case 'title_native_exact':
+      return `Tên gốc trùng${conf ? ` · ${conf}` : ''}`
+    case 'title_alt_overlap':
+      return `Tên gọi khác trùng${conf ? ` · ${conf}` : ''}`
+    case 'title_trgm':
+      return `Tên giống${conf ? ` ${conf}` : ''}`
+    default:
+      return conf || 'Gợi ý'
+  }
 }

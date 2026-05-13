@@ -117,18 +117,33 @@ async def list_link_suggestions(
     user: dict  = Depends(require_user),
     db:   Store = Depends(get_store),
 ):
-    """Materials outside this Work that have a positive community
-    link-vote score with any sibling inside it.
+    """Cross-source link candidates the SPA can offer for this Work.
 
-    The viewer's own vote (when present) surfaces in the row so the
+    Two streams merged into one list:
+
+      1. Already-voted pairs (`kind='voted'`) — community has cast at
+         least one +1 vote; we surface the aggregate score so the
+         viewer can pile on or veto.
+      2. Title-similarity ranker (`kind='ranked'`) — pg_trgm + a few
+         signal bonuses surface candidates BEFORE any vote exists, so
+         the panel isn't empty on a fresh manga. Filtered to drop
+         anything already on stream 1 to avoid duplicates.
+
+    The viewer's own vote (when present) surfaces in each row so the
     UI can render "Đã đồng ý" / "Đã từ chối" instead of the +1/−1
     buttons.
     """
     await require_work(work_id, db)
-    rows = await db.list_work_link_suggestions(work_id=work_id)
+
+    voted_rows   = await db.list_work_link_suggestions(work_id=work_id)
+    voted_keys   = {int(r["candidate_material_id"]) for r in voted_rows}
+    ranked_rows  = await db.list_work_link_candidates(work_id=work_id)
+
     out: list[LinkSuggestionOut] = []
-    for r in rows:
-        own_id = int(r["own_material_id"])
+
+    # Stream 1: existing votes — the more authoritative signal.
+    for r in voted_rows:
+        own_id  = int(r["own_material_id"])
         cand_id = int(r["candidate_material_id"])
         viewer_vote = await db.get_link_vote(
             voter_id=user["id"],
@@ -136,6 +151,7 @@ async def list_link_suggestions(
             material_b_id=cand_id,
         )
         out.append(LinkSuggestionOut(
+            kind="voted",
             candidate_material_id=cand_id,
             candidate_title=r["candidate_title"],
             candidate_source=r.get("candidate_source"),
@@ -146,6 +162,31 @@ async def list_link_suggestions(
             total_votes=int(r["total"]),
             viewer_vote=viewer_vote,
         ))
+
+    # Stream 2: ranker candidates — skip anything already voted.
+    for r in ranked_rows:
+        cand_id = int(r["candidate_material_id"])
+        if cand_id in voted_keys:
+            continue
+        own_id  = int(r["own_material_id"])
+        viewer_vote = await db.get_link_vote(
+            voter_id=user["id"],
+            material_a_id=own_id,
+            material_b_id=cand_id,
+        )
+        out.append(LinkSuggestionOut(
+            kind="ranked",
+            candidate_material_id=cand_id,
+            candidate_title=r["candidate_title"],
+            candidate_source=r.get("candidate_source"),
+            candidate_cover=r.get("candidate_cover"),
+            candidate_work_id=int(r["candidate_work_id"]),
+            own_material_id=own_id,
+            confidence=float(r["score"]),
+            reason=r["reason"],
+            viewer_vote=viewer_vote,
+        ))
+
     return out
 
 

@@ -184,14 +184,23 @@ export interface ApiWorkDetail {
 
 
 export interface ApiLinkSuggestion {
+  /** Discriminator. `voted` = community has cast at least one +1 on
+   *  this pair; `ranked` = title-similarity ranker surfaced it with
+   *  no vote yet. The UI shows them in one list but renders different
+   *  context (vote score vs confidence + reason). */
+  kind:                  'voted' | 'ranked'
   candidate_material_id: number
   candidate_title:       string
   candidate_source:      string | null
   candidate_cover:       string | null
   candidate_work_id:     number
   own_material_id:       number
+  /** Voted-stream fields. 0 on ranked rows. */
   score:                 number
   total_votes:           number
+  /** Ranked-stream fields. Null on voted rows. */
+  confidence:            number | null
+  reason:                'title_native_exact' | 'title_alt_overlap' | 'title_trgm' | null
   viewer_vote:           -1 | 1 | null
 }
 

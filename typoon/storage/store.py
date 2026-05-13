@@ -313,6 +313,29 @@ class Store(Protocol):
         """
         ...
 
+    async def list_work_link_candidates(
+        self, *, work_id: int, limit: int = 10, threshold: float = 0.45,
+    ) -> list[dict]:
+        """Cross-source merge candidates inferred from title similarity.
+
+        Whereas `list_work_link_suggestions` returns materials the
+        community has already voted on (signal = vote score), this
+        method seeds the panel BEFORE any vote exists. The signal is
+        a hybrid score over (title, title_native, title_alt) using
+        the `pg_trgm` extension, with a small bonus for shared
+        `languages` overlap and an exact-match short-circuit on
+        `title_native` (the same Japanese title across two manga
+        sites is a near-certain identity).
+
+        Returns at most `limit` rows sorted by score DESC. Each row:
+            { candidate_material_id, candidate_title,
+              candidate_source, candidate_cover, candidate_work_id,
+              score (0..1 float),
+              reason ('title_native_exact' | 'title_alt_overlap' | 'title_trgm'),
+              own_material_id }
+        """
+        ...
+
     async def get_link_vote(
         self, *, voter_id: int, material_a_id: int, material_b_id: int,
     ) -> int | None:

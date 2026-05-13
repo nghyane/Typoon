@@ -33,6 +33,13 @@
 -- Bump SCHEMA_VERSION in postgres.py when the DDL below changes shape.
 -- Mismatch ⇒ refuse to start, instruct the operator to drop the volume.
 
+-- Trigram extension for cross-language title similarity ranking.
+-- Used by `list_work_link_candidates` to suggest "có thể là cùng manga"
+-- across sources without requiring an existing community vote.
+-- Available in stock Postgres 17; no superuser needed if `CREATE`
+-- privilege on schema public is granted (which the typoon role has).
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -231,6 +238,16 @@ CREATE INDEX IF NOT EXISTS idx_materials_title_native
 CREATE INDEX IF NOT EXISTS idx_materials_cross_refs
     ON materials USING GIN (cross_refs)
     WHERE cross_refs IS NOT NULL;
+
+-- Trigram indexes for fuzzy title matching. `list_work_link_candidates`
+-- joins on `similarity(title_a, title_b) > threshold` to suggest
+-- cross-source merges without needing a vote first. GIST handles the
+-- distance operator (`%>`, `<->`) efficiently on millions of rows.
+CREATE INDEX IF NOT EXISTS idx_materials_title_trgm
+    ON materials USING GIST (title gist_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_materials_title_native_trgm
+    ON materials USING GIST (title_native gist_trgm_ops)
+    WHERE title_native IS NOT NULL;
 
 -- ── Material link votes (cross-source identity, community-driven) ──
 -- One row per (user, pair). Canonical ordering on the pair

@@ -187,8 +187,21 @@ class WorkDetailOut(BaseModel):
 
 class LinkSuggestionOut(BaseModel):
     """One row in `GET /api/work/{id}/link-suggestions` — a candidate
-    material the community has positively voted to link with this
-    Work, but which still belongs to a different Work.
+    material the SPA can offer for cross-source linking with this Work.
+
+    Two sources fold into the same row shape so the UI renders one
+    unified list:
+
+      • `kind="voted"` — community has already cast at least one +1
+        vote on the (own × candidate) pair. `score`/`total_votes`
+        carry the aggregate; `confidence` is null.
+
+      • `kind="ranked"` — a title-similarity ranker (server-side
+        `pg_trgm` + bonuses for shared `title_native` / `title_alt`)
+        surfaced the pair without any vote yet. `confidence` is the
+        0..1 score; `score`/`total_votes` are 0.
+        `reason` explains WHY (`title_native_exact` /
+        `title_alt_overlap` / `title_trgm`).
 
     `own_material_id` is the sibling that triggered the suggestion;
     it scopes which (a, b) pair the next vote attaches to.
@@ -196,14 +209,17 @@ class LinkSuggestionOut(BaseModel):
     so the UI renders "Đã đồng ý" / "Đã từ chối" instead of the
     buttons.
     """
+    kind:                  Literal["voted", "ranked"]
     candidate_material_id: int
     candidate_title:       str
     candidate_source:      str | None = None
     candidate_cover:       str | None = None
     candidate_work_id:     int
     own_material_id:       int
-    score:                 int
-    total_votes:           int
+    score:                 int = 0
+    total_votes:           int = 0
+    confidence:            float | None = None
+    reason:                str | None = None
     viewer_vote:           int | None = None     # -1 | 1 | None
 
 
