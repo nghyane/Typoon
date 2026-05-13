@@ -28,16 +28,26 @@ import type { HubVersion } from '@features/title/mergeChapters'
 
 /** Action this row triggers when clicked. Computed by the parent
  *  (`WorkChapterList`) since it depends on target_lang + readiness
- *  semantics outside the row's own version. */
+ *  semantics outside the row's own version.
+ *
+ *  When a chapter has an in-flight or failed translation, the row is
+ *  identified by the translation (creator/date metadata) but we still
+ *  want the user to be able to OPEN something — either the existing
+ *  raw or, for done translations, the translation itself. The state
+ *  chip carries the progress/error/blocked indicator; `rawFallback`
+ *  on those states tells the row whether clicking opens a raw to read
+ *  while waiting (true) or no-ops (false). For `spawn-error` the
+ *  chip is itself clickable (retry); the row's own click goes to the
+ *  raw fallback if any. */
 export type VersionAction =
   | { kind: 'read-translation' }
   | { kind: 'read-raw' }
   | { kind: 'read-raw-with-spawn'; spawnState: 'idle' | 'progress' | 'error' }
   | { kind: 'spawn-translate' }
-  | { kind: 'spawn-pending' }    // queued, not picked up yet
-  | { kind: 'spawn-progress' }   // worker is processing
-  | { kind: 'spawn-blocked' }    // stage paused; admin must resume
-  | { kind: 'spawn-error' }      // last attempt errored
+  | { kind: 'spawn-pending';  rawFallback: boolean }
+  | { kind: 'spawn-progress'; rawFallback: boolean }
+  | { kind: 'spawn-blocked';  rawFallback: boolean }
+  | { kind: 'spawn-error';    rawFallback: boolean }
   | { kind: 'disabled'; reason: string }
 
 
@@ -54,18 +64,37 @@ export interface VersionLineProps {
   /** Triggered by the chip on `read-raw-with-spawn` rows. Lets the
    *  user click "Dịch" without first reading the raw chapter. */
   onSpawn?:       () => void
+  /** Triggered by the chip on `spawn-error` rows. Row click opens
+   *  the raw fallback (if any); chip click retries the failed
+   *  translation. Tách 2 affordance ra để user không phải chọn giữa
+   *  "đọc tạm" và "thử lại" bằng cùng 1 chuyển động. */
+  onRetry?:       () => void
 }
 
 
 export function VersionLine({
   chapterNumber, version, action,
-  progressLabel, errorMessage, onClick, onSpawn,
+  progressLabel, errorMessage, onClick, onSpawn, onRetry,
 }: VersionLineProps) {
   const disabled = action.kind === 'disabled'
-  const busy     = action.kind === 'spawn-progress'
-                || action.kind === 'spawn-pending'
   const failed   = action.kind === 'spawn-error'
                 || action.kind === 'spawn-blocked'
+  // `busy` no longer disables the row outright — a chapter being
+  // translated may still have a raw the user wants to read while
+  // waiting. The row falls back to a read-raw click whenever
+  // `rawFallback` is true on a progress/error/blocked/pending state.
+  const stateWithFallback =
+       action.kind === 'spawn-pending'
+    || action.kind === 'spawn-progress'
+    || action.kind === 'spawn-blocked'
+    || action.kind === 'spawn-error'
+  const rowReadable = stateWithFallback ? action.rawFallback : false
+  const interactive =
+       !disabled
+    && (action.kind !== 'spawn-pending'  || rowReadable)
+    && (action.kind !== 'spawn-progress' || rowReadable)
+    && (action.kind !== 'spawn-blocked'  || rowReadable)
+    && (action.kind !== 'spawn-error'    || rowReadable)
 
   // Humanized failure reason — null when row isn't in an error /
   // blocked state. Renders on row 2 (mobile) and as the button title.
@@ -77,7 +106,6 @@ export function VersionLine({
   // raw-with-spawn rows can be its own <button> without producing
   // invalid nested-button HTML. Keyboard activation via Enter / Space
   // mirrors a native button.
-  const interactive = !disabled && !busy
   return (
     <div
       role="button"
@@ -103,9 +131,9 @@ export function VersionLine({
         'flex flex-col gap-1',
         'sm:flex-row sm:items-center sm:gap-2.5',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50',
-        disabled ? 'opacity-50 cursor-not-allowed' :
-        busy     ? 'cursor-wait bg-surface-2/50' :
-                   'cursor-pointer hover:bg-hover/50 active:bg-hover',
+        disabled        ? 'opacity-50 cursor-not-allowed' :
+        !interactive    ? 'cursor-default' :
+                          'cursor-pointer hover:bg-hover/50 active:bg-hover',
         action.kind === 'spawn-error'   && 'text-rose-300',
         action.kind === 'spawn-blocked' && 'text-amber-300',
       )}
@@ -142,6 +170,7 @@ export function VersionLine({
               action={action}
               progressLabel={progressLabel}
               onSpawn={onSpawn}
+              onRetry={onRetry}
             />
           </span>
         </span>
@@ -250,11 +279,12 @@ function Label({
  *  parent — when null, the chip degrades to a non-clickable hint.
  */
 function ActionChip({
-  action, progressLabel, onSpawn,
+  action, progressLabel, onSpawn, onRetry,
 }: {
   action:         VersionAction
   progressLabel?: string
   onSpawn?:       () => void
+  onRetry?:       () => void
 }) {
   if (action.kind === 'spawn-translate') {
     return (
@@ -326,12 +356,15 @@ function ActionChip({
     )
   }
   if (action.kind === 'spawn-error') {
+    // Chip is the retry affordance — row click falls through to the
+    // raw fallback (if any) so the user can still read while we redo.
     return (
       <Chip
         tone="error"
         icon={<RotateCcw size={12} />}
         label="Thử lại"
         hideLabelOnMobile
+        onClick={onRetry}
       />
     )
   }

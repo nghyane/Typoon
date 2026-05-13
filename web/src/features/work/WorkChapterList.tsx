@@ -24,8 +24,8 @@ import {
 } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
-  AlertCircle, ArrowDown, ArrowUp, ChevronDown, ChevronRight,
-  Loader2, PauseCircle, Search,
+  ArrowDown, ArrowUp, ChevronDown,
+  PauseCircle, Search,
 } from 'lucide-react'
 
 import { cn } from '@shared/lib/cn'
@@ -62,22 +62,18 @@ type SortBy = 'newest' | 'oldest'
 
 type Row = {
   chapter:       HubChapter
+  /** The version whose identity (creator, date, kind chip) the row
+   *  surfaces. For a done/in-flight/failed target translation this is
+   *  the translation; for a raw read this is the raw. */
   version:       HubVersion
+  /** When the primary version is a non-done translation (running /
+   *  pending / error / blocked) we still want the user to be able to
+   *  open SOMETHING. If a raw on the same chapter is readable, this
+   *  carries it so the row click falls through to read-raw while the
+   *  state chip shows progress/retry/blocked. */
+  rawFallback:   HubVersion | null
   readyInTarget: boolean
   score:         number
-}
-
-
-type InProgressTone = 'running' | 'blocked' | 'error'
-
-
-/** True when a version should land in the "Đang xử lý" bucket
- *  instead of the main spine. Done translations and raws are
- *  read-ready and belong on the spine. */
-function isInProgress(v: HubVersion): boolean {
-  return v.kind === 'translation'
-      && v.state !== null
-      && v.state !== 'done'
 }
 
 
@@ -124,105 +120,52 @@ export function WorkChapterList({
     return m
   }, [chapters])
 
-  // Flat rows: every (chapter, version) pair that passes the filter.
+  // Build rows: one row per chapter when the filter is target/all
+  // (the chapter's translation state, if any, owns the row); the
+  // legacy multi-row-per-chapter shape only kicks in when the user
+  // filters by a non-target lang — there they're explicitly browsing
+  // raws and want to see each scanlator option.
   //
-  // Special case: when the target lang is the active filter and a
-  // chapter has NO translation ready in the target, we still surface
-  // ONE spawnable raw row (regardless of lang) so the user has a path
-  // to translate. Otherwise the chapter would simply vanish from the
-  // VI filter — worst UX for the most common flow. Fallback picks the
-  // best raw by `versionScore`.
-  // Flat rows split into two buckets:
-  //
-  //   • `mainRows`  — what the user actually wants to read. Done
-  //     translations + raw rows (target-lang reads + spawn-eligible
-  //     fallbacks). This is the spine of the chapter list.
-  //
-  //   • `inProgressRows` — translations that are pending, running,
-  //     errored, or blocked. These are siphoned into a collapsible
-  //     "Đang xử lý" section above the main list so the spine stays
-  //     clean for the 95% of users who only want to read.
-  //
-  // The same spawn-fallback rule still applies: if a chapter has no
-  // done translation in the target lang AND no in-flight target
-  // translation, we surface one spawnable raw on the main row so the
-  // user has a path to translate.
-  const { mainRows, inProgressRows } = useMemo(() => {
+  // No "in progress" bucket: a translation that's running / pending
+  // / error / blocked stays at its natural chapter position and the
+  // row chip describes the state. Raw fallback is attached so the
+  // user can read the upstream chapter while waiting (or after an
+  // error) without losing the retry affordance.
+  const mainRows = useMemo(() => {
     const term = deferredQ.trim().toLowerCase()
-    const targetInFilter = activeLang === null || activeLang === tgt
-    const main:    Row[] = []
-    const inProg:  Row[] = []
+    const targetMode = activeLang === null || activeLang === tgt
+    const rows: Row[] = []
     for (const c of chapters) {
       if (term && !haystacks.get(c)!.includes(term)) continue
       const readyInTarget = preferredReadable(c, targetLang) !== null
 
-      // Any non-done target-lang translation suppresses spawn-fallback
-      // — the user already has an in-flight or failed attempt on this
-      // chapter; offering "Dịch" again would create a duplicate.
-      const hasTargetTranslation = !!tgt && c.versions.some(
-        (v) => v.kind === 'translation' && v.lang === tgt,
-      )
-
-      let fallback: { v: HubVersion, score: number } | null = null
-      for (const v of c.versions) {
-        const langOk = activeLang === null || v.lang === activeLang
-        if (langOk) {
-          const row: Row = {
-            chapter: c, version: v, readyInTarget,
-            score: versionScore(v, tgt),
-          }
-          if (isInProgress(v)) inProg.push(row)
-          else                 main.push(row)
-          continue
-        }
-        if (targetInFilter && !readyInTarget && !hasTargetTranslation
-            && v.kind === 'raw'
-            && v.upstreamUrl && v.sourceId) {
-          const s = versionScore(v, tgt)
-          if (!fallback || s < fallback.score) fallback = { v, score: s }
-        }
+      if (targetMode) {
+        const row = pickTargetRow(c, tgt, readyInTarget)
+        if (row) rows.push(row)
+        continue
       }
-      if (fallback) {
-        main.push({
-          chapter: c, version: fallback.v, readyInTarget,
-          score: fallback.score,
+
+      // Non-target filter — user is browsing raws in a specific lang.
+      // Surface every raw of that lang as its own row so they can
+      // pick scanlator/source.
+      for (const v of c.versions) {
+        if (v.lang !== activeLang) continue
+        if (v.kind !== 'raw') continue
+        rows.push({
+          chapter: c, version: v, rawFallback: null, readyInTarget,
+          score: versionScore(v, tgt),
         })
       }
     }
     const dir = sortBy === 'newest' ? 1 : -1
-    const sortFn = (a: Row, b: Row) => {
+    rows.sort((a, b) => {
       if (a.chapter.sortKey !== b.chapter.sortKey) {
         return (b.chapter.sortKey - a.chapter.sortKey) * dir
       }
       return a.score - b.score
-    }
-    main.sort(sortFn)
-    // In-progress always orders newest-first regardless of the main
-    // sort — when something is stuck, the user wants to see the most
-    // recent attempts on top.
-    inProg.sort((a, b) => {
-      if (a.chapter.sortKey !== b.chapter.sortKey) {
-        return b.chapter.sortKey - a.chapter.sortKey
-      }
-      return a.score - b.score
     })
-    return { mainRows: main, inProgressRows: inProg }
+    return rows
   }, [chapters, haystacks, deferredQ, activeLang, targetLang, tgt, sortBy])
-
-  // Worst-state in the in-progress bucket drives the section header's
-  // tone and default-open behaviour: anything blocked/error pulls the
-  // user's attention.
-  const inProgressTone = useMemo<InProgressTone>(() => {
-    let hasBlocked = false
-    let hasError   = false
-    for (const r of inProgressRows) {
-      if (r.version.state === 'blocked') hasBlocked = true
-      else if (r.version.state === 'error') hasError = true
-    }
-    if (hasBlocked) return 'blocked'
-    if (hasError)   return 'error'
-    return 'running'
-  }, [inProgressRows])
 
   // System-health banner: surface when ANY chapter in this work has
   // a translation in `blocked` state. Inferred from rows (no extra
@@ -265,34 +208,16 @@ export function WorkChapterList({
         />
       )}
 
-      {inProgressRows.length > 0 && (
-        <InProgressSection
-          rows={inProgressRows}
-          tone={inProgressTone}
-          tgt={tgt}
-          spawnState={spawnState}
-          spawningKey={spawningKey}
-          onSpawn={onSpawn}
-          onRetryTranslation={onRetryTranslation}
-          onOpenVersion={onOpenVersion}
-        />
-      )}
-
       {loading && chapters.length === 0 ? (
         <div className="py-16 flex justify-center">
           <Spinner size={20} />
         </div>
-      ) : mainRows.length === 0 && inProgressRows.length === 0 ? (
+      ) : mainRows.length === 0 ? (
         <EmptyView
           totalChapters={chapters.length}
           q={deferredQ}
           hasActiveFilter={activeLang !== null}
         />
-      ) : mainRows.length === 0 ? (
-        // Spine is empty but in-progress has rows — render nothing
-        // here. The section above already shows the user what's
-        // happening; an extra empty-state would just add noise.
-        null
       ) : (
         <VirtualList
           rows={mainRows}
@@ -616,10 +541,10 @@ function VirtualList({
     >
       {virt.getVirtualItems().map((vi) => {
         const row = rows[vi.index]!
-        const { chapter, version, readyInTarget } = row
+        const { chapter, version, readyInTarget, rawFallback } = row
         const isSpawning = spawningKey === version.key
         const action = resolveAction(
-          version, tgt, readyInTarget, isSpawning, spawnState,
+          version, tgt, readyInTarget, isSpawning, spawnState, rawFallback,
         )
         return (
           <div
@@ -654,14 +579,15 @@ function VirtualList({
               }
               onClick={() => {
                 if (action.kind === 'disabled') return
-                if (action.kind === 'spawn-error') {
-                  // Translation row that failed — server still has the
-                  // chapter bytes; ask it to redo. Falling back to the
-                  // full upload pipeline would silently no-op because
-                  // the translation HubVersion carries no upstreamUrl.
-                  if (version.kind === 'translation' && version.translationId != null) {
-                    onRetryTranslation(version.translationId)
-                  }
+                // In-flight / failed / blocked translation rows: row
+                // click opens the raw fallback if any (so the user can
+                // read while waiting / after error). Retry / progress
+                // / blocked indicators live on the chip.
+                if (action.kind === 'spawn-pending'
+                    || action.kind === 'spawn-progress'
+                    || action.kind === 'spawn-blocked'
+                    || action.kind === 'spawn-error') {
+                  if (rawFallback) onOpenVersion(chapter, rawFallback)
                   return
                 }
                 if (action.kind === 'spawn-translate') {
@@ -678,6 +604,13 @@ function VirtualList({
                   ? () => onSpawn(chapter, version)
                   : undefined
               }
+              onRetry={
+                action.kind === 'spawn-error'
+                  && version.kind === 'translation'
+                  && version.translationId != null
+                  ? () => onRetryTranslation(version.translationId!)
+                  : undefined
+              }
             />
           </div>
         )
@@ -690,20 +623,25 @@ function VirtualList({
 // ── Action resolution ───────────────────────────────────────────
 
 
-/** Decide what clicking a row does given the version + chapter
- *  context. */
+/** Decide what clicking a row does given the (primary) version +
+ *  chapter context. When the primary is an in-flight / failed
+ *  translation, `rawFallback` is the raw the row falls back to so the
+ *  user can read while waiting; the state chip stays the actionable
+ *  affordance for retry / progress / blocked. */
 function resolveAction(
   v:             HubVersion,
   targetLang:    string,
   readyInTarget: boolean,
   isSpawning:    boolean,
   progress:      SpawnProgress | null,
+  rawFallback:   HubVersion | null,
 ): VersionAction {
   if (v.kind === 'translation') {
-    if (v.state === 'pending') return { kind: 'spawn-pending' }
-    if (v.state === 'running') return { kind: 'spawn-progress' }
-    if (v.state === 'blocked') return { kind: 'spawn-blocked' }
-    if (v.state === 'error')   return { kind: 'spawn-error' }
+    const fb = rawFallback !== null
+    if (v.state === 'pending') return { kind: 'spawn-pending',  rawFallback: fb }
+    if (v.state === 'running') return { kind: 'spawn-progress', rawFallback: fb }
+    if (v.state === 'blocked') return { kind: 'spawn-blocked',  rawFallback: fb }
+    if (v.state === 'error')   return { kind: 'spawn-error',    rawFallback: fb }
     return { kind: 'read-translation' }
   }
   // raw
@@ -724,6 +662,115 @@ function resolveAction(
       : { kind: 'read-raw-with-spawn', spawnState: 'progress' }
   }
   return { kind: 'read-raw-with-spawn', spawnState: 'idle' }
+}
+
+
+/** Pick the best translation among candidates for a given target lang.
+ *  Priority: done > running > pending > error > blocked. Ties broken
+ *  by `date` desc so the most recent attempt wins.
+ *
+ *  Why this order: the user-visible answer to "is this chapter ready
+ *  in <lang>?" is the strongest yes (done), then "soon" (in-flight),
+ *  then "needs me" (error), then "needs admin" (blocked). Putting
+ *  blocked last keeps a single stuck row from masking a viable retry. */
+function pickBestTranslation(
+  versions: HubVersion[],
+  lang:     string,
+): HubVersion | null {
+  const stateRank = (v: HubVersion): number => {
+    if (v.state === 'done')    return 0
+    if (v.state === 'running') return 1
+    if (v.state === 'pending') return 2
+    if (v.state === 'error')   return 3
+    if (v.state === 'blocked') return 4
+    return 5
+  }
+  let best: HubVersion | null = null
+  for (const v of versions) {
+    if (v.kind !== 'translation' || v.lang !== lang) continue
+    if (!best) { best = v; continue }
+    const a = stateRank(v)
+    const b = stateRank(best)
+    if (a < b) { best = v; continue }
+    if (a > b) continue
+    // Same state → newer wins.
+    if ((v.date ?? '') > (best.date ?? '')) best = v
+  }
+  return best
+}
+
+
+/** Pick the best raw to read on a chapter — prefers target lang, then
+ *  any installed-source raw with an upstream URL. Returns null when
+ *  nothing is readable (raw missing / source uninstalled). */
+function pickBestRaw(
+  versions: HubVersion[],
+  tgt:      string,
+): HubVersion | null {
+  let best: HubVersion | null = null
+  let bestScore = Infinity
+  for (const v of versions) {
+    if (v.kind !== 'raw') continue
+    if (!v.upstreamUrl || !v.sourceId) continue
+    const s = versionScore(v, tgt)
+    if (s < bestScore) { best = v; bestScore = s }
+  }
+  return best
+}
+
+
+/** Build a single row for a chapter in target/all filter mode.
+ *
+ *  Policy: one row per chapter. The row's PRIMARY version owns the
+ *  identity (creator, date, kind chip). When a target translation
+ *  exists in any state, it's the primary — including running / error
+ *  / blocked, so the user sees "their" translation row at the natural
+ *  chapter position with a state chip. A raw fallback is attached so
+ *  the row click can still open something readable while the worker
+ *  finishes (or after an error).
+ *
+ *  Returns null only when the chapter has nothing at all to surface
+ *  (no target translation, no installed-source raw, and no
+ *  spawn-eligible raw to translate from). */
+function pickTargetRow(
+  c:             HubChapter,
+  tgt:           string,
+  readyInTarget: boolean,
+): Row | null {
+  // 1. Best target-lang translation (any state).
+  const trans = tgt ? pickBestTranslation(c.versions, tgt) : null
+  if (trans) {
+    const fallback = trans.state === 'done' ? null : pickBestRaw(c.versions, tgt)
+    return {
+      chapter: c, version: trans, rawFallback: fallback, readyInTarget,
+      score:   versionScore(trans, tgt),
+    }
+  }
+
+  // 2. No translation — fall back to raw. Prefer target-lang raw so
+  //    "VI raw" beats "EN raw" on the row.
+  if (tgt) {
+    const targetRaw = c.versions.find(
+      (v) => v.kind === 'raw' && v.lang === tgt
+          && v.upstreamUrl && v.sourceId,
+    ) ?? null
+    if (targetRaw) {
+      return {
+        chapter: c, version: targetRaw, rawFallback: null, readyInTarget,
+        score:   versionScore(targetRaw, tgt),
+      }
+    }
+  }
+
+  // 3. Other-lang raw — surfaced so the user has a "Dịch" affordance.
+  const otherRaw = pickBestRaw(c.versions, tgt)
+  if (otherRaw) {
+    return {
+      chapter: c, version: otherRaw, rawFallback: null, readyInTarget,
+      score:   versionScore(otherRaw, tgt),
+    }
+  }
+  return null
 }
 
 
@@ -854,133 +901,7 @@ function humanizeBlockedReason(raw: string): string {
 }
 
 
-// ── In-progress section ────────────────────────────────────────
-//
-// Pending / running / error / blocked translations live OUTSIDE the
-// main spine. The spine stays clean for "what can I read" — this
-// section answers "what's happening with my spawns". Default-
-// collapsed so a healthy work shows nothing extra; the header
-// chip changes color when there's something to look at.
-
-
-/** Trigger header for the collapsible "Đang xử lý" section. Color
- *  follows the worst-state present so blocked > error > running. */
-function InProgressSection({
-  rows, tone, tgt, spawnState, spawningKey, onSpawn, onRetryTranslation, onOpenVersion,
-}: {
-  rows:              Row[]
-  tone:              InProgressTone
-  tgt:               string
-  spawnState:        SpawnProgress | null
-  spawningKey:       string | null
-  onSpawn:           (c: HubChapter, v: HubVersion) => void
-  onRetryTranslation:(translationId: number) => void
-  onOpenVersion:     (c: HubChapter, v: HubVersion) => void
-}) {
-  // Default-open when the bucket carries attention-grabbing state
-  // (blocked / error). For plain running spawns we collapse — the
-  // user already saw the spinner where they clicked "Dịch".
-  const [open, setOpen] = useState(() => tone !== 'running')
-
-  const palette = {
-    running: {
-      bg:     'bg-info/10 hover:bg-info/15',
-      border: 'border-info/30',
-      text:   'text-info-text',
-      icon:   <Loader2 size={14} className="animate-spin" />,
-      label:  'Đang xử lý',
-    },
-    blocked: {
-      bg:     'bg-amber-500/10 hover:bg-amber-500/15',
-      border: 'border-amber-500/30',
-      text:   'text-amber-300',
-      icon:   <PauseCircle size={14} />,
-      label:  'Đang chờ quản trị',
-    },
-    error: {
-      bg:     'bg-rose-500/10 hover:bg-rose-500/15',
-      border: 'border-rose-500/30',
-      text:   'text-rose-300',
-      icon:   <AlertCircle size={14} />,
-      label:  'Có lỗi cần xem lại',
-    },
-  }[tone]
-
-  return (
-    <div className={cn('mb-3 rounded-md border', palette.border)}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className={cn(
-          'w-full flex items-center gap-2 px-3 py-2 cursor-pointer',
-          'transition-colors text-left',
-          palette.bg, palette.text,
-        )}
-      >
-        {palette.icon}
-        <span className="text-sm font-medium">{palette.label}</span>
-        <span className="text-xs tabular opacity-70">· {rows.length}</span>
-        <ChevronRight
-          size={14}
-          className={cn(
-            'ml-auto transition-transform shrink-0',
-            open && 'rotate-90',
-          )}
-        />
-      </button>
-
-      {open && (
-        <div className="divide-y divide-border-soft/60">
-          {rows.map(({ chapter, version, readyInTarget }) => {
-            const isSpawning = spawningKey === version.key
-            const action = resolveAction(
-              version, tgt, readyInTarget, isSpawning, spawnState,
-            )
-            return (
-              <VersionLine
-                key={version.key}
-                chapterNumber={chapter.number}
-                version={version}
-                action={action}
-                progressLabel={
-                  isSpawning ? spawnLabel(spawnState) : undefined
-                }
-                errorMessage={
-                  isSpawning && spawnState?.phase === 'error'
-                    ? spawnState.error
-                    : version.errorMessage
-                }
-                onClick={() => {
-                  if (action.kind === 'disabled') return
-                  if (action.kind === 'spawn-error') {
-                    if (version.kind === 'translation' && version.translationId != null) {
-                      onRetryTranslation(version.translationId)
-                    }
-                    return
-                  }
-                  if (action.kind === 'spawn-translate') {
-                    onSpawn(chapter, version)
-                  } else if (action.kind === 'read-translation'
-                          || action.kind === 'read-raw'
-                          || action.kind === 'read-raw-with-spawn') {
-                    onOpenVersion(chapter, version)
-                  }
-                }}
-                onSpawn={
-                  action.kind === 'read-raw-with-spawn'
-                    && action.spawnState !== 'progress'
-                    ? () => onSpawn(chapter, version)
-                    : undefined
-                }
-              />
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
+// ── Empty view ─────────────────────────────────────────────────
 
 
 function EmptyView({

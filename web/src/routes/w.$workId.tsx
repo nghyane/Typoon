@@ -209,7 +209,7 @@ function WorkPage() {
         />
       </div>
 
-      <LinkSuggestionPanel workId={workIdNum} />
+      <LinkSuggestionPanel workId={workIdNum} ownMaterials={materials} />
 
       <WorkChapterList
         chapters={chapters}

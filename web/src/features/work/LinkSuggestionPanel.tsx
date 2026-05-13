@@ -21,21 +21,33 @@ import { useNavigate } from '@tanstack/react-router'
 import { Check, X, Link2 } from 'lucide-react'
 
 import {
-  api, type ApiLinkSuggestion, type ApiLinkVoteResult,
+  api, type ApiLinkSuggestion, type ApiLinkVoteResult, type ApiMaterial,
 } from '@shared/api/api'
 import { Cover } from '@shared/ui/Cover'
 import { Spinner } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { qk } from '@shared/api/keys'
 import { useSources } from '@features/browse/sources'
+import { confirm } from '@shared/ui/Confirm'
+import { toast } from '@shared/ui/Toaster'
+
+import { LinkSearchExpander } from './LinkSearchExpander'
+import type { SearchHit } from '@features/library/addManga/fanoutSearch'
 
 
 interface Props {
-  workId: number
+  workId:       number
+  /** Materials currently on this Work. Used by the search expander
+   *  to filter self-link candidates and badge "already in library"
+   *  rows. */
+  ownMaterials: ApiMaterial[]
 }
 
 
-export function LinkSuggestionPanel({ workId }: Props) {
+export function LinkSuggestionPanel({ workId, ownMaterials }: Props) {
+  const qc = useQueryClient()
+  const nav = useNavigate()
+
   const sugQ = useQuery({
     queryKey: qk.work.linkSuggest(workId),
     queryFn:  () => api.listWorkLinkSuggestions(workId),
@@ -43,6 +55,60 @@ export function LinkSuggestionPanel({ workId }: Props) {
   })
   const list = sugQ.data ?? []
 
+  const importAndLink = useMutation({
+    mutationFn: async (hit: SearchHit) => {
+      // Two steps: import the candidate as a new material (the
+      // linker assigns it to whichever Work shares cross_refs, or a
+      // fresh isolated Work otherwise), then cast a +1 vote linking
+      // it to this Work. Server merges when threshold hits.
+      const m = await api.importMaterial({
+        source:       hit.source.manifest.id,
+        upstream_ref: hit.manga.url,
+        title:        hit.manga.title,
+        cover_url:    hit.manga.cover ?? null,
+      })
+      const own = ownMaterials[0]
+      if (!own) throw new Error('Work has no own material to vote with.')
+      const res = await api.castWorkLinkVote(workId, {
+        target_material_id: m.id,
+        own_material_id:    own.id,
+        vote:               1,
+      })
+      return { res, importedTitle: m.title }
+    },
+    onSuccess: ({ res, importedTitle }) => {
+      qc.invalidateQueries({ queryKey: qk.work.byId(workId) })
+      qc.invalidateQueries({ queryKey: qk.work.linkSuggest(workId) })
+      qc.invalidateQueries({ queryKey: qk.library.all() })
+      if (res.merged && res.canonical_work_id != null
+          && res.canonical_work_id !== workId) {
+        toast.success(`Đã gộp với "${importedTitle}"`)
+        nav({
+          to:     '/w/$workId',
+          params: { workId: String(res.canonical_work_id) },
+        })
+        return
+      }
+      toast.success(`Đã thêm "${importedTitle}" và ghi nhận liên kết`)
+    },
+    onError: (e: Error) => {
+      toast.error(`Liên kết thất bại: ${e.message}`)
+    },
+  })
+
+  const handlePick = async (hit: SearchHit) => {
+    const proceed = await confirm({
+      title:       'Liên kết manga?',
+      description: `Thêm "${hit.manga.title}" từ ${hit.source.manifest.name} và đánh dấu là cùng truyện?`,
+      confirmText: 'Liên kết',
+    })
+    if (!proceed) return
+    importAndLink.mutate(hit)
+  }
+
+  // Hide the whole panel only when there's nothing to suggest AND
+  // the search affordance can't be useful (e.g. work has no own
+  // material to vote with — extremely rare; happens mid-redirect).
   if (sugQ.isPending) {
     return (
       <Section>
@@ -52,15 +118,25 @@ export function LinkSuggestionPanel({ workId }: Props) {
       </Section>
     )
   }
-  if (list.length === 0) return null
+
+  const hasSearch = ownMaterials.length > 0
+  if (list.length === 0 && !hasSearch) return null
 
   return (
     <Section>
-      <ul className="space-y-1">
-        {list.map((s) => (
-          <SuggestionRow key={s.candidate_material_id} suggestion={s} workId={workId} />
-        ))}
-      </ul>
+      {list.length > 0 && (
+        <ul className="space-y-1 mb-3">
+          {list.map((s) => (
+            <SuggestionRow key={s.candidate_material_id} suggestion={s} workId={workId} />
+          ))}
+        </ul>
+      )}
+      {hasSearch && (
+        <LinkSearchExpander
+          ownMaterials={ownMaterials}
+          onPick={handlePick}
+        />
+      )}
     </Section>
   )
 }
