@@ -70,6 +70,42 @@ def _clean_query(q: str) -> str:
     return _CTRL.sub(" ", q).strip()
 
 
+def _clean_scalar_map(raw: dict | None) -> dict[str, str]:
+    """Coerce a `{key: value}` mapping for safe JSONB write: keys are
+    stringified, scalar values stringified + stripped, empties dropped.
+    Mirrors the linker's `_clean_refs` so cross_refs / title_locale
+    writes stay consistent across the codebase."""
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not k or v is None:
+            continue
+        if isinstance(v, (str, int, float)):
+            s = str(v).strip()
+            if s:
+                out[str(k)] = s
+    return out
+
+
+def _clean_str_list(raw: list[str] | None) -> list[str]:
+    """Strip + dedupe + drop empties from a string list. Used by the
+    metadata-enrich path on `title_alt`."""
+    if not raw:
+        return []
+    seen: set[str] = set()
+    out:  list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
 # ISO-string timestamp formatting. Convert all timestamps to UTC and
 # format as RFC 3339 with `Z` suffix — directly parseable by JS
 # `new Date(...)` and avoids local-time-zone surprises across hosts.
@@ -124,7 +160,7 @@ _TS_USERS = (
 _TS_MATERIAL = (
     "id, imported_by, origin, work_id, source, upstream_ref, title, cover_url, "
     "description, author, status, languages, title_native, title_alt, "
-    "cross_refs, nsfw, "
+    "cross_refs, title_locale, start_year, nsfw, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_CHAPTER = (
@@ -979,35 +1015,91 @@ class PostgresStore:
                 *args,
             )
 
-    async def merge_material_cross_refs(
-        self, material_id: int, refs: dict,
+    async def merge_material_metadata(
+        self,
+        material_id: int,
+        *,
+        cross_refs:   dict | None = None,
+        title_native: str | None = None,
+        title_alt:    list[str] | None = None,
+        title_locale: dict | None = None,
+        start_year:   int | None = None,
+        description:  str | None = None,
     ) -> None:
-        """Additively merge `refs` into `materials.cross_refs`.
+        """Additive merge of enriched metadata onto a material row.
 
-        Same coercion rules as the linker's `_clean_refs` — strings,
-        numbers stringified, empties dropped. Existing namespaces win
-        on conflict (JSONB `||` is right-takes-precedence; we put
-        `refs` on the LEFT so existing values on the RIGHT prevail).
-        Caller-controlled writes never overwrite the source-manifest's
-        authoritative cross_refs.
+        Authoritative-source rule: every field is filled ONLY when the
+        existing column is null / empty. Manifest-driven values (the
+        source's own snapshot) are never overwritten by enriched
+        data; auto-enrich is a supplement, not a rewrite.
+
+          • `cross_refs`   — JSONB `||` with existing on the RIGHT so
+                              existing namespaces win on conflict.
+          • `title_native` — COALESCE; first writer wins.
+          • `title_alt`    — set-union via `array(distinct unnest)`; order
+                              preserved by appending new entries after
+                              existing ones.
+          • `title_locale` — JSONB `||` with existing on the RIGHT so
+                              languages already populated stay put.
+          • `start_year`   — COALESCE; first writer wins.
+          • `description`  — COALESCE; first writer wins. Only set when
+                              currently null so manifest descriptions
+                              aren't overwritten.
+
+        Any combination of fields can be passed; omitted ones are
+        left untouched. Empty / blank values are dropped before the
+        write to keep the row tidy.
         """
-        cleaned: dict[str, str] = {}
-        for k, v in (refs or {}).items():
-            if not k or v is None:
-                continue
-            if isinstance(v, (str, int, float)):
-                s = str(v).strip()
-                if s:
-                    cleaned[str(k)] = s
-        if not cleaned:
+        sets:  list[str] = []
+        args:  list      = []
+
+        cleaned_refs = _clean_scalar_map(cross_refs)
+        if cleaned_refs:
+            args.append(cleaned_refs)
+            sets.append(
+                f"cross_refs = ${len(args)}::jsonb || COALESCE(cross_refs, '{{}}'::jsonb)"
+            )
+
+        cleaned_native = (title_native or '').strip() or None
+        if cleaned_native:
+            args.append(cleaned_native)
+            sets.append(f"title_native = COALESCE(title_native, ${len(args)})")
+
+        cleaned_alt = _clean_str_list(title_alt)
+        if cleaned_alt:
+            args.append(cleaned_alt)
+            sets.append(
+                f"title_alt = ARRAY("
+                f"  SELECT DISTINCT x FROM unnest("
+                f"    COALESCE(title_alt, ARRAY[]::text[]) || ${len(args)}::text[]"
+                f"  ) AS x WHERE x IS NOT NULL AND x <> ''"
+                f")"
+            )
+
+        cleaned_locale = _clean_scalar_map(title_locale)
+        if cleaned_locale:
+            args.append(cleaned_locale)
+            sets.append(
+                f"title_locale = ${len(args)}::jsonb || COALESCE(title_locale, '{{}}'::jsonb)"
+            )
+
+        if start_year is not None and isinstance(start_year, int) and start_year > 0:
+            args.append(start_year)
+            sets.append(f"start_year = COALESCE(start_year, ${len(args)})")
+
+        cleaned_desc = (description or '').strip() or None
+        if cleaned_desc:
+            args.append(cleaned_desc)
+            sets.append(f"description = COALESCE(description, ${len(args)})")
+
+        if not sets:
             return
+
+        args.append(material_id)
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE materials SET "
-                "  cross_refs = $1::jsonb "
-                "             || COALESCE(cross_refs, '{}'::jsonb) "
-                "WHERE id = $2",
-                cleaned, material_id,
+                f"UPDATE materials SET {', '.join(sets)} WHERE id = ${len(args)}",
+                *args,
             )
 
     async def delete_material(self, material_id: int) -> None:

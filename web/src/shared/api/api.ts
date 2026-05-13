@@ -75,6 +75,13 @@ export interface ApiMaterial {
   title_native:  string | null
   title_alt:     string[]
   cross_refs:    Record<string, unknown> | null
+  /** BCP-47 → display title. Enriched from MangaDex altTitles +
+   *  Anilist title.{english,romaji,native}. The title resolver
+   *  picks `title_locale[targetLang]` first when present. */
+  title_locale:  Record<string, string> | null
+  /** First publication year. From Anilist `startDate.year` or
+   *  MangaDex `year`. Null when no enrichment ever populated it. */
+  start_year:    number | null
 
   nsfw:          boolean
 
@@ -550,22 +557,26 @@ export const api = {
       method: 'PATCH', body: json(body),
     }),
 
-  /** Merge client-found cross_refs onto a material. Used by the
-   *  auto-enrich flow: when the SPA fans search out across link
-   *  plugins (Anilist, MAL, …) and finds the same manga on those
-   *  services, it POSTs the discovered IDs here so subsequent
-   *  imports of any sibling can auto-link via the existing
-   *  `cross_refs` linker. Idempotent; existing values are preserved
-   *  on conflict (additive merge). */
-  enrichMaterialRefs: (id: number, body: {
-    cross_refs:     Record<string, string | number>
+  /** Merge client-enriched metadata onto a material. The SPA fans
+   *  search across link plugins (Anilist, MangaDex, …) and POSTs the
+   *  discovered IDs + multilingual titles + start year here.
+   *  Idempotent; the server keeps existing values on conflict
+   *  (additive merge — manifest data wins, enriched fields fill
+   *  only the empty columns). */
+  enrichMaterialMetadata: (id: number, body: {
+    cross_refs?:    Record<string, string | number>
+    title_native?:  string
+    title_alt?:     string[]
+    title_locale?:  Record<string, string>
+    start_year?:    number
+    description?:   string
     source_signals?: Array<{
       plugin:        string
       confidence:    number
       matched_title: string | null
     }>
   }) =>
-    request<ApiMaterial>(`/material/${id}/enrich-refs`, {
+    request<ApiMaterial>(`/material/${id}/enrich-metadata`, {
       method: 'POST', body: json(body),
     }),
 

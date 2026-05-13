@@ -58,9 +58,11 @@ export interface LinkCandidate {
   namespace:    string             // plugin.namespace
   externalId:   string             // service-specific id (stringified)
   title:        string | null
+  titleEnglish: string | null      // Anilist `title.english`, MangaDex `altTitles.en`
   titleNative:  string | null
-  titleAlt:     string[]
+  synonyms:     string[]
   cover:        string | null
+  startYear:    number | null
 }
 
 
@@ -131,14 +133,17 @@ async function lookupOne(
     const f = (key: string) => getPath(row, ep.fields[key] ?? '')
     const rawId = f('id')
     const idStr = rawId == null ? '' : String(rawId)
+    const year = f('start_year')
     return {
-      plugin:      plugin.id,
-      namespace:   plugin.namespace,
-      externalId:  idStr,
-      title:       toStr(f('title')),
-      titleNative: toStr(f('title_native')),
-      titleAlt:    toStrArray(f('title_alt'), f('synonyms')),
-      cover:       toStr(f('cover')),
+      plugin:       plugin.id,
+      namespace:    plugin.namespace,
+      externalId:   idStr,
+      title:        toStr(f('title')),
+      titleEnglish: toStr(f('title_english')),
+      titleNative:  toStr(f('title_native')),
+      synonyms:     toStrArray(f('synonyms')),
+      cover:        toStr(f('cover')),
+      startYear:    typeof year === 'number' && year > 0 ? year : null,
     }
   }).filter((c) => c.externalId !== '')
 }

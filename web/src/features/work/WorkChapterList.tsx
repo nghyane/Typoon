@@ -47,6 +47,10 @@ export interface WorkChapterListProps {
   spawnState:      SpawnProgress | null
   spawningKey:     string | null
   onSpawn:         (chapter: HubChapter, raw: HubVersion) => void
+  /** Re-kick a translation that ended in `error`. Distinct from
+   *  `onSpawn` — there's no raw to re-upload, the server already has
+   *  the chapter bytes and we just POST `/translate/{id}/redo`. */
+  onRetryTranslation: (translationId: number) => void
   onOpenVersion:   (chapter: HubChapter, v: HubVersion) => void
 }
 
@@ -80,7 +84,7 @@ function isInProgress(v: HubVersion): boolean {
 export function WorkChapterList({
   chapters, targetLang, loading,
   spawnState, spawningKey,
-  onSpawn, onOpenVersion,
+  onSpawn, onRetryTranslation, onOpenVersion,
 }: WorkChapterListProps) {
   const tgt = normalizeBcp(targetLang)
 
@@ -269,6 +273,7 @@ export function WorkChapterList({
           spawnState={spawnState}
           spawningKey={spawningKey}
           onSpawn={onSpawn}
+          onRetryTranslation={onRetryTranslation}
           onOpenVersion={onOpenVersion}
         />
       )}
@@ -295,6 +300,7 @@ export function WorkChapterList({
           spawnState={spawnState}
           spawningKey={spawningKey}
           onSpawn={onSpawn}
+          onRetryTranslation={onRetryTranslation}
           onOpenVersion={onOpenVersion}
         />
       )}
@@ -518,14 +524,15 @@ function LangOption({
 
 
 function VirtualList({
-  rows, tgt, spawnState, spawningKey, onSpawn, onOpenVersion,
+  rows, tgt, spawnState, spawningKey, onSpawn, onRetryTranslation, onOpenVersion,
 }: {
-  rows:           Row[]
-  tgt:            string
-  spawnState:     SpawnProgress | null
-  spawningKey:    string | null
-  onSpawn:        (c: HubChapter, v: HubVersion) => void
-  onOpenVersion:  (c: HubChapter, v: HubVersion) => void
+  rows:              Row[]
+  tgt:               string
+  spawnState:        SpawnProgress | null
+  spawningKey:       string | null
+  onSpawn:           (c: HubChapter, v: HubVersion) => void
+  onRetryTranslation:(translationId: number) => void
+  onOpenVersion:     (c: HubChapter, v: HubVersion) => void
 }) {
   // AppLayout uses `<main className="flex-1 overflow-auto">` as the
   // page scroll container — NOT the window. Find it on mount via
@@ -647,8 +654,17 @@ function VirtualList({
               }
               onClick={() => {
                 if (action.kind === 'disabled') return
-                if (action.kind === 'spawn-translate'
-                    || action.kind === 'spawn-error') {
+                if (action.kind === 'spawn-error') {
+                  // Translation row that failed — server still has the
+                  // chapter bytes; ask it to redo. Falling back to the
+                  // full upload pipeline would silently no-op because
+                  // the translation HubVersion carries no upstreamUrl.
+                  if (version.kind === 'translation' && version.translationId != null) {
+                    onRetryTranslation(version.translationId)
+                  }
+                  return
+                }
+                if (action.kind === 'spawn-translate') {
                   onSpawn(chapter, version)
                 } else if (action.kind === 'read-translation'
                         || action.kind === 'read-raw'
@@ -850,15 +866,16 @@ function humanizeBlockedReason(raw: string): string {
 /** Trigger header for the collapsible "Đang xử lý" section. Color
  *  follows the worst-state present so blocked > error > running. */
 function InProgressSection({
-  rows, tone, tgt, spawnState, spawningKey, onSpawn, onOpenVersion,
+  rows, tone, tgt, spawnState, spawningKey, onSpawn, onRetryTranslation, onOpenVersion,
 }: {
-  rows:           Row[]
-  tone:           InProgressTone
-  tgt:            string
-  spawnState:     SpawnProgress | null
-  spawningKey:    string | null
-  onSpawn:        (c: HubChapter, v: HubVersion) => void
-  onOpenVersion:  (c: HubChapter, v: HubVersion) => void
+  rows:              Row[]
+  tone:              InProgressTone
+  tgt:               string
+  spawnState:        SpawnProgress | null
+  spawningKey:       string | null
+  onSpawn:           (c: HubChapter, v: HubVersion) => void
+  onRetryTranslation:(translationId: number) => void
+  onOpenVersion:     (c: HubChapter, v: HubVersion) => void
 }) {
   // Default-open when the bucket carries attention-grabbing state
   // (blocked / error). For plain running spawns we collapse — the
@@ -936,8 +953,13 @@ function InProgressSection({
                 }
                 onClick={() => {
                   if (action.kind === 'disabled') return
-                  if (action.kind === 'spawn-translate'
-                      || action.kind === 'spawn-error') {
+                  if (action.kind === 'spawn-error') {
+                    if (version.kind === 'translation' && version.translationId != null) {
+                      onRetryTranslation(version.translationId)
+                    }
+                    return
+                  }
+                  if (action.kind === 'spawn-translate') {
                     onSpawn(chapter, version)
                   } else if (action.kind === 'read-translation'
                           || action.kind === 'read-raw'

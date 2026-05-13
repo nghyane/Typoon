@@ -10,25 +10,26 @@
 // Priority (highest first):
 //
 //   1. The material the user explicitly picked via `?src=`
-//      (`activeMaterial`). Their choice is final — even if it's
-//      a non-target-lang source, respect it.
+//      (`activeMaterial.title`). Their choice is final — even if
+//      it's a non-target-lang source, respect it.
 //
-//   2. Material whose `languages` covers the viewer's `target_lang`.
-//      The common path: a VI viewer lands on the VI source's title.
+//   2. Any material's `title_locale[targetLang]` — multilingual map
+//      populated by the auto-enrich flow (MangaDex altTitles +
+//      Anilist title.english). The cleanest cross-source signal we
+//      have for translated names.
 //
-//   3. Material with a `title_native` set — kanji / hangul anchors
-//      identity when the previous tiers miss (rare).
+//   3. Material whose `languages` covers the viewer's `target_lang`
+//      — direct source title (OTruyen's Vietnamese, MangaDex VI fork,
+//      etc).
 //
-//   4. `materials[0]` — oldest fallback so something always renders.
+//   4. Material with a `title_native` set — kanji / hangul anchors
+//      identity when the previous tiers miss.
+//
+//   5. `materials[0]` — oldest fallback so something always renders.
 //
 // The native subtitle (the small italic line under the h1) is the
 // first material's `title_native` regardless of which one supplied
 // the primary title — purely cosmetic, doesn't drive identity.
-//
-// Cross-viewer determinism: if a URL carries `?src=`, every viewer
-// gets the same title. Without `?src=`, the chain falls through to
-// the viewer's target_lang — that's the intent, not a bug. Sharing
-// a `/w/<id>?src=<X>` link is the way to pin a specific source.
 
 import type { ApiMaterial } from '@shared/api/api'
 
@@ -36,8 +37,8 @@ import type { ApiMaterial } from '@shared/api/api'
 export interface ResolvedWorkTitle {
   title:       string
   titleNative: string | null
-  /** Material the title came from. Exposed so callers can compose
-   *  attribution UI (e.g. "title from OTruyen") if needed. */
+  /** Material the title came from. Null when the title came from
+   *  `title_locale` aggregated across multiple materials. */
   sourceMaterialId: number | null
 }
 
@@ -51,37 +52,68 @@ export function resolveWorkTitle(
     return { title: '—', titleNative: null, sourceMaterialId: null }
   }
 
-  const pick =
-       activeMaterial
-    ?? pickByLang(materials, targetLang)
-    ?? pickByNative(materials)
-    ?? materials[0]!
+  // 1. User pick wins.
+  if (activeMaterial) {
+    return {
+      title:            activeMaterial.title,
+      titleNative:      firstNative(materials),
+      sourceMaterialId: activeMaterial.id,
+    }
+  }
 
+  // 2. Enriched title_locale[targetLang] — any material that has it.
+  const norm = normalizeLang(targetLang)
+  if (norm) {
+    for (const m of materials) {
+      const t = m.title_locale?.[norm]?.trim()
+      if (t) {
+        return {
+          title:            t,
+          titleNative:      firstNative(materials),
+          sourceMaterialId: m.id,
+        }
+      }
+    }
+    // 3. Material whose own languages match the target lang.
+    const byLang = materials.find((m) =>
+      (m.languages ?? []).some((l) => normalizeLang(l) === norm),
+    )
+    if (byLang) {
+      return {
+        title:            byLang.title,
+        titleNative:      firstNative(materials),
+        sourceMaterialId: byLang.id,
+      }
+    }
+  }
+
+  // 4. Material with title_native — romanized title is the most
+  //    reliable cross-language anchor when nothing else fits.
+  const withNative = materials.find(
+    (m) => (m.title_native ?? '').trim().length > 0,
+  )
+  if (withNative) {
+    return {
+      title:            withNative.title,
+      titleNative:      firstNative(materials),
+      sourceMaterialId: withNative.id,
+    }
+  }
+
+  // 5. Default.
+  const first = materials[0]!
   return {
-    title:            pick.title,
+    title:            first.title,
     titleNative:      firstNative(materials),
-    sourceMaterialId: pick.id,
+    sourceMaterialId: first.id,
   }
 }
 
 
-function pickByLang(
-  materials: ApiMaterial[],
-  lang:      string | null,
-): ApiMaterial | null {
+function normalizeLang(lang: string | null | undefined): string | null {
   if (!lang) return null
-  const norm = lang.toLowerCase().split(/[-_]/)[0]
-  if (!norm) return null
-  return materials.find((m) =>
-    (m.languages ?? []).some((l) => l.toLowerCase().split(/[-_]/)[0] === norm),
-  ) ?? null
-}
-
-
-function pickByNative(materials: ApiMaterial[]): ApiMaterial | null {
-  return materials.find(
-    (m) => (m.title_native ?? '').trim().length > 0,
-  ) ?? null
+  const n = lang.toLowerCase().split(/[-_]/)[0]
+  return n || null
 }
 
 

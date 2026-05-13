@@ -236,13 +236,31 @@ class Store(Protocol):
         nsfw:         bool | None = None,
     ) -> None: ...
 
-    async def merge_material_cross_refs(
-        self, material_id: int, refs: dict,
+    async def merge_material_metadata(
+        self,
+        material_id: int,
+        *,
+        cross_refs:   dict | None = None,
+        title_native: str | None = None,
+        title_alt:    list[str] | None = None,
+        title_locale: dict | None = None,
+        start_year:   int | None = None,
+        description:  str | None = None,
     ) -> None:
-        """Additively merge `refs` into `materials.cross_refs`. Existing
-        namespaces keep their values; new namespaces are added. Empty
-        / non-scalar values are dropped. Used by the client-driven
-        auto-enrich flow."""
+        """Additive merge of enriched metadata onto a material row.
+
+        Every column is filled ONLY when currently empty — manifest
+        values are authoritative and never overwritten. Used by the
+        client-driven auto-enrich flow.
+
+          • `cross_refs` / `title_locale` — JSONB merge with existing
+            keys winning on conflict.
+          • `title_native` / `start_year` / `description` — COALESCE;
+            first writer wins.
+          • `title_alt` — set-union with existing list.
+
+        Pass only the fields you have; omitted ones are left untouched.
+        """
         ...
 
     async def delete_material(self, material_id: int) -> None:

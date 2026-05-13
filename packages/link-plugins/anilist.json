@@ -12,17 +12,18 @@
         "Accept":       "application/json"
       },
       "bodyJson": {
-        "query": "query($search:String){Page(page:1,perPage:3){media(search:$search,type:MANGA){id title{romaji english native} synonyms coverImage{medium}}}}",
+        "query": "query($search:String){Page(page:1,perPage:5){media(search:$search,type:MANGA){id title{romaji english native} synonyms coverImage{medium} startDate{year}}}}",
         "variables": { "search": "{q}" }
       },
       "list":  "$.data.Page.media",
       "fields": {
-        "id":           "$.id",
-        "title":        "$.title.romaji",
-        "title_alt":    "$.title.english",
-        "title_native": "$.title.native",
-        "synonyms":     "$.synonyms",
-        "cover":        "$.coverImage.medium"
+        "id":            "$.id",
+        "title":         "$.title.romaji",
+        "title_english": "$.title.english",
+        "title_native":  "$.title.native",
+        "synonyms":      "$.synonyms",
+        "cover":         "$.coverImage.medium",
+        "start_year":    "$.startDate.year"
       }
     }
   }

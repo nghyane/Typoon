@@ -19,7 +19,7 @@ import { useCallback, useMemo } from 'react'
 import {
   createFileRoute, useNavigate, redirect as routerRedirect,
 } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle } from 'lucide-react'
 
 import { api, WorkRedirectedError } from '@shared/api/api'
@@ -131,6 +131,23 @@ function WorkPage() {
     [spawnCtl],
   )
 
+  // Retry — separate path from spawn. Failed translation rows have
+  // no upstream/material handles (only `translationId`), so the
+  // upload-and-spawn pipeline would silently no-op. `redo` reuses the
+  // server-side chapter bytes and re-runs the LLM stages.
+  const qc = useQueryClient()
+  const redoMut = useMutation({
+    mutationFn: (translationId: number) => api.redoTranslation(translationId),
+    onSuccess:  () => { void qc.invalidateQueries({ queryKey: qk.work.all() }) },
+  })
+  const handleRetryTranslation = useCallback(
+    (translationId: number) => {
+      if (redoMut.isPending) return
+      redoMut.mutate(translationId)
+    },
+    [redoMut],
+  )
+
   const handleOpenVersion = useCallback((c: HubChapter) => {
     // Unified reader URL — picks translation vs raw client-side from
     // the cached Work payload. URL stays stable across kind changes,
@@ -201,6 +218,7 @@ function WorkPage() {
         spawnState={spawnCtl.progress}
         spawningKey={spawnCtl.spawningKey}
         onSpawn={handleSpawn}
+        onRetryTranslation={handleRetryTranslation}
         onOpenVersion={handleOpenVersion}
       />
     </div>

@@ -217,6 +217,19 @@ CREATE TABLE IF NOT EXISTS materials (
     title_alt     TEXT[],
     cross_refs    JSONB,           -- {"mdex_uuid":"…","anilist":12345}
 
+    -- Multilingual title map enriched from external identity services
+    -- (MangaDex altTitles, Anilist title.english, …). Schema is BCP-47
+    -- → display string, e.g. {"vi":"Mọt Sách Lật Đổ","en":"…"}. The
+    -- title resolver biases toward the viewer's target_lang via this
+    -- column so a VI reader sees a VI title even when the active
+    -- material was published in JP raw. Populated by the auto-enrich
+    -- hook; manifests don't write here.
+    title_locale  JSONB,
+
+    -- First publication year. From Anilist `startDate.year` or
+    -- MangaDex `year`. Sparse — many materials never enrich a year.
+    start_year    INTEGER,
+
     -- NSFW gate. Set by manifest.nsfw, by ext UI, or by user during
     -- upload. Forces draft visibility='private' regardless of opt-out.
     nsfw          BOOLEAN NOT NULL DEFAULT FALSE,

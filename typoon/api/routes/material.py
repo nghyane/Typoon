@@ -183,49 +183,66 @@ async def patch_material(
 # anything itself.
 
 
-class EnrichRefsBody(BaseModel):
-    """Client-supplied cross_refs to merge into the material.
+class EnrichMetadataBody(BaseModel):
+    """Client-supplied metadata fields to merge into the material.
 
-    `cross_refs` is `{namespace: value}` — same shape as the
-    materials row column. Empty / non-scalar values are dropped
-    server-side. The optional `source_signals` is logged for audit
-    but doesn't affect the merge; it's there so a future moderation
-    UI can see "which plugin claimed this".
+    Every field is optional; the storage layer fills only the columns
+    it has data for and never overwrites manifest-authoritative values.
+
+      cross_refs   — `{namespace: id}` (anilist, mal, mdex_uuid, …).
+                     Existing namespaces win on conflict.
+      title_native — fills only when currently null.
+      title_alt    — set-union with existing list (dedupes).
+      title_locale — BCP-47 → display string. Existing langs win.
+      start_year   — fills only when currently null.
+      description  — fills only when currently null.
+
+    `source_signals` is reserved for an audit log (which plugin
+    claimed what with what confidence). Stored nowhere yet; we keep
+    the parameter so the client signature is stable.
     """
-    cross_refs: dict[str, str | int | float]
+    cross_refs:    dict[str, str | int | float] | None = None
+    title_native:  str | None = None
+    title_alt:     list[str] | None = None
+    title_locale:  dict[str, str] | None = None
+    start_year:    int | None = None
+    description:   str | None = None
     source_signals: list[dict] | None = None
 
 
 @router.post(
-    "/{material_id}/enrich-refs",
+    "/{material_id}/enrich-metadata",
     response_model=MaterialOut,
 )
-async def enrich_material_refs(
+async def enrich_material_metadata(
     material_id: int,
-    body:        EnrichRefsBody,
+    body:        EnrichMetadataBody,
     user: dict  = Depends(require_user),
     db:   Store = Depends(get_store),
 ):
-    """Merge client-found cross_refs onto a material additively.
+    """Merge client-found metadata onto a material additively.
 
     The SPA's link-plugin runtime calls this after fanning search out
-    across services (Anilist, MAL, …). We accept whatever it found
-    even when the same plugin disagrees with an earlier write —
-    `merge_material_cross_refs` keeps the older value on conflict
-    (anyone with stronger evidence will revote/re-merge through the
-    community vote flow, not by overwriting here).
+    across services (Anilist, MangaDex, …). We accept whatever it
+    found; the storage layer enforces "existing-wins on conflict" so
+    manifest data is never overwritten by enriched values.
     """
-    await require_user  # already enforced by Depends
     mat = await db.get_material(material_id)
     if mat is None:
         raise HTTPException(404, "Material not found")
 
-    # Audit log — optional. Skipped at MVP; we keep the parameter so
-    # the client signature is stable.
-    _ = body.source_signals
+    _ = body.source_signals     # audit log — not implemented yet
     _ = user
 
-    await db.merge_material_cross_refs(material_id, body.cross_refs)
+    await db.merge_material_metadata(
+        material_id,
+        cross_refs=   body.cross_refs,
+        title_native= body.title_native,
+        title_alt=    body.title_alt,
+        title_locale= body.title_locale,
+        start_year=   body.start_year,
+        description=  body.description,
+    )
     refreshed = await db.get_material(material_id)
     assert refreshed is not None
     return MaterialOut.from_row(refreshed)

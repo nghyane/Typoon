@@ -50,6 +50,8 @@ class MaterialOut(BaseModel):
     title_native:  str | None = None
     title_alt:     list[str] = []
     cross_refs:    dict | None = None
+    title_locale:  dict[str, str] | None = None
+    start_year:    int | None = None
 
     nsfw:          bool = False
 
@@ -74,6 +76,8 @@ class MaterialOut(BaseModel):
             title_native=row.get("title_native"),
             title_alt=list(row.get("title_alt") or []),
             cross_refs=row.get("cross_refs"),
+            title_locale=row.get("title_locale"),
+            start_year=row.get("start_year"),
             nsfw=bool(row.get("nsfw")),
             imported_by=row.get("imported_by"),
             created_at=row.get("created_at"),

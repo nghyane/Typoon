@@ -1,31 +1,28 @@
-// useAutoEnrichWork — silent, fire-and-forget cross-reference enrichment.
+// useAutoEnrichWork — silent metadata enrichment.
 //
-// When the user opens a Work whose materials don't yet carry the
-// big-namespace IDs (Anilist, MAL, …), this hook fans search out
-// across every installed link plugin, normalizes the results, and
-// POSTs whatever it found back to the server's
-// `/material/{id}/enrich-refs` endpoint. The server's linker then
-// re-runs cross_refs matching on the next material import.
+// Flow on Work-page mount:
 //
-// Design notes:
+//   1. Skip when the primary material already has cross_refs +
+//      title_native + a target_lang entry in title_locale (the
+//      enrich would just rewrite what's already there).
+//   2. Honor a 7-day cooldown per Work (localStorage).
+//   3. Fan search out across `bundledLinkPlugins` (Anilist today,
+//      MangaDex next).
+//   4. Score each candidate against the material's titles using the
+//      multi-pass similarity in `similarity.ts`; reject obvious
+//      noise (spinoffs, suspicious length ratios) via
+//      `isSuspiciousCandidate`.
+//   5. Decide per-candidate:
+//        accept (≥ 0.85)  → commit cross_refs + title_native +
+//                            title_locale + synonyms + start_year
+//        maybe  (≥ 0.65)  → commit cross_refs ONLY; the linker
+//                            verifies via cross-vote later
+//        skip   (< 0.65)  → no write, cooldown applies
+//   6. POST the merged payload to `/material/{id}/enrich-metadata`.
 //
-//   • Silent. No UI surface for the user, no toast, no panel. The
-//     value shows up later as a community vote suggestion driven by
-//     server-side cross_refs match, OR as an automatic merge once
-//     two sibling Works share an ID — neither is interactive on
-//     this hook's frontier.
-//
-//   • One-shot per (work, week). A localStorage flag prevents
-//     re-running on every navigation; we re-try after 7 days so a
-//     plugin that came online recently gets a chance.
-//
-//   • Best-effort. Failures (rate limit, network, plugin returns
-//     nothing) are swallowed. The hook never throws or blocks
-//     render.
-//
-//   • Skips when cross_refs already populated. The linker only
-//     needs ONE plugin hit per Work to do its job; piling more on
-//     doesn't help.
+// No UI surface — the enriched data shows up as title language
+// improvements + auto-merge candidates in the LinkSuggestionPanel
+// once the linker round-trips it.
 
 import { useEffect, useRef } from 'react'
 import { useMutation } from '@tanstack/react-query'
@@ -33,85 +30,83 @@ import { useMutation } from '@tanstack/react-query'
 import { api, type ApiMaterial, type ApiWorkDetail } from '@shared/api/api'
 
 import { bundledLinkPlugins } from './plugins'
-import { lookupAcrossPlugins, type LinkCandidate } from './runtime'
+import {
+  lookupAcrossPlugins, type LinkCandidate, type LinkPlugin,
+} from './runtime'
+import {
+  bestSimilarity, decideMatch, isSuspiciousCandidate,
+} from './similarity'
 
 
 const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000   // 7 days
 const STORAGE_PREFIX = 'enrich:'
 
 
+interface EnrichPayload {
+  cross_refs?:   Record<string, string>
+  title_native?: string
+  title_alt?:    string[]
+  title_locale?: Record<string, string>
+  start_year?:   number
+  source_signals: Array<{
+    plugin:        string
+    confidence:    number
+    matched_title: string | null
+  }>
+}
+
+
 export function useAutoEnrichWork(work: ApiWorkDetail | null): void {
   const enrich = useMutation({
-    mutationFn: (input: { materialId: number; refs: Record<string, string>; signals: LinkCandidate[] }) =>
-      api.enrichMaterialRefs(input.materialId, {
-        cross_refs:     input.refs,
-        source_signals: input.signals.map((c) => ({
-          plugin:        c.plugin,
-          confidence:    confidenceFor(c),
-          matched_title: c.title,
-        })),
-      }),
+    mutationFn: (input: { materialId: number; payload: EnrichPayload }) =>
+      api.enrichMaterialMetadata(input.materialId, input.payload),
   })
 
-  // Track whether we've already kicked off enrichment for this Work
-  // in the current mount. React Strict Mode double-mounts effects;
-  // without a ref guard we'd fire twice.
+  // React Strict Mode double-mounts; ref guard prevents firing twice
+  // on the same Work in one render cycle.
   const firedRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!work) return
     if (firedRef.current === work.work.id) return
 
-    // Skip: cross_refs already populated by manifest or a previous
-    // enrich call. One plugin hit is enough for the linker.
-    if (hasUsefulCrossRefs(work.work.cross_refs)) {
-      firedRef.current = work.work.id
-      return
-    }
-    // Skip: cooldown — we tried recently and either found nothing
-    // or already submitted.
-    const cdKey = STORAGE_PREFIX + work.work.id
-    const last = safeReadCooldown(cdKey)
-    if (last !== null && Date.now() - last < COOLDOWN_MS) {
-      firedRef.current = work.work.id
-      return
-    }
-
-    // Choose the material whose titles we'll search with. Prefer one
-    // carrying `title_native` (kanji is the strongest signal across
-    // services); fall back to whichever material the work opens with.
-    const primary = pickPrimary(work.work.id, work.materials)
+    const primary = pickPrimary(work.materials)
     if (!primary) {
+      firedRef.current = work.work.id
+      return
+    }
+    if (isAlreadyEnriched(primary)) {
+      firedRef.current = work.work.id
+      return
+    }
+    const cdKey = STORAGE_PREFIX + work.work.id
+    if (withinCooldown(cdKey)) {
       firedRef.current = work.work.id
       return
     }
 
     firedRef.current = work.work.id
-    // Mark the cooldown NOW so two near-simultaneous mounts (e.g.
-    // navigating away and back inside one second) don't fan out
-    // duplicate searches. We'll overwrite this on success below.
-    safeWriteCooldown(cdKey)
+    writeCooldown(cdKey)
 
     const ctrl = new AbortController()
     void (async () => {
       try {
         const candidates = await lookupAcrossPlugins(
           bundledLinkPlugins,
-          { title: primary.title, titleNative: primary.title_native ?? null },
+          {
+            title:       primary.title,
+            titleNative: primary.title_native ?? null,
+          },
           { signal: ctrl.signal },
         )
         if (ctrl.signal.aborted) return
-        const top = pickTopPerPlugin(candidates)
-        const refs = buildRefs(top)
-        if (Object.keys(refs).length === 0) return
-        enrich.mutate({
-          materialId: primary.id,
-          refs,
-          signals:    top,
-        })
+
+        const payload = buildPayload(bundledLinkPlugins, primary, candidates)
+        if (!hasContent(payload)) return
+
+        enrich.mutate({ materialId: primary.id, payload })
       } catch {
-        // Best-effort. Swallow errors so a broken plugin or
-        // momentary network blip doesn't crash the work page.
+        // Best-effort. Plugin / network errors degrade silently.
       }
     })()
 
@@ -121,79 +116,165 @@ export function useAutoEnrichWork(work: ApiWorkDetail | null): void {
 }
 
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Pure helpers ───────────────────────────────────────────────
 
 
-/** True when the Work's `cross_refs` already carries at least one of
- *  the big-namespace IDs the plugins would discover. Empty objects
- *  count as missing; we don't quibble about which specific service
- *  is present. */
-function hasUsefulCrossRefs(refs: Record<string, unknown> | null): boolean {
-  if (!refs) return false
-  return Object.keys(refs).length > 0
-}
-
-
-function pickPrimary(
-  _workId:   number,
-  materials: ApiMaterial[],
-): ApiMaterial | null {
+/** Pick the material whose titles we'll search with. Prefer one
+ *  with `title_native` (kanji / hangul = strongest cross-language
+ *  anchor), else the first material in the work. */
+function pickPrimary(materials: ApiMaterial[]): ApiMaterial | null {
   if (materials.length === 0) return null
-  const withNative = materials.find((m) => (m.title_native ?? '').trim().length > 0)
+  const withNative = materials.find(
+    (m) => (m.title_native ?? '').trim().length > 0,
+  )
   return withNative ?? materials[0]!
 }
 
 
-/** Keep only the top-ranked candidate per plugin. Anilist returns up
- *  to 3 results per query; we trust the first one most because
- *  Anilist sorts by their internal relevance score. */
-function pickTopPerPlugin(candidates: LinkCandidate[]): LinkCandidate[] {
-  const byPlugin = new Map<string, LinkCandidate>()
+/** Skip the round-trip when the material already carries the data
+ *  an enrich would have written. Defines "enough":
+ *    • cross_refs has at least one known namespace, AND
+ *    • title_native is filled, AND
+ *    • title_locale has at least two languages.
+ *
+ *  Anything less, we try again; the merge is additive so re-running
+ *  on a partially-enriched row only adds, never overwrites. */
+function isAlreadyEnriched(m: ApiMaterial): boolean {
+  const hasIdRef = !!m.cross_refs && (
+    'anilist' in m.cross_refs
+    || 'mdex_uuid' in m.cross_refs
+    || 'mal' in m.cross_refs
+  )
+  const hasNative = (m.title_native ?? '').trim().length > 0
+  const localeCount = m.title_locale
+    ? Object.values(m.title_locale).filter((v) => v && v.trim()).length
+    : 0
+  return hasIdRef && hasNative && localeCount >= 2
+}
+
+
+/** Score every candidate against the material's known titles, drop
+ *  the suspicious ones, group by plugin, take the top per plugin,
+ *  and translate the survivors into an `EnrichPayload`.
+ *
+ *  Per-plugin scoring: a plugin's candidates compete only with their
+ *  own siblings — we never demote Anilist's best because MangaDex
+ *  had a better one. Each plugin contributes the namespace ID it's
+ *  most confident about. */
+function buildPayload(
+  plugins:    LinkPlugin[],
+  primary:    ApiMaterial,
+  candidates: LinkCandidate[],
+): EnrichPayload {
+  const queries = [primary.title_native, primary.title].filter(
+    (t): t is string => !!t && t.trim().length > 0,
+  )
+
+  // Bucket candidates by plugin id so we can pick top-per-plugin.
+  const byPlugin = new Map<string, LinkCandidate[]>()
   for (const c of candidates) {
-    if (!byPlugin.has(c.plugin)) byPlugin.set(c.plugin, c)
+    if (!byPlugin.has(c.plugin)) byPlugin.set(c.plugin, [])
+    byPlugin.get(c.plugin)!.push(c)
   }
-  return [...byPlugin.values()]
-}
 
+  const signals: EnrichPayload['source_signals'] = []
+  const crossRefs: Record<string, string> = {}
+  const titleLocale: Record<string, string> = {}
+  const titleAltSet = new Set<string>()
+  let titleNative: string | null = null
+  let startYear:   number | null = null
 
-/** Build the `{namespace: externalId}` payload the enrich endpoint
- *  expects. Drops candidates without an id (already filtered in
- *  runtime, but defensive). */
-function buildRefs(candidates: LinkCandidate[]): Record<string, string> {
-  const refs: Record<string, string> = {}
-  for (const c of candidates) {
-    if (c.externalId) refs[c.namespace] = c.externalId
+  // Plugin order is the registry order — plugins listed first in
+  // `bundledLinkPlugins` get priority on `title_locale` conflicts.
+  for (const plugin of plugins) {
+    const bucket = byPlugin.get(plugin.id)
+    if (!bucket || bucket.length === 0) continue
+
+    const scored = bucket.map((c) => {
+      const score = bestSimilarity(
+        queries[0] ?? '',
+        [c.title, c.titleEnglish, c.titleNative, ...c.synonyms],
+      )
+      return { c, score }
+    })
+
+    // Reject suspicious shapes before picking the top.
+    const clean = scored.filter(({ c, score }) =>
+      !isSuspiciousCandidate(
+        queries[0] ?? '',
+        [c.title, c.titleEnglish, c.titleNative, ...c.synonyms],
+        score,
+      ),
+    )
+    if (clean.length === 0) continue
+
+    clean.sort((a, b) => b.score - a.score)
+    const top = clean[0]!
+    const decision = decideMatch(top.score)
+    if (decision === 'skip') continue
+
+    // Every accepted / maybe candidate contributes its namespace ID.
+    if (top.c.externalId) crossRefs[plugin.namespace] = top.c.externalId
+
+    signals.push({
+      plugin:        plugin.id,
+      confidence:    top.score,
+      matched_title: top.c.title,
+    })
+
+    if (decision !== 'accept') continue
+
+    // Accept tier — commit display metadata, not just the id.
+    if (!titleNative && top.c.titleNative) titleNative = top.c.titleNative
+    if (top.c.titleEnglish) {
+      titleLocale['en'] = titleLocale['en'] ?? top.c.titleEnglish
+    }
+    if (top.c.titleNative) {
+      titleLocale['ja'] = titleLocale['ja'] ?? top.c.titleNative
+    }
+    for (const s of top.c.synonyms) titleAltSet.add(s)
+    if (top.c.startYear && !startYear) startYear = top.c.startYear
   }
-  return refs
+
+  const payload: EnrichPayload = { source_signals: signals }
+  if (Object.keys(crossRefs).length > 0)   payload.cross_refs   = crossRefs
+  if (titleNative)                         payload.title_native = titleNative
+  if (titleAltSet.size > 0)                payload.title_alt    = [...titleAltSet]
+  if (Object.keys(titleLocale).length > 0) payload.title_locale = titleLocale
+  if (startYear)                           payload.start_year   = startYear
+  return payload
 }
 
 
-/** Confidence is a coarse score used for the audit log; not directly
- *  used by the server today, but stamped so a future moderation UI
- *  can see "which plugin claimed this with what confidence". */
-function confidenceFor(c: LinkCandidate): number {
-  return c.titleNative ? 0.9 : 0.7
+function hasContent(p: EnrichPayload): boolean {
+  return (
+    !!p.cross_refs
+    || !!p.title_native
+    || !!p.title_alt
+    || !!p.title_locale
+    || p.start_year != null
+  )
 }
 
 
-function safeReadCooldown(key: string): number | null {
+function withinCooldown(key: string): boolean {
   try {
     const v = localStorage.getItem(key)
-    if (!v) return null
+    if (!v) return false
     const n = Number(v)
-    return Number.isFinite(n) ? n : null
+    if (!Number.isFinite(n)) return false
+    return Date.now() - n < COOLDOWN_MS
   } catch {
-    return null
+    return false
   }
 }
 
 
-function safeWriteCooldown(key: string): void {
+function writeCooldown(key: string): void {
   try {
     localStorage.setItem(key, String(Date.now()))
   } catch {
     // localStorage can throw in private mode / quota — fine, the
-    // hook degrades to "re-run on every navigation". Not ideal but
-    // not harmful.
+    // hook degrades to "re-run on every navigation".
   }
 }

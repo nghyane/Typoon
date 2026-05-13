@@ -20,6 +20,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
 import { fetchChapterPages } from '@features/browse/manifest/runtime'
+import { pfetch } from '@features/browse/proxy'
 import { useSources } from '@features/browse/sources'
 import { packPagesToZip } from '@typoon/upload-sdk'
 import { uploadChapterZip } from '@typoon/upload-sdk'
@@ -86,7 +87,13 @@ export function useSpawnChapter(targetLang: string) {
         while (queue.length > 0) {
           const item = queue.shift()
           if (!item) return
-          const res = await fetch(item.url)
+          // Same proxy path the reader uses for raw <img> — many
+          // sources block hotlinking via Referer or simply lack CORS,
+          // so a direct `fetch()` from this iframe origin fails the
+          // first page and aborts the entire spawn (initial run AND
+          // retry). Reader-side rendering works because it goes
+          // through `proxify()`; mirror that here with `pfetch`.
+          const res = await pfetch(item.url)
           if (!res.ok) throw new Error(`Tải trang ${item.i + 1} thất bại (HTTP ${res.status}).`)
           const buf = await res.arrayBuffer()
           results[item.i] = { source: item.url, bytes: new Uint8Array(buf) }
