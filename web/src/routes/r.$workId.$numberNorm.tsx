@@ -1,0 +1,167 @@
+// Unified reader route — /r/$workId/$numberNorm
+//
+// One URL pattern for both translated and raw reading. The route
+// layer is thin: parses the URL, hands off to `useReader`, renders
+// the shell. Source kind is resolved CLIENT-SIDE from the cached
+// Work payload (`useWork`) — no extra round-trip.
+//
+// Search params:
+//   • lang  — preferred reading lang. Override of viewerEntry.target_lang.
+//             Kept in URL so deep links land on the right version.
+//   • src   — active source material id. Drives the manifest fetch
+//             when the picked version is raw; ignored for translations.
+//
+// Status branches:
+//   loading           spinner
+//   not-found         EmptyState
+//   pending-render    "đang render xong"
+//   no-source         "plugin chưa cài"
+//   error             EmptyState
+//   ready             toolbar + body
+
+import { createFileRoute } from '@tanstack/react-router'
+import { useEffect } from 'react'
+import { AlertTriangle } from 'lucide-react'
+
+import { Spinner } from '@shared/ui/primitives'
+import { EmptyState } from '@shared/ui/EmptyState'
+
+import { ReaderToolbar, type ViewMode } from '@features/reader/ReaderToolbar'
+import { ReaderBody } from '@features/reader/Reader'
+import { useReader } from '@features/reader/useReader'
+
+
+interface SearchParams {
+  page?: number
+  mode?: ViewMode
+  lang?: string
+  src?:  number
+}
+
+
+function ReaderPage() {
+  const { workId: workIdStr, numberNorm } = Route.useParams()
+  const { page = 0, mode = 'continuous', lang, src } = Route.useSearch()
+  const nav = Route.useNavigate()
+  const workId = Number(workIdStr)
+  const validWorkId = Number.isInteger(workId) && workId > 0
+
+  const setPage = (p: number) =>
+    nav({ search: (s) => ({ ...s, page: p > 0 ? p : undefined }) })
+  const setMode = (m: ViewMode) =>
+    nav({ search: (s) => ({ ...s, mode: m === 'continuous' ? undefined : m }) })
+
+  const reader = useReader({
+    workId:     validWorkId ? workId : 0,
+    numberNorm,
+    lang,
+    src,
+  })
+
+  // Reset scroll to top whenever the chapter changes. Without this,
+  // jumping from a long chapter to a short one starts the new chapter
+  // halfway down the page (or below the bottom) — the reader's
+  // continuous view feels broken.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'auto' })
+  }, [workIdStr, numberNorm])
+
+  if (!validWorkId) {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState icon={AlertTriangle} title="Đường dẫn không hợp lệ" />
+      </div>
+    )
+  }
+
+  if (reader.status === 'loading') {
+    return (
+      <div className="flex items-center justify-center min-h-dvh">
+        <Spinner size={20} />
+      </div>
+    )
+  }
+
+  if (reader.status === 'not-found') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Không tìm thấy chương"
+          hint={`Chương "${numberNorm}" không có trong manga này.`}
+        />
+      </div>
+    )
+  }
+
+  if (reader.status === 'pending-render') {
+    return (
+      <div className="px-6 py-16 text-center max-w-md mx-auto">
+        <p className="text-sm font-medium text-text">Chương chưa render xong</p>
+        <p className="text-xs text-text-subtle mt-1">
+          Bản dịch đang được hệ thống tạo ra — quay lại sau ít phút.
+        </p>
+      </div>
+    )
+  }
+
+  if (reader.status === 'no-source') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Nguồn chưa được cài"
+          hint="Vào Cài đặt → Nguồn để cài plugin tương ứng."
+        />
+      </div>
+    )
+  }
+
+  if (reader.status === 'error') {
+    return (
+      <div className="px-4 py-16">
+        <EmptyState
+          icon={AlertTriangle}
+          title="Không tải được chương"
+          hint={reader.error ?? 'Selector hoặc archive có thể đã hỏng.'}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-dvh bg-bg">
+      <ReaderToolbar
+        workTitle={reader.meta.workTitle || 'Chương'}
+        chapterText={reader.meta.chapterText}
+        chapterSub={reader.meta.chapterSub}
+        prev={reader.nav.prev}
+        next={reader.nav.next}
+        page={page}
+        totalPages={reader.pages.length}
+        mode={mode}
+        onModeChange={setMode}
+        onBack={() => window.history.back()}
+      />
+
+      <ReaderBody
+        source={reader}
+        mode={mode}
+        page={page}
+        onChange={setPage}
+      />
+    </div>
+  )
+}
+
+
+export const Route = createFileRoute('/r/$workId/$numberNorm')({
+  validateSearch: (s: Record<string, unknown>): SearchParams => ({
+    page: typeof s.page === 'number' && s.page > 0 ? s.page : undefined,
+    mode: s.mode === 'single' ? 'single' : undefined,
+    lang: typeof s.lang === 'string' ? s.lang : undefined,
+    src:  typeof s.src  === 'number' ? s.src  : undefined,
+  }),
+  component: ReaderPage,
+  staticData: { chrome: 'bare' },
+})
