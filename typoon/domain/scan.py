@@ -66,9 +66,6 @@ class Chapter:
         return [b for p in self.pages for b in p.bubbles]
 
 
-# ── Geometry — serialized to scan.npz, not part of domain chain ──────
-
-
 @dataclass(frozen=True)
 class BubbleGeometry:
     """Polygon + render boxes for one bubble — stored in scan.npz."""

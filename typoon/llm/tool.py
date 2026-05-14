@@ -104,9 +104,6 @@ def tool(fn: Callable | None = None) -> Any:
     return decorator
 
 
-# ── Schema helpers ────────────────────────────────────────────────────
-
-
 def _build_schema(model: type[BaseModel]) -> dict:
     schema = model.model_json_schema()
     defs = schema.pop("$defs", None) or schema.pop("definitions", None) or {}

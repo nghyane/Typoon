@@ -112,9 +112,6 @@ async def load_translated_with_geometry(
     return translate.Chapter(scan=scanned, pages=pages), page_geoms
 
 
-# ── Internal ──────────────────────────────────────────────────────────
-
-
 async def _load_page_geometry(db: Store, chapter_id: int) -> dict[int, PageGeometry]:
     rows = await db.get_geometry(chapter_id)
     return {

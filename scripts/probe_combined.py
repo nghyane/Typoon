@@ -105,9 +105,6 @@ def build_user(bubbles: list[dict], target_lang: str) -> str:
     return "\n".join(lines)
 
 
-# ── Parser for the structured response ───────────────────────────────
-
-
 def parse_response(text: str) -> dict:
     """Split the model reply into named sections, parse each line.
 
@@ -198,9 +195,6 @@ def _kv(line: str) -> dict:
         if key:
             out[key] = val
     return out
-
-
-# ── Driver ───────────────────────────────────────────────────────────
 
 
 async def main() -> None:

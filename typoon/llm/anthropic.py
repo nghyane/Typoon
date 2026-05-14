@@ -118,9 +118,6 @@ class AnthropicProvider:
         return CallResponse(tool_calls=tool_calls, text=text)
 
 
-# ── IR → Anthropic serialization ─────────────────────────────────────
-
-
 def _extract_system(messages: list[Message]) -> list[dict] | None:
     """Extract system message with cache_control for prompt caching."""
     for msg in messages:

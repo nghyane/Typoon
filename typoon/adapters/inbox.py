@@ -62,9 +62,6 @@ PRESIGN_TTL_SECONDS = 3600
 DEFAULT_PART_SIZE = 8 * 1024 * 1024
 
 
-# ── Data ──────────────────────────────────────────────────────────
-
-
 @dataclass(frozen=True)
 class PartUrl:
     number: int   # 1-based, matches S3 PartNumber
@@ -91,9 +88,6 @@ class InboxHandle:
     upload_id:  str
     parts:      tuple[CompletedPart, ...]
     title:      str | None = None
-
-
-# ── Protocol ──────────────────────────────────────────────────────
 
 
 class ChapterInbox(Protocol):
@@ -136,9 +130,6 @@ class ChapterInbox(Protocol):
         ...
 
 
-# ── Configuration ─────────────────────────────────────────────────
-
-
 def is_configured(cfg: StorageConfig) -> bool:
     """True when the operator wired up a remote S3-compatible inbox.
 
@@ -156,9 +147,6 @@ def is_configured(cfg: StorageConfig) -> bool:
             and spec.s3_bucket
         )
     return False
-
-
-# ── S3-compatible backend ─────────────────────────────────────────
 
 
 class S3Inbox:
@@ -314,9 +302,6 @@ class S3Inbox:
         await asyncio.to_thread(_do)
 
 
-# ── Local backend (dev only) ──────────────────────────────────────
-
-
 class LocalInbox:
     """Filesystem inbox simulating multipart upload.
 
@@ -405,8 +390,6 @@ class LocalInbox:
         self._zip(tmp_id).unlink(missing_ok=True)
         shutil.rmtree(self._dir(tmp_id), ignore_errors=True)
 
-    # ── Local-only helpers used by the dev PUT route ──────────────
-
     def part_path(self, tmp_id: str, upload_id: str, number: int) -> Path:
         d = self._dir(tmp_id)
         stored = (d / "upload_id").read_text().strip() if (d / "upload_id").exists() else None
@@ -421,9 +404,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-# ── Factory ───────────────────────────────────────────────────────
 
 
 def build_inbox(cfg: StorageConfig, *, paths_root: Path, base_url: str) -> ChapterInbox:

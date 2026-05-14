@@ -66,9 +66,6 @@ async def _material(
     return row
 
 
-# ── auto-link by cross_refs ──────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_auto_link_matches_on_overlapping_cross_ref():
     """Two materials sharing a mdex_uuid attach to the same Work."""
@@ -140,9 +137,6 @@ async def test_auto_link_blocks_on_conflicting_cross_ref():
         await store.close()
 
 
-# ── work_chapter materialise on demand ──────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_create_chapter_reuses_work_chapter_across_materials():
     """Two materials of the same Work, each adding their own chapter
@@ -212,9 +206,6 @@ async def test_create_chapter_isolates_when_works_differ():
         await store.close()
 
 
-# ── translation surfaces cross-source ────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_translation_overlay_crosses_sources():
     """User A spawns a translation from material A; user B opening
@@ -273,9 +264,6 @@ async def test_translation_overlay_crosses_sources():
         await store.close()
 
 
-# ── reading_history dedup by work_chapter ────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_reading_history_dedupes_per_work_chapter():
     """Reading chapter 40 from material A then from material B (same
@@ -322,9 +310,6 @@ async def test_reading_history_dedupes_per_work_chapter():
         assert recent[0]["material_id"] == mb["id"]
     finally:
         await store.close()
-
-
-# ── Work payload (GET /api/work/{id} backing store calls) ────────────
 
 
 @pytest.mark.asyncio
@@ -444,9 +429,6 @@ async def test_work_payload_filters_unshared_for_other_viewers():
         assert len(visitor_view[0]["translations"]) == 0
     finally:
         await store.close()
-
-
-# ── Community link-vote merge ─────────────────────────────────────────
 
 
 @pytest.mark.asyncio

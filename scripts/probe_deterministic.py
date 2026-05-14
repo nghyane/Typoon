@@ -68,9 +68,6 @@ COMBINED_GT: dict[str, str] = {
 }
 
 
-# ── Deterministic signals ───────────────────────────────────────────
-
-
 _FIRST_PERSON_RE = re.compile(
     r"\b(?:I|I'm|I'll|I'd|I've|me|my|mine|myself)\b",
     re.IGNORECASE,
@@ -122,9 +119,6 @@ def is_caption_shape(bubble: dict, page_w: int, page_h: int) -> bool:
     top_edge = cy < page_h * 0.20
     bot_edge = cy > page_h * 0.80
     return top_edge or bot_edge
-
-
-# ── Assignment ──────────────────────────────────────────────────────
 
 
 def assign_deterministic(
@@ -190,9 +184,6 @@ def assign_deterministic(
             reason[b["key"]] = "no signal"
 
     return speakers, reason
-
-
-# ── Driver ──────────────────────────────────────────────────────────
 
 
 async def main() -> None:

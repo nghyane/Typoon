@@ -152,9 +152,6 @@ def scan_chapter(
     )
 
 
-# ── Internal helpers ──────────────────────────────────────────────────
-
-
 def _extract_page(
     index: int,
     state: ScanState,
@@ -200,9 +197,6 @@ def _extract_page(
         bubbles=tuple(geom_list),
     )
     return bubbles, page_geom, masks_out
-
-
-# ── Artifact helpers ──────────────────────────────────────────────────
 
 
 def _write_artifacts(

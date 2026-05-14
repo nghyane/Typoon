@@ -24,9 +24,6 @@ from .._pp_lcnet_v3 import (
 logger = logging.getLogger(__name__)
 
 
-# ── Neck: RSEFPN ────────────────────────────────────────────────
-
-
 class _SEBlock(nn.Module):
     """Simplified SE for neck (clamp-based activation)."""
 
@@ -86,9 +83,6 @@ class _Neck(nn.Module):
         return mx.concatenate(processed[::-1], axis=3)
 
 
-# ── Head: DBNet ──────────────────────────────────────────────────
-
-
 class _ConvBN(nn.Module):
     def __init__(self, in_ch: int, out_ch: int, kernel: int, stride: int = 1,
                  padding: int = 1, transpose: bool = False):
@@ -118,9 +112,6 @@ class _Head(nn.Module):
         x = self.conv_up(x)
         x = self.conv_final(x)
         return mx.sigmoid(x)
-
-
-# ── Full model ───────────────────────────────────────────────────
 
 
 class _CoreModel(nn.Module):
@@ -162,9 +153,6 @@ class _DetModel(nn.Module):
         return self.head(self.model(x))
 
 
-# ── Helpers ──────────────────────────────────────────────────────
-
-
 def _upsample_nearest(x: mx.array, target_h: int, target_w: int) -> mx.array:
     """Nearest-neighbor upsample NHWC tensor."""
     b, h, w, c = x.shape
@@ -198,9 +186,6 @@ def _load_weights(model: _DetModel, path: str) -> None:
             weights.append((key, arr))
     model.load_weights(weights, strict=False)
     logger.info("PP-OCR det: loaded %d tensors from %s", len(weights), path)
-
-
-# ── Public API ───────────────────────────────────────────────────
 
 
 class TextDetector:

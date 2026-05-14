@@ -66,7 +66,6 @@ class PipelineError(Event):
     error: Exception | None = None
 
 
-# ── Pipeline stage events ─────────────────────────────────────────────
 #
 # Three target kinds in the v5 pipeline:
 #   - chapter     for prepare + scan (pixel-level work, shared by every

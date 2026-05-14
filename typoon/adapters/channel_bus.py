@@ -36,9 +36,6 @@ from typing import AsyncIterator
 logger = logging.getLogger(__name__)
 
 
-# ── Tunables ──────────────────────────────────────────────────────────
-
-
 # Per-subscriber queue depth. Slow consumers drop oldest events when
 # this fills; lifecycle handler on the client reloads view state on
 # reconnect anyway, so we don't try to buffer past disconnect windows.
@@ -47,9 +44,6 @@ _SUBSCRIBER_QUEUE_SIZE = 256
 # Exponential backoff bounds for the listener reconnect loop.
 _BACKOFF_INITIAL = 1.0
 _BACKOFF_MAX = 30.0
-
-
-# ── Implementation ────────────────────────────────────────────────────
 
 
 class ChannelBus:
@@ -68,8 +62,6 @@ class ChannelBus:
         self._listener_task: asyncio.Task | None = None
         self._closed = asyncio.Event()
         self._connection_ready = asyncio.Event()
-
-    # ── lifecycle ────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Start the background listener task. Idempotent."""
@@ -91,8 +83,6 @@ class ChannelBus:
             await self._pool.close()
             self._pool = None
 
-    # ── publish ──────────────────────────────────────────────────────
-
     async def publish(self, channel: str, data: dict) -> None:
         pool = await self._ensure_pool()
         payload = json.dumps(data)
@@ -100,8 +90,6 @@ class ChannelBus:
             await conn.execute(
                 "SELECT pg_notify($1, $2)", channel, payload,
             )
-
-    # ── subscribe ────────────────────────────────────────────────────
 
     @contextlib.asynccontextmanager
     async def subscribe(
@@ -144,8 +132,6 @@ class ChannelBus:
                             await self._listen_conn.remove_listener(
                                 channel, self._on_notify,
                             )
-
-    # ── listener task ────────────────────────────────────────────────
 
     async def _listener_loop(self) -> None:
         """Run a listener connection, reconnect with backoff on drop."""
@@ -229,8 +215,6 @@ class ChannelBus:
                 # heal naturally.
                 pass
 
-    # ── pool ─────────────────────────────────────────────────────────
-
     async def _ensure_pool(self):
         if self._pool is None:
             async with self._lock:
@@ -242,9 +226,6 @@ class ChannelBus:
         return self._pool
 
 
-# ── Channel naming ────────────────────────────────────────────────────
-
-
 def draft_channel(draft_id: int) -> str:
     """Channel name for draft-scoped events (translate/render progress)."""
     return f"typoon:draft:{draft_id}"
@@ -254,9 +235,6 @@ def translation_channel(translation_id: int) -> str:
     """Channel name for translation-scoped events (per-user edit
     renders)."""
     return f"typoon:translation:{translation_id}"
-
-
-# ── Hook bridge — thread-safe ─────────────────────────────────────────
 
 
 import dataclasses

@@ -47,9 +47,6 @@ def _unit(idx: int, poly: list[list[float]]) -> UnitState:
     )
 
 
-# ── Single-polygon shape signal ───────────────────────────────────────
-
-
 def test_axis_aligned_horizontal_text_is_not_stripe():
     poly = [[100, 100], [300, 100], [300, 140], [100, 140]]
     assert not _is_stripe_polygon(poly)
@@ -82,9 +79,6 @@ def test_tilted_vertical_text_within_tolerance_is_not_flagged():
 def test_short_aspect_diagonal_polygon_is_not_flagged():
     # Aspect 2 — most glyph clusters have aspect 2-3 even at angles.
     assert not _is_stripe_polygon(_stripe(500, 500, 100, 50, 30.0))
-
-
-# ── Group-level all-or-nothing rule ──────────────────────────────────
 
 
 def test_cluster_of_parallel_stripes_is_flagged():

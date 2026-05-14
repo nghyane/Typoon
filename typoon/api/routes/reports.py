@@ -28,9 +28,6 @@ from typoon.api.models import (
 from typoon.storage import Store
 
 
-# ── User-facing intake ────────────────────────────────────────────────
-
-
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
@@ -61,9 +58,6 @@ async def submit(
         reason=body.reason,
     )
     return {"report_id": report_id}
-
-
-# ── Admin moderation queue ────────────────────────────────────────────
 
 
 admin_router = APIRouter(

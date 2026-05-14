@@ -104,9 +104,6 @@ class GeminiProvider:
         return CallResponse(tool_calls=tool_calls, text=text)
 
 
-# ── IR → Gemini serialization ────────────────────────────────────────
-
-
 def _build_contents(
     messages: list[Message],
 ) -> tuple[str | None, list[types.Content]]:

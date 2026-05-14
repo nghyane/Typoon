@@ -45,8 +45,6 @@ class MaskStore:
     def __len__(self) -> int:
         return sum(len(b) for b in self._pages.values())
 
-    # ── npz pack/unpack ───────────────────────────────────────────
-
     def pack(self, path: Path) -> None:
         """Serialize all masks into a single compressed npz file."""
         arrays: dict[str, np.ndarray] = {}

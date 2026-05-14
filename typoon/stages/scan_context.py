@@ -209,9 +209,6 @@ async def _process_chunk(
     return _parse_reply(text, valid_keys={bk.key for bk in bubbles})
 
 
-# ── Prompt ──────────────────────────────────────────────────────────
-
-
 def _build_user(bubbles: list[BubbleKey], target_lang: str) -> str:
     lines = [
         f"Target language: {target_lang}",
@@ -225,9 +222,6 @@ def _build_user(bubbles: list[BubbleKey], target_lang: str) -> str:
             f"@@ {bk.key} page={b.page_index} kind={b.shape_kind} text={text!r}"
         )
     return "\n".join(lines)
-
-
-# ── Parser ──────────────────────────────────────────────────────────
 
 
 def _parse_reply(text: str, *, valid_keys: set[str]) -> _ChunkResult:
@@ -341,9 +335,6 @@ def _parse_kv(line: str) -> dict[str, str]:
         if key:
             out[key] = val
     return out
-
-
-# ── Helpers ─────────────────────────────────────────────────────────
 
 
 def _full_noise_pages(keyed: list[BubbleKey], noise_keys: set[str]) -> set[int]:

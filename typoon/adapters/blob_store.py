@@ -53,9 +53,6 @@ class BlobStore(Protocol):
         ...
 
 
-# ── Local impl ────────────────────────────────────────────────────────
-
-
 class LocalBlobStore:
     """Filesystem-backed BlobStore.
 
@@ -69,14 +66,10 @@ class LocalBlobStore:
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
 
-    # ── Path safety ────────────────────────────────────────────────
-
     def _path(self, key: str) -> Path:
         if key.startswith("/") or ".." in Path(key).parts:
             raise ValueError(f"invalid blob key: {key!r}")
         return self._root / key
-
-    # ── BlobStore ───────────────────────────────────────────────────
 
     async def put(self, key: str, src: Path) -> str:
         dest = self._path(key)

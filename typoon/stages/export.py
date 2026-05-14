@@ -92,9 +92,6 @@ async def export_chapters(
     return results
 
 
-# ── Output writers ────────────────────────────────────────────────────
-
-
 def _render_outputs(
     archive_path: Path,
     dest_dir: Path,
@@ -148,9 +145,6 @@ def _write_image_dir(out_dir: Path, page_bytes: list[bytes], *, ext: str) -> Pat
     for i, raw in enumerate(page_bytes):
         (out_dir / f"{i:04d}.{ext}").write_bytes(raw)
     return out_dir
-
-
-# ── Manifest ──────────────────────────────────────────────────────────
 
 
 def _load_manifest(dest_dir: Path) -> dict:

@@ -119,9 +119,6 @@ def get_auth_cfg() -> AuthConfig:
     return cfg.auth
 
 
-# ── Auth dependency ──────────────────────────────────────────────────
-
-
 async def require_user(
     authorization: str | None = Header(None),
     db:   Store      = Depends(get_store),

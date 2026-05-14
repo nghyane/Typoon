@@ -86,9 +86,6 @@ class LCNetConfig:
             self.out_indices = [2, 3, 4, 5]
 
 
-# ── Layers ───────────────────────────────────────────────────────
-
-
 class ConvBN(nn.Module):
     """Conv2d + BatchNorm + optional activation."""
 

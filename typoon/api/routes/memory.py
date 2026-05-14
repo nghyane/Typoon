@@ -31,9 +31,6 @@ router = APIRouter(
 )
 
 
-# ── Read ──────────────────────────────────────────────────────────────
-
-
 class MemoryOut(BaseModel):
     material_id:     int
     source_lang:     str
@@ -74,9 +71,6 @@ async def get_memory(
         last_chapter_id=row.get("last_chapter_id"),
         updated_at=row.get("updated_at"),
     )
-
-
-# ── Upsert ────────────────────────────────────────────────────────────
 
 
 class UpsertMemoryBody(BaseModel):
@@ -137,9 +131,6 @@ async def upsert_memory(
     )
 
 
-# ── Reset ─────────────────────────────────────────────────────────────
-
-
 @router.delete("/{material_id}/memory", status_code=204)
 async def delete_memory(
     material_id: int,
@@ -153,9 +144,6 @@ async def delete_memory(
     await db.delete_translator_memory(
         user_id=user["id"], material_id=material_id, target_lang=target_lang,
     )
-
-
-# ── Briefs (sliding window) ───────────────────────────────────────────
 
 
 class MemoryBriefOut(BaseModel):

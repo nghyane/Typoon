@@ -15,15 +15,10 @@ from .types import TextMask
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ────────────────────────────────────────────────────────
-
 _MIN_CONTEXT_PAD = 64
 _INPAINT_MAX_DIM = 512
 _CONTEXT_RATIO = 0.5
 _CLUSTER_MAX_DIM = _INPAINT_MAX_DIM * 2  # max cluster bbox before quality degrades
-
-
-# ── Eraser ───────────────────────────────────────────────────────────
 
 
 class Eraser:
@@ -91,9 +86,6 @@ class Eraser:
             result = cv2.resize(result, (crop_w, crop_h))
 
         _blend_inpainted_cluster(canvas, result, combined, crop_x1, crop_y1, crop_w, crop_h)
-
-
-# ── Internal helpers ─────────────────────────────────────────────────
 
 
 def _context_pad(mask_w: int, mask_h: int) -> int:

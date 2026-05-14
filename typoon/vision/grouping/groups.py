@@ -37,9 +37,6 @@ class _Scanner(Protocol):
     def lang(self) -> str | None: ...
 
 
-# ── Group building ────────────────────────────────────────────────
-
-
 def subgroup_blocks(
     indices: list[int],
     boxes: list[list[int]],
@@ -290,7 +287,6 @@ def _assign_observations_to_groups(
         g.confidence = min(o.confidence for o in matched)
 
 
-
 def _is_geometric_noise(bw: int, bh: int, angle: float) -> bool:
     """Pre-OCR filter on bbox geometry alone — unscoped groups only.
 
@@ -359,7 +355,6 @@ def _is_stripe_cluster(units, indices: list[int]) -> bool:
     return all(_is_stripe_polygon(units[i].region.polygon) for i in indices)
 
 
-
 def filter_groups(state: ScanState) -> None:
     """Accept or reject each group based on OCR quality and geometry."""
     for g in state.groups:
@@ -409,9 +404,6 @@ def export_groups(state: ScanState) -> list[DetectedGroup]:
     return out
 
 
-# ── Erase masks ───────────────────────────────────────────────────
-
-
 def build_erase_masks(masks: list[TextMask], *, mode: str = "normal") -> list[TextMask]:
     out = []
     for mask in masks:
@@ -431,9 +423,6 @@ def _dilate_mask(mask: TextMask, pad: int) -> TextMask:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
     return TextMask(x=mask.x - pad, y=mask.y - pad,
                     image=cv2.dilate(expanded, kernel, iterations=1))
-
-
-# ── Internal helpers ──────────────────────────────────────────────
 
 
 def _poly_angle(polygon: list[list[float]]) -> float:

@@ -144,9 +144,6 @@ def nearest_bubble_for_face(face_center: tuple[float, float], bubbles: list[dict
     return best_key
 
 
-# ── Augmented prompt — give model both storyboard + face gallery ─────
-
-
 SYSTEM_AUGMENTED = SYSTEM + """
 
 Additional input: a SECOND image is a "face gallery" — face crops detected
@@ -181,9 +178,6 @@ def build_user_with_faces(
             n_part = f" nearest_bubble={nearest}" if nearest else ""
             lines.append(f"@@ {h['id']} page={h['page']}{n_part}")
     return "\n".join(lines)
-
-
-# ── Driver ──────────────────────────────────────────────────────────
 
 
 async def main() -> None:

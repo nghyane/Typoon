@@ -20,9 +20,6 @@ from typoon.adapters.storage_registry import StorageRegistry
 from typoon.storage import Store
 
 
-# ── Material ──────────────────────────────────────────────────────────
-
-
 async def require_material(material_id: int, db: Store) -> dict:
     """Resolve material by id or 404. Source-backed materials are
     cross-user readable; ext / upload are also readable by any
@@ -75,9 +72,6 @@ async def require_material_admin(
     return mat
 
 
-# ── Chapter ──────────────────────────────────────────────────────────
-
-
 async def require_chapter(
     material_id: int, chapter_id: int, db: Store,
 ) -> dict:
@@ -85,9 +79,6 @@ async def require_chapter(
     if ch is None or ch["material_id"] != material_id:
         raise HTTPException(404, "Chapter not found")
     return ch
-
-
-# ── Translation ──────────────────────────────────────────────────────
 
 
 async def require_translation_owner(
@@ -103,9 +94,6 @@ async def require_translation_owner(
     return t
 
 
-# ── Library entry ────────────────────────────────────────────────────
-
-
 async def require_library_entry(
     entry_id: int, user: dict, db: Store,
 ) -> dict:
@@ -113,9 +101,6 @@ async def require_library_entry(
     if e is None:
         raise HTTPException(404, "Library entry not found")
     return e
-
-
-# ── Archive URL ──────────────────────────────────────────────────────
 
 
 def _url_for(

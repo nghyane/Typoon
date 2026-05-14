@@ -10,9 +10,6 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 
-# ── Content parts ────────────────────────────────────────────────────
-
-
 @dataclass(slots=True)
 class ContentPart:
     """A content block within a message."""
@@ -27,9 +24,6 @@ class ContentPart:
     @staticmethod
     def of_image(data_uri: str) -> ContentPart:
         return ContentPart(image_data_uri=data_uri)
-
-
-# ── Tool calling ─────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -58,9 +52,6 @@ class ToolResponse:
     def __init__(self, text: str, image_data_uri: str | None = None) -> None:
         self.text = text
         self.image_data_uri = image_data_uri
-
-
-# ── Messages ─────────────────────────────────────────────────────────
 
 
 class Role(str, Enum):
@@ -119,18 +110,12 @@ class Message:
         return None
 
 
-# ── Provider response ────────────────────────────────────────────────
-
-
 @dataclass(slots=True)
 class CallResponse:
     """Response from a provider call."""
 
     tool_calls: list[ToolCallMsg] = field(default_factory=list)
     text: str | None = None
-
-
-# ── Provider protocol ────────────────────────────────────────────────
 
 
 @runtime_checkable

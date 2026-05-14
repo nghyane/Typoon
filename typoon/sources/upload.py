@@ -86,9 +86,6 @@ def unpack_zip(source: bytes | Path, dest: Path) -> int:
     return len(entries)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────
-
-
 _NATURAL_SPLIT = re.compile(r"(\d+)")
 
 

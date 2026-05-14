@@ -40,8 +40,6 @@ class HttpBlobStore:
             limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
         )
 
-    # ── BlobStore ───────────────────────────────────────────────────
-
     async def put(self, key: str, src: Path) -> str:
         # Stream the file body so workers don't load multi-MB blobs into
         # RAM. We wrap the sync file in an async byte stream because
@@ -91,8 +89,6 @@ class HttpBlobStore:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
-
-    # ── Helpers ─────────────────────────────────────────────────────
 
     def _url(self, key: str) -> str:
         return f"{self._base}/api/blobs/{key}"

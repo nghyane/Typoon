@@ -36,9 +36,6 @@ router = APIRouter(
 )
 
 
-# ── Spawn ─────────────────────────────────────────────────────────────
-
-
 class SpawnBody(BaseModel):
     """Spawn body. `chapter_id` must refer to an existing chapter row.
     Use the upload finalize endpoint to create a chapter row first.
@@ -53,9 +50,6 @@ class SpawnResult(BaseModel):
     state:          str
     cache_hit:      bool
     chapter_id:     int
-
-
-# ── My translations index ─────────────────────────────────────────────
 
 
 class MyTranslationOut(BaseModel):
@@ -209,9 +203,6 @@ async def spawn_translation(
     )
 
 
-# ── Detail / state ────────────────────────────────────────────────────
-
-
 async def _serialize_translation(
     t:      dict,
     *,
@@ -285,9 +276,6 @@ async def get_translation(
     return await _serialize_translation(t, db=db, stores=stores)
 
 
-# ── Patch (ownership-only) ───────────────────────────────────────────
-
-
 class PatchTranslationBody(BaseModel):
     """Patch surface left for forward-compat (rename, future flags).
 
@@ -310,9 +298,6 @@ async def patch_translation(
     del body  # no patchable fields today; kept for API stability
     t = await require_translation_owner(translation_id, user, db)
     return await _serialize_translation(t, db=db, stores=stores)
-
-
-# ── Edits (sparse override) ───────────────────────────────────────────
 
 
 class EditBubbleBody(BaseModel):
@@ -412,9 +397,6 @@ async def delete_edit(
         raise HTTPException(404, "Edit not found")
 
 
-# ── Redo (force fresh draft) ──────────────────────────────────────────
-
-
 @router.post("/{translation_id}/redo", response_model=SpawnResult)
 async def redo_translation(
     translation_id: int,
@@ -448,9 +430,6 @@ async def redo_translation(
     return await spawn_translation(
         spawn_body, user=user, db=db, cfg=cfg, auth=auth,
     )
-
-
-# ── Delete ────────────────────────────────────────────────────────────
 
 
 @router.delete("/{translation_id}", status_code=204)

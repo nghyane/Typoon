@@ -96,9 +96,6 @@ class ChapterBrief:
         return None
 
 
-# ── Slice for translator window ─────────────────────────────────────
-
-
 def brief_slice(brief: ChapterBrief, page_indices: set[int], keys: list[str]) -> str:
     """Render the subset of brief data relevant to one translation window.
 

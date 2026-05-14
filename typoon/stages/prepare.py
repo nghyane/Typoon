@@ -35,8 +35,6 @@ import numpy as np
 from typoon.domain.prepared import Chapter, Page
 from typoon.runs.artifacts import ArtifactSink
 
-# ── Constants ─────────────────────────────────────────────────────────
-
 _COLOR_RATIO_THRESHOLD = 0.15
 _SAT_THRESHOLD         = 30       # HSV saturation, out of 255
 
@@ -50,9 +48,6 @@ _X_MARGINS       = 10             # pixels to ignore on each side during detecti
 class RawChapterSource(Protocol):
     def page_count(self) -> int: ...
     def load_page(self, index: int) -> np.ndarray: ...
-
-
-# ── Public API ────────────────────────────────────────────────────────
 
 
 def prepare_chapter(
@@ -86,9 +81,6 @@ def prepare_chapter(
     return chapter
 
 
-# ── Strategy detection ────────────────────────────────────────────────
-
-
 def _detect_strategy(source: RawChapterSource) -> Literal["one_to_one", "stitch"]:
     n = source.page_count()
     if n == 0:
@@ -102,9 +94,6 @@ def _color_ratio(image: np.ndarray) -> float:
     small = cv2.resize(image, (256, 256)) if min(image.shape[:2]) > 256 else image
     hsv   = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
     return float(np.count_nonzero(hsv[:, :, 1] > _SAT_THRESHOLD)) / (hsv.shape[0] * hsv.shape[1])
-
-
-# ── one_to_one ────────────────────────────────────────────────────────
 
 
 def _prepare_one_to_one(
@@ -123,9 +112,6 @@ def _prepare_one_to_one(
         if artifacts is not None:
             artifacts.write_image("01_prepare", f"prepared_{i:04d}.png", img)
     return pages, groups
-
-
-# ── stitch ────────────────────────────────────────────────────────────
 
 
 def _prepare_stitch(
@@ -187,9 +173,6 @@ def _write_segment(
         artifacts.write_image("01_prepare", f"prepared_{out_idx:04d}.png", seg)
 
 
-# ── Pixel-comparison cut detection (stitchtoon algorithm) ─────────────
-
-
 def _confirmed_rows(strip: np.ndarray) -> np.ndarray:
     """Bool array (H,): True where a window of consecutive valid rows starts."""
     gray = cv2.cvtColor(strip, cv2.COLOR_RGB2GRAY)
@@ -219,9 +202,6 @@ def _nearest_confirmed(
         return None
     abs_idx = indices + lo
     return int(abs_idx[np.argmin(np.abs(abs_idx - target))])
-
-
-# ── Helpers ───────────────────────────────────────────────────────────
 
 
 def _modal_width(images: list[np.ndarray]) -> int:

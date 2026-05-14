@@ -55,9 +55,6 @@ def _auth(admin_role: str = "") -> AuthConfig:
     return cfg
 
 
-# ── enforce_chapter_quota ────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_enforce_passes_under_all_limits():
     rl = RateLimitConfig(chapters_per_hour=10, chapters_per_day=50)
@@ -112,9 +109,6 @@ async def test_admin_bypasses_all_caps():
     await enforce_chapter_quota(user, store, rl, auth, count=10)
 
 
-# ── record_consume ───────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_record_consume_skips_admin():
     auth = _auth(admin_role="ADMIN_ROLE")
@@ -135,9 +129,6 @@ async def test_record_consume_logs_normal_user():
         user, store, auth, translation_id=42, kind="render_create",
     )
     assert store.recorded == [(1, 42, "render_create")]
-
-
-# ── get_quota_snapshot ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -164,9 +155,6 @@ async def test_snapshot_flags_admin():
     user = _user(roles=["ADMIN"])
     snap = await get_quota_snapshot(user, store, rl, auth)
     assert snap["is_admin"] is True
-
-
-# ── is_admin ─────────────────────────────────────────────────────────
 
 
 def test_is_admin_requires_role_id_configured():

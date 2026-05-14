@@ -41,9 +41,6 @@ OUT.mkdir(parents=True, exist_ok=True)
 PAGES = [SRC / f"p0{i}_original.jpg" for i in range(4)]
 
 
-# ── PreparedReader stub backed by JPEG files ─────────────────────────
-
-
 class JpegPreparedReader:
     def __init__(self, paths: list[Path]):
         import numpy as np
@@ -73,9 +70,6 @@ class JpegPreparedReader:
 
     def __exit__(self, *_):
         pass
-
-
-# ── Storyboard with key labels ───────────────────────────────────────
 
 
 def _font(size: int) -> ImageFont.ImageFont:
@@ -162,9 +156,6 @@ def build_labelled_storyboard(
         s = max_edge / longest
         canvas = canvas.resize((int(canvas.width * s), int(canvas.height * s)), Image.LANCZOS)
     return canvas
-
-
-# ── Probe ────────────────────────────────────────────────────────────
 
 
 SYSTEM = """\

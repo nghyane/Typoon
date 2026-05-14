@@ -11,9 +11,6 @@ from typoon.adapters.blob_store import LocalBlobStore
 from typoon.adapters.http_blob_store import HttpBlobStore
 
 
-# ── LocalBlobStore round-trip ────────────────────────────────────────
-
-
 @pytest.mark.asyncio
 async def test_local_blob_store_roundtrip(tmp_path):
     store = LocalBlobStore(tmp_path / "store")
@@ -44,9 +41,6 @@ async def test_local_blob_store_rejects_unsafe_keys(tmp_path):
         await store.put("/abs/path", src)
     with pytest.raises(ValueError):
         await store.put("../escape", src)
-
-
-# ── HttpBlobStore round-trip against an in-process mock ──────────────
 
 
 def _build_mock_app() -> tuple[object, dict[str, bytes]]:

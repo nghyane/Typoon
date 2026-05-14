@@ -37,9 +37,6 @@ class ArtifactStore(BlobStore, Protocol):
         ...
 
 
-# ── Local — disk + FastAPI StaticFiles ────────────────────────────────
-
-
 class LocalArtifactStore(LocalBlobStore):
     """LocalBlobStore + URL via FastAPI `/files` static mount.
 
@@ -62,9 +59,6 @@ class LocalArtifactStore(LocalBlobStore):
     def url(self, locator: str, *, version: str = "") -> str:
         qs = f"?v={version}" if version else ""
         return f"{self._MOUNT}/{locator}{qs}"
-
-
-# ── HuggingFace — public dataset + bunle CDN ──────────────────────────
 
 
 # Wall-clock cap for a single upload_file call. Sized for typical

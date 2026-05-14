@@ -57,11 +57,6 @@ class DetectedGroup:
     shape_kind: str = "dialogue"   # dialogue | burst
 
 
-
-
-# ── Grouping pipeline internal state ─────────────────────────────────
-
-
 @dataclass
 class UnitState:
     """Mutable state for one detected text unit during grouping.

@@ -269,10 +269,6 @@ class OpenAIProvider:
         return CallResponse(tool_calls=tool_calls, text=text)
 
 
-
-# ── IR → OpenAI serialization ────────────────────────────────────────
-
-
 def _serialize_message(msg: Message) -> dict:
     match msg.role:
         case Role.SYSTEM:
@@ -321,9 +317,6 @@ def _serialize_tool(tool: ToolDef) -> dict:
         "description": tool.description,
         "parameters": tool.parameters,
     }}
-
-
-# ── IR → OpenAI Responses serialization ──────────────────────────────
 
 
 def _build_responses_input(messages: list[Message]) -> tuple[list[dict], str]:
