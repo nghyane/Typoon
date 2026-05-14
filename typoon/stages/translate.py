@@ -11,14 +11,17 @@ import asyncio
 from typoon.adapters.ctx import TranslateCtx
 from typoon.adapters.prepared_reader import PreparedReader
 from typoon.domain import scan, translate
+from typoon.domain.brief import ChapterBrief
 from typoon.domain.scan import BubbleKey
 from typoon.runs.artifacts import ArtifactSink
-from typoon.stages.brief import ChapterBrief
-from typoon.stages.scan_context import build_chapter_context
+from typoon.stages.brief import build_chapter_brief
 from typoon.stages.keys import assign_keys
 from typoon.stages.page import TranslationOp, translate_window
 
-_WINDOW_CHAR_BUDGET = 600
+# A window's source-text budget. The translator LLM has ~16k output token
+# capacity; ~3000 source chars × ~1.5 expansion ratio + header overhead
+# stays well below that with room for the brief slice on input.
+_WINDOW_CHAR_BUDGET = 3000
 
 
 async def translate_chapter(
@@ -28,68 +31,101 @@ async def translate_chapter(
     *,
     artifacts: ArtifactSink | None = None,
 ) -> tuple[translate.Chapter, ChapterBrief]:
-    """Translate a ScannedChapter. Returns (translated, brief) — does not persist.
+    """Translate a scanned chapter. Returns (translated, brief).
 
-    Caller is responsible for:
+    Does not persist. Caller is responsible for:
+
         await db.save_draft_brief(draft_id, brief.to_dict())
         await db.save_draft_bubbles(draft_id, translated.to_db_records())
     """
     if not scanned.all_bubbles:
         return _empty(scanned), ChapterBrief()
 
-    keyed  = assign_keys(scanned.all_bubbles, chapter_id=ctx.chapter_id)
-    brief  = await build_chapter_context(ctx, reader, keyed, artifacts=artifacts)
+    keyed = assign_keys(scanned.all_bubbles, chapter_id=ctx.chapter_id)
+    brief = await build_chapter_brief(ctx, reader, keyed, artifacts=artifacts)
 
-    # Bubbles flagged as noise by the context pass (site chrome, watermarks,
-    # buttons, page counters) bypass the translator entirely — they get a
-    # kind="skip" op without an LLM round trip. Pages flagged whole as
-    # noise extend that to every bubble on those pages.
-    page_noise_keys = {
+    # Partition: noise bubbles get a free `kind="skip"` op (no LLM round
+    # trip); the rest go through windowed translation.
+    skip_keys = brief.noise_keys | {
         bk.key for bk in keyed if bk.bubble.page_index in brief.noise_pages
     }
-    skip_keys = brief.noise_keys | page_noise_keys
     translatable = [bk for bk in keyed if bk.key not in skip_keys]
-    noise_ops: dict[str, TranslationOp] = {
-        bk.key: TranslationOp(key=bk.key, kind="skip")
-        for bk in keyed if bk.key in skip_keys
+    ops: dict[str, TranslationOp] = {
+        key: TranslationOp(key=key, kind="skip") for key in skip_keys
     }
 
     if not translatable:
-        return _build(scanned, keyed, noise_ops), brief
+        return _build(scanned, keyed, ops), brief
 
     windows = _make_windows(translatable)
-    total   = len(windows)
+    source_by_key = {bk.key: bk.source_text for bk in translatable}
 
-    # Fan out windows in parallel. Provider errors propagate (chapter fails);
-    # parse-incompleteness does not — translate_window returns whatever it
-    # parsed and we collect missing keys for a single combined retry below.
-    results = await asyncio.gather(*[
-        translate_window(ctx, brief, wk, translatable, window_num=i, total_windows=total)
-        for i, wk in enumerate(windows)
+    if artifacts is not None:
+        _record_windows_plan(artifacts, keyed, translatable, skip_keys, windows)
+
+    # Fan out windows in parallel. Provider errors propagate (chapter
+    # fails); parse-incompleteness does not — translate_window returns
+    # whatever it parsed and we collect missing keys for a single
+    # combined retry below.
+    batches = await asyncio.gather(*[
+        translate_window(
+            ctx, brief, window, translatable,
+            window_num=i, total_windows=len(windows),
+            artifacts=artifacts, window_tag=f"w{i:02d}",
+        )
+        for i, window in enumerate(windows)
     ])
-
-    ops: dict[str, TranslationOp] = {**noise_ops}
-    for batch in results:
+    for batch in batches:
         for op in batch:
             ops[op.key] = op
 
     missing = [bk.key for bk in translatable if bk.key not in ops]
     if missing:
+        if artifacts is not None:
+            artifacts.write_json("06_translate", "missing_after_pass1.json", {
+                "count":   len(missing),
+                "keys":    missing,
+                "sources": {k: source_by_key[k] for k in missing},
+            })
         retry_ops = await translate_window(
             ctx, brief, missing, translatable,
-            window_num=total, total_windows=total + 1,
+            window_num=len(windows),
+            total_windows=len(windows) + 1,
+            artifacts=artifacts, window_tag="retry",
         )
         for op in retry_ops:
             ops[op.key] = op
+
         still_missing = [k for k in missing if k not in ops]
         if still_missing:
+            if artifacts is not None:
+                artifacts.write_json("06_translate", "unresolved.json", {
+                    "count":   len(still_missing),
+                    "keys":    still_missing,
+                    "sources": {k: source_by_key[k] for k in still_missing},
+                })
+            # Every key here is real translatable content: noise was
+            # filtered upstream by `brief.noise_keys` / `noise_pages`
+            # before windowing. So "still missing" is unambiguously an
+            # LLM or wire-format bug — prompt malformed, response
+            # truncated by max_tokens, parser regex miss, provider
+            # returned partial, model mirrored input header. The
+            # artifacts under `06_translate/` (per-window
+            # prompt/response/parsed, plus unresolved.json) are the
+            # diagnosis surface.
+            head = ", ".join(still_missing[:10])
+            tail = f" (+{len(still_missing) - 10} more)" if len(still_missing) > 10 else ""
             raise RuntimeError(
                 f"translate_chapter: {len(still_missing)} keys unresolved after retry: "
-                f"{', '.join(still_missing[:10])}"
-                + (f" (+{len(still_missing) - 10} more)" if len(still_missing) > 10 else "")
+                f"{head}{tail}"
             )
 
     return _build(scanned, keyed, ops), brief
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _build(
@@ -97,21 +133,33 @@ def _build(
     keyed: list[BubbleKey],
     ops: dict[str, TranslationOp],
 ) -> translate.Chapter:
-    pos_to_key = {(bk.page_index, bk.idx): bk.key for bk in keyed}
-    pages = []
-    for sp in scanned.pages:
-        bubbles = []
-        for sb in sp.bubbles:
-            key = pos_to_key.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
-            op  = ops.get(key)
-            bubbles.append(translate.Bubble(
-                source=sb,
-                translation_key=key,
-                translated_text=op.text if op else "",
-                kind=op.kind if op else "skip",
-            ))
-        pages.append(translate.Page(source=sp, bubbles=tuple(bubbles)))
-    return translate.Chapter(scan=scanned, pages=tuple(pages))
+    """Stitch per-key translation ops back onto the scanned bubble structure."""
+    key_at = {(bk.page_index, bk.idx): bk.key for bk in keyed}
+    pages = tuple(
+        translate.Page(
+            source=sp,
+            bubbles=tuple(
+                _materialize_bubble(sb, key_at, ops) for sb in sp.bubbles
+            ),
+        )
+        for sp in scanned.pages
+    )
+    return translate.Chapter(scan=scanned, pages=pages)
+
+
+def _materialize_bubble(
+    sb: scan.Bubble,
+    key_at: dict[tuple[int, int], str],
+    ops: dict[str, TranslationOp],
+) -> translate.Bubble:
+    key = key_at.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
+    op = ops.get(key)
+    return translate.Bubble(
+        source=sb,
+        translation_key=key,
+        translated_text=op.text if op else "",
+        kind=op.kind if op else "skip",
+    )
 
 
 def _empty(scanned: scan.Chapter) -> translate.Chapter:
@@ -122,17 +170,47 @@ def _empty(scanned: scan.Chapter) -> translate.Chapter:
 
 
 def _make_windows(keyed: list[BubbleKey]) -> list[list[str]]:
+    """Greedy-pack keys into windows whose source-char total stays under budget.
+
+    Order is preserved: keys are sorted by `(page_index, idx)` so the
+    translator sees bubbles in reading order, and each window is a
+    contiguous slice of that order.
+    """
     ordered = sorted(keyed, key=lambda bk: (bk.page_index, bk.idx))
     windows: list[list[str]] = []
     current: list[str] = []
-    chars   = 0
+    chars = 0
     for bk in ordered:
-        n = len(bk.source_text)
-        if current and chars + n > _WINDOW_CHAR_BUDGET:
+        size = len(bk.source_text)
+        if current and chars + size > _WINDOW_CHAR_BUDGET:
             windows.append(current)
             current, chars = [], 0
         current.append(bk.key)
-        chars += n
+        chars += size
     if current:
         windows.append(current)
     return windows
+
+
+def _record_windows_plan(
+    artifacts: ArtifactSink,
+    keyed: list[BubbleKey],
+    translatable: list[BubbleKey],
+    skip_keys: set[str],
+    windows: list[list[str]],
+) -> None:
+    chars_by_key = {bk.key: len(bk.source_text) for bk in translatable}
+    artifacts.write_json("06_translate", "windows.json", {
+        "total_windows": len(windows),
+        "total_bubbles": len(keyed),
+        "translatable":  len(translatable),
+        "skip_keys":     sorted(skip_keys),
+        "windows": [
+            {
+                "num":        i,
+                "keys":       window,
+                "char_count": sum(chars_by_key[k] for k in window),
+            }
+            for i, window in enumerate(windows)
+        ],
+    })

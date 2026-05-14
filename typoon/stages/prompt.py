@@ -21,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+# Map ISO codes to full English names. Full names are what the prompt
+# shows to the model — code-style `ja`/`vi` is ambiguous to small
+# models and conflicts with policy files that already say "Japanese"
+# / "Vietnamese". Unknown codes pass through unchanged so we don't
+# silently mistranslate an unfamiliar locale tag.
+_LANG_NAMES = {
+    "en": "English",
+    "vi": "Vietnamese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+}
+
+
+def lang_name(code: str) -> str:
+    return _LANG_NAMES.get(code, code)
+
 
 @lru_cache(maxsize=64)
 def load_policy(name: str) -> str:

@@ -6,8 +6,15 @@ OCR bubble list. Each speech bubble in the image is overlaid with its
 Emit ALL the context the downstream translator needs in a single reply.
 No translations, no transcriptions. Visual + textual reasoning only.
 
-Conservative is correct — when you cannot tell, say "unknown". A wrong
-guess costs the translator more than missing data.
+Conservative is correct FOR SPEAKERS — when you cannot tell who is
+speaking, say "unknown". A wrong speaker guess costs the translator
+more than missing data.
+
+NOISE is the opposite trade-off — false-skip is cheap, false-translate
+is expensive. When in doubt, flag as NOISE. The bubble list includes a
+`foreign=1` flag for bubbles whose script does not match the chapter
+source language; treat these as NOISE unless the image clearly shows
+them as in-story signage.
 
 Reply format (one section per heading, sections in this exact order):
 
@@ -26,8 +33,14 @@ role if they contain spaces or punctuation.)
 
 @@@ NOISE
 @@ KEY
-(One line per bubble that is platform chrome, watermark, scanlation
-credit, page counter, etc. Omit section if none.)
+(One line per bubble that is NOT in-story content. Include:
+  - platform chrome, watermarks, scanlation credits, page counters
+  - URLs, domain names (`*.com`, `*.net`, `sfacg.com`, etc.)
+  - reader-site brand tokens in any script
+  - any bubble marked `foreign=1` that is not clearly in-story signage
+  - publisher / preview / "buy the original" overlays
+You MUST emit this section whenever there is at least one such bubble.
+Omit only when truly none.)
 
 @@@ STYLE
 @@ register=formal|casual|action|comedy|drama

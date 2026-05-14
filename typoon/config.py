@@ -36,8 +36,8 @@ class TranslationConfig(BaseModel):
 
 
 class VisionAgentConfig(BaseModel):
-    """Vision provider — drives both the per-chapter storyboard context pass
-    (`stages.scan_context`) and on-demand `look_at` calls during translation."""
+    """Vision provider — drives both the per-chapter brief pass
+    (`stages.brief`) and on-demand `look_at` calls during translation."""
     provider: str = "openai"
     model: str = "gpt-4o-mini"
     max_tokens: int | None = 4096

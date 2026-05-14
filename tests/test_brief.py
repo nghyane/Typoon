@@ -1,16 +1,16 @@
-"""Tests for storyboard layout + scan_context parser."""
+"""Tests for storyboard layout + brief reply parser."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
+from typoon.domain.brief import Character, ChapterBrief
 from typoon.domain.scan import Box, Bubble, BubbleKey
-from typoon.stages.brief import Character, ChapterBrief, brief_slice
-from typoon.stages.scan_context import (
+from typoon.stages.brief import (
     _parse_kv,
     _parse_reply,
     _full_noise_pages,
+    brief_slice,
 )
 from typoon.stages.storyboard import chunk_pages
 
@@ -61,9 +61,13 @@ class TestKVParser:
         assert out["mood"] == "bleak, hungry, desperate"
         assert out["register"] == "casual"
 
-    def test_unterminated_quote_consumes_rest(self):
+    def test_unterminated_quote_yields_empty(self):
+        # Malformed quoting is treated as a parse failure: we drop the
+        # line entirely rather than guess at the intended value. The
+        # storyboard prompt forbids unescaped quotes inside values, so
+        # this case only fires on a broken model reply.
         out = _parse_kv('name="unclosed')
-        assert out["name"] == "unclosed"
+        assert out == {}
 
     def test_empty_string(self):
         assert _parse_kv("") == {}

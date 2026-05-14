@@ -3,7 +3,7 @@
 # Each non-empty, non-comment line is a Python regex matched against the
 # whole bubble text (case-insensitive, after stripping). If it matches,
 # the bubble is treated as non-diegetic noise and never sent to the
-# translator. Used by typoon.stages.page._is_auto_skip.
+# translator. Used by typoon.stages.noise.is_auto_skip.
 #
 # Keep entries narrow — false positives silently drop story dialogue.
 # Prefer matches anchored to brand tokens / URLs / disclaimer phrasing

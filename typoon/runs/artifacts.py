@@ -17,7 +17,7 @@ STAGE_DIRS = (
     "02_detect",
     "03_group",
     "04_ocr",
-    "05_context",
+    "05_brief",
     "06_translate",
     "07_render",
     "final",
