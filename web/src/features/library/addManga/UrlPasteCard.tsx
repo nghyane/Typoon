@@ -1,40 +1,33 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Loader2, Wand2 } from 'lucide-react'
-import { fetchMangaDetail } from '@features/browse/manifest/runtime'
-import type { matchSource } from './parseUrl'
-import type { Picked } from './types'
 
-// =============================================================================
-// UrlPasteCard — three states for a URL paste:
-//
-//   • match + loading  spinner + 'Đang tải từ {source}…'
-//   • match + error    error card with the source name + reason
-//   • no match         warning card with a 'Tạo thủ công' CTA
-//
-// On loading success, we immediately call onPick so the parent flips
-// to PickedDetail. The card unmounts in the same render, so 'loading'
-// is the only state the user sees until the network call returns.
-// =============================================================================
+import { fetchMangaDetail } from '@features/browse/manifest/runtime'
+
+import type { matchSource } from './parseUrl'
+import type { ImportToLibrary } from './useImportToLibrary'
+
+// Three states for a URL paste: match+loading, match+error, no-match.
+// On detail-fetch success we forge a SearchHit and call importHit
+// directly; the modal closes via the importer's onSuccess. No
+// confirm step.
 
 export function UrlPasteCard({
-  url, match, onPick, onManualCreate,
+  url, match, importer,
 }: {
-  url:            string
-  match:          ReturnType<typeof matchSource>
-  onPick:         (p: Picked) => void
-  onManualCreate: (seed: string) => void
+  url:      string
+  match:    ReturnType<typeof matchSource>
+  importer: ImportToLibrary
 }) {
-  if (!match) {
-    return <UnsupportedUrlCard url={url} onManualCreate={onManualCreate} />
-  }
-  return <MatchedUrlCard match={match} onPick={onPick} />
+  if (!match) return <UnsupportedUrlCard url={url} importer={importer} />
+  return <MatchedUrlCard match={match} importer={importer} />
 }
 
 
 function UnsupportedUrlCard({
-  url, onManualCreate,
+  url, importer,
 }: {
-  url: string; onManualCreate: (seed: string) => void
+  url:      string
+  importer: ImportToLibrary
 }) {
   return (
     <div className="rounded-md bg-warning/10 border border-warning/20 px-4 py-3">
@@ -47,11 +40,12 @@ function UnsupportedUrlCard({
           </p>
           <button
             type="button"
-            onClick={() => onManualCreate('')}
-            className="mt-2.5 inline-flex items-center gap-2 h-7 px-2.5 rounded-sm bg-surface-2 text-xs text-text hover:bg-hover cursor-pointer transition-colors"
+            onClick={() => importer.importBlank('')}
+            disabled={importer.isPending}
+            className="mt-2.5 inline-flex items-center gap-2 h-7 px-2.5 rounded-sm bg-surface-2 text-xs text-text hover:bg-hover cursor-pointer transition-colors disabled:cursor-wait disabled:opacity-60"
           >
             <Wand2 size={12} />
-            Tạo thủ công thay
+            Tạo trống thay
           </button>
         </div>
       </div>
@@ -61,38 +55,49 @@ function UnsupportedUrlCard({
 
 
 function MatchedUrlCard({
-  match, onPick,
+  match, importer,
 }: {
-  match: NonNullable<ReturnType<typeof matchSource>>
-  onPick: (p: Picked) => void
+  match:    NonNullable<ReturnType<typeof matchSource>>
+  importer: ImportToLibrary
 }) {
   const { source, upstreamRef } = match
   const manifest = source.manifest
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    let cancelled = false
+    const ctrl = new AbortController()
     setErr(null)
     fetchMangaDetail(manifest, upstreamRef)
       .then((d) => {
-        if (cancelled) return
-        onPick({
-          source, upstreamRef,
-          title:       d.title,
-          cover:       d.cover,
-          description: d.description,
-          author:      d.author,
-          status:      d.status,
-          languages:   d.availableLanguages ?? manifest.languages,
-          nsfw:        !!manifest.nsfw,
+        if (ctrl.signal.aborted) return
+        // Forge a SearchHit from the URL match so the same importer
+        // path covers both flows. The "manga snapshot" carries only
+        // url + title + cover (the MangaSummary contract). All
+        // language / status / author resolution happens inside
+        // `importHit` from the resolved `detail` we pass alongside.
+        importer.importHit({
+          hit: {
+            source,
+            manga: {
+              id:    upstreamRef,
+              url:   upstreamRef,
+              title: d.title,
+              cover: d.cover,
+            },
+            // Score doesn't apply to URL-paste flow (we already
+            // resolved the canonical row); use 1.0 so any consumer
+            // that reads it sees a "100% match" rather than 0.
+            score: 1,
+          },
+          detail: d,
         })
       })
       .catch((e) => {
-        if (cancelled) return
+        if (ctrl.signal.aborted) return
         setErr(e instanceof Error ? e.message : 'Không tải được trang truyện')
       })
-    return () => { cancelled = true }
-  }, [manifest, upstreamRef, source, onPick])
+    return () => ctrl.abort()
+  }, [manifest, upstreamRef, source, importer])
 
   if (err) {
     return (
@@ -111,7 +116,11 @@ function MatchedUrlCard({
     <div className="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-2.5">
       <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-text">Đang tải từ {manifest.name}…</p>
+        <p className="text-sm text-text">
+          {importer.isPending
+            ? 'Đang thêm vào thư viện…'
+            : `Đang tải từ ${manifest.name}…`}
+        </p>
         <p className="text-xs text-text-subtle truncate mt-0.5">{upstreamRef}</p>
       </div>
     </div>

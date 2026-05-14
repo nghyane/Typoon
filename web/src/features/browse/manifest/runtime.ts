@@ -317,6 +317,17 @@ export async function fetchMangaDetail(
     )
   }
 
+  // Fallback for sources that report a manga-level `updatedAt` but no
+  // per-chapter date (OTruyen): stamp it onto the latest chapter so
+  // the row shows SOMETHING. Other chapters stay null — better than
+  // faking the same date across every row.
+  const mangaUpdatedAt = f.updatedAt ?? null
+  if (mangaUpdatedAt && chapters.length > 0
+      && chapters.every((c) => !c.date)) {
+    const latest = pickLatestChapter(chapters)
+    if (latest) latest.date = mangaUpdatedAt
+  }
+
   return {
     id:                 mangaUrl,
     url:                mangaUrl,
@@ -335,8 +346,7 @@ export async function fetchMangaDetail(
  *  manifest names them with the `*Langs` / `*List` convention and
  *  runtime restores. Falls back to `null` so callers can use the
  *  manifest's static `languages` list. */
-function parseLangList(raw: string | null | undefined): string[] | null {
-  if (!raw) return null
+function parseLangList(raw: string | null | undefined): string[] | null {  if (!raw) return null
   // JSON-stringified array (`["ka","ru"]`) — common when the field
   // selector resolves to a JSON array node.
   if (raw.startsWith('[')) {
@@ -350,6 +360,33 @@ function parseLangList(raw: string | null | undefined): string[] | null {
   // Comma- or space-separated fallback.
   const parts = raw.split(/[\s,]+/).filter((s) => s.length > 0)
   return parts.length > 0 ? parts : null
+}
+
+
+/** Pick the chapter with the largest numeric `number` value. Used to
+ *  decide which row a manga-level `updatedAt` should be stamped onto
+ *  when the source doesn't report per-chapter dates — the latest
+ *  chapter is the one the timestamp actually refers to.
+ *
+ *  Position in the array is unreliable: OTruyen lists chapters
+ *  ascending (oldest first), HappyMH lists descending. The numeric
+ *  parse mirrors `mergeChapters.parseSortKey` so both agree on which
+ *  chapter is "latest". */
+function pickLatestChapter(
+  chapters: MangaChapterRef[],
+): MangaChapterRef | null {
+  let best: MangaChapterRef | null = null
+  let bestKey = -Infinity
+  for (const c of chapters) {
+    const k = parseFloat(c.numberNorm)
+    if (Number.isFinite(k) && k > bestKey) {
+      best    = c
+      bestKey = k
+    }
+  }
+  // Fall back to the last appended chapter when nothing parsed
+  // numerically — better than silently dropping the timestamp.
+  return best ?? chapters[chapters.length - 1] ?? null
 }
 
 function collectChapters(

@@ -1,10 +1,13 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import { exchangeCode, setLoginError, setToken, verifyState } from '@features/auth/auth'
+import {
+  exchangeCode, setLoginError, useSignIn, verifyState,
+} from '@features/auth/session'
 import { Spinner } from '@shared/ui/primitives'
 
 function CallbackPage() {
-  const nav = useNavigate()
+  const nav     = useNavigate()
+  const signIn  = useSignIn()
   const [status,  setStatus]  = useState<'working' | 'error'>('working')
   const [message, setMessage] = useState('Đang đăng nhập…')
 
@@ -46,12 +49,15 @@ function CallbackPage() {
     }
 
     exchangeCode(code)
-      .then((token) => {
-        setToken(token)
+      .then(async (token) => {
+        // signIn writes the token + primes the session cache and
+        // waits on the first refetch so the guarded route below
+        // sees `authenticated`, not `loading`.
+        await signIn(token)
         nav({ to: '/' })
       })
       .catch((e: Error) => fail(e.message))
-  }, [nav])
+  }, [nav, signIn])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg">

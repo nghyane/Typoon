@@ -48,12 +48,13 @@ CREATE TABLE IF NOT EXISTS meta (
 -- ── Identity ────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS users (
-    id            BIGSERIAL PRIMARY KEY,
-    display_name  TEXT NOT NULL,
-    avatar_url    TEXT,
-    email         TEXT,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_login_at TIMESTAMPTZ
+    id                    BIGSERIAL PRIMARY KEY,
+    display_name          TEXT NOT NULL,
+    avatar_url            TEXT,
+    email                 TEXT,
+    preferred_target_lang TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at         TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS identities (
@@ -246,6 +247,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_materials_source_ref
 
 CREATE INDEX IF NOT EXISTS idx_materials_imported_by ON materials(imported_by);
 CREATE INDEX IF NOT EXISTS idx_materials_work ON materials(work_id);
+-- One user → at most one `origin='upload'` material per Work. Upload
+-- material is a per-user scratchpad: append-only chapters all live on
+-- the same row, never spawn duplicates when the user uploads chap N+1.
+-- Source-backed materials (origin='source') are cross-user-shared,
+-- they have their own dedup via (source, upstream_ref).
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_upload_material_per_user_work
+    ON materials(imported_by, work_id)
+    WHERE origin = 'upload';
 CREATE INDEX IF NOT EXISTS idx_materials_title_native
     ON materials(title_native) WHERE title_native IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_materials_cross_refs
@@ -293,6 +302,55 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_material_links
     ON material_links(material_a_id, material_b_id);
 CREATE INDEX IF NOT EXISTS idx_links_a ON material_links(material_a_id);
 CREATE INDEX IF NOT EXISTS idx_links_b ON material_links(material_b_id);
+
+-- ── Material split votes (community-driven "tách nguồn") ──────────
+-- Inverse of material_link_votes. One row per (user, material): "user
+-- thinks this material is wrong in its current work, should split out
+-- to its own work". Aggregated like merge votes; threshold met → the
+-- material is moved to a fresh work row.
+--
+-- Cleared (DELETE) when the split fires so a future re-merge of the
+-- same material doesn't carry stale "split" votes.
+
+CREATE TABLE IF NOT EXISTS material_split_votes (
+    material_id  BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    voter_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vote         SMALLINT NOT NULL CHECK (vote IN (-1, 1)),
+    voted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (material_id, voter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_split_votes_material
+    ON material_split_votes(material_id);
+
+
+-- ── Force-action audit log (owner undo window) ────────────────────
+-- Records every "force" mutation (manual link, manual unlink). The
+-- actor can reverse their own action within UNDO_WINDOW minutes
+-- without going through a community vote — they just changed their
+-- mind / clicked the wrong row. After the window expires the only
+-- way back is the regular split-vote flow.
+--
+-- `material_b_id` is NULL for force_unlink (one material, no pair).
+-- `target_work_id` is the work the material(s) ended up in after
+-- the action: for force_link it's the surviving work; for
+-- force_unlink it's the new isolated work the material moved to.
+
+CREATE TABLE IF NOT EXISTS material_link_actions (
+    id              BIGSERIAL PRIMARY KEY,
+    actor_id        BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind            TEXT   NOT NULL CHECK (kind IN ('force_link', 'force_unlink')),
+    material_a_id   BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+    material_b_id   BIGINT          REFERENCES materials(id) ON DELETE CASCADE,
+    target_work_id  BIGINT NOT NULL REFERENCES works(id)     ON DELETE CASCADE,
+    reversed_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_link_actions_actor_recent
+    ON material_link_actions(actor_id, created_at DESC)
+    WHERE reversed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_link_actions_material_a
+    ON material_link_actions(material_a_id);
+
 
 -- ── Chapter ─────────────────────────────────────────────────────────
 -- A unit of pages inside a Material. Pages are always local: the
@@ -574,8 +632,14 @@ CREATE TABLE IF NOT EXISTS library_entries (
     -- it slots into this entry via library_materials instead of
     -- spawning a duplicate row.
     work_id             BIGINT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
-    title               TEXT NOT NULL,
-    cover_url           TEXT,
+
+    -- No `title` / `cover_url` cache. Display fields live on the
+    -- attached materials (or a placeholder upload material for
+    -- "Tạo trống" Works that have no chapter yet). The library API
+    -- resolves both server-side via `_resolve_work_display`, biased
+    -- by the viewer's reading lang, so the same canonical title the
+    -- Work hub renders shows up on the library card without a stale
+    -- snapshot ever drifting.
 
     -- User's reading-language preference for THIS Work. BCP-47, e.g.
     -- 'vi', 'en'. Drives the chapter-list translation badges + the
@@ -830,6 +894,71 @@ CREATE TRIGGER stage_pause_notify_resume
     AFTER DELETE ON stage_pause
     FOR EACH ROW
     EXECUTE FUNCTION notify_stage_resume();
+
+-- ── Admin / ops audit ───────────────────────────────────────────────
+-- Append-only timeline of every operator-initiated mutation on the
+-- pipeline: stage pause/resume, task requeue/release/force-fail. The
+-- row is written in the SAME TRANSACTION as the mutation it describes,
+-- so we never have an action without an audit entry (or vice versa).
+--
+-- `actor_id` is NULL for CLI-driven actions — the originating shell
+-- user is captured in `target_ref.source` instead (e.g.
+-- "cli:nghyane"). Web/Discord actions carry the authenticated user.
+--
+-- `prev_state` is a JSONB snapshot of the affected row(s) before the
+-- mutation, captured under `SELECT ... FOR UPDATE` in the same txn.
+-- Lets the dashboard render "attempts: 3 → 0" diffs and supports
+-- forensic comparison ("when did this task last get requeued, and
+-- what was its state?") without rebuilding from logs.
+--
+-- `target_ref` is a free-shape JSONB so each action can record what
+-- it actually touched: {stage} for stage-level, {stage,target_kind,
+-- target_id} for task-level. Idempotency keys (when present) live
+-- here under .idem_key with a unique partial index, so a retried
+-- request from the same client never produces two audit rows.
+
+CREATE TABLE IF NOT EXISTS admin_actions (
+    id          BIGSERIAL PRIMARY KEY,
+    at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Authenticated user that initiated the action via HTTP. NULL when
+    -- the action came in through the ops CLI (target_ref.source
+    -- captures shell identity instead).
+    actor_id    BIGINT REFERENCES users(id) ON DELETE SET NULL,
+
+    action      TEXT NOT NULL
+        CHECK (action IN (
+            'stage.pause', 'stage.resume',
+            'task.requeue', 'task.release', 'task.force_fail'
+        )),
+    target_ref  JSONB NOT NULL,
+    reason      TEXT  NOT NULL CHECK (length(reason) >= 3),
+    prev_state  JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_actions_at
+    ON admin_actions(at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_admin_actions_actor
+    ON admin_actions(actor_id, at DESC) WHERE actor_id IS NOT NULL;
+
+-- Action × target lookup ("show me every mutation on translate/draft/5").
+-- Functional index on the two task identity fields when present.
+CREATE INDEX IF NOT EXISTS idx_admin_actions_task_target
+    ON admin_actions(
+        (target_ref->>'stage'),
+        (target_ref->>'target_kind'),
+        ((target_ref->>'target_id')::BIGINT),
+        at DESC
+    )
+    WHERE target_ref ? 'target_id';
+
+-- Idempotency: same client may retry a mutation with the same key;
+-- partial unique index lets concurrent writes converge on one audit
+-- row + one mutation. Absent → no idempotency, every request is new.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_actions_idem
+    ON admin_actions((target_ref->>'idem_key'))
+    WHERE target_ref ? 'idem_key';
 
 -- ── Quota usage log ─────────────────────────────────────────────────
 -- One row per LLM-costing event. Cache HITS do not insert; quota

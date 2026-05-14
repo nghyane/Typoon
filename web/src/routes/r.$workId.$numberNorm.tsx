@@ -1,15 +1,14 @@
 // Unified reader route — /r/$workId/$numberNorm
 //
-// One URL pattern for both translated and raw reading. The route
-// layer is thin: parses the URL, hands off to `useReader`, renders
-// the shell. Source kind is resolved CLIENT-SIDE from the cached
-// Work payload (`useWork`) — no extra round-trip.
+// Thin route layer: parse URL params, hand off to `useReader`,
+// render the shell. Source kind (raw vs translation) is resolved
+// client-side from the cached Work payload — no extra round-trip.
 //
-// Search params:
-//   • lang  — preferred reading lang. Override of viewerEntry.target_lang.
-//             Kept in URL so deep links land on the right version.
-//   • src   — active source material id. Drives the manifest fetch
-//             when the picked version is raw; ignored for translations.
+// Reading language follows the viewer-wide resolver in
+// `features/auth/readingLang.ts` (per-Work entry override →
+// `users.preferred_target_lang` → fallback). No URL `?lang=`: a
+// shared chapter link respects the recipient's own preference, the
+// way Netflix shares an episode without forcing subtitle track.
 //
 // Status branches:
 //   loading           spinner
@@ -28,22 +27,21 @@ import { qk } from '@shared/api/keys'
 import { Spinner } from '@shared/ui/primitives'
 import { EmptyState } from '@shared/ui/EmptyState'
 
-import { ReaderToolbar, type ViewMode } from '@features/reader/ReaderToolbar'
+import { ReaderToolbar } from '@features/reader/ReaderToolbar'
 import { ReaderBody } from '@features/reader/Reader'
 import { useReader } from '@features/reader/useReader'
+import type { ViewMode } from '@features/reader/types'
 
 
 interface SearchParams {
   page?: number
   mode?: ViewMode
-  lang?: string
-  src?:  number
 }
 
 
 function ReaderPage() {
   const { workId: workIdStr, numberNorm } = Route.useParams()
-  const { page = 0, mode = 'continuous', lang, src } = Route.useSearch()
+  const { page = 0, mode = 'continuous' } = Route.useSearch()
   const nav = Route.useNavigate()
   const workId = Number(workIdStr)
   const validWorkId = Number.isInteger(workId) && workId > 0
@@ -56,8 +54,6 @@ function ReaderPage() {
   const reader = useReader({
     workId:     validWorkId ? workId : 0,
     numberNorm,
-    lang,
-    src,
   })
 
   // Reset scroll to top whenever the chapter changes. Without this,
@@ -94,7 +90,6 @@ function ReaderPage() {
           // clicking the manga title implies.
           to:     '/w/$workId',
           params: { workId: workIdStr },
-          search: { src },
         })}
       />
 
@@ -188,8 +183,6 @@ export const Route = createFileRoute('/r/$workId/$numberNorm')({
   validateSearch: (s: Record<string, unknown>): SearchParams => ({
     page: typeof s.page === 'number' && s.page > 0 ? s.page : undefined,
     mode: s.mode === 'single' ? 'single' : undefined,
-    lang: typeof s.lang === 'string' ? s.lang : undefined,
-    src:  typeof s.src  === 'number' ? s.src  : undefined,
   }),
   // Intercept Work merge redirect BEFORE rendering. Same pattern as
   // `/w/$workId`: ensure-fetch surfaces `WorkRedirectedError` and we

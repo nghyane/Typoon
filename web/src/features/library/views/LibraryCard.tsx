@@ -4,7 +4,6 @@ import {
 } from 'lucide-react'
 import { Cover } from '@shared/ui/Cover'
 import { Tag, type TagTone } from '@shared/ui/primitives'
-import { proxify } from '@features/browse/proxy'
 import { type LibraryStatus } from '@shared/api/api'
 import { useLibrary, type LibraryEntry } from '../store'
 import type { LibraryItem } from '../unified'
@@ -155,7 +154,7 @@ export function LibraryRailCard({ entry }: RailProps) {
     >
       <div className="relative w-full aspect-[2/3] rounded-md overflow-hidden">
         <Cover
-          src={entry.cover ? proxify(entry.cover) : null}
+          src={entry.cover}
           title={entry.title}
           className="absolute inset-0 group-hover:brightness-110 transition-[filter]"
         />

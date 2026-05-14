@@ -1,38 +1,39 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Loader2, ChevronDown } from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, Loader2 } from 'lucide-react'
+
 import { Cover } from '@shared/ui/Cover'
 import { cn } from '@shared/lib/cn'
-import { fetchMangaDetail } from '@features/browse/manifest/runtime'
-import { proxify } from '@features/browse/proxy'
 import type { InstalledSource } from '@features/browse/manifest/types'
-import type { SearchHit } from './fanoutSearch'
-import type { Picked } from './types'
 
-// =============================================================================
-// ResultsList — grouped per source with score-ranked preview + expand.
-//
-// Each source group renders its top INITIAL_PREVIEW hits (sorted by
-// fuzzy score). When the group has more, a 'Xem thêm N' row reveals
-// the rest in place — modal stays compact by default; deeper digs
-// available on demand.
-//
-// Source scope filter (set externally via ScopeFilterRow) narrows
-// `searchableSources`; when only one source remains the per-group
-// header collapses to a single inline row.
-// =============================================================================
+import type { SearchHit } from './fanoutSearch'
+import { hitKey } from './hitKey'
+
+// Per-source groups with score-ranked preview (top 3) and an expand
+// row. Pure presentation: emits `onPick(hit)` and lets the parent
+// decide what "pick" means (import to library, link to work, …).
+// The parent passes `pendingKey` to flag the row currently resolving
+// and `pickedKeys` to flag rows the user has already acted on so
+// they show a "đã chọn" check instead of being clickable again.
 
 const INITIAL_PREVIEW = 3
 const PER_GROUP_MAX   = 8
 
+
 export function ResultsList({
-  hits, loading, failures, searchableSources, onPick,
+  hits, loading, failures, searchableSources,
+  pendingKey = null, pickedKeys,
+  onPick,
 }: {
-  query:             string
   hits:              SearchHit[]
   loading:           boolean
   failures:          { sourceId: string; error: Error }[]
   searchableSources: InstalledSource[]
-  onPick:            (p: Picked) => void
+  /** Key of the row whose detail-fetch / mutation is in flight. */
+  pendingKey?:       string | null
+  /** Keys of rows the user has already picked (link flow uses this
+   *  to keep the modal open while marking completed picks). */
+  pickedKeys?:       Set<string>
+  onPick:            (hit: SearchHit) => void
 }) {
   const groups = useMemo(() => {
     const by: Record<string, { source: InstalledSource; hits: SearchHit[] }> = {}
@@ -82,6 +83,8 @@ export function ResultsList({
           key={source.manifest.id}
           source={source}
           hits={g}
+          pendingKey={pendingKey}
+          pickedKeys={pickedKeys}
           onPick={onPick}
           hideHeader={singleSource}
         />
@@ -92,20 +95,20 @@ export function ResultsList({
 
 
 function SourceGroup({
-  source, hits, onPick, hideHeader,
+  source, hits, pendingKey, pickedKeys, onPick, hideHeader,
 }: {
   source:     InstalledSource
   hits:       SearchHit[]
-  onPick:     (p: Picked) => void
+  pendingKey: string | null
+  pickedKeys: Set<string> | undefined
+  onPick:     (hit: SearchHit) => void
   hideHeader: boolean
 }) {
   const manifest = source.manifest
   const [expanded, setExpanded] = useState(false)
 
-  // When the user has scoped to a single source via ScopeFilterRow,
-  // `hideHeader` is true — that's also our signal to skip the
-  // 'Xem thêm' collapse: the user already committed to this source,
-  // no need to hide hits behind another click.
+  // hideHeader == single-source scope: also skip the "Xem thêm"
+  // collapse since the user already committed to this source.
   const capped = hits.slice(0, PER_GROUP_MAX)
   const visible = hideHeader || expanded
     ? capped
@@ -130,13 +133,19 @@ function SourceGroup({
         </header>
       )}
       <ul className="rounded-md bg-surface-2 divide-y divide-border-soft overflow-hidden">
-        {visible.map((hit) => (
-          <ResultRow
-            key={`${manifest.id}::${hit.manga.id}`}
-            hit={hit}
-            onPick={onPick}
-          />
-        ))}
+        {visible.map((hit) => {
+          const key = hitKey(hit)
+          return (
+            <ResultRow
+              key={key}
+              hit={hit}
+              pending={pendingKey === key}
+              picked={pickedKeys?.has(key) ?? false}
+              busy={pendingKey !== null}
+              onPick={() => onPick(hit)}
+            />
+          )
+        })}
         {more > 0 && (
           <li>
             <button
@@ -156,57 +165,35 @@ function SourceGroup({
 
 
 function ResultRow({
-  hit, onPick,
+  hit, pending, picked, busy, onPick,
 }: {
-  hit:    SearchHit
-  onPick: (p: Picked) => void
+  hit:     SearchHit
+  pending: boolean
+  picked:  boolean
+  /** Some other row on the page is mid-flight. Disables click. */
+  busy:    boolean
+  onPick:  () => void
 }) {
   const { source, manga } = hit
   const manifest = source.manifest
-  const [resolving, setResolving] = useState(false)
-
-  const pick = async () => {
-    setResolving(true)
-    try {
-      const d = await fetchMangaDetail(manifest, manga.url)
-      onPick({
-        source, upstreamRef: manga.url,
-        title:       d.title || manga.title,
-        cover:       d.cover ?? manga.cover,
-        description: d.description,
-        author:      d.author,
-        status:      d.status,
-        languages:   d.availableLanguages ?? manifest.languages,
-        nsfw:        !!manifest.nsfw,
-      })
-    } catch {
-      onPick({
-        source, upstreamRef: manga.url,
-        title:       manga.title,
-        cover:       manga.cover,
-        description: null, author: null, status: null,
-        languages:   manifest.languages,
-        nsfw:        !!manifest.nsfw,
-      })
-    } finally {
-      setResolving(false)
-    }
-  }
+  const disabled = busy || picked
 
   return (
     <li>
       <button
         type="button"
-        onClick={pick}
-        disabled={resolving}
+        onClick={onPick}
+        disabled={disabled}
         className={cn(
           'w-full flex items-center gap-2.5 px-2.5 py-1.5 text-left',
           'hover:bg-hover transition-colors cursor-pointer',
-          resolving && 'opacity-60 cursor-wait',
+          picked  && 'opacity-70 cursor-default',
+          pending && 'opacity-60 cursor-wait',
+          disabled && !picked && !pending && 'opacity-60 cursor-not-allowed',
         )}
       >
         <Cover
-          src={manga.cover ? proxify(manga.cover) : null}
+          src={manga.cover}
           title={manga.title}
           className="w-8 aspect-[2/3] rounded-xs shrink-0"
           fontSize="text-[9px]"
@@ -221,8 +208,11 @@ function ResultRow({
             </p>
           )}
         </div>
-        {resolving && (
+        {pending && (
           <Loader2 size={14} className="text-text-subtle animate-spin shrink-0" />
+        )}
+        {picked && (
+          <Check size={14} className="text-success-text shrink-0" />
         )}
       </button>
     </li>

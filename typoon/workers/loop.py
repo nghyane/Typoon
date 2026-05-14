@@ -77,9 +77,6 @@ from typoon.storage import PostgresStore, Store
 logger = logging.getLogger(__name__)
 
 
-# ── Identity ────────────────────────────────────────────────────────
-
-
 def _host_prefix() -> str:
     """Stable per-process prefix for `tasks.claimed_by`."""
     host = socket.gethostname() or "unknown"
@@ -89,9 +86,6 @@ def _host_prefix() -> str:
 def _worker_id(stage: str) -> str:
     """`{hostname}-{pid}-{stage}-{shortuuid}` — diagnosable in logs."""
     return f"{_host_prefix()}-{stage}-{uuid4().hex[:6]}"
-
-
-# ── Hooks ──────────────────────────────────────────────────────────
 
 
 class ProgressPersistingHook(Hook):
@@ -130,9 +124,6 @@ class ProgressPersistingHook(Hook):
             pass
 
 
-# ── Roles ──────────────────────────────────────────────────────────
-
-
 class Role(StrEnum):
     vision  = "vision"
     llm     = "llm"
@@ -157,9 +148,6 @@ _STAGES_BY_ROLE: dict[Role, tuple[str, ...]] = {
 }
 
 
-# ── Stage context (shared by handlers) ─────────────────────────────
-
-
 @dataclass
 class StageContext:
     db:           Store
@@ -175,9 +163,6 @@ class StageContext:
 # Stage handler signature: receives the context + (target_kind, target_id).
 # Handlers are pure functions; events / DB updates flow through ctx.
 StageHandler = Callable[[StageContext, str, int], Awaitable[None]]
-
-
-# ── Helpers shared by handlers ─────────────────────────────────────
 
 
 async def _chapter_id_for_target(
@@ -250,9 +235,6 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-# ── Stage handlers ──────────────────────────────────────────────────
 
 
 async def _handle_prepare(
@@ -632,9 +614,6 @@ _HANDLERS: dict[str, StageHandler] = {
 }
 
 
-# ── Stage pump ─────────────────────────────────────────────────────
-
-
 async def _run_one(
     ctx:    StageContext,
     stage:  str,
@@ -678,7 +657,9 @@ async def _run_one(
             stage, target_kind, target_id, e,
         )
         await ctx.db.pause_stage(
-            stage, reason=str(e), paused_by=_worker_id(stage),
+            stage=stage, reason=str(e),
+            actor_id=None,
+            source=f"worker:{_worker_id(stage)}",
         )
         await ctx.db.release_task_for_transient(
             target_kind, target_id, stage, str(e),
@@ -778,9 +759,6 @@ async def _stage_pump(
             pass
         await listen_conn.close()
         logger.info("[%s] pump down", stage)
-
-
-# ── Process entrypoint ────────────────────────────────────────────
 
 
 async def run_workers(

@@ -16,28 +16,15 @@ from pydantic_settings import BaseSettings
 from .paths import Paths, home
 
 
-# ── Config data ──────────────────────────────────────────────────
-
-
 class ProviderConfig(BaseModel):
     type: str = "openai"
     endpoint: str = ""
     api_key: str | None = None
     extra_headers: dict[str, str] = Field(default_factory=dict)
-    # OpenAI-family endpoints expose two incompatible shapes:
-    #   "chat"      → POST /v1/chat/completions  (legacy, broadest support)
-    #   "responses" → POST /v1/responses          (current, image_url goes under input_image)
-    # Gateways like CF compat are "chat"; modern local servers (e.g.
-    # Bifrost/Packy proxies) often only speak "responses". Per-provider
-    # because it's an endpoint capability, not an agent choice.
+    # "chat" = /v1/chat/completions; "responses" = /v1/responses.
     api_kind: str = "chat"
-    # Maximum concurrent in-flight requests against this provider,
-    # shared across every agent that resolves to it (context, translate,
-    # vision). Sized by Little's law: at ~3s/call latency, 24 in-flight
-    # ≈ 8 RPS, which sits inside paid Tier 1 budgets (OpenAI 500 RPM /
-    # Anthropic Tier 1). Higher tiers tolerate more — bump to 64 for
-    # 2000+ RPM accounts. Free tiers should drop to 1–2. Set to 0 to
-    # disable the gate entirely (rely solely on retry + backoff).
+    # In-flight cap shared across agents resolving to this provider.
+    # 0 disables the gate.
     concurrency: int = 24
 
 
@@ -58,60 +45,30 @@ class VisionAgentConfig(BaseModel):
 
 
 class ServerConfig(BaseModel):
-    """API + web URLs.
-
-    `public_base_url` is the single public origin every client hits in
-    production — both the SPA load and every API/file/CDN/upload path
-    are fronted by it. In a Discord Activity deploy that's the DA host
-    (`https://<app_id>.discordsays.com`) and Discord's URL Mappings
-    forward `/`, `/api`, `/r2`, `/cdn`, `/t` to the matching upstreams.
-    Browser clients running outside DA hit the same origin cross-
-    origin; CORS allows it because the regex below covers DA hosts.
-    Dev simply points at the local API and the SPA dev server proxies.
-    """
+    """Single public origin fronting SPA + API + CDN + upload paths."""
     public_base_url: str = "http://localhost:8000"
-    # Extra web origins to allow in CORS, beyond `public_base_url` and
-    # the built-in `*.discordsays.com` regex. Needed when the SPA is
-    # served from a different host than the public origin clients
-    # primarily hit — e.g. CF Pages at `mangalocal.com` cross-origins
-    # to the DA host `discordsays.com` to reach the API. Browsers
-    # outside DA preflight from the SPA's own origin, which must be
-    # whitelisted here or every fetch fails with "Disallowed CORS".
+    # Additional CORS origins beyond public_base_url and the built-in
+    # *.discordsays.com regex (e.g. when the SPA is served from a
+    # different host than the API).
     extra_web_origins: list[str] = Field(default_factory=list)
     host:           str = "0.0.0.0"
     port:           int = 8000
-    # Hosts allowed in the Host header. Behind Cloudflare Tunnel the
-    # uvicorn server sees the tunnel's ingress hostname (e.g.
-    # `api.mangalocal.com`), NOT `public_base_url` — Discord proxy +
-    # tunnel both preserve the upstream's real hostname. Production
-    # must set TRUSTED_HOSTS explicitly to that ingress; dev derives
-    # from `public_base_url` + localhost. `["*"]` disables the check.
+    # Host-header allowlist. Must include the tunnel/proxy ingress
+    # hostname in production (it can differ from public_base_url).
+    # ["*"] disables the check.
     trusted_hosts: list[str] = Field(default_factory=list)
 
 
 class AuthConfig(BaseModel):
-    """Discord OAuth + JWT session config.
-
-    Secrets (client_secret, jwt_secret) come from environment variables
-    in load_config() — never the toml. The SPA owns the OAuth redirect
-    URI (it points at the web origin's /auth/callback), so the engine
-    does not store one.
-    """
+    """Discord OAuth + JWT. Secrets read from env in load_config()."""
     discord_client_id:     str = ""
     discord_client_secret: str = ""
-    # Optional gating: if set, user must be a member of this guild snowflake.
-    # When gating is on, the engine fetches the public widget
-    # (/guilds/{id}/widget.json) for the guild name + invite URL on
-    # demand. The operator just needs to enable "Server Widget" in
-    # Discord Server Settings — no extra config here.
+    # Empty disables membership gating.
     discord_guild_id:      str = ""
-    # Discord role ID (snowflake) that grants admin privileges in the app.
-    # Right-click role in Discord (with developer mode on) → Copy Role ID.
-    # Empty = no app admin (engine refuses admin operations).
+    # Empty = engine refuses admin operations.
     admin_role_id:         str = ""
-    # JWT signing key. MUST be set in production. Auto-generated for dev.
+    # MUST be set in production; auto-generated for dev.
     jwt_secret:            str = ""
-    # Session lifetime (days)
     session_days:          int = 30
 
 
@@ -125,15 +82,8 @@ class PublicStoreConfig(BaseModel):
 
 
 class PipelineStoreConfig(BaseModel):
-    """Where pipeline blobs (prepared, masks) live for cross-worker sharing.
-
-    Single-host: type=local, all workers share the same disk via the
-    same LocalBlobStore. Multi-host: type=http pointing at the storage
-    role's /api/blobs endpoint, typically reached via tailnet so the
-    transport stays on the encrypted mesh.
-    """
+    """Cross-worker blob storage. local=shared disk, http=storage role."""
     type:           str = "local"      # local | http
-    # http
     http_base_url:  str = ""           # e.g. http://100.72.203.52:8000
     http_api_token: str = ""           # env: PIPELINE_HTTP_TOKEN
 
@@ -141,29 +91,12 @@ class PipelineStoreConfig(BaseModel):
 class InboxConfig(BaseModel):
     """Short-lived chapter-zip inbox.
 
-    Browser clients (web SPA, extension) PUT a packed chapter zip via
-    pre-signed multipart URLs straight to this backend, sparing the
-    engine's home upstream bandwidth. The worker then fetches the zip
-    and prepares the chapter.
+    Browser clients PUT zips via presigned multipart URLs straight to
+    the backend; the worker fetches them after.
 
-    Backends:
-      - `local`: filesystem under `paths.artifacts/_inbox/`. Multipart
-        is simulated; PUTs go to a sibling local API route. Dev only.
-      - `s3`:    any S3-compatible endpoint (R2 / AWS S3 / B2 /
-        MinIO / Wasabi). Set `s3_endpoint` to the provider URL.
-
-    The bucket SHOULD have a 24h lifecycle rule on the prefix as a
-    safety net for upload-aborted prefixes; the engine deletes
-    successful uploads after ingest.
-
-    The bucket MUST have CORS configured to expose the `ETag` header
-    on PUT responses, otherwise the browser cannot complete the
-    multipart flow:
-
-        AllowedOrigins: <web origin> + chrome-extension://<id>
-        AllowedMethods: PUT
-        ExposeHeaders:  ETag
-        MaxAgeSeconds:  3600
+    For s3 backends the bucket MUST expose the ETag header on PUT
+    (CORS ExposeHeaders: ETag), otherwise the multipart flow breaks.
+    A 24h lifecycle rule on the prefix is recommended.
     """
     type:                 str = "local"      # local | s3
     # s3-compatible
@@ -188,18 +121,7 @@ class StorageConfig(BaseModel):
 
 
 class RateLimitConfig(BaseModel):
-    """Per-user chapter quota for actions that consume LLM cost.
-
-    A "chapter slot" is consumed by draft-create and render-create —
-    never by idle upload, cache-hit reuse, or reads. Admins bypass
-    entirely.
-
-    Counters are time-windowed (last hour, last day) over rows in
-    `chapter_consumes`. The concurrency limit was removed in the
-    material refactor — `projects.owner_id` is gone, so there's no
-    longer a coherent definition of "in-flight" chapters per user
-    without a non-trivial join through translations + tasks.
-    """
+    """Per-user chapter slot quota. Consumed by draft/render-create."""
     chapters_per_hour: int = 10
     chapters_per_day:  int = 50
 
@@ -207,11 +129,9 @@ class RateLimitConfig(BaseModel):
 class DatabaseConfig(BaseModel):
     """Postgres pool sizing.
 
-    `statement_cache_size=0` is the historical default — asyncpg's
-    per-connection prepared-statement cache has occasionally surfaced
-    `_get_statement` failures under concurrent first requests. Leave
-    at 0 unless profiling justifies otherwise; bump via
-    `DB_STATEMENT_CACHE` env or `[database]` toml block.
+    statement_cache_size=0 sidesteps asyncpg's prepared-statement
+    cache, which has surfaced _get_statement races under concurrent
+    first requests.
     """
     pool_min_size:        int = 2
     pool_max_size:        int = 10
@@ -227,18 +147,11 @@ class Config(BaseSettings):
     translation: TranslationConfig = TranslationConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
     bubble_scope_imgsz: int = 640
-    # OCR backend choice. `"auto"` picks the first available backend in
-    # the order google-lens → apple-vision → windows-ocr → tesseract.
-    # Set explicitly (e.g. `"apple_vision"`) to pin a backend regardless
-    # of what's installed. Japanese projects always use manga-ocr if it
-    # is installed, ignoring this setting.
+    # "auto" tries google-lens → apple-vision → windows-ocr → tesseract.
+    # Japanese always uses manga-ocr if installed.
     ocr_backend: str = "auto"
-    # Override the Google Lens endpoint. Empty → library default
-    # (https://lensfrontend-pa.googleapis.com/v1/crupload). Setting this
-    # to a Discord Activity proxy URL
-    # (e.g. https://<app_id>.discordsays.com/lens/v1/crupload) routes
-    # through Cloudflare's edge — measured 30–50% faster from APAC and
-    # noticeably lower variance under load.
+    # Empty → google-lens default endpoint. Override e.g. to route
+    # through a Discord Activity proxy.
     lens_endpoint: str = ""
     # Postgres DSN. Required — engine refuses to start without it.
     database_url: str = ""
@@ -247,9 +160,6 @@ class Config(BaseSettings):
     storage: StorageConfig = StorageConfig()
     rate_limit: RateLimitConfig = RateLimitConfig()
     database: DatabaseConfig = DatabaseConfig()
-
-
-# ── Loading ──────────────────────────────────────────────────────
 
 
 def _find_config_file(root: Path | None = None) -> Path:
@@ -307,7 +217,6 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
             k: os.path.expandvars(v) for k, v in pcfg.extra_headers.items()
         }
 
-    # Server URLs — env wins over toml.
     config.server.public_base_url = os.environ.get(
         "PUBLIC_BASE_URL", config.server.public_base_url,
     ).rstrip("/")
@@ -322,10 +231,6 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         except ValueError:
             pass
 
-    # Trusted hosts for the Host header. Comma-separated env or
-    # auto-derive from public_base_url. Behind a tunnel/proxy the
-    # ingress hostname differs from public_base_url and TRUSTED_HOSTS
-    # MUST be set explicitly. "*" disables the check (dev only).
     env_hosts = os.environ.get("TRUSTED_HOSTS", "").strip()
     if env_hosts:
         config.server.trusted_hosts = [h.strip() for h in env_hosts.split(",") if h.strip()]
@@ -335,14 +240,10 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
         host = urlparse(config.server.public_base_url).hostname
         if host:
             derived.append(host)
-        # Always allow localhost so health probes / SSH tunnels still
-        # work without explicit config.
         derived.extend(["localhost", "127.0.0.1"])
-        # De-dup preserving order.
         seen: set[str] = set()
         config.server.trusted_hosts = [h for h in derived if not (h in seen or seen.add(h))]
 
-    # Database — env wins over toml. Must be a postgresql:// DSN.
     config.database_url = os.environ.get("DATABASE_URL", config.database_url)
     if not config.database_url:
         raise RuntimeError(
@@ -355,8 +256,6 @@ def load_config(root: Path | None = None) -> tuple[Config, Paths]:
             f"DATABASE_URL must be postgresql://… — got {config.database_url!r}."
         )
 
-    # Pool sizing env overrides — keep these flat so ops can tweak
-    # without dropping a toml block. Ignore invalid ints (fail loud).
     def _env_int(name: str, current: int) -> int:
         raw = os.environ.get(name)
         if raw is None or raw == "":

@@ -1,19 +1,25 @@
 // Work-centric chapter merge.
 //
-// One Work groups every sibling material; the canonical MangaPage
-// renders the active source's manifest chapter list as the spine,
-// overlaid with cross-source translations the community has spawned.
+// One Work groups every sibling material. After community-vote
+// merges, a single Work may carry N source-installed materials
+// (HappyMH-zh + OTruyen-vi + MangaDex multilang). The chapter list is
+// the UNION of every installed source's manifest spine, overlaid
+// with cross-source translations the community has spawned.
 //
 // Two inputs:
-//   • workDetail  — server payload (sibling materials, viewer entry,
-//                   work_chapters with shared translations attached).
-//   • activeSource / manifestDetail — the source the user is viewing.
-//                   Drives the chapter spine (raw versions).
+//   • workDetail     — server payload (sibling materials, viewer
+//                       entry, work_chapters with shared translations
+//                       attached).
+//   • manifestSources — every installed-source material's manifest
+//                       chapter list. Caller fetches in parallel; a
+//                       failed manifest fetch silently contributes
+//                       no raws.
 //
 // Two kinds of versions per chapter:
 //
-//   • raw          a manifest-live chapter URL on the ACTIVE source.
-//                   Always exactly one per chapter row.
+//   • raw          a manifest-live chapter URL on ANY installed
+//                   source. N source materials → up to N raws per
+//                   chapter row.
 //   • translation  a Work-chapter translation row from the server
 //                   (cross-source, any sibling material's spawn).
 //
@@ -103,20 +109,26 @@ export interface HubChapter {
 }
 
 
+/** One installed-source material's manifest chapter list, paired
+ *  with the source plugin handle that resolved its name. The Work
+ *  page may attach several of these — one per installed source
+ *  material — and `mergeChapters` unions all their raws into a
+ *  single chapter list.
+ */
+export interface ManifestSource {
+  material: ApiMaterial
+  source:   InstalledSource
+  chapters: MangaChapterRef[]
+}
+
+
 export interface MergeInput {
   /** Server work payload — sibling materials + cross-source overlay. */
-  work:            ApiWorkDetail
-  /** Active source the user is viewing (= materialId in `?src=`).
-   *  Used to produce the raw versions on each chapter row. */
-  activeMaterialId: number | null
-  /** Manifest chapter list for the active source (live). Empty when
-   *  no manifest fetch has resolved yet, when the active source is
-   *  offline, or when the active material has no manifest (ext /
-   *  upload). */
-  manifestChapters: MangaChapterRef[]
-  /** Installed source for the active material, for name resolution
-   *  on raw versions. Null when not installed. */
-  activeSource:    InstalledSource | null
+  work:             ApiWorkDetail
+  /** Every installed-source material whose manifest has resolved.
+   *  A material with a failed / in-flight manifest fetch is omitted
+   *  by the caller (silent skip). */
+  manifestSources:  ManifestSource[]
   /** Map of every installed source by manifest id. Used to resolve
    *  source names on translation versions whose draft was rendered
    *  from a sibling material (cross-source overlay). */
@@ -125,28 +137,35 @@ export interface MergeInput {
 
 
 export function mergeChapters(input: MergeInput): HubChapter[] {
-  const { work, activeMaterialId, manifestChapters, activeSource, installedSources } = input
+  const { work, manifestSources, installedSources } = input
 
   const materialsById = new Map<number, ApiMaterial>()
   for (const m of work.materials) materialsById.set(m.id, m)
-  const activeMaterial = activeMaterialId != null
-    ? materialsById.get(activeMaterialId) ?? null
-    : null
 
   const byNumber = new Map<string, HubChapter>()
 
-  // 1) Manifest chapters of the active source → raw versions.
-  if (activeMaterial) {
-    for (const mc of manifestChapters) {
+  // 1) Manifest chapters of every installed source → raw versions.
+  //    N source materials can each contribute a raw at the same
+  //    numberNorm. The HubVersion key already embeds materialId so
+  //    raws across sources stay unique.
+  for (const ms of manifestSources) {
+    const material = ms.material
+    // Single-language sources (OTruyen, HappyMH) don't set per-chapter
+    // language on `mc`; the source's static `manifest.languages[0]` is
+    // the authoritative fallback. `material.languages` is a different
+    // concept (what langs the source EXPOSES — used for browse filters
+    // / badges) and is not a reliable signal for a chapter's lang.
+    const sourceLang = ms.source.manifest.languages[0] ?? null
+    for (const mc of ms.chapters) {
       const num = mc.numberNorm
       const ch  = ensureChapter(byNumber, num, mc.label)
       ch.versions.push({
-        key:            `raw::${activeMaterial.id}::${mc.id}`,
+        key:            `raw::${material.id}::${mc.id}`,
         kind:           'raw',
-        lang:           normalizeLang(mc.language ?? activeMaterial.languages[0]),
-        materialId:     activeMaterial.id,
-        sourceId:       activeMaterial.source,
-        sourceName:     activeSource?.manifest.name ?? activeMaterial.source,
+        lang:           normalizeLang(mc.language ?? sourceLang),
+        materialId:     material.id,
+        sourceId:       material.source,
+        sourceName:     ms.source.manifest.name ?? material.source,
         upstreamUrl:    mc.url,
         numberNorm:     mc.numberNorm,
         translationId:  null,
@@ -261,31 +280,7 @@ function newer(a: string | null, b: string | null | undefined): string | null {
 }
 
 
-// ── Display helpers (re-exported from the legacy module) ──────────
-
-
-/** Strip "Chapter N" / "Chương N" prefixes from a chapter label so
- *  the UI doesn't show "Chương 40" next to the chapter number cell.
- *  Returns null when nothing meaningful remains after stripping.
- *
- *  Patterns covered:
- *    VI    "Chương 40", "Chương: 40", "Chương 40: Trận cuối"
- *    EN    "Chapter 40", "Ch. 40", "Ch 40", "Chapter 40 - Showdown"
- *    ZH    "第40话", "第40話"
- *    JA    "第40話", "第40回"
- *    KO    "40화"
- */
-const _PREFIX_RE = /^\s*(?:ch(?:apter|ương|\.|)\s*:?\s*[0-9]+(?:\.[0-9]+)?|第\s*[0-9]+(?:\.[0-9]+)?\s*[话話回]?|[0-9]+(?:\.[0-9]+)?\s*화)\s*[:\-—·]?\s*/i
-
-export function stripChapterPrefix(
-  label: string | null | undefined,
-  _number: string,
-): string | null {
-  if (!label) return null
-  const stripped = label.replace(_PREFIX_RE, '').trim()
-  if (stripped.length === 0) return null
-  return stripped
-}
+// ── Display helpers ────────────────────────────────────────────────
 
 
 // ── Action helpers ───────────────────────────────────────────────

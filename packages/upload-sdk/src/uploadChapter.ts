@@ -16,7 +16,7 @@
 import { ProgressTracker, type ProgressCallback } from './progress'
 import { PermanentPutError, putPart, type PutPartResult } from './putPart'
 import type {
-  ApiChapterLike, FinalizePart, UploadHttpClient,
+  ApiChapterLike, FinalizePart, UploadHttpClient, WorkUploadHttpClient,
 } from './api'
 
 const DEFAULT_CONCURRENCY = 4
@@ -53,11 +53,39 @@ export async function uploadChapterZip(
   zip:        Blob,
   opts:       UploadOptions = {},
 ): Promise<ApiChapterLike> {
+  const init = await client.uploadInit(materialId, { byte_size: zip.size })
+  return finalizeUpload(client, init, materialId, zip, opts)
+}
+
+
+/** Per-Work upload helper: caller passes the Work id; the server
+ *  lazily creates (or resolves) the viewer's upload-origin material
+ *  on init and we use the returned `material_id` for finalize +
+ *  abort. Shape mirrors `uploadChapterZip` so consumers can swap
+ *  without restructuring their progress UI. */
+export async function uploadChapterZipToWork(
+  client: WorkUploadHttpClient,
+  workId: number,
+  zip:    Blob,
+  opts:   UploadOptions = {},
+): Promise<ApiChapterLike> {
+  const init = await client.workUploadInit(workId, { byte_size: zip.size })
+  // Init now carries the resolved material id; subsequent finalize/
+  // abort must target that material, not the work.
+  return finalizeUpload(client, init, init.material_id, zip, opts)
+}
+
+
+async function finalizeUpload(
+  client:     UploadHttpClient,
+  init:       UploadInitOutLike,
+  materialId: number,
+  zip:        Blob,
+  opts:       UploadOptions,
+): Promise<ApiChapterLike> {
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
   const onProgress  = opts.onProgress ?? (() => {})
 
-  // 1. Init.
-  const init = await client.uploadInit(materialId, { byte_size: zip.size })
   if (init.parts.length === 0) {
     throw new Error('upload-init returned zero parts')
   }
@@ -65,8 +93,6 @@ export async function uploadChapterZip(
   const tracker = new ProgressTracker(zip.size, init.parts.length, onProgress)
   tracker.setPhase('uploading')
 
-  // 2. Drive parallel part PUTs. On any error, abort the multipart
-  //    upload before re-throwing so the inbox key doesn't linger.
   const queue = [...init.parts]
   const completed: PutPartResult[] = []
   let failed: unknown = null
@@ -107,7 +133,6 @@ export async function uploadChapterZip(
     )
   }
 
-  // 3. Finalize.
   tracker.setPhase('finalizing')
   tracker.flush()
   completed.sort((a, b) => a.number - b.number)
@@ -126,11 +151,20 @@ export async function uploadChapterZip(
       source_lang:  opts.sourceLang,
     })
   } catch (err) {
-    // Finalize failed (engine couldn't unpack/ingest, or quota tripped
-    // at the commit point). Abort so the inbox key dies now.
     await safeAbort(client, materialId, init.tmp_id, init.upload_id)
     throw err
   }
+}
+
+
+/** Minimal init shape `finalizeUpload` reads — narrower than
+ *  `UploadInitOut` so the per-material path doesn't have to surface
+ *  a `material_id` it already knows.  */
+interface UploadInitOutLike {
+  tmp_id:    string
+  upload_id: string
+  parts:     { number: number; url: string }[]
+  part_size: number
 }
 
 

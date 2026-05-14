@@ -15,11 +15,13 @@ Discord Activity flow:
   2. Activity POSTs the code here with redirect_uri = the value the SDK
      used internally (also exposed by the SDK).
 
-Schema 19 removed guild-based authorization — Discord is now ONLY an
-identity provider. There is no membership check, no admin-role gate
-beyond a Discord-side role list snapshotted into the JWT (kept for
-forward-compat with admin features). The community is a single global
-pool; if a user can log in via Discord, they're in.
+Discord is the identity provider AND the authorization source. Login
+itself has no guild gate — anyone who can OAuth gets a session. RBAC
+is layered on top: at exchange time we read the user's role IDs in
+`AuthConfig.discord_guild_id` (scope `guilds.members.read`) and embed
+them in the JWT. `require_admin` then checks for
+`AuthConfig.admin_role_id` membership. Users outside the guild log in
+with `roles=[]` and are treated as ordinary members.
 """
 
 from __future__ import annotations
@@ -29,11 +31,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from typoon.api.auth import exchange_code, fetch_user, issue_jwt
-from typoon.api.deps import get_auth_cfg, require_user
+from typoon.api.auth import exchange_code, fetch_guild_member_roles, fetch_user, issue_jwt
+from typoon.api.deps import get_auth_cfg, get_store, require_user
+from typoon.api.models import SessionUser
 from typoon.config import AuthConfig
 from typoon.storage import Store
-from typoon.api.deps import get_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -77,13 +79,16 @@ async def discord_exchange(
     return {"token": token}
 
 
-@router.get("/me")
+@router.get("/me", response_model=SessionUser)
 async def me(
     user: dict       = Depends(require_user),
     cfg:  AuthConfig = Depends(get_auth_cfg),
-):
-    is_admin = bool(cfg.admin_role_id) and cfg.admin_role_id in user.get("roles", [])
-    return _user_out(user, is_admin=is_admin)
+) -> SessionUser:
+    """Canonical session payload. The SPA caches this under the
+    React Query key `['session']`; every consumer (header avatar,
+    settings page, reading-language picker) reads from that one
+    cache instead of refetching."""
+    return _session_user(user, cfg=cfg)
 
 
 @router.post("/logout", status_code=204)
@@ -92,9 +97,6 @@ async def logout():
     exists so the UI can call a logical 'logout' route. If we add a token
     revocation list later, this is where it goes."""
     return None
-
-
-# ── Internals ────────────────────────────────────────────────────────
 
 
 async def _exchange_and_issue(
@@ -110,6 +112,12 @@ async def _exchange_and_issue(
 
     discord_user = await fetch_user(access_token)
 
+    # Snapshot the user's guild role IDs into the JWT so `require_admin`
+    # can authorise without a per-request Discord round trip. Role
+    # changes therefore need a re-login — acceptable for an ops surface
+    # where elevation is a deliberate, infrequent event.
+    role_ids = await fetch_guild_member_roles(access_token, cfg.discord_guild_id)
+
     user = await db.upsert_user_from_identity(
         provider="discord",
         external_id=discord_user.id,
@@ -123,15 +131,24 @@ async def _exchange_and_issue(
         },
     )
 
-    # JWT carries an empty roles list — admin elevation requires the
-    # operator to manually grant via /api/admin (out of scope here).
-    return issue_jwt(user_id=user["id"], role_ids=[], cfg=cfg)
+    return issue_jwt(user_id=user["id"], role_ids=role_ids, cfg=cfg)
 
 
-def _user_out(user: dict, *, is_admin: bool) -> dict:
-    return {
-        "id":           user["id"],
-        "display_name": user["display_name"],
-        "avatar_url":   user.get("avatar_url"),
-        "is_admin":     is_admin,
-    }
+def _session_user(user: dict, *, cfg: AuthConfig) -> SessionUser:
+    """Project a Store user row into the wire-shape `SessionUser`,
+    deriving `is_admin` from the JWT-snapshotted Discord roles.
+    Shared by `GET /api/auth/me` and `PATCH /api/me/preferences`
+    so both endpoints emit byte-identical payloads — the SPA can
+    overwrite the session cache with either response without
+    schema-shape branching."""
+    is_admin = (
+        bool(cfg.admin_role_id)
+        and cfg.admin_role_id in user.get("roles", [])
+    )
+    return SessionUser(
+        id                    = user["id"],
+        display_name          = user["display_name"],
+        avatar_url            = user.get("avatar_url"),
+        is_admin              = is_admin,
+        preferred_target_lang = user.get("preferred_target_lang"),
+    )

@@ -1,165 +1,82 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import {
   AlertTriangle, Hourglass, Loader2, PauseCircle,
 } from 'lucide-react'
 import { api } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
+import { useSession } from '@features/auth/session'
 import { cn } from '@shared/lib/cn'
 
 // =============================================================================
-// WorkersIndicator — header pill showing current pipeline state.
+// WorkersIndicator — header pill, ADMIN ONLY.
 //
-// Visible state priority (highest first), so the user reads ONE
-// signal instead of a mixed message:
+// Regular users get per-chapter activity via their library cards
+// (`translating_summary` on each entry), which answers "is my
+// chapter done yet" with the right scope — only their manga, with
+// titles and a click-to-resume affordance. The system-wide pill
+// here is operator context, not consumer context, so we render
+// nothing for non-admins.
 //
-//   1. blocked  — at least one stage is paused waiting for admin.
-//                 Amber pill, no spinner.  "Tạm ngưng N"
-//   2. failed   — dead-lettered tasks (attempts past MAX_ATTEMPTS).
+// For admins, the pill is a status-only widget: visible iff there
+// is something to surface. When the pipeline is fully idle the
+// pill hides — admins reach /admin/ops via the sidebar entry
+// (Sidebar.tsx, NAV_FOOT_ADMIN). The pill is just a fast-path
+// "click here to handle the live incident".
+//
+// Visible-state priority (highest first):
+//
+//   1. blocked  — stage paused waiting for operator.
+//                 Amber pill.              "Tạm ngưng N"
+//   2. failed   — dead-letter not yet acknowledged via draft.error.
 //                 Rose pill.               "Lỗi N"
-//   3. running  — workers actively processing chapters.
+//   3. running  — workers active.
 //                 Info pill + spinner.     "Đang xử lý N"
-//   4. pending  — queued, waiting for an idle worker.
+//   4. pending  — queued, no idle worker.
 //                 Warning pill.            "N chờ"
-//
-// Hides entirely when everything is zero.
+//   5. stale    — claim older than STALE_CLAIM_INTERVAL.
+//                 Error pill.              "Treo N"
 // =============================================================================
 
-const STAGE_LABEL: Record<string, string> = {
-  scan:      'Quét bong bóng',
-  translate: 'Đang dịch',
-  render:    'Đang render',
-}
-
 export function WorkersIndicator() {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const { user } = useSession()
+  const navigate = useNavigate()
+  const isAdmin = !!user?.is_admin
 
+  // Skip the query entirely for non-admins: no point polling /workers
+  // every 4s for data we'll never render.
   const { data } = useQuery({
-    queryKey: qk.workers(),
-    queryFn:  api.workers,
+    queryKey:        qk.workers(),
+    queryFn:         api.workers,
     refetchInterval: 4000,
-    staleTime: 1000,
+    staleTime:       1000,
+    enabled:         isAdmin,
   })
 
-  // Close popover on outside click.
-  useEffect(() => {
-    if (!open) return
-    const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
-  }, [open])
+  if (!isAdmin) return null
 
   const stages       = data?.stages ?? {}
   const pausedStages = data?.paused_stages ?? []
   const totals = sumTotals(stages)
 
-  // Idle — nothing is happening anywhere. Hide the pill so the
-  // header stays uncluttered.
+  // Nothing to surface → hide. Admin still has the sidebar entry.
   if (totals.all === 0 && pausedStages.length === 0) return null
 
   const tone = pickTone(totals, pausedStages.length)
   const { icon, label } = pillFor(tone, totals)
 
   return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          'flex items-center gap-2 h-8 px-2.5 rounded-sm cursor-pointer transition-colors',
-          toneClasses(tone),
-        )}
-      >
-        {icon}
-        <span className="text-xs font-medium tabular">{label}</span>
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-80 z-50 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden">
-          <header className="px-3.5 py-2.5 border-b border-border-soft">
-            <p className="text-sm font-semibold text-text">Hàng đợi dịch</p>
-            <p className="text-xs text-text-subtle mt-0.5">
-              {totals.running} chạy · {totals.pending} chờ
-              {totals.blocked > 0 && ` · ${totals.blocked} tạm ngưng`}
-              {totals.failed  > 0 && ` · ${totals.failed} lỗi`}
-            </p>
-          </header>
-
-          {/* Paused-stage banner takes top billing — this is the
-              ONE thing the user needs to know about. */}
-          {pausedStages.length > 0 && (
-            <div className="px-3.5 py-2.5 border-b border-border-soft bg-amber-500/5">
-              <p className="text-xs font-medium text-amber-300 inline-flex items-center gap-1.5">
-                <PauseCircle size={12} />
-                Hệ thống tạm ngưng
-              </p>
-              <p className="text-xs text-amber-200/70 mt-1">
-                {pausedStages.map((s) => STAGE_LABEL[s] ?? s).join(', ')}
-                {' — '}đang chờ quản trị xử lý.
-              </p>
-            </div>
-          )}
-
-          <div className="px-3.5 py-2.5 space-y-2">
-            {(['scan', 'translate', 'render'] as const).map((stage) => {
-              const s = stages[stage] ?? {
-                pending: 0, running: 0, stale: 0, blocked: 0, failed: 0,
-              }
-              const total = s.pending + s.running + s.stale
-                          + s.blocked + s.failed
-              if (total === 0) return null
-              const isPaused = pausedStages.includes(stage)
-              return (
-                <div key={stage} className="flex items-center justify-between text-xs">
-                  <span
-                    className={cn(
-                      'inline-flex items-center gap-1.5',
-                      isPaused ? 'text-amber-300' : 'text-text-muted',
-                    )}
-                  >
-                    {isPaused && <PauseCircle size={11} />}
-                    {STAGE_LABEL[stage]}
-                  </span>
-                  <div className="flex items-center gap-3">
-                    {s.running > 0 && (
-                      <Stat icon={<Loader2 size={12} className="animate-spin" />}
-                            count={s.running} color="text-info-text" />
-                    )}
-                    {s.pending > 0 && !isPaused && (
-                      <Stat icon={<Hourglass size={12} />}
-                            count={s.pending} color="text-warning-text" />
-                    )}
-                    {s.blocked > 0 && (
-                      <Stat icon={<PauseCircle size={12} />}
-                            count={s.blocked} color="text-amber-400"
-                            title="Tạm ngưng — chờ quản trị" />
-                    )}
-                    {s.stale > 0 && (
-                      <Stat icon={<span className="size-1.5 rounded-full bg-error" />}
-                            count={s.stale} color="text-error-text"
-                            title="Bị treo, không phản hồi" />
-                    )}
-                    {s.failed > 0 && (
-                      <Stat icon={<AlertTriangle size={12} />}
-                            count={s.failed} color="text-rose-400"
-                            title="Đã hết lượt thử lại — cần quản trị" />
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-
-            {totals.stale > 0 && (
-              <p className="text-xs text-error-text/80 pt-2 border-t border-border-soft">
-                {totals.stale} chương bị treo trên 10 phút — kiểm tra worker.
-              </p>
-            )}
-          </div>
-        </div>
+    <button
+      onClick={() => void navigate({ to: '/admin/ops' })}
+      title="Mở quản trị pipeline"
+      className={cn(
+        'flex items-center gap-2 h-8 px-2.5 rounded-sm cursor-pointer transition-colors',
+        toneClasses(tone),
       )}
-    </div>
+    >
+      {icon}
+      <span className="text-xs font-medium tabular">{label}</span>
+    </button>
   )
 }
 
@@ -244,24 +161,4 @@ function toneClasses(tone: Tone): string {
     case 'pending':
     default:        return 'bg-warning-bg text-warning-text hover:brightness-110'
   }
-}
-
-
-function Stat({
-  icon, count, color, title,
-}: {
-  icon:   React.ReactNode
-  count:  number
-  color:  string
-  title?: string
-}) {
-  return (
-    <span
-      className={cn('inline-flex items-center gap-1.5', color)}
-      title={title}
-    >
-      {icon}
-      <span className="tabular">{count}</span>
-    </span>
-  )
 }

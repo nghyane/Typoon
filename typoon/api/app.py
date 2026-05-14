@@ -25,6 +25,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from typoon.api.deps import get_store
 from typoon.api.middleware import RequestIDMiddleware
 from typoon.api.routes import (
+    admin_ops,
     auth, blobs, community, glossary, library, material, me,
     memory, reports,
     translate, translate_events, upload, work, workers,
@@ -147,6 +148,7 @@ if _serve_api:
     app.include_router(reports.router)
     app.include_router(reports.admin_router)
     app.include_router(workers.router)
+    app.include_router(admin_ops.router)
 
 if _serve_storage:
     app.include_router(blobs.router)

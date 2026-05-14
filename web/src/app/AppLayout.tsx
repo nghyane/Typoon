@@ -3,21 +3,23 @@ import { useNavigate, useMatches } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { BottomNav } from './BottomNav'
+import { AdminTopBar } from './AdminTopBar'
 import { Toaster } from '@shared/ui/Toaster'
 import { ConfirmHost } from '@shared/ui/Confirm'
-import { useCurrentUser } from '@features/auth/auth'
+import { useSession } from '@features/auth/session'
 import { cn } from '@shared/lib/cn'
 
 // =============================================================================
 // AppLayout — single source of truth for the page shell.
 //
 // Each route declares its needs through `staticData`:
-//   - `chrome: 'app' | 'bare'`   — full app chrome (sidebar+header+bottomnav)
-//                                  vs. bare shell (route owns its own chrome,
-//                                  e.g. the chapter reader).
+//   - `chrome: 'app' | 'admin' | 'bare'`
+//        • app   — full app chrome (sidebar+header+bottomnav).
+//        • admin — ops workspace: tight header with back-to-app + the
+//                  page title, no sidebar / no search / no bottomnav.
+//                  The admin dashboard owns its own internal layout.
+//        • bare  — route owns its chrome (chapter reader).
 //   - `auth:   'public' | 'required'` — whether visiting requires a session.
-//                                       Public routes render children
-//                                       directly with no guard or shell.
 //
 // Defaults: `chrome='app'`, `auth='required'`.
 // AppLayout never inspects pathnames. New routes opt in by setting
@@ -30,36 +32,37 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const chrome  = leaf?.staticData?.chrome ?? 'app'
   const auth    = leaf?.staticData?.auth   ?? 'required'
 
-  const nav = useNavigate()
-  const { user, loading } = useCurrentUser()
+  const nav     = useNavigate()
+  const session = useSession()
 
   // Auth guard — applies only to routes that require a session.
+  // We branch on the discriminated status (not on `user`/`loading`
+  // separately) so an `error` state doesn't get mistaken for
+  // `unauthenticated` and silently bounce the user to /login.
   useEffect(() => {
     if (auth !== 'required') return
-    if (!loading && !user) nav({ to: '/login' })
-  }, [auth, loading, user, nav])
+    if (session.status === 'unauthenticated') nav({ to: '/login' })
+  }, [auth, session.status, nav])
 
-  // Global 401 → bounce to login.
+  // Global 401 → bounce to login. The session module already cleared
+  // the token + cache when the unauthorized 401 fired; we just route.
   useEffect(() => {
     const onUnauth = () => nav({ to: '/login' })
     window.addEventListener('typoon:unauthorized', onUnauth)
     return () => window.removeEventListener('typoon:unauthorized', onUnauth)
   }, [nav])
 
-  // Document title follows the brand. Only set when we have a real name —
-  // never fall back to a hardcoded string. The HTML <title> in index.html
-  // is a one-time placeholder shown before the SPA boots.
-  useEffect(() => {
-    if (user?.guild_name) document.title = user.guild_name
-  }, [user])
-
   // Public route (login, oauth callback): render children verbatim, no
   // chrome, no guard. The page owns its full viewport.
   if (auth === 'public') return <>{children}</>
 
-  // Auth required but session not ready: avoid flashing app chrome around
-  // an empty body before the redirect effect fires.
-  if (!loading && !user) return null
+  // Auth required but session not authenticated: avoid flashing app
+  // chrome around an empty body before the redirect effect fires.
+  // While `loading`, render nothing rather than the shell — the
+  // session query resolves on every nav, the flicker would be
+  // visible on every route switch otherwise.
+  if (session.status !== 'authenticated') return null
+  const user = session.user
 
   // Bare shell: no sidebar/header/bottomnav. The page provides its own
   // toolbar (e.g. ReaderToolbar) and scrolls the document — `min-h-dvh`
@@ -68,13 +71,30 @@ export function AppLayout({ children }: { children: ReactNode }) {
   if (chrome === 'bare') {
     return (
       <div className="min-h-dvh bg-bg text-text text-sm">
-        {user && (
-          <>
-            {children}
-            <Toaster />
-            <ConfirmHost />
-          </>
+        {children}
+        <Toaster />
+        <ConfirmHost />
+      </div>
+    )
+  }
+
+  // Admin workspace: no sidebar (manga nav is irrelevant), no global
+  // search, no bottomnav. A tight top bar with "← Back to app" + a
+  // workspace label keeps the operator anchored. The admin dashboard
+  // page owns everything below the bar.
+  if (chrome === 'admin') {
+    return (
+      <div
+        className={cn(
+          'flex flex-col h-dvh overflow-hidden bg-bg text-text text-sm',
+          'pt-[var(--sait)]',
+          'pl-[var(--sail)] pr-[var(--sair)]',
         )}
+      >
+        <AdminTopBar user={user} />
+        <main className="flex-1 overflow-auto pb-[var(--saib)]">{children}</main>
+        <Toaster />
+        <ConfirmHost />
       </div>
     )
   }
@@ -95,24 +115,17 @@ export function AppLayout({ children }: { children: ReactNode }) {
         'pl-[var(--sail)] pr-[var(--sair)]',
       )}
     >
-      {user && (
-        <>
-          <Sidebar
-            brandName={user.guild_name}
-            brandIcon={user.guild_icon_url}
-          />
-          <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-            <Header user={user} />
-            {/* Bottom safe-area: on mobile BottomNav owns the inset
-                (its bg-surface fills the home-indicator strip). On
-                desktop there's no BottomNav, so Main carries it. */}
-            <main className="flex-1 overflow-auto sm:pb-[var(--saib)]">{children}</main>
-            <BottomNav />
-          </div>
-          <Toaster />
-          <ConfirmHost />
-        </>
-      )}
+      <Sidebar />
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+        <Header user={user} />
+        {/* Bottom safe-area: on mobile BottomNav owns the inset
+            (its bg-surface fills the home-indicator strip). On
+            desktop there's no BottomNav, so Main carries it. */}
+        <main className="flex-1 overflow-auto sm:pb-[var(--saib)]">{children}</main>
+        <BottomNav />
+      </div>
+      <Toaster />
+      <ConfirmHost />
     </div>
   )
 }

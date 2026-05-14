@@ -27,13 +27,20 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "24"  # library_entries.target_lang — per-entry reading language preference
+SCHEMA_VERSION = "27"  # library_entries title/cover_url dropped — resolved from materials
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
 # many failures the task is dead-lettered: visible to status views
 # (last_error populated) but never re-claimed until an operator redoes.
 MAX_TASK_ATTEMPTS = 3
+# A claim older than this is considered dead — used to project the
+# `stale` lifecycle state for the ops dashboard. Workers don't release
+# stale claims themselves; the operator (or `release_claims_by_prefix`
+# on startup) clears them. Keep in sync with whatever heartbeat the
+# workers use to refresh `claimed_at` (currently none — the claim is
+# only refreshed on completion, so 10 min is "definitely orphaned").
+STALE_CLAIM_INTERVAL = "10 minutes"
 
 # How long a claim is considered "live". After this, the task is
 # re-claimable by another worker AND status views treat it as pending
@@ -154,7 +161,7 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 
 
 _TS_USERS = (
-    "id, display_name, avatar_url, email, "
+    "id, display_name, avatar_url, email, preferred_target_lang, "
     f"{_ts('created_at')}, {_ts('last_login_at')}"
 )
 _TS_MATERIAL = (
@@ -197,7 +204,7 @@ _TS_TRANSLATION = (
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_LIBRARY_ENTRY = (
-    "id, user_id, work_id, title, cover_url, target_lang, status, "
+    "id, user_id, work_id, target_lang, status, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
 _TS_TRANSLATOR_MEMORY = (
@@ -211,11 +218,124 @@ def _row_dict(row: asyncpg.Record | None) -> dict | None:
     return dict(row) if row else None
 
 
+def _build_target_ref(
+    *,
+    stage: str,
+    target_kind: str | None = None,
+    target_id:   int | None = None,
+    source:      str | None = None,
+    idem_key:    str | None = None,
+) -> dict:
+    """Audit `target_ref` shape, single point of truth.
+
+    Stage-level actions write {stage}; task-level actions add
+    target_kind/target_id; CLI callers add `source`; idempotent
+    callers add `idem_key`. The dashboard inspects these keys by
+    name — never positional — so omitting them when absent keeps
+    the JSON clean without breaking any reader.
+    """
+    ref: dict = {"stage": stage}
+    if target_kind is not None:
+        ref["target_kind"] = target_kind
+    if target_id is not None:
+        ref["target_id"] = target_id
+    if source:
+        ref["source"] = source
+    if idem_key:
+        ref["idem_key"] = idem_key
+    return ref
+
+
+def _audit_paused_by(actor_id: int | None) -> str:
+    """Fallback for the legacy `stage_pause.paused_by` text column.
+    The full identity lives in `admin_actions.actor_id` /
+    `target_ref.source`; this string just gives CLI listings a hint
+    when an admin pauses via the web UI ('user:42')."""
+    return f"user:{actor_id}" if actor_id is not None else "ops"
+
+
 def _try_float(s: str) -> float | None:
     try:
         return float(s)
     except (TypeError, ValueError):
         return None
+
+
+# ── Work title / cover resolution (mirrors web/src/features/work/title.ts) ──
+#
+# Community feeds and recent-reads need the SAME canonical title +
+# cover the Work hub renders, biased by the viewer's
+# `preferred_target_lang`. Implementing the resolver server-side
+# avoids a round-trip per row on the client and keeps every surface
+# (hub, feed, history) in sync without each consumer re-deriving.
+
+
+def _norm_lang(lang: str | None) -> str | None:
+    if not lang:
+        return None
+    s = lang.strip().lower().split("-")[0].split("_")[0]
+    return s or None
+
+
+def _resolve_work_title(materials: list[dict], target: str | None) -> str:
+    """Title priority — viewer-lang first, then native script, then
+    anything. We deliberately skip the fallback lang-priority chain
+    that used to live here: when the viewer asked for `vi` and no
+    material is `vi`, falling through to `en` surfaced Romaji ("as
+    pronounced") which is illegible to BOTH the Vietnamese viewer
+    AND the original speakers. Native CJK script is the unambiguous
+    "real name" — show it instead.
+
+      1. title_locale[target]                       (any material)
+      2. material whose `languages` covers target  → its `title`
+      3. any material's `title_native`             (native script)
+      4. materials[0].title                        (last resort)
+    """
+    if not materials:
+        return ""
+    if target:
+        for m in materials:
+            locale = m.get("title_locale") or {}
+            if isinstance(locale, dict):
+                t = (locale.get(target) or "").strip()
+                if t:
+                    return t
+        for m in materials:
+            langs = m.get("languages") or []
+            if any(_norm_lang(l) == target for l in langs):
+                t = (m.get("title") or "").strip()
+                if t:
+                    return t
+    for m in materials:
+        t = (m.get("title_native") or "").strip()
+        if t:
+            return t
+    return (materials[0].get("title") or "").strip()
+
+
+def _resolve_work_cover(
+    materials: list[dict], target: str | None,
+) -> str | None:
+    """Cover priority:
+      1. material whose `languages` covers target AND has cover_url
+      2. first material with any cover_url
+      3. None
+
+    No fallback lang chain — covers are mostly identical across
+    sources for the same Work, so picking "the en cover before the
+    zh cover" doesn't help the viewer. Just take whatever's there.
+    """
+    if not materials:
+        return None
+    if target:
+        for m in materials:
+            langs = m.get("languages") or []
+            if any(_norm_lang(l) == target for l in langs) and m.get("cover_url"):
+                return m["cover_url"]
+    for m in materials:
+        if m.get("cover_url"):
+            return m["cover_url"]
+    return None
 
 
 # Chapter `progress_stage/index/total` are also columns on
@@ -503,6 +623,102 @@ async def _merge_works(
     await conn.execute("DELETE FROM works WHERE id=$1", doomed)
 
 
+async def _split_material_to_work(
+    conn: asyncpg.Connection, *, material_id: int, new_work_id: int,
+) -> None:
+    """Move a single material out of its current work into
+    `new_work_id`. Inverse of the per-material side of `_merge_works`.
+
+    The new work is assumed to be freshly allocated (empty). We move:
+
+      1. `materials.work_id` itself.
+      2. Every `chapters` row of this material — re-point them to a
+         brand-new `work_chapters` row under the new work (one per
+         chapter, since the moving material is the only contributor
+         to those entries on the new side).
+      3. Any `reading_history` / `translations` continue working
+         because they reference `work_chapters.id`, which we
+         re-pointed in step 2.
+
+    The previous work is left intact (sibling materials stay). Their
+    `work_chapters` rows now drop the moving material's chapters but
+    that's already handled by the cascade-light approach below: the
+    moving chapters are re-pointed, not deleted, so the old
+    work_chapter rows just lose their contributor.
+
+    If a previous work_chapter ends up with zero `chapters` after the
+    move, it's stale — drop it so the canonical Work hub doesn't
+    surface phantom chapters.
+    """
+    # 1. Move the material row.
+    await conn.execute(
+        "UPDATE materials SET work_id=$1 WHERE id=$2",
+        new_work_id, material_id,
+    )
+
+    # 2. Re-home every chapter of this material under a fresh
+    # work_chapter row on `new_work_id`. We need the source work_chapter
+    # to copy `number_norm` / `label` over verbatim — those identify
+    # the logical chapter regardless of work id.
+    old_chs = await conn.fetch(
+        """
+        SELECT c.id            AS chapter_id,
+               c.work_chapter_id AS old_wc_id,
+               wc.number_norm   AS number_norm,
+               wc.label         AS label
+        FROM chapters c
+        JOIN work_chapters wc ON wc.id = c.work_chapter_id
+        WHERE c.material_id = $1
+        """,
+        material_id,
+    )
+    for r in old_chs:
+        chapter_id = int(r["chapter_id"])
+        old_wc_id  = int(r["old_wc_id"])
+        new_wc_row = await conn.fetchrow(
+            "INSERT INTO work_chapters (work_id, number_norm, label) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            new_work_id, r["number_norm"], r["label"],
+        )
+        new_wc_id = int(new_wc_row["id"])
+
+        # Re-point the chapter + its translations + reading_history.
+        await conn.execute(
+            "UPDATE chapters SET work_chapter_id=$1 WHERE id=$2",
+            new_wc_id, chapter_id,
+        )
+        await conn.execute(
+            "UPDATE translations SET work_chapter_id=$1 "
+            "WHERE work_chapter_id=$2 AND id IN ("
+            "  SELECT t.id FROM translations t "
+            "  JOIN translation_drafts d ON d.id = t.draft_id "
+            "  JOIN chapters cc ON cc.id = d.chapter_id "
+            "  WHERE cc.material_id = $3"
+            ")",
+            new_wc_id, old_wc_id, material_id,
+        )
+        await conn.execute(
+            "UPDATE reading_history SET work_chapter_id=$1 "
+            "WHERE work_chapter_id=$2 AND last_material_id=$3",
+            new_wc_id, old_wc_id, material_id,
+        )
+
+        # If the old work_chapter row is now orphaned (no chapters
+        # left), drop it.
+        leftover = await conn.fetchrow(
+            "SELECT 1 FROM chapters WHERE work_chapter_id=$1 LIMIT 1",
+            old_wc_id,
+        )
+        if leftover is None:
+            # And nothing in translations / reading_history still
+            # points at it (they were all moved alongside their
+            # material; cross-material refs to the same wc are
+            # impossible by construction).
+            await conn.execute(
+                "DELETE FROM work_chapters WHERE id=$1", old_wc_id,
+            )
+
+
 async def _verify_schema_version(conn: asyncpg.Connection) -> None:
     row = await conn.fetchrow(
         "SELECT value FROM meta WHERE key='schema_version'",
@@ -665,6 +881,18 @@ class PostgresStore:
                 user_id, provider,
             )
         return row["external_id"] if row else None
+
+    async def update_user_preferred_target_lang(
+        self, user_id: int, lang: str | None,
+    ) -> None:
+        """Set the viewer-wide default reading language. `None` clears
+        it (resolver falls through to the hard-coded fallback)."""
+        cleaned = (lang or "").strip().lower() or None
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET preferred_target_lang=$1 WHERE id=$2",
+                cleaned, user_id,
+            )
 
     # ── API tokens ────────────────────────────────────────────────
 
@@ -981,6 +1209,109 @@ class PostgresStore:
             )
         return row["id"]
 
+    async def get_or_create_upload_material(
+        self,
+        *,
+        work_id:     int,
+        imported_by: int,
+    ) -> int:
+        """Return the viewer's upload-material id for a Work, creating
+        one on first call. Schema enforces the UNIQUE
+        (imported_by, work_id) WHERE origin='upload' invariant so two
+        concurrent callers can't race a duplicate row.
+
+        Title is inherited from any existing sibling material attached
+        to the Work — for source-backed Works, the source's title;
+        for blank Works, the placeholder material that
+        `create_blank_work` planted up front (same `(imported_by,
+        work_id)` row, so this call is a no-op fast path in that
+        case). If somehow no material exists yet, fall back to the
+        literal "Tải lên" placeholder so the row is never NULL.
+        `languages` defaults to ['vi'] — single-lang upload is the
+        dominant case; user can edit later.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            existing = await conn.fetchrow(
+                "SELECT id FROM materials "
+                "WHERE work_id=$1 AND imported_by=$2 AND origin='upload'",
+                work_id, imported_by,
+            )
+            if existing is not None:
+                return int(existing["id"])
+
+            title_row = await conn.fetchrow(
+                """
+                SELECT COALESCE(
+                    (SELECT title FROM materials
+                     WHERE work_id=$1
+                     ORDER BY (origin='source') DESC, id ASC LIMIT 1),
+                    'Tải lên'
+                ) AS title
+                """,
+                work_id,
+            )
+            title = str(title_row["title"])
+
+            row = await conn.fetchrow(
+                "INSERT INTO materials ("
+                "  imported_by, origin, work_id, title, languages "
+                ") VALUES ($1, 'upload', $2, $3, ARRAY['vi']::text[]) "
+                "RETURNING id",
+                imported_by, work_id, title,
+            )
+        return int(row["id"])
+
+    async def create_blank_work(
+        self,
+        *,
+        user_id:     int,
+        title:       str,
+        cover_url:   str | None = None,
+        target_lang: str        = 'vi',
+    ) -> tuple[int, int]:
+        """Create an empty Work + a placeholder upload material + a
+        library entry for the viewer. Used by the "+ Tạo trống" flow
+        — user wants to follow a manga before any source plug-in has
+        it indexed.
+
+        The placeholder material (origin='upload', zero chapters) is
+        eager-created here so that title + cover have somewhere stable
+        to live BEFORE the user uploads their first chapter. Without
+        it, the library card would render an empty name for fresh
+        blank Works (`library_entries` no longer caches title — see
+        schema 27). When the user later uploads, the upload-init flow
+        finds this same material via the UNIQUE
+        (imported_by, work_id) WHERE origin='upload' invariant; no
+        duplicate row is spawned.
+
+        Returns ``(work_id, library_entry_id)``.
+        """
+        from typoon.adapters.work_linker import link_or_create_work
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            work_id = await link_or_create_work(conn, None)
+            # Placeholder material — the canonical home for the Work's
+            # title/cover until a source plugin attaches a richer
+            # material or the user uploads chapters with their own
+            # metadata. `languages=['vi']` matches the upload-init
+            # default; user can edit later.
+            await conn.execute(
+                "INSERT INTO materials ("
+                "  imported_by, origin, work_id, title, cover_url, "
+                "  languages "
+                ") VALUES ($1, 'upload', $2, $3, $4, ARRAY['vi']::text[])",
+                user_id, work_id, title, cover_url,
+            )
+            entry_row = await conn.fetchrow(
+                "INSERT INTO library_entries "
+                "  (user_id, work_id, target_lang, status) "
+                "VALUES ($1, $2, $3, 'reading') "
+                "RETURNING id",
+                user_id, work_id, target_lang,
+            )
+        return int(work_id), int(entry_row["id"])
+
+
     async def get_material(self, material_id: int) -> dict | None:
         async with self._pool.acquire() as conn:
             return _row_dict(await conn.fetchrow(
@@ -1025,6 +1356,7 @@ class PostgresStore:
         title_locale: dict | None = None,
         start_year:   int | None = None,
         description:  str | None = None,
+        cover_url:    str | None = None,
     ) -> None:
         """Additive merge of enriched metadata onto a material row.
 
@@ -1045,6 +1377,10 @@ class PostgresStore:
           • `description`  — COALESCE; first writer wins. Only set when
                               currently null so manifest descriptions
                               aren't overwritten.
+          • `cover_url`    — COALESCE; first writer wins. Lets ext /
+                              upload materials (no upstream cover)
+                              pick up canonical artwork from the
+                              aggregator on the first enrich.
 
         Any combination of fields can be passed; omitted ones are
         left untouched. Empty / blank values are dropped before the
@@ -1092,15 +1428,86 @@ class PostgresStore:
             args.append(cleaned_desc)
             sets.append(f"description = COALESCE(description, ${len(args)})")
 
+        cleaned_cover = (cover_url or '').strip() or None
+        if cleaned_cover:
+            args.append(cleaned_cover)
+            sets.append(f"cover_url = COALESCE(cover_url, ${len(args)})")
+
         if not sets:
             return
 
         args.append(material_id)
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 f"UPDATE materials SET {', '.join(sets)} WHERE id = ${len(args)}",
                 *args,
             )
+
+            # Re-link: enriched cross_refs may now match a sibling Work
+            # that didn't share namespaces at material-create time.
+            # Without this step the material stays on its old isolated
+            # Work even after MangaBaka / MangaDex provided a canonical
+            # ID — exactly the case where two users imported the same
+            # manga from different sources and the auto-enrich finally
+            # connected the dots. The merge is irreversible from a UX
+            # POV (history, library entries, votes collapse together),
+            # so we only run it when refs ACTUALLY changed (cleaned_refs
+            # truthy = enrich brought new namespaces). Pure cosmetic
+            # updates (description, title_locale only) skip the
+            # re-link entirely.
+            if cleaned_refs:
+                await self._relink_material_if_needed(conn, material_id)
+
+    async def _relink_material_if_needed(
+        self, conn: asyncpg.Connection, material_id: int,
+    ) -> None:
+        """Re-evaluate the material's Work attachment after its
+        cross_refs grew. Runs inside the caller's transaction.
+
+        Outcomes:
+          • New refs match the material's CURRENT Work — propagate the
+            additive merge onto the Work row (so the linker sees full
+            refs on the next material import) and return.
+          • New refs match a DIFFERENT Work — collapse: the older Work
+            is canonical, the newer one dissolves into it via
+            `_merge_works`. All materials, chapters, library entries
+            on the doomed side migrate over and a `work_redirects`
+            entry is logged so existing `/w/<doomed>` URLs survive.
+          • New refs conflict / no candidates — leave the material
+            where it is. Work-level cross_refs still gets the additive
+            merge so the next material to import sees the full set.
+        """
+        from typoon.adapters.work_linker import (
+            _clean_refs, _merge_refs, find_compatible_work,
+        )
+
+        row = await conn.fetchrow(
+            "SELECT work_id, cross_refs FROM materials WHERE id=$1",
+            material_id,
+        )
+        if row is None:
+            return
+        current_work_id = int(row["work_id"])
+        refs = _clean_refs(row["cross_refs"])
+        if not refs:
+            return
+
+        # Always sync the current Work's cross_refs first. Even when
+        # no sibling Work matches, this is what lets the linker pick
+        # us up next time someone imports a related material.
+        await _merge_refs(conn, current_work_id, refs)
+
+        target_work_id = await find_compatible_work(
+            conn, refs, exclude=current_work_id,
+        )
+        if target_work_id is None:
+            return
+
+        # Canonical = older work (lower id). Same policy as
+        # community-vote merges: history points at the surviving id.
+        canonical = min(current_work_id, target_work_id)
+        doomed    = max(current_work_id, target_work_id)
+        await _merge_works(conn, canonical=canonical, doomed=doomed)
 
     async def delete_material(self, material_id: int) -> None:
         """Cascades through chapters → drafts/translations → bubbles
@@ -1175,6 +1582,7 @@ class PostgresStore:
         material_b_id: int,
         vote:         int,
         threshold:    int = 3,
+        force_merge:  bool = False,
     ) -> dict:
         """Cast a +1/-1 link vote on (a, b). If the resulting score
         crosses `threshold` AND the two materials are still in
@@ -1189,6 +1597,13 @@ class PostgresStore:
             namespace with different values; refuse to merge.
           - 'same_work' — already share a Work (idempotent vote, no
             merge needed).
+
+        When `force_merge=True`, the threshold gate is skipped: the
+        vote is recorded for the audit trail and the merge runs as
+        long as the cross_refs check passes. Used by the explicit
+        "manual link" flow where one user has affirmatively picked
+        the pair via search — community vote semantics still apply
+        to the regular ±1 path.
         """
         if vote not in (-1, 1):
             raise ValueError(f"vote must be ±1, got {vote}")
@@ -1222,7 +1637,7 @@ class PostgresStore:
                 "canonical_work_id":  None,
                 "blocked_reason":     None,
             }
-            if score < threshold:
+            if not force_merge and score < threshold:
                 return result
 
             # Threshold met. Resolve current Works.
@@ -1264,6 +1679,241 @@ class PostgresStore:
             result["merged"]             = True
             result["canonical_work_id"]  = canonical
             return result
+
+    # ── Split votes (community "tách nguồn") + force-unlink ────────
+
+    async def cast_split_vote_with_split(
+        self,
+        *,
+        voter_id:    int,
+        material_id: int,
+        vote:        int,
+        threshold:   int,
+        force_split: bool = False,
+    ) -> dict:
+        """Cast a ±1 split vote on `material_id`. When the running
+        score crosses `threshold` (or `force_split=True`) AND the
+        host work still has ≥2 materials, move the material to a
+        fresh isolated work and clear its split votes.
+
+        Returns ``{"vote": ±1, "score": int, "split": bool,
+        "new_work_id": int | None, "blocked_reason": str | None}``.
+
+        Blocked reasons:
+          - 'solo_member'    — only material in the work; splitting
+                               would leave the work empty.
+          - 'material_gone'  — race: material vanished mid-call.
+        """
+        if vote not in (-1, 1):
+            raise ValueError(f"vote must be ±1, got {vote}")
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO material_split_votes "
+                "  (material_id, voter_id, vote) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (material_id, voter_id) DO UPDATE "
+                "  SET vote=EXCLUDED.vote, voted_at=NOW()",
+                material_id, voter_id, vote,
+            )
+
+            score_row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(vote), 0)::INTEGER AS score "
+                "FROM material_split_votes WHERE material_id=$1",
+                material_id,
+            )
+            score = int(score_row["score"] or 0)
+
+            result: dict = {
+                "vote":            vote,
+                "score":           score,
+                "split":           False,
+                "new_work_id":     None,
+                "blocked_reason":  None,
+            }
+            if not force_split and score < threshold:
+                return result
+
+            # Threshold met (or force). Resolve current work + sibling count.
+            mat = await conn.fetchrow(
+                "SELECT work_id FROM materials WHERE id=$1", material_id,
+            )
+            if mat is None:
+                result["blocked_reason"] = "material_gone"
+                return result
+            work_id = int(mat["work_id"])
+
+            sib = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM materials WHERE work_id=$1",
+                work_id,
+            )
+            if int(sib["n"]) < 2:
+                # Single-material work — split would empty it.
+                result["blocked_reason"] = "solo_member"
+                return result
+
+            # Allocate the new isolated work and move the material.
+            new_row = await conn.fetchrow(
+                "INSERT INTO works DEFAULT VALUES RETURNING id",
+            )
+            new_work_id = int(new_row["id"])
+            await _split_material_to_work(
+                conn, material_id=material_id, new_work_id=new_work_id,
+            )
+            # Clear split votes — fresh slate. Merge votes stay; they
+            # refer to a (pair) which may still be meaningful.
+            await conn.execute(
+                "DELETE FROM material_split_votes WHERE material_id=$1",
+                material_id,
+            )
+            result["split"]       = True
+            result["new_work_id"] = new_work_id
+            return result
+
+    async def get_split_vote(
+        self, *, voter_id: int, material_id: int,
+    ) -> int | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT vote FROM material_split_votes "
+                "WHERE material_id=$1 AND voter_id=$2",
+                material_id, voter_id,
+            )
+        return int(row["vote"]) if row else None
+
+    async def get_split_score(self, material_id: int) -> dict:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(vote), 0)::INTEGER AS score, "
+                "       COUNT(*)::INTEGER             AS total "
+                "FROM material_split_votes WHERE material_id=$1",
+                material_id,
+            )
+        return {
+            "score": int(row["score"] or 0),
+            "total": int(row["total"] or 0),
+        }
+
+    # ── Force action audit (undo window) ───────────────────────────
+
+    async def log_force_action(
+        self,
+        *,
+        actor_id:       int,
+        kind:           str,                 # 'force_link' | 'force_unlink'
+        material_a_id:  int,
+        material_b_id:  int | None,
+        target_work_id: int,
+    ) -> int:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO material_link_actions "
+                "  (actor_id, kind, material_a_id, material_b_id, target_work_id) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                actor_id, kind, material_a_id, material_b_id, target_work_id,
+            )
+        return int(row["id"])
+
+    async def get_recent_force_link(
+        self,
+        *,
+        actor_id:       int,
+        material_id:    int,
+        window_minutes: int,
+    ) -> dict | None:
+        """Most recent non-reversed force_link by `actor_id` involving
+        `material_id`, if it falls inside the undo window. Returns the
+        row dict or None.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, material_a_id, material_b_id, target_work_id, created_at
+                FROM material_link_actions
+                WHERE actor_id = $1
+                  AND kind = 'force_link'
+                  AND reversed_at IS NULL
+                  AND created_at > NOW() - ($3 || ' minutes')::interval
+                  AND (material_a_id = $2 OR material_b_id = $2)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                actor_id, material_id, str(window_minutes),
+            )
+        return dict(row) if row else None
+
+    async def mark_force_action_reversed(self, action_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE material_link_actions SET reversed_at=NOW() WHERE id=$1",
+                action_id,
+            )
+
+    async def force_unlink_material(
+        self, *, actor_id: int, material_id: int,
+    ) -> dict:
+        """Owner undo for a recent force_link: pull `material_id` out
+        of its current work into a fresh isolated work, mark the
+        original force_link action reversed, log the unlink. Caller
+        must verify the undo window upstream.
+
+        Returns ``{"new_work_id": int, "previous_work_id": int}``.
+        Raises if the material's work would be left empty (caller
+        should bubble that to UI as `solo_member`).
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            mat = await conn.fetchrow(
+                "SELECT work_id FROM materials WHERE id=$1", material_id,
+            )
+            if mat is None:
+                raise ValueError(f"material {material_id} not found")
+            previous_work_id = int(mat["work_id"])
+
+            sib = await conn.fetchrow(
+                "SELECT COUNT(*) AS n FROM materials WHERE work_id=$1",
+                previous_work_id,
+            )
+            if int(sib["n"]) < 2:
+                raise ValueError("solo_member")
+
+            new_row = await conn.fetchrow(
+                "INSERT INTO works DEFAULT VALUES RETURNING id",
+            )
+            new_work_id = int(new_row["id"])
+            await _split_material_to_work(
+                conn, material_id=material_id, new_work_id=new_work_id,
+            )
+
+            # Clear any split votes that piled up in the meantime —
+            # the undo is the authoritative split.
+            await conn.execute(
+                "DELETE FROM material_split_votes WHERE material_id=$1",
+                material_id,
+            )
+
+            # Audit row for the unlink + flip the original force_link.
+            await conn.execute(
+                "INSERT INTO material_link_actions "
+                "  (actor_id, kind, material_a_id, material_b_id, target_work_id) "
+                "VALUES ($1, 'force_unlink', $2, NULL, $3)",
+                actor_id, material_id, new_work_id,
+            )
+            await conn.execute(
+                """
+                UPDATE material_link_actions
+                SET reversed_at = NOW()
+                WHERE actor_id = $1
+                  AND kind = 'force_link'
+                  AND reversed_at IS NULL
+                  AND (material_a_id = $2 OR material_b_id = $2)
+                """,
+                actor_id, material_id,
+            )
+
+            return {
+                "new_work_id":      new_work_id,
+                "previous_work_id": previous_work_id,
+            }
 
     async def list_work_link_suggestions(
         self, *, work_id: int,
@@ -2259,6 +2909,12 @@ class PostgresStore:
                 {"pending": 0, "running": 0, "done": 0, "error": 0},
             )
             out.append(d)
+        # Resolve viewer-lang-biased title + cover across every
+        # material of each Work. Same helper the recent-reads and
+        # community feeds use — the library card now shows the exact
+        # canonical name the Work hub renders, regardless of which
+        # source first introduced the manga.
+        await self._resolve_work_display(out, viewer_id=user_id)
         return out
 
     async def get_library_entry(
@@ -2303,6 +2959,7 @@ class PostgresStore:
             if state in summary:
                 summary[state] = int(r["n"])
         d["translation_summary"] = summary
+        await self._resolve_work_display([d], viewer_id=user_id)
         return d
 
     async def find_entry_for_work(
@@ -2325,8 +2982,6 @@ class PostgresStore:
         *,
         user_id:     int,
         work_id:     int,
-        title:       str,
-        cover_url:   str | None,
         target_lang: str,
         materials:   list[tuple[int, str]] | None = None,
         status:      str = "reading",
@@ -2338,10 +2993,16 @@ class PostgresStore:
         enforced by the schema; callers must check with
         `find_entry_for_work` first.
 
+        Title + cover are NOT stored on the entry — display fields
+        come from the attached materials at read time via
+        `_resolve_work_display`. Callers that have just created a
+        Work / material must ensure at least one material is attached
+        before the user navigates to the library, else the card
+        renders an empty title.
+
         `target_lang` is the user's reading-language preference for
         this Work; the chapter list overlay + manifest fetch (e.g.
-        MangaDex multi-language feed) read from it. Defaults are set
-        at the route layer, not here.
+        MangaDex multi-language feed) read from it.
 
         Material auto-link votes (used to surface cross-source pairs
         to other users) are NOT cast here; the caller drives those
@@ -2358,9 +3019,9 @@ class PostgresStore:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO library_entries "
-                "  (user_id, work_id, title, cover_url, target_lang, status) "
-                "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                user_id, work_id, title, cover_url, target_lang, status,
+                "  (user_id, work_id, target_lang, status) "
+                "VALUES ($1, $2, $3, $4) RETURNING id",
+                user_id, work_id, target_lang, status,
             )
             entry_id = int(row["id"])
             for material_id, origin in (materials or ()):
@@ -2377,14 +3038,11 @@ class PostgresStore:
         self,
         entry_id: int, user_id: int,
         *,
-        title:       str | None = None,
         status:      str | None = None,
         target_lang: str | None = None,
     ) -> None:
         sets: list[str] = []
         args: list = []
-        if title is not None:
-            args.append(title); sets.append(f"title=${len(args)}")
         if status is not None:
             if status not in ("reading", "plan", "done", "dropped"):
                 raise ValueError(f"invalid library status: {status!r}")
@@ -2488,6 +3146,60 @@ class PostgresStore:
 
     # ── Community recent feed (cross-user, no guild scope) ───────
 
+    async def _resolve_work_display(
+        self,
+        rows: list[dict],
+        *,
+        viewer_id: int,
+    ) -> None:
+        """Mutate `rows` in place, stamping each entry with `title`
+        and `cover` resolved against the viewer's preferred reading
+        language across every material attached to the row's
+        `work_id`. Mirrors the frontend `resolveWorkTitle` /
+        `resolveWorkCover` chain so the community feed + recent reads
+        render the same canonical name the Work hub does.
+
+        Each row must already carry a `work_id` key; everything else
+        is added by this helper. One round-trip joins materials with
+        viewer prefs regardless of row count, so the N+1 risk on
+        per-row resolution is gone.
+
+        Priority (per field):
+          title — title_locale[target_lang] → material in target lang
+                  → material with title_native → materials[0]
+          cover — material in target lang with cover_url
+                  → first material with cover_url
+        """
+        if not rows:
+            return
+        work_ids = sorted({int(r["work_id"]) for r in rows if r.get("work_id")})
+        if not work_ids:
+            return
+
+        async with self._pool.acquire() as conn:
+            mat_rows = await conn.fetch(
+                "SELECT id, work_id, title, cover_url, title_native, "
+                "       languages, title_locale "
+                "FROM materials WHERE work_id = ANY($1::bigint[])",
+                work_ids,
+            )
+            viewer = await conn.fetchrow(
+                "SELECT preferred_target_lang FROM users WHERE id=$1",
+                viewer_id,
+            )
+
+        target = _norm_lang((viewer or {}).get("preferred_target_lang"))
+
+        by_work: dict[int, list[dict]] = {}
+        for m in mat_rows:
+            by_work.setdefault(int(m["work_id"]), []).append(dict(m))
+
+        for row in rows:
+            mats = by_work.get(int(row["work_id"]), [])
+            row["title"] = _resolve_work_title(mats, target)
+            row["cover"] = _resolve_work_cover(mats, target)
+
+
     async def list_recent_community(
         self,
         *,
@@ -2496,15 +3208,15 @@ class PostgresStore:
         before:    str | None = None,
     ) -> list[dict]:
         """Recent translations across the community, deduped per Work
-        (latest chapter per manga wins). `viewer_id` is accepted for
-        API symmetry but no longer gates visibility — schema 19 made
-        every non-takedown translation public.
+        (latest chapter per manga wins). Title + cover resolve against
+        the viewer's `preferred_target_lang` so the feed renders the
+        same canonical name the Work hub does — never a Chinese
+        material title when the viewer reads VN.
 
         Cursor pagination via ISO `before` filters on the per-Work
         latest `created_at` so a manga doesn't reappear on later pages
         once its newest chapter is consumed.
         """
-        del viewer_id  # reserved for future personalisation
         cond_before = ""
         args: list = [limit]
         if before is not None:
@@ -2524,8 +3236,6 @@ class PostgresStore:
                         c.position        AS chapter_position,
                         m.work_id         AS work_id,
                         m.id              AS material_id,
-                        m.title           AS material_title,
-                        m.cover_url       AS material_cover,
                         t.target_lang,
                         t.owner_id        AS creator_id,
                         u.display_name    AS creator_name,
@@ -2543,7 +3253,7 @@ class PostgresStore:
                 )
                 SELECT DISTINCT ON (work_id)
                     translation_id, chapter_id, chapter_number, chapter_label,
-                    work_id, material_id, material_title, material_cover,
+                    work_id, material_id,
                     target_lang, creator_id, creator_name,
                     to_char(
                         created_at AT TIME ZONE 'UTC',
@@ -2560,6 +3270,7 @@ class PostgresStore:
             )
         out = [dict(r) for r in rows]
         out.sort(key=lambda r: r["created_at"] or "", reverse=True)
+        await self._resolve_work_display(out, viewer_id=viewer_id)
         return out
 
     # ── Reading history (per-user, system-recorded) ──────────────
@@ -2591,9 +3302,10 @@ class PostgresStore:
     ) -> list[dict]:
         """Recent unique Works the user has read, newest first. Dedupes
         per Work (so reading three chapters of one manga collapses to
-        one row). Surfaces the most-recent (material, chapter) the
-        user actually opened so the row can deep-link back to the
-        same source.
+        one row). Title + cover resolve against the viewer's
+        `preferred_target_lang` so the row matches the Work hub label
+        rather than whichever per-source material the user happened
+        to open last.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -2601,8 +3313,6 @@ class PostgresStore:
                 SELECT DISTINCT ON (m.work_id)
                     m.work_id         AS work_id,
                     m.id              AS material_id,
-                    m.title           AS material_title,
-                    m.cover_url       AS material_cover,
                     wc.id             AS work_chapter_id,
                     wc.number_norm    AS chapter_number,
                     wc.label          AS chapter_label,
@@ -2623,6 +3333,7 @@ class PostgresStore:
             )
         out = [dict(r) for r in rows]
         out.sort(key=lambda r: r["last_read_at"] or "", reverse=True)
+        await self._resolve_work_display(out, viewer_id=user_id)
         return out
 
     # ── Glossary ─────────────────────────────────────────────────
@@ -2893,40 +3604,6 @@ class PostgresStore:
                 error, target_kind, target_id, stage,
             )
 
-    async def pause_stage(
-        self, stage: str, *, reason: str, paused_by: str | None = None,
-    ) -> bool:
-        """Mark a whole stage as blocked pending operator action.
-
-        Idempotent: re-pausing keeps the first `reason` so post-mortem
-        sees what actually broke. Returns True if this call inserted
-        the row, False if the stage was already paused.
-
-        While a stage is paused, `claim_task` will not return any of
-        its tasks. Existing claims (if any) drain through their
-        current dispatch and are released on completion / failure.
-        """
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "INSERT INTO stage_pause (stage, reason, paused_by) "
-                "VALUES ($1, $2, $3) "
-                "ON CONFLICT (stage) DO NOTHING",
-                stage, reason, paused_by,
-            )
-        return result.endswith(" 1")
-
-    async def resume_stage(self, stage: str) -> bool:
-        """Lift a pause. Workers wake on NOTIFY (DELETE trigger) and
-        start claiming again. Returns True if the stage was paused,
-        False if it wasn't (idempotent resume).
-        """
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM stage_pause WHERE stage=$1",
-                stage,
-            )
-        return result.endswith(" 1")
-
     async def list_paused_stages(self) -> list[dict]:
         """Snapshot of all paused stages for the ops CLI / dashboard."""
         async with self._pool.acquire() as conn:
@@ -2988,12 +3665,12 @@ class PostgresStore:
                     ) AS pending,
                     SUM(CASE
                         WHEN t.claimed_by IS NOT NULL
-                         AND t.claimed_at >= NOW() - INTERVAL '10 minutes'
+                         AND t.claimed_at >= NOW() - INTERVAL '{STALE_CLAIM_INTERVAL}'
                         THEN 1 ELSE 0 END
                     ) AS running,
                     SUM(CASE
                         WHEN t.claimed_by IS NOT NULL
-                         AND t.claimed_at <  NOW() - INTERVAL '10 minutes'
+                         AND t.claimed_at <  NOW() - INTERVAL '{STALE_CLAIM_INTERVAL}'
                         THEN 1 ELSE 0 END
                     ) AS stale,
                     SUM(CASE
@@ -3006,6 +3683,19 @@ class PostgresStore:
                     SUM(CASE
                         WHEN t.claimed_by IS NULL
                          AND t.attempts >= {MAX_TASK_ATTEMPTS}
+                         -- A dead-letter on a draft target is dropped
+                         -- from the count once the draft itself flipped
+                         -- to state='error': the failure is already
+                         -- surfaced to the viewer, so the header pill
+                         -- shouldn't keep nagging the admin. The row
+                         -- is still listable in /admin/ops for forensic
+                         -- + manual requeue.
+                         AND NOT EXISTS (
+                             SELECT 1 FROM translation_drafts d
+                              WHERE t.target_kind = 'draft'
+                                AND d.id = t.target_id
+                                AND d.state = 'error'
+                         )
                         THEN 1 ELSE 0 END
                     ) AS failed
                 FROM tasks t
@@ -3015,7 +3705,7 @@ class PostgresStore:
             active_rows = await conn.fetch(
                 "SELECT DISTINCT claimed_by FROM tasks "
                 "WHERE claimed_by IS NOT NULL "
-                "  AND claimed_at >= NOW() - INTERVAL '10 minutes'"
+                f"  AND claimed_at >= NOW() - INTERVAL '{STALE_CLAIM_INTERVAL}'"
             )
             paused_rows = await conn.fetch(
                 "SELECT stage FROM stage_pause"
@@ -3037,6 +3727,467 @@ class PostgresStore:
             "active_workers": active,
             "paused_stages":  paused,
         }
+
+    # ── Admin / ops dashboard ─────────────────────────────────────
+    #
+    # All mutations share the same shape:
+    #   1. txn begin
+    #   2. SELECT ... FOR UPDATE on the affected row(s)  → prev_state
+    #   3. UPDATE with optimistic-concurrency WHERE clause
+    #   4. If affected = 0 → ROLLBACK, return False (caller surfaces 409)
+    #   5. INSERT into admin_actions with prev_state + reason
+    #   6. txn commit
+    #
+    # Idempotency: when `idem_key` is supplied, the audit INSERT uses
+    # ON CONFLICT (uq_admin_actions_idem) DO NOTHING. The mutation is
+    # still attempted — but state guards make it a no-op the second
+    # time. Net result: the second call returns the same "did it
+    # work" boolean without producing a duplicate audit row.
+
+    async def list_queue_tasks(
+        self,
+        *,
+        stage: str | None = None,
+        state: str | None = None,
+        target_kind: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict:
+        # Keyset cursor encodes "(claimed_at_iso_or_null, target_kind,
+        # target_id, stage)" of the last row from the previous page.
+        # The "(NULL, ...)" branch keeps unclaimed rows after claimed
+        # ones in a single deterministic order.
+        after_claimed_at: str | None = None
+        after_kind = after_id = after_stage = None
+        if cursor:
+            try:
+                parts = cursor.split("|", 3)
+                after_claimed_at = parts[0] or None
+                after_kind = parts[1] or None
+                after_id = int(parts[2]) if parts[2] else None
+                after_stage = parts[3] or None
+            except (ValueError, IndexError):
+                # Bad cursor → start from the top. The UI re-issues
+                # without a cursor when the first page changes shape
+                # anyway, so silently resetting is fine.
+                after_claimed_at = after_kind = after_id = after_stage = None
+
+        where: list[str] = []
+        params: list = []
+        def p(v):
+            params.append(v)
+            return f"${len(params)}"
+
+        if stage:
+            where.append(f"t.stage = {p(stage)}")
+        if target_kind:
+            where.append(f"t.target_kind = {p(target_kind)}")
+
+        # Project the lifecycle state into a derived column so we can
+        # both filter by it AND return it to the client in one trip.
+        state_expr = f"""
+            CASE
+                WHEN t.claimed_by IS NOT NULL
+                 AND t.claimed_at >= NOW() - INTERVAL '{STALE_CLAIM_INTERVAL}'
+                    THEN 'running'
+                WHEN t.claimed_by IS NOT NULL
+                    THEN 'stale'
+                WHEN t.attempts >= {MAX_TASK_ATTEMPTS}
+                    THEN 'failed'
+                WHEN EXISTS (
+                    SELECT 1 FROM stage_pause sp WHERE sp.stage = t.stage
+                )   THEN 'blocked'
+                ELSE 'pending'
+            END
+        """
+
+        if state:
+            where.append(f"({state_expr}) = {p(state)}")
+
+        if (
+            after_kind is not None
+            and after_id is not None
+            and after_stage is not None
+        ):
+            # Lexicographic keyset on (claimed_at NULLS LAST, kind, id, stage).
+            # NULLs sort last in our ORDER, so a NULL cursor opens the
+            # second half (unclaimed rows past the snapshot point).
+            if after_claimed_at is None:
+                where.append(
+                    f"(t.claimed_at IS NULL AND "
+                    f" (t.target_kind, t.target_id, t.stage) > "
+                    f" ({p(after_kind)}, {p(after_id)}, {p(after_stage)}))"
+                )
+            else:
+                where.append(
+                    f"(t.claimed_at IS NULL OR "
+                    f" (t.claimed_at, t.target_kind, t.target_id, t.stage) > "
+                    f" ({p(after_claimed_at)}::timestamptz, {p(after_kind)}, "
+                    f"  {p(after_id)}, {p(after_stage)}))"
+                )
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        limit_sql = p(limit + 1)  # over-fetch one row to know if there's more
+
+        sql = f"""
+            SELECT t.stage, t.target_kind, t.target_id, t.attempts,
+                   t.claimed_by, t.claimed_at, t.last_error,
+                   ({state_expr}) AS lifecycle_state,
+                   EXTRACT(EPOCH FROM (NOW() - t.claimed_at))::INT
+                       AS claim_age_seconds
+              FROM tasks t
+              {where_sql}
+             ORDER BY t.claimed_at NULLS LAST,
+                      t.target_kind, t.target_id, t.stage
+             LIMIT {limit_sql}
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        items = [
+            {
+                "stage":             r["stage"],
+                "target_kind":       r["target_kind"],
+                "target_id":         r["target_id"],
+                "attempts":          r["attempts"],
+                "claimed_by":        r["claimed_by"],
+                "claimed_at":        r["claimed_at"],
+                "last_error":        r["last_error"],
+                "lifecycle_state":   r["lifecycle_state"],
+                "claim_age_seconds": r["claim_age_seconds"],
+            }
+            for r in rows[:limit]
+        ]
+        next_cursor: str | None = None
+        if len(rows) > limit:
+            last = items[-1]
+            claimed_iso = (
+                last["claimed_at"].isoformat() if last["claimed_at"] else ""
+            )
+            next_cursor = (
+                f"{claimed_iso}|{last['target_kind']}|"
+                f"{last['target_id']}|{last['stage']}"
+            )
+        return {"items": items, "next_cursor": next_cursor}
+
+    async def requeue_task(
+        self,
+        *,
+        target_kind: str,
+        target_id: int,
+        stage: str,
+        expected_attempts: int,
+        expected_claimed_by: str | None,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        return await self._task_mutation(
+            target_kind=target_kind, target_id=target_id, stage=stage,
+            expected_attempts=expected_attempts,
+            expected_claimed_by=expected_claimed_by,
+            action="task.requeue",
+            reason=reason, actor_id=actor_id, source=source,
+            idem_key=idem_key,
+            updates={
+                "claimed_by": None,
+                "claimed_at": None,
+                "attempts":   0,
+                "last_error": None,
+            },
+        )
+
+    async def release_task_claim(
+        self,
+        *,
+        target_kind: str,
+        target_id: int,
+        stage: str,
+        expected_claimed_by: str,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        # `expected_attempts=-1` skips the attempts guard (release
+        # doesn't care). The claimed_by guard is the one that matters:
+        # if a fresh worker has already grabbed the row, we don't strip
+        # its claim.
+        return await self._task_mutation(
+            target_kind=target_kind, target_id=target_id, stage=stage,
+            expected_attempts=-1,
+            expected_claimed_by=expected_claimed_by,
+            action="task.release",
+            reason=reason, actor_id=actor_id, source=source,
+            idem_key=idem_key,
+            updates={
+                "claimed_by": None,
+                "claimed_at": None,
+            },
+        )
+
+    async def force_fail_task(
+        self,
+        *,
+        target_kind: str,
+        target_id: int,
+        stage: str,
+        expected_attempts: int,
+        expected_claimed_by: str | None,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        return await self._task_mutation(
+            target_kind=target_kind, target_id=target_id, stage=stage,
+            expected_attempts=expected_attempts,
+            expected_claimed_by=expected_claimed_by,
+            action="task.force_fail",
+            reason=reason, actor_id=actor_id, source=source,
+            idem_key=idem_key,
+            updates={
+                "claimed_by": None,
+                "claimed_at": None,
+                "attempts":   MAX_TASK_ATTEMPTS,
+                "last_error": f"force-fail by operator: {reason}",
+            },
+        )
+
+    async def _task_mutation(
+        self,
+        *,
+        target_kind: str,
+        target_id: int,
+        stage: str,
+        expected_attempts: int,
+        expected_claimed_by: str | None,
+        action: str,
+        reason: str,
+        actor_id: int | None,
+        source: str | None,
+        idem_key: str | None,
+        updates: dict,
+    ) -> bool:
+        """Atomic snapshot → guarded UPDATE → audit insert.
+
+        Returns True when the row was mutated, False when the state
+        guard rejected the change (operator's view was stale) or the
+        task simply doesn't exist. The two cases are indistinguishable
+        from the caller's perspective and are both surfaced as 409 by
+        the route — refresh, decide again.
+        """
+        set_clauses = []
+        set_params: list = []
+
+        def add(col, val):
+            set_params.append(val)
+            set_clauses.append(f"{col} = ${len(set_params)}")
+        for col, val in updates.items():
+            add(col, val)
+
+        guard_clauses = [
+            f"target_kind = ${len(set_params) + 1}",
+            f"target_id   = ${len(set_params) + 2}",
+            f"stage       = ${len(set_params) + 3}",
+        ]
+        guard_params: list = [target_kind, target_id, stage]
+
+        if expected_attempts >= 0:
+            guard_params.append(expected_attempts)
+            guard_clauses.append(
+                f"attempts = ${len(set_params) + len(guard_params)}"
+            )
+        guard_params.append(expected_claimed_by)
+        guard_clauses.append(
+            f"claimed_by IS NOT DISTINCT FROM "
+            f"${len(set_params) + len(guard_params)}"
+        )
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            prev = await conn.fetchrow(
+                "SELECT stage, target_kind, target_id, attempts, "
+                "       claimed_by, claimed_at, last_error "
+                "  FROM tasks "
+                " WHERE target_kind=$1 AND target_id=$2 AND stage=$3 "
+                " FOR UPDATE",
+                target_kind, target_id, stage,
+            )
+            if prev is None:
+                return False
+
+            result = await conn.execute(
+                f"UPDATE tasks SET {', '.join(set_clauses)} "
+                f"WHERE {' AND '.join(guard_clauses)}",
+                *set_params, *guard_params,
+            )
+            if not result.endswith(" 1"):
+                # Guard miss — state moved between snapshot and update.
+                return False
+
+            await self._record_admin_action(
+                conn,
+                action=action,
+                target_ref=_build_target_ref(
+                    stage=stage, target_kind=target_kind,
+                    target_id=target_id, source=source, idem_key=idem_key,
+                ),
+                reason=reason,
+                actor_id=actor_id,
+                prev_state={
+                    "attempts":   prev["attempts"],
+                    "claimed_by": prev["claimed_by"],
+                    "claimed_at": (
+                        prev["claimed_at"].isoformat()
+                        if prev["claimed_at"] else None
+                    ),
+                    "last_error": prev["last_error"],
+                },
+            )
+            return True
+
+    async def pause_stage(
+        self,
+        *,
+        stage: str,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(
+                "INSERT INTO stage_pause (stage, reason, paused_by) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (stage) DO NOTHING",
+                stage, reason, source or _audit_paused_by(actor_id),
+            )
+            if not result.endswith(" 1"):
+                return False
+            await self._record_admin_action(
+                conn,
+                action="stage.pause",
+                target_ref=_build_target_ref(
+                    stage=stage, source=source, idem_key=idem_key,
+                ),
+                reason=reason,
+                actor_id=actor_id,
+                prev_state=None,
+            )
+            return True
+
+    async def resume_stage(
+        self,
+        *,
+        stage: str,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        async with self._pool.acquire() as conn, conn.transaction():
+            prev = await conn.fetchrow(
+                "SELECT stage, reason, paused_at, paused_by "
+                "  FROM stage_pause WHERE stage=$1 FOR UPDATE",
+                stage,
+            )
+            if prev is None:
+                return False
+            result = await conn.execute(
+                "DELETE FROM stage_pause WHERE stage=$1", stage,
+            )
+            if not result.endswith(" 1"):
+                return False
+            await self._record_admin_action(
+                conn,
+                action="stage.resume",
+                target_ref=_build_target_ref(
+                    stage=stage, source=source, idem_key=idem_key,
+                ),
+                reason=reason,
+                actor_id=actor_id,
+                prev_state={
+                    "reason":    prev["reason"],
+                    "paused_at": prev["paused_at"].isoformat(),
+                    "paused_by": prev["paused_by"],
+                },
+            )
+            return True
+
+    async def _record_admin_action(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        action: str,
+        target_ref: dict,
+        reason: str,
+        actor_id: int | None,
+        prev_state: dict | None,
+    ) -> None:
+        """Insert one audit row in the caller's transaction. Idempotent
+        on (target_ref->>'idem_key') via uq_admin_actions_idem: a retry
+        with the same key silently dedupes. No idem_key → always
+        inserts."""
+        await conn.execute(
+            "INSERT INTO admin_actions "
+            "       (actor_id, action, target_ref, reason, prev_state) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT ((target_ref->>'idem_key')) "
+            "  WHERE target_ref ? 'idem_key' DO NOTHING",
+            actor_id, action, target_ref, reason, prev_state,
+        )
+
+    async def list_admin_actions(
+        self,
+        *,
+        action: str | None = None,
+        actor_id: int | None = None,
+        target_kind: str | None = None,
+        target_id: int | None = None,
+        stage: str | None = None,
+        limit: int = 50,
+        before_id: int | None = None,
+    ) -> list[dict]:
+        where: list[str] = []
+        params: list = []
+        def p(v):
+            params.append(v)
+            return f"${len(params)}"
+
+        if action:
+            where.append(f"action = {p(action)}")
+        if actor_id is not None:
+            where.append(f"actor_id = {p(actor_id)}")
+        if stage:
+            where.append(f"target_ref->>'stage' = {p(stage)}")
+        if target_kind:
+            where.append(f"target_ref->>'target_kind' = {p(target_kind)}")
+        if target_id is not None:
+            where.append(f"(target_ref->>'target_id')::BIGINT = {p(target_id)}")
+        if before_id is not None:
+            where.append(f"id < {p(before_id)}")
+
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = (
+            "SELECT id, at, actor_id, action, target_ref, reason, prev_state "
+            f"  FROM admin_actions {where_sql} "
+            f" ORDER BY id DESC LIMIT {p(limit)}"
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [
+            {
+                "id":         r["id"],
+                "at":         r["at"],
+                "actor_id":   r["actor_id"],
+                "action":     r["action"],
+                "target_ref": r["target_ref"],
+                "reason":     r["reason"],
+                "prev_state": r["prev_state"],
+            }
+            for r in rows
+        ]
 
     # ── Chapter inbox (deferred prepare handle) ───────────────────
 

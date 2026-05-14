@@ -157,14 +157,12 @@ export function VersionLine({
             → không wrap. Chip slot fixed-width để align dọc thành
             một cột thẳng giữa các row. */}
         <span className="ml-auto sm:ml-0 inline-flex items-center gap-2.5 shrink-0">
-          {version.date && (
-            <span
-              className="hidden sm:inline whitespace-nowrap text-text-subtle tabular shrink-0"
-              title={version.date}
-            >
-              {timeAgo(version.date)}
-            </span>
-          )}
+          <span
+            className="hidden sm:inline whitespace-nowrap text-text-subtle tabular shrink-0"
+            title={version.date ?? undefined}
+          >
+            {version.date ? timeAgo(version.date) : '—'}
+          </span>
           <span className="sm:w-20 sm:inline-flex sm:justify-end">
             <ActionChip
               action={action}
@@ -192,14 +190,12 @@ export function VersionLine({
         ) : (
           <Label version={version} className="text-xs min-w-0" />
         )}
-        {version.date && (
-          <span
-            className="text-xs text-text-subtle tabular shrink-0"
-            title={version.date}
-          >
-            {timeAgoShort(version.date)}
-          </span>
-        )}
+        <span
+          className="text-xs text-text-subtle tabular shrink-0"
+          title={version.date ?? undefined}
+        >
+          {version.date ? timeAgoShort(version.date) : '—'}
+        </span>
       </div>
     </div>
   )

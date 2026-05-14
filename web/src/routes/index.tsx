@@ -113,7 +113,6 @@ function RecentSection({
             onOpenManga={() => nav({
               to:     '/w/$workId',
               params: { workId: String(it.work_id) },
-              search: { src: it.material_id },
             })}
             onContinue={() => {
               // Unified reader resolves translation vs raw from the
@@ -124,7 +123,6 @@ function RecentSection({
                   workId:     String(it.work_id),
                   numberNorm: it.chapter_number,
                 },
-                search: { src: it.material_id ?? undefined },
               })
             }}
           />
@@ -150,8 +148,8 @@ function RecentCard({
         className="relative aspect-[2/3] rounded-md overflow-hidden bg-surface-2 cursor-pointer"
       >
         <Cover
-          src={item.material_cover}
-          title={item.material_title}
+          src={item.cover}
+          title={item.title}
           className="absolute inset-0 group-hover:brightness-110 transition-[filter]"
         />
         <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-2 py-1.5">
@@ -167,7 +165,7 @@ function RecentCard({
           className="block w-full text-left"
         >
           <p className="text-sm font-medium text-text truncate group-hover:text-accent-text transition-colors">
-            {item.material_title}
+            {item.title}
           </p>
         </button>
         <button
@@ -236,7 +234,6 @@ function CommunitySection({
             onClick={() => nav({
               to:     '/w/$workId',
               params: { workId: String(e.work_id) },
-              search: { src: e.material_id },
             })}
           />
         ))}
@@ -264,8 +261,8 @@ function CommunityCard({
       >
         <div className="relative aspect-[2/3] rounded-md overflow-hidden bg-surface-2">
           <Cover
-            src={entry.material_cover}
-            title={entry.material_title}
+            src={entry.cover}
+            title={entry.title}
             className="absolute inset-0 group-hover:brightness-110 transition-[filter]"
           />
           {extra > 0 && (
@@ -284,7 +281,7 @@ function CommunityCard({
         </div>
         <div className="min-w-0">
           <p className="text-sm font-medium text-text truncate group-hover:text-accent-text transition-colors">
-            {entry.material_title}
+            {entry.title}
           </p>
           <p className="text-xs text-text-subtle truncate">
             {entry.creator_name ? `@${entry.creator_name}` : 'Ẩn danh'}

@@ -8,6 +8,7 @@ import { routeTree } from './routeTree.gen'
 import {
   CACHE_BUSTER, MAX_AGE_MS, persister, shouldDehydrateQuery,
 } from '@shared/api/persistence'
+import { handleUnauthorized } from '@features/auth/session'
 
 // Persist DA flag before router strips query params from the URL.
 if (new URLSearchParams(window.location.search).get('frame_id') != null) {
@@ -43,6 +44,19 @@ const queryClient = new QueryClient({
   },
 })
 
+// Centralised 401 handling. `@shared/api/api` only knows about token
+// storage; it dispatches `typoon:unauthorized` on every 401 from any
+// request. We listen here (boot has the QueryClient) and clear the
+// session cache too, so a stale `['session']` entry doesn't keep
+// rendering a logged-in shell while AppLayout navigates to /login.
+//
+// AppLayout has its own listener on the same event for the nav side;
+// the two listeners are independent — one owns auth state, the
+// other owns routing.
+window.addEventListener('typoon:unauthorized', () => {
+  handleUnauthorized(queryClient)
+})
+
 const router = createRouter({
   routeTree,
   // Cross-fade pending → resolved instead of blanking the route.
@@ -60,7 +74,7 @@ declare module '@tanstack/react-router' {
   // Per-route shell + auth metadata. Read by AppLayout via useMatches().
   // Defaults: chrome='app', auth='required'.
   interface StaticDataRouteOption {
-    chrome?: 'app' | 'bare'
+    chrome?: 'app' | 'admin' | 'bare'
     auth?:   'public' | 'required'
   }
 }

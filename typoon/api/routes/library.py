@@ -46,8 +46,12 @@ def _entry_to_out(row: dict) -> LibraryEntryOut:
     summary = row.get("translation_summary") or {}
     return LibraryEntryOut(
         id=row["id"],
-        title=row["title"],
-        cover_url=row.get("cover_url"),
+        # `_resolve_work_display` stamps `title` + `cover` server-side,
+        # biased by the viewer's reading lang. Same canonical name the
+        # Work hub renders — never the raw snapshot a manifest first
+        # imported.
+        title=row.get("title") or "",
+        cover_url=row.get("cover"),
         work_id=int(row["work_id"]),
         target_lang=row["target_lang"],
         status=row["status"],
@@ -68,9 +72,6 @@ def _entry_to_out(row: dict) -> LibraryEntryOut:
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
     )
-
-
-# ── List / read ───────────────────────────────────────────────────────
 
 
 @router.get("", response_model=list[LibraryEntryOut])
@@ -95,9 +96,6 @@ async def get_entry(
     return _entry_to_out(row)
 
 
-# ── Create / update / delete ──────────────────────────────────────────
-
-
 class CreateEntryBody(BaseModel):
     """Create a library entry for a Work.
 
@@ -107,11 +105,12 @@ class CreateEntryBody(BaseModel):
     The material itself is attached as `link_origin='manual'` so it
     shows up under the entry alongside any sibling materials linked
     later.
+
+    No `title` / `cover_url` here — they live on the material(s)
+    attached to the Work and resolve server-side at read time.
     """
     material_id:    int
     target_lang:    str           = "vi"
-    title:          str | None    = None
-    cover_url:      str | None    = None
     status:         LibraryStatus = "reading"
 
 
@@ -141,8 +140,6 @@ async def create_entry(
         entry_id = await db.create_library_entry(
             user_id=user["id"],
             work_id=work_id,
-            title=body.title or mat["title"],
-            cover_url=body.cover_url or mat.get("cover_url"),
             target_lang=body.target_lang,
             materials=[(body.material_id, "manual")],
             status=body.status,
@@ -153,7 +150,6 @@ async def create_entry(
 
 
 class PatchEntryBody(BaseModel):
-    title:       str | None           = None
     status:      LibraryStatus | None = None
     target_lang: str | None           = None
 
@@ -168,7 +164,6 @@ async def patch_entry(
     await require_library_entry(entry_id, user, db)
     await db.update_library_entry(
         entry_id, user["id"],
-        title=body.title,
         status=body.status,
         target_lang=body.target_lang,
     )
@@ -186,9 +181,6 @@ async def delete_entry(
     ok = await db.delete_library_entry(entry_id, user["id"])
     if not ok:
         raise HTTPException(404, "Library entry not found")
-
-
-# ── Material linking ──────────────────────────────────────────────────
 
 
 class LinkBody(BaseModel):

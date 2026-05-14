@@ -1,45 +1,35 @@
 import { useMemo, useState } from 'react'
 import { Search, Link as LinkIcon, AlertTriangle, CheckCircle2 } from 'lucide-react'
+
 import { input as inputCls } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
 import { useDebouncedValue } from '@shared/lib/useDebouncedValue'
-import { hasSearch } from '@features/browse/manifest/runtime'
+import { fetchMangaDetail, hasSearch } from '@features/browse/manifest/runtime'
 import { useAllSources, useSources } from '@features/browse/sources'
 import type { InstalledSource } from '@features/browse/manifest/types'
+
 import { isUrlLike, matchSource } from './parseUrl'
-import { useFanoutSearch } from './fanoutSearch'
+import { useFanoutSearch, type SearchHit } from './fanoutSearch'
 import { UrlPasteCard } from './UrlPasteCard'
 import { ResultsList } from './ResultsList'
-import { ManualCreateRow } from './ManualCreateRow'
+import { hitKey } from './hitKey'
+import { BlankCreateRow } from './BlankCreateRow'
 import { ScopeFilterRow } from './ScopeFilterRow'
-import type { Picked } from './types'
+import type { ImportToLibrary } from './useImportToLibrary'
 
-// =============================================================================
-// SearchPane — single column, three vertical zones:
-//
-//   ① Input          full width. Detects URL paste; renders the
-//                    'HappyMH ✓' badge inline when matched.
-//   ② Scope tabs     'Tất cả N · HappyMH 5 · MangaDex 7'. Only
-//                    appears after a query returns results — no
-//                    upfront scope decision required.
-//   ③ Body           URL card / empty hint / scoped results list.
-//
-// No overlays, no dropdowns, no chip-next-to-input. The three zones
-// flow top to bottom inside the modal body; modal height never
-// shifts because of menu state.
-// =============================================================================
-
-interface Props {
-  query:          string
-  setQuery:       (s: string) => void
-  sources:        InstalledSource[]
-  onPick:         (p: Picked) => void
-  onManualCreate: (seed: string) => void
-}
+// Three vertical zones: input → scope tabs → body (URL card / source
+// roster / scoped results + blank-create fallback). Fanout runs across
+// every searchable source; scope filter is applied client-side so the
+// user can switch sources without re-issuing the request.
 
 export function SearchPane({
-  query, setQuery, sources, onPick, onManualCreate,
-}: Props) {
+  query, setQuery, sources, importer,
+}: {
+  query:    string
+  setQuery: (s: string) => void
+  sources:  InstalledSource[]
+  importer: ImportToLibrary
+}) {
   const searchable = useMemo(
     () => sources.filter((s) => hasSearch(s.manifest)),
     [sources],
@@ -50,28 +40,42 @@ export function SearchPane({
   )
   const isUrl = isUrlLike(query)
 
-  // Local scope state — resets implicitly whenever the user changes
-  // the query (cleared via setQuery).
   const [scopeId, setScopeId] = useState<string | null>(null)
+  const [pendingKey, setPendingKey] = useState<string | null>(null)
 
-  // Fanout always queries every searchable source; scope filter is
-  // applied client-side over the merged hit list. That way the user
-  // can switch source without re-running the request.
-  // Debounce the query before passing to the network. Each keystroke
-  // updates the input synchronously (no laggy typing) but fanout only
-  // fires after 250ms of stability — fewer requests, no flicker.
   const debouncedQuery = useDebouncedValue(query, 250)
   const { hits, loading, failures } = useFanoutSearch(debouncedQuery, searchable)
 
-  const scopedHits = useMemo(() => {
-    if (scopeId === null) return hits
-    return hits.filter((h) => h.source.manifest.id === scopeId)
-  }, [hits, scopeId])
+  const scopedHits = useMemo(
+    () => scopeId === null
+      ? hits
+      : hits.filter((h) => h.source.manifest.id === scopeId),
+    [hits, scopeId],
+  )
+  const visibleSources = useMemo(
+    () => scopeId === null
+      ? searchable
+      : searchable.filter((s) => s.manifest.id === scopeId),
+    [searchable, scopeId],
+  )
 
-  const visibleSources = useMemo(() => {
-    if (scopeId === null) return searchable
-    return searchable.filter((s) => s.manifest.id === scopeId)
-  }, [searchable, scopeId])
+  // Pick handler: resolve canonical detail (description / author /
+  // languages) before importing. Falls back to the search snapshot
+  // on fetch failure so a flaky upstream doesn't block the save.
+  // The wire payload is built inside `importHit` — this callsite
+  // does not touch `ImportBody` shape.
+  const handlePick = async (hit: SearchHit) => {
+    if (importer.isPending || pendingKey) return
+    const key = hitKey(hit)
+    setPendingKey(key)
+    try {
+      const detail = await fetchMangaDetail(hit.source.manifest, hit.manga.url)
+        .catch(() => null)
+      importer.importHit({ hit, detail })
+    } finally {
+      setPendingKey(null)
+    }
+  }
 
   return (
     <div className="space-y-3 min-h-[420px]">
@@ -80,15 +84,11 @@ export function SearchPane({
         setQuery={(v) => { setQuery(v); setScopeId(null) }}
         isUrl={isUrl}
         urlMatch={urlMatch}
+        disabled={importer.isPending}
       />
 
       {isUrl ? (
-        <UrlPasteCard
-          url={query}
-          match={urlMatch}
-          onPick={onPick}
-          onManualCreate={onManualCreate}
-        />
+        <UrlPasteCard url={query} match={urlMatch} importer={importer} />
       ) : debouncedQuery.trim().length < 2 ? (
         <SourceListHint />
       ) : (
@@ -100,17 +100,17 @@ export function SearchPane({
             onChange={setScopeId}
           />
           <ResultsList
-            query={query}
             hits={scopedHits}
             loading={loading}
             failures={failures}
             searchableSources={visibleSources}
-            onPick={onPick}
+            pendingKey={pendingKey}
+            onPick={handlePick}
           />
-          <ManualCreateRow
+          <BlankCreateRow
             query={query}
             hits={scopedHits.length}
-            onManualCreate={onManualCreate}
+            importer={importer}
           />
         </>
       )}
@@ -120,12 +120,13 @@ export function SearchPane({
 
 
 function InputRow({
-  query, setQuery, isUrl, urlMatch,
+  query, setQuery, isUrl, urlMatch, disabled,
 }: {
   query:    string
   setQuery: (v: string) => void
   isUrl:    boolean
   urlMatch: ReturnType<typeof matchSource>
+  disabled: boolean
 }) {
   const Icon = isUrl ? LinkIcon : Search
   return (
@@ -139,6 +140,7 @@ function InputRow({
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        disabled={disabled}
         placeholder="Tìm tên truyện hoặc dán đường dẫn manga"
         className={cn(
           inputCls, 'pl-9 h-10',
@@ -151,11 +153,7 @@ function InputRow({
 }
 
 
-function UrlBadge({
-  urlMatch,
-}: {
-  urlMatch: ReturnType<typeof matchSource>
-}) {
+function UrlBadge({ urlMatch }: { urlMatch: ReturnType<typeof matchSource> }) {
   const base =
     'absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 ' +
     'h-6 px-2 rounded-xs text-xs font-medium pointer-events-none'
@@ -176,18 +174,9 @@ function UrlBadge({
 }
 
 
-// Empty-state hint. Shows the source roster as chips so the user
-// knows what the app can reach without reading instructions. Each
-// chip carries a Link icon when the source supports search ('Tìm
-// được') vs a muted state for paste-only sources.
-
-// Domain chip list — empty-state replacement for hint text. Each
-// installed source becomes a toggle chip. Active = included in
-// fanout search. Disabled chips dim to text-subtle. Chip itself is
-// the affordance: name + host text reads as a domain, click toggles
-// inclusion. The user can also paste a URL from any of those hosts
-// regardless of the toggle — paste mode always works.
-
+// Empty-state hint when the query is too short. Renders the installed
+// source roster as toggle chips so the user can enable / disable
+// individual sources for fanout search without leaving the modal.
 function SourceListHint() {
   const sources    = useAllSources()
   const setEnabled = useSources((s) => s.setEnabled)

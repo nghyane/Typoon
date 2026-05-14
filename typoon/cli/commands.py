@@ -25,9 +25,6 @@ app     = typer.Typer(name="typoon", help="Manga translation pipeline.")
 console = Console()
 
 
-# ── api ───────────────────────────────────────────────────────────────
-
-
 @app.command()
 def api(
     host:   str  = typer.Option(None, "--host", help="Bind host (default from [server].host)"),
@@ -58,9 +55,6 @@ def api(
         # perspective; without a graceful timeout Ctrl+C hangs.
         timeout_graceful_shutdown=5,
     )
-
-
-# ── work ──────────────────────────────────────────────────────────────
 
 
 @app.command()
@@ -99,9 +93,6 @@ async def _work(role: str, concurrency: int) -> None:
     await run_workers(role_enum, translate_concurrency=concurrency)
 
 
-# ── version ───────────────────────────────────────────────────────────
-
-
 @app.command()
 def version():
     """Print SCHEMA_VERSION + git SHA for diagnostic logs."""
@@ -116,7 +107,6 @@ def version():
     console.print(f"typoon schema={SCHEMA_VERSION} commit={sha}")
 
 
-# ── stage (operator pause / resume) ───────────────────────────────────
 #
 # Pipeline stages auto-pause when a worker raises
 # `OperatorActionRequired` — model not found, credential revoked,
@@ -186,38 +176,51 @@ async def _stage_pause(name: str, reason: str) -> None:
     from ..storage import PostgresStore
     from ..config import load_config
     cfg, _ = load_config()
-    paused_by = f"cli:{getpass.getuser()}"
+    source = f"cli:{getpass.getuser()}"
     db = await PostgresStore.open(cfg.database_url)
     try:
-        inserted = await db.pause_stage(name, reason=reason, paused_by=paused_by)
+        inserted = await db.pause_stage(
+            stage=name, reason=reason,
+            actor_id=None, source=source,
+        )
     finally:
         await db.close()
     if inserted:
-        console.print(f"[yellow]paused[/] stage={name} by={paused_by}")
+        console.print(f"[yellow]paused[/] stage={name} by={source}")
     else:
         console.print(f"stage={name} was already paused (no change)")
 
 
 @stage.command("resume")
 def stage_resume(
-    name: str = typer.Argument(..., help="prepare | scan | translate | render"),
+    name:   str = typer.Argument(..., help="prepare | scan | translate | render"),
+    reason: str = typer.Option(
+        "ops: resumed via CLI", "--reason", "-r",
+        help="Why workers should start claiming again (audit trail)",
+    ),
 ):
     """Lift a pause. Workers wake up on the resume NOTIFY and start
-    claiming again immediately — no restart required."""
+    claiming again immediately — no restart required. `reason` is
+    recorded in admin_actions for post-mortem."""
     _validate_stage(name)
-    asyncio.run(_stage_resume(name))
+    asyncio.run(_stage_resume(name, reason))
 
 
-async def _stage_resume(name: str) -> None:
+async def _stage_resume(name: str, reason: str) -> None:
+    import getpass
     from ..storage import PostgresStore
     from ..config import load_config
     cfg, _ = load_config()
+    source = f"cli:{getpass.getuser()}"
     db = await PostgresStore.open(cfg.database_url)
     try:
-        deleted = await db.resume_stage(name)
+        deleted = await db.resume_stage(
+            stage=name, reason=reason,
+            actor_id=None, source=source,
+        )
     finally:
         await db.close()
     if deleted:
-        console.print(f"[green]resumed[/] stage={name}")
+        console.print(f"[green]resumed[/] stage={name} by={source}")
     else:
         console.print(f"stage={name} was not paused (no change)")

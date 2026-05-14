@@ -167,10 +167,9 @@ export interface ApiWorkViewerEntry {
 
 export interface ApiWorkDetail {
   work:         ApiWork
-  /** Sibling materials, oldest-first. The SPA picks one as the
-   *  "active source" (via `?src=` URL state) and fetches its
-   *  manifest chapter list live; the others render as switch
-   *  targets without manifest fetches. */
+  /** Sibling materials, oldest-first. The SPA auto-merges every
+   *  installed source's manifest chapter list into a single chapter
+   *  spine; no per-source URL state. */
   materials:    ApiMaterial[]
   /** Work chapters the community has touched (spawn / upload / raw
    *  history). Empty when no one has translated or read anything
@@ -223,6 +222,44 @@ export interface ApiLinkVoteResult {
   canonical_work_id:  number | null
   /** 'same_work' | 'cross_refs_conflict' | null. */
   blocked_reason:     string | null
+}
+
+
+/** Outcome of POST /api/work/{id}/split-vote or /force-unlink.
+ *  Same shape so the SPA's success path is unified. */
+export interface ApiSplitVoteResult {
+  vote:            -1 | 1
+  score:           number
+  split:           boolean
+  /** Work id the material moved to when `split` is true. The SPA
+   *  toasts with a "Mở →" link to navigate. */
+  new_work_id:     number | null
+  /** 'solo_member' | 'material_gone' | null. */
+  blocked_reason:  string | null
+}
+
+
+/** One row in `/api/work/{id}/members` — a material attached to
+ *  this Work, with the viewer's split-vote state and the
+ *  owner-undo hint folded in. Drives the "Nguồn đang đọc" panel. */
+export interface ApiWorkMember {
+  material_id:                number
+  title:                      string
+  cover_url:                  string | null
+  source:                     string | null
+  languages:                  string[]
+  title_native:               string | null
+  title_locale:               Record<string, string> | null
+  /** Viewer's split vote on this member. -1 / 1 / null. */
+  viewer_split_vote:          number | null
+  /** Aggregate split score so far (sum of ±1). */
+  pending_split_score:        number
+  /** Threshold the SPA uses for the "X/N" hint. Mirrors backend. */
+  pending_split_threshold:    number
+  /** ISO timestamp when the viewer's force-link undo window closes,
+   *  or null when there's nothing to undo. The SPA renders a
+   *  countdown until expiry, then hides the affordance. */
+  force_link_undo_expires_at: string | null
 }
 
 export interface ApiBubbleEdit {
@@ -290,7 +327,11 @@ export interface ApiTranslationSummary {
 
 export interface ApiLibraryEntry {
   id:                   number
+  /** Resolved server-side from the Work's materials against the
+   *  viewer's reading lang. Same canonical title the Work hub
+   *  renders; the entry row no longer caches this. */
   title:                string
+  /** Likewise resolved. */
   cover_url:            string | null
   /** Canonical Work this entry bookmarks. SPA navigates `/w/${work_id}`
    *  to open the manga page; multiple materials of the same Work
@@ -323,8 +364,10 @@ export interface ApiCommunityFeedEntry {
   chapter_label:    string | null
   work_id:          number
   material_id:      number
-  material_title:   string
-  material_cover:   string | null
+  /** Work-level title resolved server-side against the viewer's
+   *  preferred reading lang. Same string the Work hub renders. */
+  title:            string
+  cover:            string | null
   target_lang:      string
   creator_id:       number | null
   creator_name:     string | null
@@ -339,8 +382,9 @@ export interface ApiCommunityFeedEntry {
 export interface ApiRecentRead {
   work_id:         number
   material_id:     number
-  material_title:  string
-  material_cover:  string | null
+  /** Same viewer-lang-resolved title as the community feed. */
+  title:           string
+  cover:           string | null
   work_chapter_id: number
   chapter_number:  string
   chapter_label:   string | null
@@ -355,12 +399,6 @@ export interface ApiGlossaryTerm {
   source_term: string
   target_term: string
   notes:       string | null
-}
-
-export interface ApiMe {
-  id:           number
-  display_name: string
-  avatar_url:   string | null
 }
 
 export interface ApiTokenInfo {
@@ -399,6 +437,68 @@ export interface ApiQueueStats {
   active_workers: string[]
   /** Stages currently in `stage_pause`. Drives the system banner. */
   paused_stages:  string[]
+}
+
+// ── Admin / ops ─────────────────────────────────────────────────────
+//
+// Backed by /api/admin/ops/*. RBAC = require_admin (Discord role
+// snapshotted in the JWT at login). The dashboard uses these for
+// pause/resume + dead-letter recovery + audit timeline.
+
+export type PipelineStage    = 'prepare' | 'scan' | 'translate' | 'render'
+export type TaskTargetKind   = 'chapter' | 'draft' | 'translation'
+export type TaskState        = 'pending' | 'running' | 'stale' | 'blocked' | 'failed'
+export type AdminActionKind  =
+  | 'stage.pause' | 'stage.resume'
+  | 'task.requeue' | 'task.release' | 'task.force_fail'
+
+export interface ApiPausedStage {
+  stage:     PipelineStage
+  reason:    string
+  paused_at: string
+  paused_by: string | null
+}
+
+export interface ApiTask {
+  stage:             PipelineStage
+  target_kind:       TaskTargetKind
+  target_id:         number
+  attempts:          number
+  claimed_by:        string | null
+  claimed_at:        string | null
+  last_error:        string | null
+  lifecycle_state:   TaskState
+  /** Wall-clock seconds since `claimed_at`. null when unclaimed. */
+  claim_age_seconds: number | null
+}
+
+export interface ApiTaskList {
+  items:       ApiTask[]
+  next_cursor: string | null
+}
+
+export interface ApiAdminAction {
+  id:         number
+  at:         string
+  actor_id:   number | null
+  action:     AdminActionKind
+  target_ref: {
+    stage:        string
+    target_kind?: string
+    target_id?:   number
+    source?:      string
+    idem_key?:    string
+  }
+  reason:     string
+  prev_state: Record<string, unknown> | null
+}
+
+/** Thrown when the server replies 409 to an ops mutation — the
+ *  operator's snapshot of (attempts, claimed_by) no longer matches
+ *  the live row, or the task vanished. The UI catches this and
+ *  re-fetches the dashboard so the next click is on fresh data. */
+export class OpsConflictError extends Error {
+  constructor() { super('State has changed — refresh and retry') }
 }
 
 // ── Translator memory ───────────────────────────────────────────────
@@ -475,10 +575,17 @@ export interface SpawnTranslateResult {
 // ── Transport ────────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Default JSON body for plain bodies; FormData carries its own
+  // boundary in `Content-Type` and MUST NOT be overridden — letting
+  // fetch set it ensures the boundary stays consistent with the
+  // serialised body. Anything else (string/Blob) is treated as JSON
+  // per existing call sites.
+  const isFormData = typeof FormData !== 'undefined'
+                  && init?.body instanceof FormData
   const res = await safeFetch(`${API_BASE}/api${path}`, {
     ...init,
     headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init?.body && !isFormData ? { 'Content-Type': 'application/json' } : {}),
       ...authHeaders(),
       ...(init?.headers ?? {}),
     },
@@ -515,6 +622,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const json = (body: unknown) => JSON.stringify(body)
 
+/** Mutation variant of `request` that recognises 409 from the ops
+ *  endpoints and re-throws it as `OpsConflictError`. Also accepts an
+ *  optional `Idempotency-Key`: the SPA generates one per click so a
+ *  network retry produces one audit row, not two. Same 401/5xx
+ *  semantics as `request`; everything else falls through. */
+async function opsMutate(
+  path: string,
+  body: unknown,
+  opts: { idemKey?: string } = {},
+): Promise<void> {
+  const res = await safeFetch(`${API_BASE}/api${path}`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':    'application/json',
+      ...(opts.idemKey ? { 'Idempotency-Key': opts.idemKey } : {}),
+      ...authHeaders(),
+    },
+    body: json(body),
+  })
+  if (res.status === 401) {
+    onUnauthorized()
+    throw new Error('401 Unauthorized')
+  }
+  if (res.status === 409) {
+    throw new OpsConflictError()
+  }
+  if (res.status === 502 || res.status === 503 || res.status === 504) {
+    throw new BackendUnavailableError()
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(
+      `${res.status} ${res.statusText}${text ? ` — ${text.slice(0, 200)}` : ''}`,
+    )
+  }
+}
+
 // ── API ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -543,11 +687,23 @@ export const api = {
 
   // ── Work (canonical manga page) ───────────────────────────────
   // Drives /w/$workId — sibling materials + cross-source chapter
-  // overlay + viewer library state in one round-trip. The active
-  // source (`?src=`) is a URL-only concept; the server is identity-
-  // only.
+  // overlay + viewer library state in one round-trip. The SPA
+  // auto-merges every installed source's manifest into a single
+  // chapter list; no per-source URL state.
   getWork: (id: number) =>
     request<ApiWorkDetail>(`/work/${id}`),
+
+  /** "Tạo trống" — create an empty Work the viewer can follow before
+   *  any source plug-in has it indexed. No material is created here;
+   *  the first chapter upload lazy-creates the upload material. */
+  createBlankWork: (body: {
+    title:        string
+    cover_url?:   string | null
+    target_lang?: string
+  }) =>
+    request<ApiWorkDetail>('/work', {
+      method: 'POST', body: json(body),
+    }),
 
   patchMaterial: (id: number, body: Partial<{
     title: string; cover_url: string | null;
@@ -557,10 +713,24 @@ export const api = {
       method: 'PATCH', body: json(body),
     }),
 
+  /** Upload a cover image for an ext / upload material. Server
+   *  decodes, strips EXIF, stores via the public ArtifactStore, and
+   *  writes the resulting URL into `materials.cover_url`. Returns
+   *  the refreshed material so the caller can re-render without a
+   *  separate refetch. Allowed MIMEs: image/jpeg, image/png,
+   *  image/webp. Hard cap: 2 MiB (server enforces too). */
+  uploadCover: (id: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<ApiMaterial>(`/material/${id}/cover`, {
+      method: 'POST', body: fd,
+    })
+  },
+
   /** Merge client-enriched metadata onto a material. The SPA fans
-   *  search across link plugins (Anilist, MangaDex, …) and POSTs the
-   *  discovered IDs + multilingual titles + start year here.
-   *  Idempotent; the server keeps existing values on conflict
+   *  search across link plugins (MangaBaka, MangaDex, …) and POSTs
+   *  the discovered IDs + multilingual titles + start year + cover
+   *  here. Idempotent; the server keeps existing values on conflict
    *  (additive merge — manifest data wins, enriched fields fill
    *  only the empty columns). */
   enrichMaterialMetadata: (id: number, body: {
@@ -570,6 +740,7 @@ export const api = {
     title_locale?:  Record<string, string>
     start_year?:    number
     description?:   string
+    cover_url?:     string
     source_signals?: Array<{
       plugin:        string
       confidence:    number
@@ -604,6 +775,40 @@ export const api = {
       method: 'POST', body: json(body),
     }),
 
+  // Explicit manual-link: the viewer affirmatively picked the
+  // candidate via search. Server-side merge fires immediately (no
+  // community-vote threshold), but the cross_refs conflict check
+  // still applies — `blocked_reason: 'cross_refs_conflict'` means
+  // the two Works claim incompatible identities and a +1 vote was
+  // recorded instead.
+  forceWorkLink: (
+    workId: number,
+    body: { target_material_id: number; own_material_id?: number },
+  ) =>
+    request<ApiLinkVoteResult>(`/work/${workId}/force-link`, {
+      method: 'POST', body: json(body),
+    }),
+
+  // ── Split / unlink (inverse of link-vote / force-link) ────────
+  listWorkMembers: (workId: number) =>
+    request<ApiWorkMember[]>(`/work/${workId}/members`),
+
+  castWorkSplitVote: (
+    workId: number,
+    body: { material_id: number; vote: 1 | -1 },
+  ) =>
+    request<ApiSplitVoteResult>(`/work/${workId}/split-vote`, {
+      method: 'POST', body: json(body),
+    }),
+
+  forceWorkUnlink: (
+    workId: number,
+    body: { material_id: number },
+  ) =>
+    request<ApiSplitVoteResult>(`/work/${workId}/force-unlink`, {
+      method: 'POST', body: json(body),
+    }),
+
   deleteMaterial: (id: number) =>
     request<void>(`/material/${id}`, { method: 'DELETE' }),
 
@@ -616,11 +821,26 @@ export const api = {
   // three methods below.
   uploadInit: (materialId: number, body: { byte_size: number }) =>
     request<{
+      material_id: number;
       tmp_id: string; upload_id: string;
       parts: { number: number; url: string }[];
       part_size: number; expires_in: number;
     }>(
       `/material/${materialId}/chapter/upload-init`,
+      { method: 'POST', body: json(body) },
+    ),
+  /** Per-Work convenience: server resolves (or creates) the
+   *  viewer's upload-origin material lazily and returns the same
+   *  init payload, including the resolved `material_id` so the SDK
+   *  finalize call targets the right material. */
+  workUploadInit: (workId: number, body: { byte_size: number }) =>
+    request<{
+      material_id: number;
+      tmp_id: string; upload_id: string;
+      parts: { number: number; url: string }[];
+      part_size: number; expires_in: number;
+    }>(
+      `/work/${workId}/upload-init`,
       { method: 'POST', body: json(body) },
     ),
   uploadFinalize: (materialId: number, body: {
@@ -701,8 +921,6 @@ export const api = {
   createLibraryEntry: (body: {
     material_id:  number
     target_lang?: string
-    title?:       string
-    cover_url?:   string | null
     status?:      LibraryStatus
   }) =>
     request<ApiLibraryEntry>('/library/entry', {
@@ -710,7 +928,6 @@ export const api = {
     }),
 
   patchLibraryEntry: (id: number, body: Partial<{
-    title:       string
     status:      LibraryStatus
     target_lang: string
   }>) =>
@@ -788,8 +1005,12 @@ export const api = {
   deleteTerm: (id: number) =>
     request<void>(`/glossary/${id}`, { method: 'DELETE' }),
 
-  // ── Me / tokens / quota ─────────────────────────────────────────
-  me:        () => request<ApiMe>('/me'),
+  // ── Tokens / quota ──────────────────────────────────────────────
+  //
+  // Session payload (`/api/auth/me`) and the matching preferences
+  // PATCH live in `@features/auth/session` — they share the
+  // `['session']` React Query cache so every consumer reads from
+  // one entry. Don't add a thin re-export here.
   listTokens: () => request<ApiTokenInfo[]>('/me/tokens'),
   createToken: (name: string) =>
     request<ApiTokenCreated>('/me/tokens', {
@@ -801,6 +1022,109 @@ export const api = {
 
   // ── Workers (admin-ish dashboard) ───────────────────────────────
   workers: () => request<ApiQueueStats>('/workers'),
+
+  // ── Admin / ops ────────────────────────────────────────────────
+  //
+  // Every mutation accepts an optional `idemKey` (a UUID the UI
+  // mints per click). Network retries with the same key produce
+  // one audit row + one state change on the server, never two.
+  // 409 from any mutation is thrown as `OpsConflictError` so the
+  // UI can react with "trạng thái đã thay đổi, refresh" without
+  // string-matching error messages.
+  adminOps: {
+    listStages: () =>
+      request<ApiPausedStage[]>('/admin/ops/stages'),
+
+    pauseStage: (
+      stage:  PipelineStage,
+      reason: string,
+      opts?:  { idemKey?: string },
+    ) =>
+      opsMutate(
+        `/admin/ops/stages/${stage}/pause`,
+        { reason },
+        opts,
+      ),
+
+    resumeStage: (
+      stage:  PipelineStage,
+      reason: string,
+      opts?:  { idemKey?: string },
+    ) =>
+      opsMutate(
+        `/admin/ops/stages/${stage}/resume`,
+        { reason },
+        opts,
+      ),
+
+    listTasks: (q: {
+      stage?:       PipelineStage
+      state?:       TaskState
+      target_kind?: TaskTargetKind
+      limit?:       number
+      cursor?:      string
+    } = {}) => {
+      const usp = new URLSearchParams()
+      if (q.stage)       usp.set('stage',       q.stage)
+      if (q.state)       usp.set('state',       q.state)
+      if (q.target_kind) usp.set('target_kind', q.target_kind)
+      if (q.limit)       usp.set('limit',       String(q.limit))
+      if (q.cursor)      usp.set('cursor',      q.cursor)
+      const qs = usp.toString()
+      return request<ApiTaskList>(`/admin/ops/tasks${qs ? `?${qs}` : ''}`)
+    },
+
+    requeueTask: (
+      t: { stage: PipelineStage; target_kind: TaskTargetKind; target_id: number },
+      body: { reason: string; expected_attempts: number; expected_claimed_by: string | null },
+      opts?: { idemKey?: string },
+    ) =>
+      opsMutate(
+        `/admin/ops/tasks/${t.stage}/${t.target_kind}/${t.target_id}/requeue`,
+        body, opts,
+      ),
+
+    releaseTask: (
+      t: { stage: PipelineStage; target_kind: TaskTargetKind; target_id: number },
+      body: { reason: string; expected_claimed_by: string },
+      opts?: { idemKey?: string },
+    ) =>
+      opsMutate(
+        `/admin/ops/tasks/${t.stage}/${t.target_kind}/${t.target_id}/release`,
+        body, opts,
+      ),
+
+    forceFailTask: (
+      t: { stage: PipelineStage; target_kind: TaskTargetKind; target_id: number },
+      body: { reason: string; expected_attempts: number; expected_claimed_by: string | null },
+      opts?: { idemKey?: string },
+    ) =>
+      opsMutate(
+        `/admin/ops/tasks/${t.stage}/${t.target_kind}/${t.target_id}/fail`,
+        body, opts,
+      ),
+
+    listActions: (q: {
+      action?:      AdminActionKind
+      actor_id?:    number
+      stage?:       PipelineStage
+      target_kind?: TaskTargetKind
+      target_id?:   number
+      limit?:       number
+      before_id?:   number
+    } = {}) => {
+      const usp = new URLSearchParams()
+      if (q.action)      usp.set('action',      q.action)
+      if (q.actor_id)    usp.set('actor_id',    String(q.actor_id))
+      if (q.stage)       usp.set('stage',       q.stage)
+      if (q.target_kind) usp.set('target_kind', q.target_kind)
+      if (q.target_id)   usp.set('target_id',   String(q.target_id))
+      if (q.limit)       usp.set('limit',       String(q.limit))
+      if (q.before_id)   usp.set('before_id',   String(q.before_id))
+      const qs = usp.toString()
+      return request<ApiAdminAction[]>(`/admin/ops/actions${qs ? `?${qs}` : ''}`)
+    },
+  },
 
   // ── Translator memory ───────────────────────────────────────────
   // Per (user, material, target_lang) knowledge bag. The agent loop

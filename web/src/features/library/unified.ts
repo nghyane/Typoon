@@ -21,9 +21,9 @@ import { coverUrl } from '@shared/ui/Cover'
  *  answered by translation_summary not the enum.
  *
  *  `dropped` isn't a UI status anymore: the StatusPicker only offers
- *  reading / plan / done plus a destructive "Bỏ theo dõi" that deletes
- *  the entry. Legacy entries with status='dropped' still load but
- *  filter under `all` only — no dedicated chip. */
+ *  reading / plan / done plus a destructive "Xoá khỏi thư viện" that
+ *  deletes the entry. Legacy entries with status='dropped' still load
+ *  but filter under `all` only — no dedicated chip. */
 export type LibraryFilter =
   | 'all'
   | 'reading' | 'plan' | 'done'

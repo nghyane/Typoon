@@ -1,13 +1,23 @@
 import { useState, useEffect, useRef } from 'react'
-import { Search, ArrowLeft, LogOut, Shield } from 'lucide-react'
-import { Link } from '@tanstack/react-router'
+import {
+  ArrowLeft, ChevronLeft, ChevronRight, Check, Globe, LogOut,
+  Search, Settings, Shield,
+} from 'lucide-react'
+import { Link, useNavigate } from '@tanstack/react-router'
+
 import { useHeaderStore } from '../store/header'
 import { WorkersIndicator } from './WorkersIndicator'
 import { cn } from '@shared/lib/cn'
-import { useLogout, type AuthUser } from '@features/auth/auth'
+import {
+  useSession, useSignOut, useUpdatePreferredLang,
+  type SessionUser,
+} from '@features/auth/session'
+import { LANG_OPTIONS } from '@features/auth/readingLang'
 import { Monogram } from '@shared/ui/primitives'
 
-interface Props { user: AuthUser }
+
+interface Props { user: SessionUser }
+
 
 export function Header({ user }: Props) {
   const { crumbs, title } = useHeaderStore()
@@ -52,19 +62,49 @@ export function Header({ user }: Props) {
   )
 }
 
-function UserMenu({ user }: { user: AuthUser }) {
+
+// ── User menu ──────────────────────────────────────────────────────
+//
+// Two-pane dropdown (iOS Settings pattern): a root pane with row-style
+// entries, and named sub-panes that slide in over the root. Each pane
+// fills the full dropdown width so layouts stay legible without
+// nesting popovers or wrapping chips. Add a new pane by extending
+// `Pane` + branching the body.
+
+type Pane = 'root' | 'lang'
+
+
+function UserMenu({ user }: { user: SessionUser }) {
   const [open, setOpen] = useState(false)
+  const [pane, setPane] = useState<Pane>('root')
   const ref = useRef<HTMLDivElement>(null)
-  const logout = useLogout()
+  const signOut = useSignOut()
+  const nav = useNavigate()
+
+  // Reset to root pane every time the menu closes so the next open
+  // starts fresh — keeping pane state stale would surprise the user.
+  useEffect(() => {
+    if (!open) setPane('root')
+  }, [open])
 
   useEffect(() => {
     if (!open) return
     const onClick = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (pane !== 'root') setPane('root')
+        else setOpen(false)
+      }
+    }
     document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
-  }, [open])
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open, pane])
 
   return (
     <div className="relative" ref={ref}>
@@ -79,38 +119,167 @@ function UserMenu({ user }: { user: AuthUser }) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-56 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden z-50">
-          <div className="px-3.5 py-3 border-b border-border-soft">
-            <p className="text-sm font-medium text-text truncate">{user.display_name}</p>
-            {user.email && (
-              <p className="text-xs text-text-subtle truncate mt-0.5">{user.email}</p>
-            )}
-            {user.is_admin && (
-              <span className="inline-flex items-center gap-1 mt-1.5 text-xs font-semibold uppercase tracking-wider text-success-text bg-success-bg rounded px-1.5 py-0.5">
-                <Shield size={9} />
-                Admin
-              </span>
-            )}
-          </div>
-          <button
-            onClick={() => { setOpen(false); logout() }}
-            className="w-full flex items-center gap-2 px-3.5 py-2.5 text-sm text-text hover:bg-hover cursor-pointer transition-colors"
-          >
-            <LogOut size={14} className="text-text-subtle" />
-            Đăng xuất
-          </button>
+        <div className="absolute right-0 top-full mt-1.5 w-64 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden z-50">
+          {pane === 'root' ? (
+            <RootPane
+              user={user}
+              onOpenLang={() => setPane('lang')}
+              onOpenSettings={() => {
+                setOpen(false)
+                nav({ to: '/settings', search: { section: 'account' } })
+              }}
+              onLogout={() => { setOpen(false); void signOut().then(() => nav({ to: '/login' })) }}
+            />
+          ) : (
+            <LangPane onBack={() => setPane('root')} />
+          )}
         </div>
       )}
     </div>
   )
 }
 
-function Avatar({ user }: { user: AuthUser }) {
+
+function RootPane({
+  user, onOpenLang, onOpenSettings, onLogout,
+}: {
+  user:           SessionUser
+  onOpenLang:     () => void
+  onOpenSettings: () => void
+  onLogout:       () => void
+}) {
+  const currentLang = LANG_OPTIONS.find(
+    (o) => o.code === user.preferred_target_lang,
+  )?.label ?? '—'
+
+  return (
+    <div>
+      <header className="px-3.5 py-3 border-b border-border-soft">
+        <p className="text-sm font-medium text-text truncate">
+          {user.display_name}
+        </p>
+        {user.is_admin && (
+          <span className="inline-flex items-center gap-1 mt-1.5 text-xs font-semibold uppercase tracking-wider text-success-text bg-success-bg rounded px-1.5 py-0.5">
+            <Shield size={9} />
+            Admin
+          </span>
+        )}
+      </header>
+
+      <nav className="py-1">
+        <MenuRow
+          icon={<Globe size={14} />}
+          label="Đọc bằng"
+          value={currentLang}
+          onClick={onOpenLang}
+          trailing={<ChevronRight size={12} className="text-text-subtle" />}
+        />
+        <MenuRow
+          icon={<Settings size={14} />}
+          label="Cài đặt"
+          onClick={onOpenSettings}
+          trailing={<ChevronRight size={12} className="text-text-subtle" />}
+        />
+      </nav>
+
+      <div className="border-t border-border-soft py-1">
+        <MenuRow
+          icon={<LogOut size={14} />}
+          label="Đăng xuất"
+          onClick={onLogout}
+          tone="destructive"
+        />
+      </div>
+    </div>
+  )
+}
+
+
+function LangPane({ onBack }: { onBack: () => void }) {
+  const { user } = useSession()
+  const update = useUpdatePreferredLang()
+  const current = user?.preferred_target_lang ?? ''
+
+  return (
+    <div>
+      <header className="flex items-center gap-1 px-2 py-2 border-b border-border-soft">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-sm text-sm text-text-muted hover:bg-hover hover:text-text cursor-pointer transition-colors"
+        >
+          <ChevronLeft size={14} />
+          Quay lại
+        </button>
+      </header>
+
+      <ul role="listbox" className="py-1">
+        {LANG_OPTIONS.map((opt) => {
+          const active = current === opt.code
+          return (
+            <li key={opt.code}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => update(active ? null : opt.code)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3.5 py-2 text-sm text-left cursor-pointer transition-colors',
+                  active ? 'text-text' : 'text-text-muted hover:bg-hover hover:text-text',
+                )}
+              >
+                <span className="flex-1">{opt.label}</span>
+                {active && <Check size={14} className="text-accent" />}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+
+function MenuRow({
+  icon, label, value, trailing, onClick, tone = 'default',
+}: {
+  icon:      React.ReactNode
+  label:     string
+  value?:    string
+  trailing?: React.ReactNode
+  onClick:   () => void
+  tone?:     'default' | 'destructive'
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left cursor-pointer transition-colors',
+        tone === 'destructive'
+          ? 'text-text hover:bg-error/10 hover:text-error-text'
+          : 'text-text hover:bg-hover',
+      )}
+    >
+      <span className="text-text-subtle">{icon}</span>
+      <span className="flex-1">{label}</span>
+      {value && (
+        <span className="text-xs text-text-subtle truncate max-w-[80px]">
+          {value}
+        </span>
+      )}
+      {trailing}
+    </button>
+  )
+}
+
+
+function Avatar({ user }: { user: SessionUser }) {
   const [failed, setFailed] = useState(false)
   const showImg = user.avatar_url && !failed
   if (showImg) {
     return (
-      <span className={cn('size-7 rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-surface-2')}>
+      <span className="size-7 rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-surface-2">
         <img
           src={user.avatar_url!}
           alt={user.display_name}

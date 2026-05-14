@@ -116,6 +116,12 @@ export interface MangaEndpoint extends HttpRequest {
     description?: Selector
     author?:      Selector
     status?:      Selector
+    /** Manga-level last-updated timestamp. When the source reports
+     *  WHEN the manga was last touched but NOT per-chapter dates
+     *  (OTruyen-style payloads), the runtime stamps this onto the
+     *  latest chapter so the row still surfaces something. Other
+     *  chapters stay date-less. */
+    updatedAt?:   Selector
   }
   extras?: Record<string, Selector>
   /** Inline chapter list when the manga response carries it. */

@@ -4,7 +4,7 @@
   "host":      "otruyenapi.com",
   "homepage":  "https://otruyen.cc",
   "languages": ["vi"],
-  "version":   "2.0",
+  "version":   "2.1",
   "accent":    "emerald",
 
   "endpoints": {
@@ -105,7 +105,8 @@
         "description": "$.data.item.content",
         "author":      "$.data.item.author[0]",
         "status":      "$.data.item.status",
-        "cover":       "={cdn}/uploads/comics/{thumb}"
+        "cover":       "={cdn}/uploads/comics/{thumb}",
+        "updatedAt":   "$.data.item.updatedAt"
       },
       "chapters": {
         "list":   "$.data.item.chapters[0].server_data[*]",

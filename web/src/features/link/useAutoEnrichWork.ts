@@ -5,9 +5,12 @@
 //   1. Skip when the primary material already has cross_refs +
 //      title_native + a target_lang entry in title_locale (the
 //      enrich would just rewrite what's already there).
-//   2. Honor a 7-day cooldown per Work (localStorage).
-//   3. Fan search out across `bundledLinkPlugins` (Anilist today,
-//      MangaDex next).
+//   2. Honor a 7-day cooldown per Work (localStorage). Cooldown is
+//      only set AFTER a successful commit (or a clean "no matches"
+//      result) — transient lookup / network failures retry next
+//      visit instead of locking the Work out for a week.
+//   3. Fan search out across `bundledLinkPlugins` (MangaBaka +
+//      MangaDex today).
 //   4. Score each candidate against the material's titles using the
 //      multi-pass similarity in `similarity.ts`; reject obvious
 //      noise (spinoffs, suspicious length ratios) via
@@ -20,11 +23,18 @@
 //        skip   (< 0.65)  → no write, cooldown applies
 //   6. POST the merged payload to `/material/{id}/enrich-metadata`.
 //
+// React Strict Mode note: the effect's cleanup aborts the in-flight
+// fetch on unmount. Strict Mode mount→cleanup→remount calls the
+// effect body twice — the second run starts a fresh AbortController
+// and a fresh fetch, so the work always completes. No ref guard is
+// needed; the useEffect deps (`work?.work.id`) already collapse
+// re-renders that don't change the work id.
+//
 // No UI surface — the enriched data shows up as title language
 // improvements + auto-merge candidates in the LinkSuggestionPanel
 // once the linker round-trips it.
 
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useMutation } from '@tanstack/react-query'
 
 import { api, type ApiMaterial, type ApiWorkDetail } from '@shared/api/api'
@@ -39,7 +49,17 @@ import {
 
 
 const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000   // 7 days
-const STORAGE_PREFIX = 'enrich:'
+// Bump the prefix whenever the enrich pipeline gains new data that
+// older cooldown stamps would gate out. Old keys never expire on
+// their own (localStorage doesn't gc), so the suffix is the only way
+// to force a one-time re-run across the whole user base.
+//
+// v2 (2026-05): plugins now emit per-lang `title_locale` (was
+// hardcoded `en`/`ja` in the merge layer). Old enrich rows only have
+// the two-locale subset; bumping the prefix lets every Work re-run
+// once so resolver finds e.g. `vi` titles when the plugin actually
+// has them.
+const STORAGE_PREFIX = 'enrich:v2:'
 
 
 interface EnrichPayload {
@@ -48,6 +68,7 @@ interface EnrichPayload {
   title_alt?:    string[]
   title_locale?: Record<string, string>
   start_year?:   number
+  cover_url?:    string
   source_signals: Array<{
     plugin:        string
     confidence:    number
@@ -56,37 +77,36 @@ interface EnrichPayload {
 }
 
 
-export function useAutoEnrichWork(work: ApiWorkDetail | null): void {
+export function useAutoEnrichWork(
+  work:          ApiWorkDetail | null,
+  /** Viewer's reading lang. When provided, an otherwise-enriched
+   *  material whose `title_locale` is missing this lang triggers a
+   *  re-enrich. Lets a plugin upgrade (e.g. mangabaka started
+   *  surfacing per-lang locales) backfill old rows lazily without a
+   *  bulk migration — every Work the viewer opens self-heals on
+   *  first hit. */
+  viewerLang?:   string | null,
+): void {
   const enrich = useMutation({
     mutationFn: (input: { materialId: number; payload: EnrichPayload }) =>
       api.enrichMaterialMetadata(input.materialId, input.payload),
   })
 
-  // React Strict Mode double-mounts; ref guard prevents firing twice
-  // on the same Work in one render cycle.
-  const firedRef = useRef<number | null>(null)
-
   useEffect(() => {
     if (!work) return
-    if (firedRef.current === work.work.id) return
 
     const primary = pickPrimary(work.materials)
-    if (!primary) {
-      firedRef.current = work.work.id
-      return
-    }
-    if (isAlreadyEnriched(primary)) {
-      firedRef.current = work.work.id
-      return
-    }
-    const cdKey = STORAGE_PREFIX + work.work.id
-    if (withinCooldown(cdKey)) {
-      firedRef.current = work.work.id
-      return
-    }
+    if (!primary) return
+    if (isAlreadyEnriched(primary, viewerLang ?? null)) return
 
-    firedRef.current = work.work.id
-    writeCooldown(cdKey)
+    // Cooldown: 7-day window keyed by Work id + pipeline version.
+    // Bumping the `STORAGE_PREFIX` suffix forces every Work to
+    // re-run once after a pipeline upgrade (see the v2 note). The
+    // commit() path stamps the key on every successful run — `ok` or
+    // `nothing matched` — so the cooldown still gates the "nobody
+    // can identify this manga" case from hammering the network.
+    const cdKey = STORAGE_PREFIX + work.work.id
+    if (withinCooldown(cdKey)) return
 
     const ctrl = new AbortController()
     void (async () => {
@@ -102,11 +122,24 @@ export function useAutoEnrichWork(work: ApiWorkDetail | null): void {
         if (ctrl.signal.aborted) return
 
         const payload = buildPayload(bundledLinkPlugins, primary, candidates)
-        if (!hasContent(payload)) return
+        if (!hasContent(payload)) {
+          // Nothing to commit — but the lookup itself succeeded, so
+          // cooldown applies: re-running tomorrow will just hit the
+          // same dry plugins. The 7-day window is the right cadence
+          // to let candidate plugins surface new matches.
+          writeCooldown(cdKey)
+          return
+        }
 
-        enrich.mutate({ materialId: primary.id, payload })
+        await enrich.mutateAsync({ materialId: primary.id, payload })
+        // Only stamp cooldown AFTER a successful commit. A transient
+        // network / plugin failure should re-try on the next visit
+        // instead of locking the Work out for a week.
+        writeCooldown(cdKey)
       } catch {
-        // Best-effort. Plugin / network errors degrade silently.
+        // Best-effort. Plugin / network / mutation errors degrade
+        // silently — cooldown stays unset so the next page mount
+        // gets a clean retry.
       }
     })()
 
@@ -119,15 +152,51 @@ export function useAutoEnrichWork(work: ApiWorkDetail | null): void {
 // ── Pure helpers ───────────────────────────────────────────────
 
 
-/** Pick the material whose titles we'll search with. Prefer one
- *  with `title_native` (kanji / hangul = strongest cross-language
- *  anchor), else the first material in the work. */
+/** Pick the material whose titles we'll search with. The auto-enrich
+ *  fanout queries upstream metadata services (MangaBaka, MangaDex,
+ *  …) that index by NATIVE / romanized titles — VN scanlator titles
+ *  ("Cầm Dao Mổ Heo Chém Bay Vạn Giới") rarely hit, so picking the
+ *  VN ext-upload material as primary on a multi-source Work would
+ *  cause the entire enrich to come back empty.
+ *
+ *  Priority:
+ *    1. Material with a non-empty `title_native`        (strongest).
+ *    2. Material whose `title` contains CJK / Hangul    (HappyMH-zh,
+ *       MangaDex with CJK display title — upstream native, no need
+ *       for the title_native field to be populated).
+ *    3. Source-backed material (`source != null`)       — upstream
+ *       romanized title is still a stronger signal than a scanlator
+ *       VN title.
+ *    4. `materials[0]`                                  — last resort.
+ */
 function pickPrimary(materials: ApiMaterial[]): ApiMaterial | null {
   if (materials.length === 0) return null
+
   const withNative = materials.find(
     (m) => (m.title_native ?? '').trim().length > 0,
   )
-  return withNative ?? materials[0]!
+  if (withNative) return withNative
+
+  const withCjkTitle = materials.find(
+    (m) => containsCjk(m.title),
+  )
+  if (withCjkTitle) return withCjkTitle
+
+  const sourceBacked = materials.find((m) => m.source != null)
+  if (sourceBacked) return sourceBacked
+
+  return materials[0]!
+}
+
+
+/** True when the string carries CJK Unified Ideographs, Hiragana,
+ *  Katakana, or Hangul. These ranges signal "native script title"
+ *  cleanly enough for the enrich primary picker — we don't need to
+ *  be exhaustive (Cyrillic / Thai etc. are not enrichment targets
+ *  for the bundled plugins). */
+function containsCjk(s: string | null | undefined): boolean {
+  if (!s) return false
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/.test(s)
 }
 
 
@@ -135,21 +204,31 @@ function pickPrimary(materials: ApiMaterial[]): ApiMaterial | null {
  *  an enrich would have written. Defines "enough":
  *    • cross_refs has at least one known namespace, AND
  *    • title_native is filled, AND
- *    • title_locale has at least two languages.
+ *    • title_locale has at least two languages, AND
+ *    • if `viewerLang` is given, `title_locale[viewerLang]` is
+ *      present (so a viewer reading in 'vi' triggers a re-enrich
+ *      even when the row already has en+ja from a previous run).
  *
  *  Anything less, we try again; the merge is additive so re-running
  *  on a partially-enriched row only adds, never overwrites. */
-function isAlreadyEnriched(m: ApiMaterial): boolean {
+function isAlreadyEnriched(
+  m:          ApiMaterial,
+  viewerLang: string | null,
+): boolean {
   const hasIdRef = !!m.cross_refs && (
     'anilist' in m.cross_refs
     || 'mdex_uuid' in m.cross_refs
     || 'mal' in m.cross_refs
   )
   const hasNative = (m.title_native ?? '').trim().length > 0
-  const localeCount = m.title_locale
-    ? Object.values(m.title_locale).filter((v) => v && v.trim()).length
-    : 0
-  return hasIdRef && hasNative && localeCount >= 2
+  const locale = m.title_locale ?? {}
+  const localeCount = Object.values(locale).filter(
+    (v) => v && v.trim(),
+  ).length
+  if (!hasIdRef || !hasNative || localeCount < 2) return false
+  const target = (viewerLang ?? '').trim().toLowerCase().split(/[-_]/)[0]
+  if (target && !(locale[target] && locale[target].trim())) return false
+  return true
 }
 
 
@@ -183,6 +262,7 @@ function buildPayload(
   const titleAltSet = new Set<string>()
   let titleNative: string | null = null
   let startYear:   number | null = null
+  let cover:       string | null = null
 
   // Plugin order is the registry order — plugins listed first in
   // `bundledLinkPlugins` get priority on `title_locale` conflicts.
@@ -226,14 +306,39 @@ function buildPayload(
 
     // Accept tier — commit display metadata, not just the id.
     if (!titleNative && top.c.titleNative) titleNative = top.c.titleNative
-    if (top.c.titleEnglish) {
-      titleLocale['en'] = titleLocale['en'] ?? top.c.titleEnglish
+
+    // Merge lang-tagged display titles. Plugin order determines
+    // priority: a key that's already populated by an earlier plugin
+    // is kept (first-writer-wins) so the registry order in
+    // `bundledLinkPlugins` is also the priority order.
+    //
+    // Plus the legacy `titleEnglish` / `titleNative` flags fill in
+    // `en` / a CJK key when the plugin didn't surface them via
+    // `titleLocale` — back-compat for adapters not yet emitting the
+    // full locale map.
+    for (const [lang, value] of Object.entries(top.c.titleLocale)) {
+      if (!value || titleLocale[lang]) continue
+      titleLocale[lang] = value
     }
+    if (top.c.titleEnglish && !titleLocale['en']) {
+      titleLocale['en'] = top.c.titleEnglish
+    }
+    // Heuristic backstop for `titleNative`: only attach to a CJK key
+    // when we can detect the script. Hardcoding `'ja'` (the old
+    // behaviour) labelled Korean / Chinese natives as Japanese in
+    // the resolver and the title_locale map became misleading.
     if (top.c.titleNative) {
-      titleLocale['ja'] = titleLocale['ja'] ?? top.c.titleNative
+      const cjk = detectCjkScript(top.c.titleNative)
+      if (cjk && !titleLocale[cjk]) titleLocale[cjk] = top.c.titleNative
     }
+
     for (const s of top.c.synonyms) titleAltSet.add(s)
     if (top.c.startYear && !startYear) startYear = top.c.startYear
+    // Cover is first-writer-wins on the storage side; we still pick
+    // the FIRST plugin's accepted cover so ordering (MangaBaka over
+    // MangaDex) drives the choice. Per-material existing covers are
+    // preserved by the COALESCE on `cover_url`.
+    if (!cover && top.c.cover) cover = top.c.cover
   }
 
   const payload: EnrichPayload = { source_signals: signals }
@@ -242,6 +347,7 @@ function buildPayload(
   if (titleAltSet.size > 0)                payload.title_alt    = [...titleAltSet]
   if (Object.keys(titleLocale).length > 0) payload.title_locale = titleLocale
   if (startYear)                           payload.start_year   = startYear
+  if (cover)                               payload.cover_url    = cover
   return payload
 }
 
@@ -253,6 +359,7 @@ function hasContent(p: EnrichPayload): boolean {
     || !!p.title_alt
     || !!p.title_locale
     || p.start_year != null
+    || !!p.cover_url
   )
 }
 
@@ -277,4 +384,38 @@ function writeCooldown(key: string): void {
     // localStorage can throw in private mode / quota — fine, the
     // hook degrades to "re-run on every navigation".
   }
+}
+
+
+/** Detect the dominant CJK script of a string and return a BCP-47
+ *  primary subtag. Used by the enrich pipeline to label a plugin's
+ *  `titleNative` with the right `title_locale` key when the plugin
+ *  didn't already split natives per-lang.
+ *
+ *  We classify by the FIRST CJK code point we see. That's enough
+ *  for the manga case: a Japanese title is overwhelmingly hiragana/
+ *  katakana, a Korean title is hangul, a Chinese title is purely
+ *  Han ideographs. Returns null for non-CJK strings (Latin, Cyrillic,
+ *  Thai...) — the caller leaves them alone rather than guessing. */
+function detectCjkScript(s: string): 'ja' | 'ko' | 'zh' | null {
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)
+    if (cp == null) continue
+    // Hiragana 3040–309F | Katakana 30A0–30FF | Katakana ext 31F0–31FF
+    if ((cp >= 0x3040 && cp <= 0x30FF) || (cp >= 0x31F0 && cp <= 0x31FF)) {
+      return 'ja'
+    }
+    // Hangul Syllables AC00–D7AF | Jamo 1100–11FF | Compat A 3130–318F
+    if ((cp >= 0xAC00 && cp <= 0xD7AF) ||
+        (cp >= 0x1100 && cp <= 0x11FF) ||
+        (cp >= 0x3130 && cp <= 0x318F)) {
+      return 'ko'
+    }
+    // CJK Unified 4E00–9FFF — claim zh as the safest default when
+    // the string is purely Han with no hiragana/katakana/hangul.
+    if (cp >= 0x4E00 && cp <= 0x9FFF) {
+      return 'zh'
+    }
+  }
+  return null
 }

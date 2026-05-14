@@ -55,7 +55,7 @@ const ACTIVITY_CHIPS: Array<{
 const EMPTY_HINT: Record<LibraryFilter, { title: string; sub: string }> = {
   all: {
     title: 'Thư viện đang trống',
-    sub:   'Dán đường dẫn manga hoặc gõ tên để thêm vào theo dõi',
+    sub:   'Dán đường dẫn manga hoặc gõ tên để thêm vào thư viện',
   },
   reading: {
     title: 'Chưa có truyện đang đọc',

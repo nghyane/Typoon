@@ -41,10 +41,10 @@ import { confirm } from '@shared/ui/Confirm'
 import { timeAgo } from '@shared/lib/time'
 import { languageSummary, MULTI_LANG } from '@shared/lib/lang'
 import { cn } from '@shared/lib/cn'
-import {
-  useSources, useEnabledSources, bundledManifests,
-} from '@features/browse/sources'
+import { useSources, useEnabledSources, bundledManifests } from '@features/browse/sources'
 import type { InstalledSource } from '@features/browse/manifest/types'
+import { useSession, useUpdatePreferredLang } from '@features/auth/session'
+import { LANG_OPTIONS } from '@features/auth/readingLang'
 
 // ── tab registry ────────────────────────────────────────────────────────────
 
@@ -89,8 +89,54 @@ function SettingsPage() {
 // ════════════════════════════════════════════════════════════════════════════
 
 function AccountTab() {
-  return <QuotaSection />
+  return (
+    <div className="space-y-6">
+      <ReadingSection />
+      <QuotaSection />
+    </div>
+  )
 }
+
+
+function ReadingSection() {
+  const { user, status } = useSession()
+  const update = useUpdatePreferredLang()
+  const loading = status === 'loading'
+
+  return (
+    <SettingsSection
+      title="Đọc bằng"
+      description="Ngôn ngữ mặc định khi mở một manga. Mỗi manga có thể đặt riêng từ trang truyện."
+    >
+      {loading ? (
+        <div className="h-9 flex items-center"><Spinner /></div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          {LANG_OPTIONS.map((opt) => {
+            const active = (user?.preferred_target_lang ?? '') === opt.code
+            return (
+              <button
+                key={opt.code}
+                type="button"
+                onClick={() => update(active ? null : opt.code)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 h-8 px-3 rounded-sm text-sm transition-colors cursor-pointer',
+                  active
+                    ? 'bg-accent/15 text-text border border-accent/30'
+                    : 'bg-surface-2 text-text-muted border border-border-soft hover:bg-hover hover:text-text',
+                )}
+              >
+                {opt.label}
+                {active && <Check size={12} />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </SettingsSection>
+  )
+}
+
 
 function QuotaSection() {
   const { data, isLoading } = useQuery({

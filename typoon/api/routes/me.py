@@ -12,8 +12,9 @@ from pydantic import BaseModel, Field
 
 from typoon.api.auth_token import issue_api_token
 from typoon.api.deps import get_auth_cfg, get_config, get_store, require_user
-from typoon.api.models import MeOut, RecentReadOut
+from typoon.api.models import RecentReadOut, SessionUser
 from typoon.api.quota import get_quota_snapshot
+from typoon.api.routes.auth import _session_user
 from typoon.config import AuthConfig, Config
 from typoon.storage import Store
 
@@ -22,9 +23,6 @@ router = APIRouter(
     prefix="/api/me", tags=["me"],
     dependencies=[Depends(require_user)],
 )
-
-
-# ── Request bodies ────────────────────────────────────────────────────
 
 
 class CreateTokenBody(BaseModel):
@@ -51,9 +49,6 @@ class RecordRawReadingBody(BaseModel):
     label:       str | None = None
 
 
-# ── Response models ──────────────────────────────────────────────────
-
-
 class TokenInfo(BaseModel):
     id:         int
     name:       str
@@ -67,21 +62,34 @@ class TokenCreated(TokenInfo):
     token: str
 
 
-# ── /me ──────────────────────────────────────────────────────────────
+class UpdatePreferencesBody(BaseModel):
+    """Patch viewer-wide preferences. Every field is optional; only
+    keys present in the payload are written."""
+    preferred_target_lang: str | None = None
 
 
-@router.get("", response_model=MeOut)
-async def me(user: dict = Depends(require_user)):
-    """Current user identity. Slim — no guild list, no settings
-    payload; clients ask `/api/me/quota` etc. as needed."""
-    return MeOut(
-        id=user["id"],
-        display_name=user["display_name"],
-        avatar_url=user.get("avatar_url"),
-    )
-
-
-# ── Reading history ──────────────────────────────────────────────────
+@router.patch("/preferences", response_model=SessionUser)
+async def update_preferences(
+    body: UpdatePreferencesBody,
+    user: dict       = Depends(require_user),
+    cfg:  AuthConfig = Depends(get_auth_cfg),
+    db:   Store      = Depends(get_store),
+) -> SessionUser:
+    """Update viewer-wide preferences. Returns the full `SessionUser`
+    payload so the client can overwrite its `['session']` cache in one
+    round-trip — same shape as `GET /api/auth/me`."""
+    fields = body.model_dump(exclude_unset=True)
+    if "preferred_target_lang" in fields:
+        await db.update_user_preferred_target_lang(
+            user["id"], fields["preferred_target_lang"],
+        )
+    refreshed = await db.get_user(user["id"])
+    if refreshed is None:
+        raise HTTPException(404, "User not found")
+    # Carry the original JWT-snapshotted roles forward so `is_admin`
+    # stays consistent with the role list in the bearer token.
+    refreshed = {**refreshed, "roles": user.get("roles", [])}
+    return _session_user(refreshed, cfg=cfg)
 
 
 @router.get("/recent-reads", response_model=list[RecentReadOut])
@@ -150,9 +158,6 @@ async def record_raw_reading(
     )
 
 
-# ── API tokens (CLI / extension) ─────────────────────────────────────
-
-
 @router.get("/tokens", response_model=list[TokenInfo])
 async def list_tokens(
     user: dict  = Depends(require_user),
@@ -193,9 +198,6 @@ async def revoke_token(
 ):
     if not await db.revoke_api_token(user["id"], token_id):
         raise HTTPException(404, "Token not found")
-
-
-# ── Quota ────────────────────────────────────────────────────────────
 
 
 @router.get("/quota")

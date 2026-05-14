@@ -12,7 +12,6 @@
 //   │  │      │  ┌Đọc tiếp ch.X┐ [Đang đọc ▾] [♡] [↗]            │
 //   │  └──────┘                                                   │
 //   │                                                             │
-//   │  Nguồn:  [● MangaDex] [Bato.to] [+ 2]                       │
 //   │  Mới nhất ch.64.6 · 92 chương · Cập nhật 2 giờ trước        │
 //   │                                                             │
 //   │  After the discussions with the temple master…              │
@@ -23,103 +22,115 @@
 // the app. Status appears twice on purpose: a muted chip for the
 // MANGA's publication state (from upstream), and a clickable picker
 // for the USER's reading state (saved on the library entry).
+//
+// One Work may aggregate N sibling materials across sources. The
+// hero picks a SINGLE primary material (`pickPrimaryMaterial`) for
+// the metadata strip / status picker / bookmark / description; the
+// title and cover come from their own resolvers, biased toward the
+// viewer's reading language. The per-source picker rail is gone:
+// chapter rows expose source info inline via `VersionLine`.
 
-import { useState } from 'react'
-import { BookOpen, Share2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  BookOpen, Camera, ChevronDown, Globe, Share2, Upload,
+} from 'lucide-react'
 
 import { cn } from '@shared/lib/cn'
 import { Cover } from '@shared/ui/Cover'
 import { Button } from '@shared/ui/Button'
+import { toast } from '@shared/ui/Toaster'
+import { api } from '@shared/api/api'
+import { qk } from '@shared/api/keys'
+import { useSession } from '@features/auth/session'
 import type {
   ApiMaterial, ApiRecentRead, ApiWorkViewerEntry,
 } from '@shared/api/api'
 
-import { SourceChipRail } from './SourceChipRail'
 import { TargetLangPicker } from './TargetLangPicker'
 import { StatusPicker } from './StatusPicker'
-import { resolveWorkTitle } from './title'
+import {
+  collectAltTitles, pickPrimaryMaterial, resolveWorkCover,
+  resolveWorkTitle,
+} from './title'
 
 
 interface Props {
   workId:           number
-  activeMaterial:   ApiMaterial | null
   materials:        ApiMaterial[]
   resumeFrom:       ApiRecentRead | null
   viewerEntry:      ApiWorkViewerEntry | null
+  /** Resolved reading-lang from `useWorkData` (entry override → user
+   *  default → fallback). Drives title / cover / primary-material
+   *  resolution AND the TargetLangPicker label so both stay in sync
+   *  whether the viewer has bookmarked the Work yet or not. */
+  targetLang:       string
   latestChapterNum: string | null
   totalChapters?:   number
-  onSelectSource:   (materialId: number) => void
   onShare:          () => void
   onResume:         () => void
+  onUpload:         () => void
 }
 
 
 export function WorkHero({
-  workId, activeMaterial, materials, resumeFrom, viewerEntry,
+  workId, materials, resumeFrom, viewerEntry, targetLang,
   latestChapterNum, totalChapters,
-  onSelectSource, onShare, onResume,
+  onShare, onResume, onUpload,
 }: Props) {
-  const m = activeMaterial
-  // Canonical title — biased toward the viewer's reading language.
-  // A VI reader opening a manga that exists in both OTruyen (VI) and
-  // HappyMH (raw JP) sees the OTruyen title, not a romanized JP one.
-  // The `?src=` URL param wins when present so shared links are
-  // reproducible across viewers.
-  const targetLang = viewerEntry?.target_lang ?? null
-  const { title, titleNative } = resolveWorkTitle(materials, m, targetLang)
+  const { title, titleNative } = resolveWorkTitle(materials, targetLang)
+  const cover                  = resolveWorkCover(materials, targetLang)
+  const primary                = pickPrimaryMaterial(materials, targetLang)
+  const altTitles              = collectAltTitles(materials, title)
 
   return (
     <div className="px-4 sm:px-6 pt-6 pb-4">
-      {/* Top row — cover + title block. */}
-      <div className="flex gap-4 sm:gap-6">
-        <div className="w-24 sm:w-40 shrink-0 aspect-[2/3] rounded-md overflow-hidden shadow-md">
-          <Cover
-            src={m?.cover_url ?? null}
-            title={title}
-            version={m?.updated_at}
-            className="w-full h-full"
-          />
-        </div>
+      {/* Top row — cover + title block.
+          `items-start` keeps the cover at its intrinsic
+          aspect-ratio height; without it the flex row stretches
+          every child to the tallest sibling, and an expanded
+          alt-titles disclosure pulls the cover taller than its
+          2:3 ratio (poster becomes warped). */}
+      <div className="flex items-start gap-4 sm:gap-6">
+        <CoverSlot
+          material={primary}
+          coverUrl={cover.coverUrl}
+          title={title}
+        />
 
         <div className="flex-1 min-w-0 flex flex-col gap-2 sm:gap-2.5">
-          <TitleBlock title={title} native={titleNative} />
+          <TitleBlock
+            title={title}
+            native={titleNative}
+            alts={altTitles}
+          />
 
-          <MetaStrip material={m} />
+          <MetaStrip material={primary} />
 
           <ActionBar
             resumeFrom={resumeFrom}
             viewerEntry={viewerEntry}
             workId={workId}
-            material={m}
+            material={primary}
+            targetLang={targetLang}
             onResume={onResume}
             onShare={onShare}
+            onUpload={onUpload}
           />
         </div>
       </div>
-
-      {/* Source picker — outside the title column so it can span the
-          full width on mobile (cover + label width is too narrow). */}
-      <div className="mt-4 flex items-center gap-2 flex-wrap">
-        <span className="text-xs text-text-subtle shrink-0">Nguồn:</span>
-        <SourceChipRail
-          materials={materials}
-          activeMaterialId={activeMaterial?.id ?? null}
-          onSelect={onSelectSource}
-        />
-      </div>
-
 
       {/* Stats strip — small, subtle metadata that wasn't worth a
           chip but the user might still want at a glance. */}
       <StatsStrip
         latestChapterNum={latestChapterNum}
         totalChapters={totalChapters}
-        updatedAt={m?.updated_at ?? null}
+        updatedAt={primary?.updated_at ?? null}
       />
 
       {/* Description — full text, collapsed by default. */}
-      {m?.description && (
-        <Description text={stripHtml(m.description)} />
+      {primary?.description && (
+        <Description text={stripHtml(primary.description)} />
       )}
     </div>
   )
@@ -129,26 +140,176 @@ export function WorkHero({
 // ── Sub-blocks ─────────────────────────────────────────────────
 
 
+// Match the server-side cap so we reject early instead of streaming a
+// huge file up just to get a 413 back.
+const COVER_MAX_BYTES        = 2 * 1024 * 1024
+const COVER_ACCEPTED_MIMES   = ['image/jpeg', 'image/png', 'image/webp']
+
+
+/** Cover slot with an inline "change cover" affordance for local
+ *  (ext / upload) materials the viewer owns. Source-backed materials
+ *  render the cover read-only — their state mirrors the manifest
+ *  snapshot so a user-uploaded cover would just get overwritten on
+ *  the next enrich. The button overlays the cover bottom-right on
+ *  hover (desktop) and stays visible (mobile) so it's discoverable
+ *  without obstructing the image. */
+function CoverSlot({
+  material, coverUrl, title,
+}: {
+  material: ApiMaterial | null
+  coverUrl: string | null
+  title:    string
+}) {
+  const qc = useQueryClient()
+  const { user } = useSession()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const canEdit =
+       !!material
+    && material.origin !== 'source'
+    && !!user
+    && material.imported_by === user.id
+
+  const upload = useMutation({
+    mutationFn: (f: File) => api.uploadCover(material!.id, f),
+    onSuccess: () => {
+      // Refresh both the active work payload (cover surfaces here)
+      // and the library entry payload (cover surfaces on the card).
+      // Cheap at beta scale — one entry per open tab.
+      void qc.invalidateQueries({ queryKey: qk.work.all() })
+      void qc.invalidateQueries({ queryKey: qk.library.all() })
+      toast.success('Đã cập nhật ảnh bìa.')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  function handlePick(file: File | null) {
+    if (!file) return
+    if (!COVER_ACCEPTED_MIMES.includes(file.type)) {
+      toast.error('Chỉ chấp nhận ảnh JPG, PNG hoặc WebP.')
+      return
+    }
+    if (file.size > COVER_MAX_BYTES) {
+      toast.error(`Ảnh quá lớn (tối đa ${COVER_MAX_BYTES / 1024 / 1024} MB).`)
+      return
+    }
+    upload.mutate(file)
+  }
+
+  return (
+    <div className={cn(
+      'relative w-24 sm:w-40 shrink-0 aspect-[2/3] rounded-md overflow-hidden shadow-md',
+      'group',
+    )}>
+      <Cover
+        src={coverUrl}
+        title={title}
+        version={material?.updated_at}
+        className="w-full h-full"
+      />
+      {canEdit && (
+        <>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={COVER_ACCEPTED_MIMES.join(',')}
+            className="sr-only"
+            onChange={(e) => {
+              handlePick(e.target.files?.[0] ?? null)
+              // Reset value so picking the same file twice re-fires
+              // onChange — common pattern after a failed upload.
+              e.target.value = ''
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={upload.isPending}
+            title={upload.isPending ? 'Đang tải lên…' : 'Đổi ảnh bìa'}
+            className={cn(
+              'absolute bottom-1 right-1 inline-flex items-center justify-center',
+              'h-7 w-7 rounded-full',
+              'bg-bg/80 text-text hover:bg-bg backdrop-blur-sm',
+              'border border-border-soft/60 shadow-sm',
+              'transition-opacity cursor-pointer',
+              // Always visible on touch; fade in on hover for desktop
+              // so the image isn't permanently covered.
+              'opacity-90 sm:opacity-0 sm:group-hover:opacity-100',
+              'focus-visible:opacity-100 focus-visible:outline-none',
+              'focus-visible:ring-1 focus-visible:ring-accent/50',
+              upload.isPending && 'opacity-100 cursor-wait',
+            )}
+          >
+            <Camera size={14} />
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+
 function TitleBlock({
-  title, native,
+  title, native, alts,
 }: {
   title:  string
   native: string | null
+  alts:   string[]
 }) {
-  // Only render the native title when it's actually different from
-  // the romanized one (some sources duplicate the same string into
-  // both fields).
-  const showNative = native && native.trim() && native.trim() !== title.trim()
+  // Native title is included in `alts` already (collectAltTitles
+  // walks every material's title_native). Render it inline in the
+  // disclosure list — no separate italic subtitle. The `native`
+  // prop is kept for callers that still want the raw value, but
+  // not used here.
+  void native
 
   return (
     <div className="min-w-0">
       <h1 className="text-lg sm:text-2xl font-semibold text-text leading-tight line-clamp-2">
         {title}
       </h1>
-      {showNative && (
-        <p className="mt-1 text-xs sm:text-sm text-text-subtle italic truncate">
-          {native}
-        </p>
+      {alts.length > 0 && <AltTitleStrip alts={alts} />}
+    </div>
+  )
+}
+
+
+/** Disclosure row: the trigger line ALWAYS shows the joined alts
+ *  truncated to one line — that's the "button" that doesn't grow
+ *  the cover row's height. Expanded just appends a separate list
+ *  below; the trigger stays one line either way. */
+function AltTitleStrip({ alts }: { alts: string[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1.5 text-text-subtle">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          'flex items-center gap-2 w-full min-w-0 text-left',
+          'text-xs sm:text-sm hover:text-text cursor-pointer',
+          'transition-colors',
+        )}
+      >
+        <Globe size={14} className="shrink-0" />
+        <span className="flex-1 min-w-0 truncate">
+          {alts.join(' / ')}
+        </span>
+        <ChevronDown
+          size={14}
+          className={cn(
+            'shrink-0 transition-transform',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+      {open && (
+        <ul className="mt-2 ml-6 space-y-1.5 text-xs sm:text-sm text-text-muted">
+          {alts.map((t) => (
+            <li key={t} className="break-words">{t}</li>
+          ))}
+        </ul>
       )}
     </div>
   )
@@ -187,14 +348,17 @@ function MetaStrip({ material }: { material: ApiMaterial | null }) {
 
 
 function ActionBar({
-  resumeFrom, viewerEntry, workId, material, onResume, onShare,
+  resumeFrom, viewerEntry, workId, material, targetLang,
+  onResume, onShare, onUpload,
 }: {
   resumeFrom:  ApiRecentRead | null
   viewerEntry: ApiWorkViewerEntry | null
   workId:      number
   material:    ApiMaterial | null
+  targetLang:  string
   onResume:    () => void
   onShare:     () => void
+  onUpload:    () => void
 }) {
   return (
     <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -211,26 +375,38 @@ function ActionBar({
       )}
 
       {/* Status picker covers both bookmark-create (no entry yet)
-          and status-change (entry exists). `dropped` = bỏ theo dõi
-          — no separate remove button needed. */}
+          and status-change (entry exists). Removing the entry is the
+          explicit "xoá khỏi thư viện" action inside the picker — no
+          separate button needed. */}
       <StatusPicker
         workId={workId}
         entryId={viewerEntry?.entry_id ?? null}
         status={viewerEntry?.status ?? null}
-        material={material ? {
-          id:        material.id,
-          title:     material.title,
-          cover_url: material.cover_url,
-        } : null}
+        materialId={material?.id ?? null}
       />
 
       {viewerEntry && (
         <TargetLangPicker
           entryId={viewerEntry.entry_id}
           workId={workId}
-          targetLang={viewerEntry.target_lang}
+          targetLang={targetLang}
         />
       )}
+
+      {/* Upload one's own chapter into this Work. Lazy material
+          create happens server-side on first upload-init; this
+          button always works regardless of whether the viewer has
+          previously uploaded here. */}
+      <Button
+        variant="ghost"
+        size="md"
+        onClick={onUpload}
+        className="inline-flex items-center gap-1.5"
+        title="Tải lên chương"
+      >
+        <Upload size={14} />
+        <span className="hidden sm:inline">Tải chương</span>
+      </Button>
 
       <Button
         variant="ghost"

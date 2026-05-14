@@ -2,10 +2,11 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { useSidebar } from '../store/sidebar'
 import { cn } from '../shared/lib/cn'
 import {
-  ChevronLeft, ChevronRight, Home, Library, Compass, Settings,
+  ChevronLeft, ChevronRight, Home, Library, Compass, Settings, Shield,
   type LucideIcon,
 } from 'lucide-react'
 import { SidebarQuota } from './SidebarQuota'
+import { useSession } from '@features/auth/session'
 
 // =============================================================================
 // Sidebar — 4-tab shell, Hội-first.
@@ -32,23 +33,35 @@ const NAV_PRIMARY: NavItem[] = [
   { to: '/explore', label: 'Khám phá',  icon: Compass },
 ]
 
-const NAV_FOOT: NavItem[] = [
+// Footer nav. Admin entry is folded in alongside settings — both are
+// "meta" destinations (manage things, not consume things) so they
+// belong below the primary feed/library/explore block. Admin-only;
+// non-admins simply don't see the row.
+const NAV_FOOT_BASE: NavItem[] = [
   { to: '/settings', label: 'Cài đặt', icon: Settings },
 ]
+const NAV_FOOT_ADMIN: NavItem = {
+  to: '/admin/ops', label: 'Quản trị', icon: Shield,
+}
 
 const W_COLLAPSED = 60
 const W_EXPANDED  = 240
 const NAV_PAD_X   = 8
 const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44px — icon column
 
-interface Props {
-  brandName: string | null
-  brandIcon: string | null
-}
+// No brand props — the backend stopped carrying guild_name/icon when
+// Discord became identity-only (schema 19). The sidebar renders a
+// solid "T" monogram; if guild branding ever comes back it'll live
+// on auth config (cached once), not on the per-user payload.
 
-export function Sidebar({ brandName, brandIcon }: Props) {
+export function Sidebar() {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
+  const { user } = useSession()
+
+  const navFoot = user?.is_admin
+    ? [NAV_FOOT_ADMIN, ...NAV_FOOT_BASE]
+    : NAV_FOOT_BASE
 
   const isActive = (to: string) =>
     to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
@@ -103,26 +116,13 @@ export function Sidebar({ brandName, brandIcon }: Props) {
             title={collapsed ? 'Mở rộng' : undefined}
             className={cn(
               'group relative size-7 rounded-sm flex items-center justify-center overflow-hidden',
-              brandIcon
-                ? 'bg-surface-2'
-                : 'bg-accent text-accent-fg text-sm font-bold',
+              'bg-accent text-accent-fg text-sm font-bold',
               collapsed ? 'cursor-pointer' : 'cursor-default',
             )}
           >
-            {brandIcon ? (
-              <img
-                src={brandIcon}
-                alt={brandName ?? ''}
-                className={cn(
-                  'w-full h-full object-cover',
-                  collapsed && 'group-hover:opacity-0 transition-opacity',
-                )}
-              />
-            ) : (
-              <span className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}>
-                {brandName ? brandName.charAt(0).toUpperCase() : 'T'}
-              </span>
-            )}
+            <span className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}>
+              T
+            </span>
             {collapsed && (
               <ChevronRight
                 size={12}
@@ -132,16 +132,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
           </button>
         </div>
 
-        {brandName && (
-          <span
-            className="flex-1 min-w-0 font-semibold text-sm tracking-tight text-text truncate transition-opacity duration-150"
-            style={{ opacity: collapsed ? 0 : 1 }}
-            title={brandName}
-          >
-            {brandName}
-          </span>
-        )}
-        {!brandName && <div className="flex-1" />}
+        <div className="flex-1" />
 
         <button
           onClick={toggle}
@@ -165,7 +156,7 @@ export function Sidebar({ brandName, brandIcon }: Props) {
       {/* footer: quota + secondary nav */}
       <div className="px-2 pb-2 pt-2 flex flex-col gap-0.5">
         <SidebarQuota collapsed={collapsed} />
-        {NAV_FOOT.map(renderLink)}
+        {navFoot.map(renderLink)}
       </div>
     </aside>
   )

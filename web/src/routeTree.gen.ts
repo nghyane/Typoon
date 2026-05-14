@@ -16,6 +16,7 @@ import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WWorkIdRouteImport } from './routes/w.$workId'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as AdminOpsRouteImport } from './routes/admin.ops'
 import { Route as RWorkIdNumberNormRouteImport } from './routes/r.$workId.$numberNorm'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -53,6 +54,11 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminOpsRoute = AdminOpsRouteImport.update({
+  id: '/admin/ops',
+  path: '/admin/ops',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RWorkIdNumberNormRoute = RWorkIdNumberNormRouteImport.update({
   id: '/r/$workId/$numberNorm',
   path: '/r/$workId/$numberNorm',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/login'
     | '/settings'
+    | '/admin/ops'
     | '/auth/callback'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/login'
     | '/settings'
+    | '/admin/ops'
     | '/auth/callback'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/login'
     | '/settings'
+    | '/admin/ops'
     | '/auth/callback'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
+  AdminOpsRoute: typeof AdminOpsRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   WWorkIdRoute: typeof WWorkIdRoute
   RWorkIdNumberNormRoute: typeof RWorkIdNumberNormRoute
@@ -185,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/ops': {
+      id: '/admin/ops'
+      path: '/admin/ops'
+      fullPath: '/admin/ops'
+      preLoaderRoute: typeof AdminOpsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/r/$workId/$numberNorm': {
       id: '/r/$workId/$numberNorm'
       path: '/r/$workId/$numberNorm'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
+  AdminOpsRoute: AdminOpsRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   WWorkIdRoute: WWorkIdRoute,
   RWorkIdNumberNormRoute: RWorkIdNumberNormRoute,

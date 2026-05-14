@@ -34,9 +34,6 @@ DISCORD_API   = "https://discord.com/api"
 JWT_ALGORITHM = "HS256"
 
 
-# ── DTOs ──────────────────────────────────────────────────────────────
-
-
 @dataclass
 class DiscordUser:
     id:           str           # snowflake (string in Discord JSON)
@@ -55,9 +52,6 @@ class DiscordUser:
         if not self.avatar:
             return None
         return f"https://cdn.discordapp.com/avatars/{self.id}/{self.avatar}.png"
-
-
-# ── JWT ──────────────────────────────────────────────────────────────
 
 
 def issue_jwt(user_id: int, *, cfg: AuthConfig, role_ids: list[str] | None = None) -> str:
@@ -81,9 +75,6 @@ def verify_jwt(token: str, *, cfg: AuthConfig) -> tuple[int, list[str]]:
     """Returns (user_id, role_ids). Raises jwt.InvalidTokenError on failure."""
     payload = jwt.decode(token, cfg.jwt_secret, algorithms=[JWT_ALGORITHM])
     return int(payload["sub"]), list(payload.get("roles") or [])
-
-
-# ── Discord OAuth ─────────────────────────────────────────────────────
 
 
 async def exchange_code(code: str, *, redirect_uri: str, cfg: AuthConfig) -> str:
@@ -127,6 +118,44 @@ async def fetch_user(access_token: str) -> DiscordUser:
     )
 
 
-# OAuth URL builder lives in the SPA now — web/src/lib/auth.ts — because
-# the SPA owns the redirect_uri (web origin /auth/callback) and CSRF
+async def fetch_guild_member_roles(access_token: str, guild_id: str) -> list[str]:
+    """Discord role IDs the user holds in `guild_id`, via the OAuth
+    user token (requires `guilds.members.read` scope at authorize).
+
+    Returns `[]` when the user is not a member of the guild (404),
+    when the bot/app has no member-read access (403), or when the
+    guild_id is empty. Never raises for these expected paths — RBAC
+    is opt-in on top of identity, not a precondition for login.
+
+    Other HTTP errors raise so the caller can decide whether to fail
+    the OAuth exchange.
+    """
+    if not guild_id:
+        return []
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(
+            f"{DISCORD_API}/users/@me/guilds/{guild_id}/member",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if r.status_code in (403, 404):
+        # 404: user is not in the configured guild.
+        # 403: the OAuth scope `guilds.members.read` wasn't granted, or
+        #      the guild has restricted member fetches. Either way,
+        #      treat as "no roles" — user logs in without admin.
+        return []
+    if r.status_code != 200:
+        logger.warning(
+            "Discord guild member fetch failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        r.raise_for_status()
+    roles = r.json().get("roles") or []
+    # Discord returns snowflakes as strings; keep them that way to match
+    # AuthConfig.admin_role_id (also string) so equality comparison in
+    # require_admin is type-safe without coercion.
+    return [str(rid) for rid in roles]
+
+
+# OAuth URL builder lives in the SPA now — web/src/features/auth/session.ts —
+# because the SPA owns the redirect_uri (web origin /auth/callback) and CSRF
 # state lifecycle. This module is a pure code→JWT exchanger.

@@ -6,6 +6,10 @@
 import type { ReactNode } from 'react'
 
 
+/** Page layout mode the reader is rendering. */
+export type ViewMode = 'continuous' | 'single'
+
+
 /** One page in the reader. `url` is null while the page is still
  *  being fetched; the slot still reserves its aspect-ratio box so
  *  the layout never jumps. `width`/`height` are 0 when unknown —
@@ -39,11 +43,6 @@ export interface ReaderMeta {
 export type ReaderNavTarget = {
   workId:     number
   numberNorm: string
-  /** Optional preferred reading-lang. Carried so the URL preserves
-   *  the user's choice across chapter jumps. */
-  lang?:      string
-  /** Optional active source. Same intent as `lang`. */
-  src?:       number
 }
 
 

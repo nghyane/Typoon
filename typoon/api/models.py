@@ -16,10 +16,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
-
-
-# ── Material ──────────────────────────────────────────────────────────
+from pydantic import BaseModel, Field
 
 
 MaterialOrigin = Literal["source", "extension", "upload"]
@@ -85,9 +82,6 @@ class MaterialOut(BaseModel):
         )
 
 
-# ── Chapter + per-chapter translations overlay ────────────────────────
-
-
 class ChapterTranslationOverlay(BaseModel):
     """A single translation existing for this chapter, surfaced in the
     chapter list response. Schema 19 made every non-takedown
@@ -114,9 +108,6 @@ class ChapterOut(BaseModel):
     page_count:    int
     updated_at:    str | None = None
     translations:  list[ChapterTranslationOverlay] = []
-
-
-# ── Work — global identity hub ────────────────────────────────────────
 
 
 class WorkOut(BaseModel):
@@ -252,7 +243,52 @@ class LinkVoteResult(BaseModel):
     blocked_reason:     str | None = None
 
 
-# ── Translation Draft (Layer 2) ───────────────────────────────────────
+class SplitVoteResult(BaseModel):
+    """Outcome of POST /api/work/{id}/split-vote.
+
+    `split` flips when the community vote crossed the inline-split
+    threshold. `new_work_id` is the Work the material moved to; null
+    when the vote was recorded but no split fired yet.
+
+    `blocked_reason`:
+      None             — vote stored normally
+      'solo_member'    — would empty the host work, refused
+      'material_gone'  — race: material vanished mid-call
+    """
+    vote:            int       # -1 | 1
+    score:           int
+    split:           bool
+    new_work_id:     int | None = None
+    blocked_reason:  str | None = None
+
+
+class WorkMemberOut(BaseModel):
+    """One material attached to a Work, surfaced on the hub's
+    "Nguồn đang đọc" panel. The viewer-facing equivalent of
+    `MaterialOut` but trimmed to what the panel renders (cover,
+    title, source, lang chip) plus the viewer's split-vote state +
+    the owner undo-window hint.
+
+    `pending_split_score` / `pending_split_threshold` drive the
+    "Đang chờ tách (1/2)" affordance — same shape as the merge
+    threshold counter on the suggestions panel.
+
+    `force_link_undo_expires_at` is non-null only for the viewer
+    who originally fired the force-link (and only within the undo
+    window). Lets the SPA render "↩ Vừa thêm, hoàn tác (còn 8:42)"
+    without a separate fetch.
+    """
+    material_id:                int
+    title:                      str
+    cover_url:                  str | None = None
+    source:                     str | None = None
+    languages:                  list[str] = []
+    title_native:               str | None = None
+    title_locale:               dict[str, str] | None = None
+    viewer_split_vote:          int | None = None
+    pending_split_score:        int        = 0
+    pending_split_threshold:    int        = 2
+    force_link_undo_expires_at: str | None = None
 
 
 DraftState     = Literal["pending", "running", "done", "error", "blocked"]
@@ -279,9 +315,6 @@ class TranslationDraftOut(BaseModel):
     updated_at:      str | None = None
 
 
-# ── Translation (Layer 3 — per-user wrapper) ─────────────────────────
-
-
 class TranslationOut(BaseModel):
     id:               int
     work_id:          int
@@ -300,9 +333,6 @@ class TranslationOut(BaseModel):
     shared:           bool = True
     created_at:       str | None = None
     updated_at:       str | None = None
-
-
-# ── Library entry ────────────────────────────────────────────────────
 
 
 LinkOrigin = Literal["auto", "manual"]
@@ -329,6 +359,9 @@ class TranslationSummary(BaseModel):
 
 class LibraryEntryOut(BaseModel):
     id:                   int
+    # Resolved server-side from the Work's materials against the
+    # viewer's reading lang. Same canonical title the Work hub
+    # renders; library_entries no longer caches it on the row.
     title:                str
     cover_url:            str | None = None
     work_id:              int
@@ -346,9 +379,6 @@ class LibraryEntryOut(BaseModel):
     updated_at:           str | None = None
 
 
-# ── Glossary ──────────────────────────────────────────────────────────
-
-
 class GlossaryTermOut(BaseModel):
     id:          int
     source_lang: str
@@ -358,19 +388,18 @@ class GlossaryTermOut(BaseModel):
     notes:       str | None = None
 
 
-# ── Feed (Hội Mê Truyện, guild-scoped) ──────────────────────────────
-
-
-# ── Community feed (cross-user recent translations) ────────────────
-
-
 class CommunityFeedEntryOut(BaseModel):
     """One row in /api/community/recent. A Work surfaced for discovery,
     represented by its most recent translated chapter so repeated
     chapter updates don't duplicate the manga in the feed.
     `chapters_in_feed` lets the SPA show a "+N chương khác" affordance.
-    `material_id` is the source the surfacing translation came from
-    — used as the default `?src=` when navigating to /w/$workId.
+
+    `title` + `cover` resolve server-side against the viewer's
+    preferred reading language across every material attached to the
+    Work — matching the Work hub label rather than whichever
+    per-source material surfaced the translation. `material_id`
+    records WHICH source the translation came from for analytics;
+    the SPA doesn't use it for navigation any more (no `?src=`).
     """
 
     translation_id:   int
@@ -379,8 +408,8 @@ class CommunityFeedEntryOut(BaseModel):
     chapter_label:    str | None
     work_id:          int
     material_id:      int
-    material_title:   str
-    material_cover:   str | None
+    title:            str
+    cover:            str | None
     target_lang:      str
     creator_id:       int | None
     creator_name:     str | None
@@ -392,21 +421,18 @@ class CommunityFeedEntryOut(BaseModel):
 class RecentReadOut(BaseModel):
     """One row in /api/me/recent-reads — the home "Tiếp tục đọc" surface.
     Drawn from `reading_history`, deduped per Work so each manga
-    surfaces once with its most recent chapter. `material_id` is the
-    source the user last opened (deep-link target on click)."""
+    surfaces once with its most recent chapter. `title` + `cover`
+    follow the same viewer-lang resolver the community feed uses."""
 
     work_id:          int
     material_id:      int
-    material_title:   str
-    material_cover:   str | None = None
+    title:            str
+    cover:            str | None = None
     work_chapter_id:  int
     chapter_number:   str
     chapter_label:    str | None = None
     translation_id:   int | None
     last_read_at:     str | None = None
-
-
-# ── Workers / queue ───────────────────────────────────────────────────
 
 
 class StageStatsOut(BaseModel):
@@ -430,7 +456,99 @@ class QueueStatsOut(BaseModel):
     paused_stages:  list[str] = []
 
 
-# ── Reports + moderation ─────────────────────────────────────────────
+# ── Admin / ops dashboard ────────────────────────────────────────────
+# Wire-shape for /api/admin/ops endpoints. The store side projects
+# `lifecycle_state` so the UI doesn't re-derive it from raw columns.
+
+PipelineStageLit  = Literal["prepare", "scan", "translate", "render"]
+TaskTargetKindLit = Literal["chapter", "draft", "translation"]
+TaskStateLit      = Literal["pending", "running", "stale", "blocked", "failed"]
+AdminActionLit    = Literal[
+    "stage.pause", "stage.resume",
+    "task.requeue", "task.release", "task.force_fail",
+]
+
+
+class PausedStageOut(BaseModel):
+    stage:     PipelineStageLit
+    reason:    str
+    paused_at: str
+    paused_by: str | None = None
+
+
+class TaskOut(BaseModel):
+    """One row of the queue, projected for the ops dashboard. The
+    `lifecycle_state` is computed in SQL — UI just renders it."""
+    stage:             PipelineStageLit
+    target_kind:       TaskTargetKindLit
+    target_id:         int
+    attempts:          int
+    claimed_by:        str | None = None
+    claimed_at:        str | None = None
+    last_error:        str | None = None
+    lifecycle_state:   TaskStateLit
+    # NULL when the task is unclaimed; otherwise wall-clock seconds
+    # since `claimed_at`. Lets the UI flag "stuck N minutes" without
+    # the client doing date math.
+    claim_age_seconds: int | None = None
+
+
+class TaskListOut(BaseModel):
+    items:       list[TaskOut]
+    next_cursor: str | None = None
+
+
+class AdminActionOut(BaseModel):
+    """Audit row — every ops mutation produces exactly one of these,
+    inserted in the same transaction as the state change it describes.
+    `prev_state` is NULL for create-only actions (stage.pause),
+    populated for every mutation that overwrites state."""
+    id:         int
+    at:         str
+    actor_id:   int | None = None
+    action:     AdminActionLit
+    target_ref: dict
+    reason:     str
+    prev_state: dict | None = None
+
+
+# ── Request bodies for /api/admin/ops mutations ──────────────────────
+# All mutations require `reason` (min 3 chars) — non-negotiable for
+# post-mortem. Task mutations additionally carry `expected_attempts`
+# and `expected_claimed_by` as optimistic-concurrency tokens taken
+# from the snapshot the admin clicked on. A guard miss returns 409.
+
+_REASON = Field(min_length=3, max_length=500)
+
+
+class StagePauseIn(BaseModel):
+    reason: str = _REASON
+
+
+class StageResumeIn(BaseModel):
+    reason: str = _REASON
+
+
+class RequeueTaskIn(BaseModel):
+    reason:              str         = _REASON
+    expected_attempts:   int         = Field(ge=0)
+    expected_claimed_by: str | None  = None
+
+
+class ReleaseTaskIn(BaseModel):
+    """Release a stale claim. The claim itself is the only guarded
+    field — attempts are intentionally not touched, so we don't need
+    `expected_attempts`. `expected_claimed_by` is required (not
+    optional) because releasing an unclaimed task is a no-op the
+    admin shouldn't be asking for."""
+    reason:              str = _REASON
+    expected_claimed_by: str
+
+
+class ForceFailTaskIn(BaseModel):
+    reason:              str         = _REASON
+    expected_attempts:   int         = Field(ge=0)
+    expected_claimed_by: str | None  = None
 
 
 ReportTargetKind = Literal["material", "chapter", "draft", "translation"]
@@ -464,10 +582,18 @@ class ModerationActionOut(BaseModel):
     created_at:   str | None
 
 
-# ── User / identity ──────────────────────────────────────────────────
+class SessionUser(BaseModel):
+    """Current-user payload returned by `GET /api/auth/me` and
+    `PATCH /api/me/preferences`.
 
-
-class MeOut(BaseModel):
-    id:            int
-    display_name:  str
-    avatar_url:    str | None = None
+    This is the single canonical "who am I + what are my prefs" shape.
+    There is no `/api/me` GET — clients ask `/api/auth/me` for
+    everything identity-related (the old slim `/me` was a duplicate
+    subset, removed because two endpoints meant two caches, two
+    types, and a real race when both lagged behind a logout).
+    """
+    id:                    int
+    display_name:          str
+    avatar_url:            str | None = None
+    is_admin:              bool        = False
+    preferred_target_lang: str | None  = None

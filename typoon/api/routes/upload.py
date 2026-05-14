@@ -65,27 +65,18 @@ router = APIRouter(
     dependencies=[Depends(require_user)],
 )
 
-# Hard cap on declared upload size — refuse upload-init outright when a
-# client claims a chapter zip larger than this. 1.5 GiB easily fits a
-# 200-page lossy-WebP webtoon plus headroom.
+# Hard cap on declared upload size. 1.5 GiB fits a 200-page lossy-WebP
+# webtoon with headroom.
 _MAX_UPLOAD_BYTES = 1500 * 1024 * 1024
 
-# Part-count ceiling. R2 / S3 allow up to 10000; we cap lower so a
-# misbehaving client can't tie up presigning CPU. With 8 MiB parts
-# this still permits 8 GiB total — well above _MAX_UPLOAD_BYTES.
+# Part-count ceiling. R2 / S3 allow 10000; we cap lower to bound
+# presigning CPU. At 8 MiB parts this still permits 8 GiB total.
 _MAX_PARTS = 1024
 
-# Browser-direct PUTs always flow through the public origin's `/r2`
-# URL Mapping. In production the public origin IS the DA origin
-# (`https://<app_id>.discordsays.com`) — every public path is fronted
-# by the Discord proxy regardless of whether the client is the DA
-# iframe or a plain browser. In dev `public_base_url` points at the
-# local API directly, the LocalInbox URLs are not R2 hosts, and this
-# rewrite is a no-op.
-#
-# SigV4 signs Host only; the mapping target is the original R2 host,
-# so the proxy forwards with the right Host and the signature stays
-# valid regardless of which origin made the PUT.
+# R2 presigned URLs are rewritten to flow through `<public_origin>/r2/`
+# so browser PUTs stay on the Discord Activity proxy in prod. SigV4 signs
+# Host only and the proxy forwards with the original R2 Host, so the
+# signature stays valid. In dev (LocalInbox) the rewrite is a no-op.
 _R2_HOST_RE = re.compile(r"^[a-z0-9-]+\.r2\.cloudflarestorage\.com$", re.I)
 
 
@@ -127,9 +118,6 @@ async def _gate_for_chapter_upload(
     return mat
 
 
-# ── Schemas ───────────────────────────────────────────────────────────
-
-
 class UploadInitBody(BaseModel):
     byte_size: int = Field(ge=1, le=_MAX_UPLOAD_BYTES)
 
@@ -140,11 +128,21 @@ class InitPart(BaseModel):
 
 
 class UploadInitOut(BaseModel):
-    tmp_id:     str
-    upload_id:  str
-    parts:      list[InitPart]
-    part_size:  int
-    expires_in: int
+    """Init payload the SDK feeds into `uploadChapterZip`.
+
+    `material_id` echoes back the material chapters will be created
+    against. For the per-material route this is the path arg; for
+    the per-work convenience route the server resolved (or
+    lazy-created) the viewer's upload-origin material and surfaces
+    its id so the SDK can call `/material/{id}/chapter/upload-
+    finalize` with the right target.
+    """
+    material_id: int
+    tmp_id:      str
+    upload_id:   str
+    parts:       list[InitPart]
+    part_size:   int
+    expires_in:  int
 
 
 class FinalizePart(BaseModel):
@@ -176,9 +174,6 @@ class UploadAbortBody(BaseModel):
     upload_id: str = Field(min_length=1, max_length=512)
 
 
-# ── Routes ────────────────────────────────────────────────────────────
-
-
 @router.post(
     "/{material_id}/chapter/upload-init",
     response_model=UploadInitOut,
@@ -200,16 +195,41 @@ async def upload_init(
     re-checking + consuming at finalize time.
     """
     await _gate_for_chapter_upload(material_id, user, db)
+    return await _init_upload_for_material(
+        material_id=material_id,
+        byte_size=body.byte_size,
+        user=user, db=db, cfg=cfg, auth=auth, inbox=inbox,
+    )
+
+
+async def _init_upload_for_material(
+    *,
+    material_id: int,
+    byte_size:   int,
+    user:        dict,
+    db:          Store,
+    cfg:         Config,
+    auth:        AuthConfig,
+    inbox:       ChapterInbox,
+) -> "UploadInitOut":
+    """Quota check + presigned multipart URLs. Shared by the per-
+    material route above and the per-work convenience route in
+    `work.py` (which resolves/creates the viewer's upload material
+    before delegating here). Caller is responsible for the
+    ownership/upload gate; quota is enforced uniformly here so a
+    single tweak (raising the limit, swapping the meter) reaches
+    both paths.
+    """
     await enforce_chapter_quota(user, db, cfg.rate_limit, auth, count=1)
 
     tmp_id = secrets.token_urlsafe(16)
 
     # Round up to part count — last part may be smaller.
-    part_count = max(1, math.ceil(body.byte_size / DEFAULT_PART_SIZE))
+    part_count = max(1, math.ceil(byte_size / DEFAULT_PART_SIZE))
     if part_count > _MAX_PARTS:
         raise HTTPException(
             413,
-            f"Upload too large ({body.byte_size} bytes; max "
+            f"Upload too large ({byte_size} bytes; max "
             f"{_MAX_PARTS * DEFAULT_PART_SIZE} bytes).",
         )
 
@@ -227,6 +247,7 @@ async def upload_init(
     ]
 
     return UploadInitOut(
+        material_id=material_id,
         tmp_id=tmp_id,
         upload_id=upload_id,
         parts=parts_out,
@@ -262,13 +283,10 @@ async def upload_finalize(
     if not body.parts:
         raise HTTPException(400, "Empty parts list")
 
-    # Dedup: if a chapter with this upstream_url already exists for the
-    # material (e.g. another user uploaded the same source chapter, or
-    # a manifest-coordinated translate created the row first), reuse it
-    # so we don't fork the chapter into duplicate rows. The prepare
-    # worker's CAS dedup on prepared_hash handles content-level dedup
-    # too, but row-level dedup keeps the cache key (chapter_id, ...)
-    # consistent across users.
+    # Dedup by upstream_url: another user (or a manifest-coordinated
+    # translate) may already have created the chapter row. Row-level
+    # dedup keeps the cache key consistent; content-level dedup is
+    # separately enforced by the prepare worker via prepared_hash.
     chapter_id: int | None = None
     if body.upstream_url:
         existing = await db.find_chapter_by_upstream(
@@ -277,11 +295,10 @@ async def upload_finalize(
         if existing is not None:
             chapter_id = existing["id"]
 
+    # number_norm is the canonical identity. The SPA/SDK computes it
+    # via the manifest's declarative normaliser; when absent we fall
+    # back to a sequential value so the upload still lands.
     if chapter_id is None:
-        # `number_norm` is the canonical identity. Caller (SPA / SDK)
-        # computes it via the manifest's declarative normaliser.
-        # When absent (ext / upload origin with no manifest spec),
-        # generate a sequential fallback so an upload still lands.
         number_norm = (body.number_norm or "").strip() or await _next_sequential_number(
             db, material_id,
         )
@@ -311,15 +328,9 @@ async def upload_finalize(
         target_kind="chapter", target_id=chapter_id, stage="prepare",
     )
 
-    # Quota commit AFTER the chapter row exists — the consume row is
-    # tied to a translation_id in the new schema, but at upload time
-    # we don't have one yet. We hold the consume until the first
-    # translate spawn happens (POST /api/translate). For symmetry the
-    # legacy flow recorded at upload-finalize; in the new model the
-    # cost belongs to translate, not ingest. We deliberately skip the
-    # record here.
+    # Quota is consumed at translate-spawn time, not here — the
+    # `chapter_consumes` row is tied to a translation_id.
 
-    # Return a ChapterOut with empty translation overlay (none yet).
     chapter = await db.get_chapter(chapter_id)
     if chapter is None:
         raise HTTPException(500, "Chapter created but lookup failed")
@@ -360,7 +371,6 @@ async def upload_abort(
         )
 
 
-# ── Local inbox PUT route (dev only) ─────────────────────────────────
 #
 # When `storage.inbox.type == 'local'`, `LocalInbox.create_multipart`
 # returns `${public_base_url}/api/_inbox/...` URLs. This sibling router
@@ -407,9 +417,6 @@ async def local_inbox_put(
     # Browser CORS: must be in Access-Control-Expose-Headers so JS can
     # read it. The middleware already sets a permissive list.
     return r
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
 
 
 _NUMBER_RE = re.compile(r"(?:^|[^\d])(\d+(?:\.\d+)?)")

@@ -24,6 +24,7 @@ export const qk = {
     all:           ()                  => ['work'] as const,
     byId:          (workId: number)    => ['work', workId] as const,
     linkSuggest:   (workId: number)    => ['work', workId, 'link-suggestions'] as const,
+    members:       (workId: number)    => ['work', workId, 'members'] as const,
   },
 
   translation: {
@@ -38,9 +39,22 @@ export const qk = {
   quota:           ()                  => ['quota'] as const,
   tokens:          ()                  => ['tokens'] as const,
 
+  // Admin / ops dashboard. Granular keys so the dashboard can
+  // invalidate just the section it mutated (e.g. requeue → invalidate
+  // tasks + actions, not stages).
+  adminOps: {
+    stages:        ()                          => ['admin-ops', 'stages'] as const,
+    tasks:         (q: object = {})            => ['admin-ops', 'tasks', q] as const,
+    actions:       (q: object = {})            => ['admin-ops', 'actions', q] as const,
+  },
+
   me: {
-    self:          ()                  => ['me'] as const,
     recentReads:   ()                  => ['me', 'recent-reads'] as const,
+  },
+
+  session: {
+    self:          ()                  => ['session'] as const,
+    config:        ()                  => ['session', 'config'] as const,
   },
 
   community: {

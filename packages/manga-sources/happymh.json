@@ -4,8 +4,18 @@
   "host":      "m.happymh.com",
   "homepage":  "https://m.happymh.com",
   "languages": ["zh"],
-  "version":   "2.0",
+  "version":   "2.1",
   "accent":    "rose",
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "第\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[话話回]?",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
 
   "endpoints": {
     "shelves": [

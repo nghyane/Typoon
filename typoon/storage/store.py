@@ -89,6 +89,25 @@ ReportKind       = Literal["dmca", "abuse", "quality", "other"]
 ReportStatus     = Literal["open", "reviewing", "resolved", "dismissed"]
 ModerationAction = Literal["takedown", "restore", "delete"]
 
+# Operator-initiated mutations on the pipeline queue. Each one writes a
+# row to `admin_actions` (audit) in the same transaction as the state
+# change it describes. See schema.sql for the column layout.
+AdminAction = Literal[
+    "stage.pause", "stage.resume",
+    "task.requeue", "task.release", "task.force_fail",
+]
+
+# Lifecycle state of a queue task, derived from (claimed_by, claimed_at,
+# attempts) + the existence of a stage_pause row. Matches the dimensions
+# already counted in `queue_stats`. Not a column — projected on read.
+TaskLifecycleState = Literal[
+    "pending",   # claimed_by IS NULL AND attempts < MAX AND not paused
+    "running",   # claimed_by IS NOT NULL AND claimed_at younger than stale window
+    "stale",     # claimed_by IS NOT NULL AND claimed_at older than stale window
+    "blocked",   # claimed_by IS NULL AND stage is in stage_pause
+    "failed",    # claimed_by IS NULL AND attempts >= MAX (dead-letter)
+]
+
 
 class Store(Protocol):
     """Storage interface — pipeline + API operations."""
@@ -124,6 +143,9 @@ class Store(Protocol):
     async def get_external_id(
         self, user_id: int, provider: str = "discord",
     ) -> str | None: ...
+    async def update_user_preferred_target_lang(
+        self, user_id: int, lang: str | None,
+    ) -> None: ...
 
     # ── API tokens (CLI / extension / worker) ────────────────────
     async def create_api_token(
@@ -225,6 +247,31 @@ class Store(Protocol):
         """Per-row material (no cross-user dedup) for ext + upload."""
         ...
 
+    async def get_or_create_upload_material(
+        self,
+        *,
+        work_id:     int,
+        imported_by: int,
+    ) -> int:
+        """Return the viewer's upload-material id for a Work, creating
+        one on first call. Title inherits from the Work's canonical
+        display snapshot; languages default to ['vi']. Idempotent
+        (schema-enforced UNIQUE per user × work for origin='upload')."""
+        ...
+
+    async def create_blank_work(
+        self,
+        *,
+        user_id:     int,
+        title:       str,
+        cover_url:   str | None = None,
+        target_lang: str        = 'vi',
+    ) -> tuple[int, int]:
+        """Create an empty Work + a library entry for the viewer.
+        Upload material is created lazily on the first chapter
+        upload. Returns ``(work_id, library_entry_id)``."""
+        ...
+
     async def get_material(self, material_id: int) -> dict | None: ...
 
     async def update_material_metadata(
@@ -246,6 +293,7 @@ class Store(Protocol):
         title_locale: dict | None = None,
         start_year:   int | None = None,
         description:  str | None = None,
+        cover_url:    str | None = None,
     ) -> None:
         """Additive merge of enriched metadata onto a material row.
 
@@ -306,6 +354,7 @@ class Store(Protocol):
         material_b_id: int,
         vote:         int,
         threshold:    int = 3,
+        force_merge:  bool = False,
     ) -> dict:
         """Cast a +1 / -1 link vote on a material pair. When the
         resulting score crosses `threshold`, the two Works are merged
@@ -314,6 +363,13 @@ class Store(Protocol):
         `cross_refs` (same namespace, different value) — those are
         hard identity signals that should never be overridden by
         community votes.
+
+        When `force_merge=True`, the threshold check is skipped — the
+        vote is still recorded (so the user shows up in the audit
+        trail) but the merge runs as long as the cross_refs check
+        passes. Used by the explicit "manual link" flow where the
+        viewer has affirmatively chosen the pair via search; the
+        community vote path keeps the threshold.
 
         Returns
             ``{vote, score, merged, canonical_work_id, blocked_reason}``
@@ -325,6 +381,83 @@ class Store(Protocol):
                                     collision
         """
         ...
+
+    async def cast_split_vote_with_split(
+        self,
+        *,
+        voter_id:    int,
+        material_id: int,
+        vote:        int,
+        threshold:   int,
+        force_split: bool = False,
+    ) -> dict:
+        """Inverse of `cast_link_vote_with_merge`: vote that a material
+        is in the wrong work and should be split out. When the score
+        crosses `threshold` (or `force_split=True`), the material moves
+        to a fresh isolated work and its split votes are cleared.
+
+        Returns ``{vote, score, split, new_work_id, blocked_reason}``
+        where `blocked_reason` is:
+            None             — vote stored, may have triggered split
+            'solo_member'    — would empty the host work
+            'material_gone'  — race: material vanished mid-call
+        """
+        ...
+
+    async def get_split_vote(
+        self, *, voter_id: int, material_id: int,
+    ) -> int | None:
+        """Viewer's current split vote on a material (None when never
+        voted). Drives "Đã đề xuất tách / Hoàn tác" UI."""
+        ...
+
+    async def get_split_score(self, material_id: int) -> dict:
+        """Aggregate split votes on a material:
+        ``{score: int, total: int}``."""
+        ...
+
+    async def log_force_action(
+        self,
+        *,
+        actor_id:       int,
+        kind:           str,
+        material_a_id:  int,
+        material_b_id:  int | None,
+        target_work_id: int,
+    ) -> int:
+        """Append a `material_link_actions` row (audit + undo source).
+        `kind` is 'force_link' or 'force_unlink'."""
+        ...
+
+    async def get_recent_force_link(
+        self,
+        *,
+        actor_id:       int,
+        material_id:    int,
+        window_minutes: int,
+    ) -> dict | None:
+        """Most recent non-reversed force_link by `actor_id` involving
+        `material_id`, if inside the undo window. Drives the "↩ Hoàn
+        tác liên kết" affordance on the owner's own actions."""
+        ...
+
+    async def mark_force_action_reversed(self, action_id: int) -> None:
+        """Flip `reversed_at` on a force-action row. Called when the
+        user undoes their own force_link via `force_unlink_material`."""
+        ...
+
+    async def force_unlink_material(
+        self, *, actor_id: int, material_id: int,
+    ) -> dict:
+        """Owner undo: move `material_id` to a fresh isolated work,
+        flip the matching `force_link` audit row, log the
+        `force_unlink`. Caller must verify the undo window upstream.
+
+        Returns ``{new_work_id, previous_work_id}``.
+        Raises ValueError('solo_member') when the source work has
+        only this material (split would empty it)."""
+        ...
+
 
     async def list_work_link_suggestions(
         self, *, work_id: int,
@@ -649,8 +782,6 @@ class Store(Protocol):
         *,
         user_id:     int,
         work_id:     int,
-        title:       str,
-        cover_url:   str | None,
         target_lang: str,
         materials:   list[tuple[int, "LinkOrigin"]] | None = None,
         status:      LibraryStatus = "reading",
@@ -658,6 +789,13 @@ class Store(Protocol):
         """Create the (user, Work) entry plus optional initial material
         links. UNIQUE (user_id, work_id) is enforced at the schema
         level; callers must check `find_entry_for_work` first.
+
+        Title + cover are NOT stored on the entry — display values
+        come from the attached materials at read time (resolved
+        server-side, viewer-lang biased). Callers must ensure at
+        least one material is attached or the Work already has one
+        before the user navigates here.
+
         `target_lang` is the user's reading-language preference for
         this Work (drives manifest fetch + UI badges).
         """
@@ -667,7 +805,6 @@ class Store(Protocol):
         self,
         entry_id: int, user_id: int,
         *,
-        title:       str | None = None,
         status:      LibraryStatus | None = None,
         target_lang: str | None = None,
     ) -> None: ...
@@ -905,18 +1042,153 @@ class Store(Protocol):
         stage: PipelineStage, error: str,
     ) -> None: ...
 
-    async def pause_stage(
-        self, stage: PipelineStage, *, reason: str,
-        paused_by: str | None = None,
-    ) -> bool: ...
-
-    async def resume_stage(self, stage: PipelineStage) -> bool: ...
-
     async def list_paused_stages(self) -> list[dict]: ...
 
     async def release_claims_by_prefix(self, prefix: str) -> int: ...
 
     async def queue_stats(self) -> dict: ...
+
+    # ── Admin / ops dashboard ────────────────────────────────────
+    #
+    # Every mutation below writes a row to `admin_actions` in the SAME
+    # TRANSACTION as the state change, and uses SELECT ... FOR UPDATE
+    # to capture `prev_state` consistently. Optimistic concurrency
+    # (expected_attempts + expected_claimed_by) guards against ghost
+    # writes when a worker has picked up the task between snapshot
+    # and click. Methods return False on guard miss so callers can
+    # surface a 409 to the operator.
+    #
+    # `actor_id` is the authenticated user that initiated the action
+    # (web/Discord). CLI callers pass None and put their shell identity
+    # in `source` ("cli:nghyane") which lands in target_ref.
+
+    async def list_queue_tasks(
+        self,
+        *,
+        stage:       PipelineStage | None = None,
+        state:       TaskLifecycleState | None = None,
+        target_kind: TaskTargetKind | None = None,
+        limit:       int = 50,
+        cursor:      str | None = None,
+    ) -> dict:
+        """Page through the queue. Returns
+        `{"items": [TaskRecord...], "next_cursor": str|None}`. Each
+        TaskRecord includes the projected lifecycle `state` so the UI
+        doesn't re-derive it. Keyset cursor on
+        (claimed_at NULLS LAST, target_kind, target_id) keeps paging
+        stable while workers churn the queue."""
+        ...
+
+    async def requeue_task(
+        self,
+        *,
+        target_kind:        TaskTargetKind,
+        target_id:          int,
+        stage:              PipelineStage,
+        expected_attempts:  int,
+        expected_claimed_by: str | None,
+        reason:             str,
+        actor_id:           int | None,
+        source:             str | None = None,
+        idem_key:           str | None = None,
+    ) -> bool:
+        """Reset attempts/last_error/claim, putting the task back on
+        the queue. Used to recover dead-letter (attempts=MAX) rows
+        after a fix.
+
+        Optimistic concurrency: only updates when the row's current
+        (attempts, claimed_by) match expected_*. Returns True on
+        success, False if state has moved (caller surfaces 409)."""
+        ...
+
+    async def release_task_claim(
+        self,
+        *,
+        target_kind:        TaskTargetKind,
+        target_id:          int,
+        stage:              PipelineStage,
+        expected_claimed_by: str,
+        reason:             str,
+        actor_id:           int | None,
+        source:             str | None = None,
+        idem_key:           str | None = None,
+    ) -> bool:
+        """Clear a stale claim left by a dead worker. Attempts
+        untouched — the task picks up where it was. Guarded on
+        expected_claimed_by so we don't strip a fresh re-claim."""
+        ...
+
+    async def force_fail_task(
+        self,
+        *,
+        target_kind:        TaskTargetKind,
+        target_id:          int,
+        stage:              PipelineStage,
+        expected_attempts:  int,
+        expected_claimed_by: str | None,
+        reason:             str,
+        actor_id:           int | None,
+        source:             str | None = None,
+        idem_key:           str | None = None,
+    ) -> bool:
+        """Dead-letter a task on operator decision (e.g. corrupt
+        source nobody can fix). Sets attempts=MAX + records reason.
+        The row stays for forensic — requeue still possible later."""
+        ...
+
+    async def pause_stage(
+        self,
+        *,
+        stage: PipelineStage,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        """Mark a stage paused. Workers stop claiming new tasks for it
+        until `resume_stage` lifts the pause. Records an audit row
+        (`stage.pause`) in the same transaction. Returns False if the
+        stage was already paused (idempotent, no audit row written).
+
+        Called by:
+          • the worker loop when a stage raises `OperatorActionRequired`
+            (actor_id=None, source='worker:<stage>'),
+          • the ops CLI `typoon stage pause` (actor_id=None,
+            source='cli:<getuser>'),
+          • the admin dashboard POST /api/admin/ops/stages/{s}/pause
+            (actor_id=<user>, source='web:user:<id>').
+        """
+        ...
+
+    async def resume_stage(
+        self,
+        *,
+        stage: PipelineStage,
+        reason: str,
+        actor_id: int | None,
+        source: str | None = None,
+        idem_key: str | None = None,
+    ) -> bool:
+        """Lift a pause. Returns False if the stage wasn't paused
+        (idempotent). Records `stage.resume` with the previous
+        pause row snapshotted into `prev_state`."""
+        ...
+
+    async def list_admin_actions(
+        self,
+        *,
+        action:      AdminAction | None = None,
+        actor_id:    int | None = None,
+        target_kind: TaskTargetKind | None = None,
+        target_id:   int | None = None,
+        stage:       PipelineStage | None = None,
+        limit:       int = 50,
+        before_id:   int | None = None,
+    ) -> list[dict]:
+        """Reverse-chronological audit feed for the ops dashboard.
+        `before_id` is the keyset cursor (id DESC); supply the last
+        seen `id` to fetch the next page. All filters are AND."""
+        ...
 
     # ── Chapter inbox (multipart upload handle) ──────────────────
     async def set_inbox_handle(self, handle: "InboxHandle") -> None: ...

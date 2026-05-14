@@ -11,9 +11,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@shared/ui/Button'
 import { cn } from '@shared/lib/cn'
-import type { ReaderNavTarget } from './types'
-
-export type ViewMode = 'continuous' | 'single'
+import type { ReaderNavTarget, ViewMode } from './types'
 
 interface Props {
   workTitle:    string
@@ -156,10 +154,6 @@ function NavLink({
       params={{
         workId:     String(target.workId),
         numberNorm: target.numberNorm,
-      }}
-      search={{
-        lang: target.lang,
-        src:  target.src,
       }}
       title={title}
     >

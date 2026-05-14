@@ -2,11 +2,9 @@
 // agnostic: takes a `ReaderSource` shape (built by `useReader`) and
 // dispatches to the right body component.
 
-import type { ReaderSource } from './types'
+import type { ReaderSource, ViewMode } from './types'
 import { ContinuousView } from './ContinuousView'
 import { SinglePageView } from './SinglePageView'
-
-export type ViewMode = 'continuous' | 'single'
 
 
 interface Props {

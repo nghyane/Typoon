@@ -16,7 +16,7 @@
 //
 // What's NOT persisted (negative list, explicit):
 //
-//   • workers / quota / me / tokens     — realtime or auth-sensitive.
+//   • workers / quota / session / tokens — realtime or auth-sensitive.
 //   • library                            — short-lived, refetch-fast.
 //   • community / recent-reads / search — user-action-driven, ephemeral.
 //
@@ -47,7 +47,7 @@ const PERSIST_DOMAINS = new Set<string>([
 
 /** Bump when the persisted-cache shape changes incompatibly. The
  *  persister wipes old blobs that don't match. */
-export const CACHE_BUSTER = 'v1'
+export const CACHE_BUSTER = 'v2'
 
 /** Drop persisted entries older than this on hydrate. Manifest data
  *  goes stale fast enough that a day-old snapshot is rarely useful. */

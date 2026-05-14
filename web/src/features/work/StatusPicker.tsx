@@ -3,17 +3,19 @@
 // Bookmark and status are two concerns; this control surfaces them
 // in priority order:
 //
-//   no entry yet    "+ Theo dõi" single button. Click POSTs a fresh
-//                   library entry with status='reading' — no menu,
-//                   no choice; the most common path is one tap.
+//   no entry yet    "+ Thêm vào thư viện" single button. Click POSTs
+//                   a fresh library entry with status='reading' — no
+//                   menu, no choice; the common path is one tap.
 //
 //   has entry       "<icon> <label> ▾" dropdown reflecting the
 //                   current status. Menu offers the three reading
 //                   states (Đang đọc / Để dành / Đã đọc) plus a
-//                   destructive "Bỏ theo dõi" item that DELETEs the
-//                   entry. There is no "đã bỏ" status here on
-//                   purpose: untrack is the explicit destructive
-//                   action, not a status alias.
+//                   destructive "Xoá khỏi thư viện" item that DELETEs
+//                   the entry. There is no "đã bỏ" status here on
+//                   purpose: removing the entry is the explicit
+//                   destructive action, not a status alias. The verb
+//                   matches the shelf mental model — a library is a
+//                   collection you add to / remove from.
 //
 // Every viewer sees their OWN bookmark — the entry is keyed on
 // (user, Work). Two readers can disagree on status, and that's fine.
@@ -41,8 +43,8 @@ const OPTIONS: Option[] = [
   { code: 'reading', label: 'Đang đọc', icon: <BookOpen     size={13} /> },
   { code: 'plan',    label: 'Để dành',  icon: <BookmarkPlus size={13} /> },
   { code: 'done',    label: 'Đã đọc',   icon: <CheckCircle2 size={13} /> },
-  // No 'dropped' — "Bỏ theo dõi" (delete entry) is the explicit
-  // untrack action. A separate "đã bỏ" status overlapped with that
+  // No 'dropped' — "Xoá khỏi thư viện" (delete entry) is the
+  // explicit removal action. A separate "đã bỏ" status overlapped with that
   // intent and confused the model. Schema still allows the value
   // for legacy entries; library filter degrades gracefully.
 ]
@@ -51,17 +53,17 @@ const OPTIONS: Option[] = [
 interface Props {
   workId:   number
   /** Null → no library entry yet for this Work. Trigger collapses
-   *  to a single "+ Theo dõi" action. */
+   *  to a single "+ Thêm vào thư viện" action. */
   entryId:  number | null
   status:   LibraryStatus | null
-  /** Material currently shown — required to create the library entry
-   *  when `entryId` is null (server resolves work_id from material_id
-   *  and dedupes per user+Work). */
-  material: { id: number; title: string; cover_url: string | null } | null
+  /** Material id the SPA is currently showing on the Work hub.
+   *  Required to create the library entry (server resolves
+   *  `work_id` from material_id and dedupes per user+Work). */
+  materialId: number | null
 }
 
 
-export function StatusPicker({ workId, entryId, status, material }: Props) {
+export function StatusPicker({ workId, entryId, status, materialId }: Props) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
@@ -89,11 +91,15 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
 
   const create = useMutation({
     mutationFn: () => {
-      if (!material) throw new Error('material required to create entry')
+      if (materialId == null) {
+        throw new Error('material required to create entry')
+      }
+      // Title + cover are NOT sent — they resolve server-side from
+      // the Work's materials at read time. Status defaults to
+      // 'reading' (single-tap path); user can change later via the
+      // dropdown that this button morphs into.
       return api.createLibraryEntry({
-        material_id: material.id,
-        title:       material.title,
-        cover_url:   material.cover_url,
+        material_id: materialId,
         status:      'reading',
       })
     },
@@ -127,19 +133,19 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
       <button
         type="button"
         onClick={() => create.mutate()}
-        disabled={pending || !material}
+        disabled={pending || materialId == null}
         className={cn(
           'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-sm text-sm',
           'bg-accent text-accent-fg hover:brightness-110',
           'cursor-pointer transition-[filter]',
-          (pending || !material) && 'opacity-60 cursor-wait',
+          (pending || materialId == null) && 'opacity-60 cursor-wait',
         )}
-        title="Thêm vào Thư viện"
+        title="Thêm vào thư viện"
       >
         {pending
           ? <Loader2 size={13} className="animate-spin" />
           : <BookmarkPlus size={13} />}
-        <span>Theo dõi</span>
+        <span>Thêm vào thư viện</span>
       </button>
     )
   }
@@ -157,7 +163,7 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
           'cursor-pointer transition-colors',
           pending && 'opacity-60 cursor-wait',
         )}
-        title="Đã theo dõi — đổi trạng thái hoặc bỏ theo dõi"
+        title="Đã có trong thư viện — đổi trạng thái hoặc xoá"
       >
         {pending
           ? <Loader2 size={13} className="animate-spin" />
@@ -210,7 +216,7 @@ export function StatusPicker({ workId, entryId, status, material }: Props) {
             )}
           >
             <Trash2 size={12} />
-            <span>Bỏ theo dõi</span>
+            <span>Xoá khỏi thư viện</span>
           </button>
         </div>
       )}

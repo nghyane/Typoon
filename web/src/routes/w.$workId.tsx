@@ -1,21 +1,17 @@
 // /w/$workId — canonical Work-centric manga page.
 //
 // One Work groups N sibling materials. The page renders:
-//   • Hero (active material's metadata + sibling chip rail)
+//   • Hero (resolved primary-material metadata, target-lang biased)
 //   • Continue-reading bar (server-side reading_history latest hit)
-//   • Chapter list (manifest spine of the active source overlaid
-//     with cross-source translation rows)
+//   • Chapter list (union of every installed source's manifest spine
+//     overlaid with cross-source translation rows)
 //
-// URL state:
-//   /w/123        → defaults to oldest installed-source material
-//   /w/123?src=7  → forces material 7 as the active source
-//
-// Per-Work metadata is sparse (Cách 1 — danh bạ); display fields come
-// from the active material. Switching the source re-fetches its
-// manifest live; the cross-source translation overlay is already
-// part of the work payload.
+// No URL state for source selection — chapters auto-merge across
+// every installed-source material attached to the Work. Each row's
+// `VersionLine` already shows the per-version source, so a chip rail
+// above the list would be redundant.
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   createFileRoute, useNavigate, redirect as routerRedirect,
 } from '@tanstack/react-router'
@@ -33,39 +29,41 @@ import {
   WorkHero, ContinueReadingBar,
 } from '@features/work/WorkHero'
 import { LinkSuggestionPanel } from '@features/work/LinkSuggestionPanel'
+import { WorkMembersPanel } from '@features/work/WorkMembersPanel'
+import { UploadChapterDialog } from '@features/work/UploadChapterDialog'
 import {
   WorkChapterList, useChapterSpawn,
 } from '@features/work/WorkChapterList'
+import { pickPrimaryMaterial, resolveWorkTitle } from '@features/work/title'
 import {
   type HubChapter, type HubVersion,
 } from '@features/title/mergeChapters'
 
 
-interface SearchParams {
-  /** Active source — sibling material id. Absent → server default
-   *  (oldest installed-source material). */
-  src?: number
-}
-
-
 function WorkPage() {
   const { workId } = Route.useParams()
-  const { src }    = Route.useSearch()
   const nav        = useNavigate({ from: '/w/$workId' })
 
   const workIdNum = Number(workId)
 
   const {
-    work, materials, activeMaterial, targetLang, chapters,
-    workLoading, manifestLoading, workError,
-  } = useWorkData(workIdNum, src ?? null)
+    work, materials, targetLang, chapters,
+    workLoading, manifestsLoading, workError,
+  } = useWorkData(workIdNum)
+
+  // Single primary material drives share-title / fallback labels.
+  // Same resolver as the hero so both pick the same handle.
+  const primary = useMemo(
+    () => pickPrimaryMaterial(materials, targetLang),
+    [materials, targetLang],
+  )
 
   // Silent cross-reference auto-enrich. When this Work has no
   // `cross_refs` yet, the hook fans search across installed link
   // plugins (Anilist, …), POSTs whatever it found back to the
   // server, and the linker takes it from there. Fires at most once
   // per (work, week); no UI surface for the user.
-  useAutoEnrichWork(work)
+  useAutoEnrichWork(work, targetLang)
 
   // Recent-read row scoped to this Work — drives the "Tiếp tục"
   // affordance in the hero. Pulled out of the global recent feed by
@@ -80,13 +78,6 @@ function WorkPage() {
     [recentQ.data, workIdNum],
   )
 
-  const handleSelectSource = useCallback((materialId: number) => {
-    nav({
-      params: { workId },
-      search: { src: materialId },
-    })
-  }, [nav, workId])
-
   const handleResume = useCallback(() => {
     if (!resumeFrom) return
     // Unified reader URL — same path covers translation + raw resume.
@@ -97,19 +88,15 @@ function WorkPage() {
         workId:     String(workIdNum),
         numberNorm: resumeFrom.chapter_number,
       },
-      search: {
-        lang: targetLang ?? undefined,
-        src:  activeMaterial?.id,
-      },
     })
-  }, [resumeFrom, nav, workIdNum, targetLang, activeMaterial])
+  }, [resumeFrom, nav, workIdNum])
 
   const handleShare = useCallback(async () => {
     const url = `${window.location.origin}/w/${workId}`
     if (navigator.share) {
       try {
         await navigator.share({
-          title: activeMaterial?.title ?? 'Manga',
+          title: primary?.title ?? 'Manga',
           url,
         })
       } catch {
@@ -118,7 +105,20 @@ function WorkPage() {
     } else {
       void navigator.clipboard?.writeText(url)
     }
-  }, [workId, activeMaterial])
+  }, [workId, primary])
+
+  // Upload-chapter dialog: state lives at the route so both the hero
+  // action button and a future empty-state CTA on a fresh "Tạo trống"
+  // work can mount the same dialog without prop-drilling.
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const existingChapterNumbers = useMemo(
+    () => new Set(chapters.map((c) => c.number)),
+    [chapters],
+  )
+  const workTitleForUpload = useMemo(
+    () => resolveWorkTitle(materials, targetLang).title,
+    [materials, targetLang],
+  )
 
   // Spawn — wraps useSpawnChapter so only the active row reflects
   // progress text. Spawn is per-raw-version: the user picks which
@@ -156,12 +156,8 @@ function WorkPage() {
     nav({
       to:     '/r/$workId/$numberNorm',
       params: { workId: String(workIdNum), numberNorm: c.number },
-      search: {
-        lang: targetLang ?? undefined,
-        src:  activeMaterial?.id,
-      },
     })
-  }, [nav, workIdNum, targetLang, activeMaterial])
+  }, [nav, workIdNum])
 
   // ── Render ─────────────────────────────────────────────────────
 
@@ -190,15 +186,15 @@ function WorkPage() {
     <div className="pb-16">
       <WorkHero
         workId={workIdNum}
-        activeMaterial={activeMaterial}
         materials={materials}
         resumeFrom={resumeFrom}
         viewerEntry={work.viewer_entry}
+        targetLang={targetLang}
         latestChapterNum={latestChapter}
         totalChapters={chapters.length}
-        onSelectSource={handleSelectSource}
         onShare={handleShare}
         onResume={handleResume}
+        onUpload={() => setUploadOpen(true)}
       />
 
       {/* Optional resume bar shown below the hero on touch widths */}
@@ -209,17 +205,31 @@ function WorkPage() {
         />
       </div>
 
-      <LinkSuggestionPanel workId={workIdNum} ownMaterials={materials} />
+      <WorkMembersPanel workId={workIdNum} />
+
+      <LinkSuggestionPanel
+        workId={workIdNum}
+        ownMaterials={materials}
+        targetLang={targetLang}
+      />
 
       <WorkChapterList
         chapters={chapters}
         targetLang={targetLang}
-        loading={manifestLoading}
+        loading={manifestsLoading}
         spawnState={spawnCtl.progress}
         spawningKey={spawnCtl.spawningKey}
         onSpawn={handleSpawn}
         onRetryTranslation={handleRetryTranslation}
         onOpenVersion={handleOpenVersion}
+      />
+
+      <UploadChapterDialog
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        workId={workIdNum}
+        workTitle={workTitleForUpload}
+        existing={existingChapterNumbers}
       />
     </div>
   )
@@ -227,9 +237,6 @@ function WorkPage() {
 
 
 export const Route = createFileRoute('/w/$workId')({
-  validateSearch: (s: Record<string, unknown>): SearchParams => ({
-    src: typeof s.src === 'number' ? s.src : undefined,
-  }),
   // Intercept the Work merge redirect BEFORE rendering the page. If
   // the URL points at a dissolved Work, ensure-fetch surfaces
   // `WorkRedirectedError` carrying the canonical id; we throw a

@@ -1,7 +1,7 @@
 // useReader — composed hook driving the unified reader.
 //
-// Inputs from the URL: `workId` + `numberNorm` (+ optional `lang`,
-// `src`). The hook:
+// Inputs from the URL: `workId` + `numberNorm` (+ optional `lang`).
+// The hook:
 //
 //   1. fetches the Work payload (shared cache with detail page),
 //   2. picks the right HubVersion for the requested chapter based on
@@ -13,6 +13,10 @@
 //      so navigation feels stable,
 //   5. records reading history,
 //   6. drives Discord presence + portrait lock.
+//
+// The Work payload auto-merges chapters across every installed
+// source, so the reader never needs a per-source URL param — lang
+// preference is all it takes to pick a version.
 //
 // Returns a `ReaderSource` shape the `<Reader>` shell consumes
 // without caring which kind of pixels backed it.
@@ -29,6 +33,7 @@ import { useSources } from '@features/browse/sources'
 import type { HubChapter, HubVersion } from '@features/title/mergeChapters'
 
 import { useWorkData } from '@features/work/useWorkData'
+import { pickPrimaryMaterial } from '@features/work/title'
 import { useChapterArchive } from './useChapterArchive'
 import { useTranslation, useChapterPages } from './queries'
 import type {
@@ -39,10 +44,6 @@ import type {
 export interface UseReaderInput {
   workId:     number
   numberNorm: string
-  /** Reading-lang override. Defaults to viewer's entry preference. */
-  lang?:      string
-  /** Active source material override (carried in URL search). */
-  src?:       number
 }
 
 
@@ -65,11 +66,15 @@ export interface UseReaderResult extends ReaderSource {
 
 
 export function useReader(input: UseReaderInput): UseReaderResult {
-  const { workId, numberNorm, lang: langOverride, src } = input
+  const { workId, numberNorm } = input
 
   const installed = useSources((s) => s.sources)
-  const work = useWorkData(workId, src ?? null)
-  const targetLang = (langOverride ?? work.targetLang ?? '').toLowerCase() || null
+  const work = useWorkData(workId)
+  // `targetLang` from useWorkData already runs through the full
+  // resolver chain (entry override → user default → fallback), so
+  // the reader inherits the same answer the hub badge shows. No URL
+  // `?lang=` — shared links respect the recipient's own preference.
+  const targetLang = work.targetLang
 
   // Locate the current HubChapter + pick the version the user
   // actually wants to read. Pure derivation — no extra queries.
@@ -86,8 +91,8 @@ export function useReader(input: UseReaderInput): UseReaderResult {
   // source of truth across chapter switches.
   const nav = useMemo(() => {
     if (!chapter) return { prev: null, next: null }
-    return resolveNav(work.chapters, chapter, workId, targetLang, src)
-  }, [work.chapters, chapter, workId, targetLang, src])
+    return resolveNav(work.chapters, chapter, workId, targetLang)
+  }, [work.chapters, chapter, workId, targetLang])
 
   // Dispatch to the right source query based on the picked version's
   // kind. Both queries `enable: false` until a version of the right
@@ -162,9 +167,14 @@ export function useReader(input: UseReaderInput): UseReaderResult {
   }, [chapter, picked, isTranslation, isRaw, trans?.id])
 
   // Discord presence + portrait lock — same lifecycle for every kind.
-  const workTitle = work.activeMaterial?.title
-                 ?? trans?.material_title
-                 ?? ''
+  // The Work payload no longer carries an "active material"; pick a
+  // primary one for the title here (same resolver as the hero would
+  // do) and fall back to the translation's own snapshot when the
+  // payload hasn't landed yet.
+  const workTitle = useMemo(() => {
+    const primary = pickPrimaryMaterial(work.materials, targetLang)
+    return primary?.title ?? trans?.material_title ?? ''
+  }, [work.materials, targetLang, trans?.material_title])
   useEffect(() => {
     if (!workTitle || !chapter) return
     setReadingPresence({
@@ -287,7 +297,6 @@ function resolveNav(
   current:    HubChapter,
   workId:     number,
   targetLang: string | null,
-  src:        number | undefined,
 ): { prev: ReaderNavTarget | null; next: ReaderNavTarget | null } {
   const idx = chapters.findIndex((c) => c.number === current.number)
   if (idx < 0) return { prev: null, next: null }
@@ -296,12 +305,7 @@ function resolveNav(
     for (let i = start; i >= 0 && i < chapters.length; i += step) {
       const c = chapters[i]!
       if (pickReadable(c, targetLang)) {
-        return {
-          workId,
-          numberNorm: c.number,
-          lang:       targetLang ?? undefined,
-          src,
-        }
+        return { workId, numberNorm: c.number }
       }
     }
     return null

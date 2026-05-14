@@ -48,27 +48,7 @@ async def link_or_create_work(
     if not refs:
         return await _create_work(conn, None)
 
-    # 1) Find every Work that overlaps on at least one namespace.
-    overlap_rows = await conn.fetch(
-        "SELECT id, cross_refs FROM works "
-        "WHERE cross_refs IS NOT NULL "
-        "  AND cross_refs ?| $1::text[]",
-        list(refs.keys()),
-    )
-
-    matched_id: int | None = None
-    for row in overlap_rows:
-        existing = row["cross_refs"] or {}
-        if _is_conflict(existing, refs):
-            # Hard conflict — do NOT attach. Continue scanning other
-            # candidates; a different Work may still match cleanly.
-            continue
-        # Compatible (overlap with no conflicting values). Pick the
-        # first such Work; if more than one matches cleanly, the
-        # oldest wins (rows come back in id order from Postgres).
-        matched_id = int(row["id"])
-        break
-
+    matched_id = await find_compatible_work(conn, refs)
     if matched_id is not None:
         # Augment the Work's cross_refs with any namespaces the new
         # material brought along — purely additive, never overwrites.
@@ -76,6 +56,40 @@ async def link_or_create_work(
         return matched_id
 
     return await _create_work(conn, refs)
+
+
+async def find_compatible_work(
+    conn:     asyncpg.Connection,
+    refs:     dict[str, str],
+    *,
+    exclude:  int | None = None,
+) -> int | None:
+    """Pick the oldest existing Work whose `cross_refs` are compatible
+    with `refs` (share at least one namespace, no conflicting values).
+    Returns None when nothing matches.
+
+    Set `exclude` to the caller's own work id when re-linking an
+    EXISTING material whose cross_refs just expanded — we don't want
+    to "match" the material's current Work and then attempt a no-op
+    merge with itself.
+    """
+    if not refs:
+        return None
+    overlap_rows = await conn.fetch(
+        "SELECT id, cross_refs FROM works "
+        "WHERE cross_refs IS NOT NULL "
+        "  AND cross_refs ?| $1::text[] "
+        "  AND ($2::bigint IS NULL OR id <> $2) "
+        "ORDER BY id ASC",
+        list(refs.keys()),
+        exclude,
+    )
+    for row in overlap_rows:
+        existing = row["cross_refs"] or {}
+        if _is_conflict(existing, refs):
+            continue
+        return int(row["id"])
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

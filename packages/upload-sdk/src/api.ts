@@ -13,11 +13,15 @@ export interface InitPart {
 }
 
 export interface UploadInitOut {
-  tmp_id:     string
-  upload_id:  string
-  parts:      InitPart[]
-  part_size:  number
-  expires_in: number
+  /** Material chapters will be created against. Per-material init
+   *  echoes back the path arg; per-work init returns the
+   *  server-resolved (lazy-created) upload-origin material id. */
+  material_id: number
+  tmp_id:      string
+  upload_id:   string
+  parts:       InitPart[]
+  part_size:   number
+  expires_in:  number
 }
 
 export interface FinalizePart {
@@ -71,4 +75,11 @@ export interface UploadHttpClient {
     materialId: number, body: UploadFinalizeBody,
   ): Promise<ApiChapterLike>
   uploadAbort(materialId: number, body: UploadAbortBody): Promise<void>
+}
+
+/** Extension of `UploadHttpClient` for the per-work convenience
+ *  route. The SPA's `api.ts` implements both shapes; the extension
+ *  has no use for the work-level flow and may omit it. */
+export interface WorkUploadHttpClient extends UploadHttpClient {
+  workUploadInit(workId: number, body: UploadInitBody): Promise<UploadInitOut>
 }
