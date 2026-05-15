@@ -173,9 +173,22 @@ function SourceRow({
       ? (spawnState?.error ?? 'Lỗi — bấm để thử lại')
       : versionStateHint(v)
 
-  // Action region — one of these at a time, never two:
+  // Action region. A picked raw row that is also spawnable shows both
+  // the "Đang đọc" badge AND the "Dịch" button so the user can kick
+  // off a translation without first having to switch away from the
+  // current raw version.
   let action: React.ReactNode = null
-  if (isPicked) {
+  if (isPicked && isSpawnable && phase === 'idle') {
+    action = (
+      <div className="flex items-center gap-1.5">
+        <ActiveBadge />
+        <RowButton variant="accent" onClick={onSpawn}>
+          <Sparkles size={11} />
+          Dịch
+        </RowButton>
+      </div>
+    )
+  } else if (isPicked) {
     action = <ActiveBadge />
   } else if (isSpawning) {
     action = <SpawningChip />

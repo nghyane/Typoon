@@ -261,24 +261,40 @@ function ReaderPage() {
       const srcLabel = target.raw.lang
         ? target.raw.lang.toUpperCase()
         : 'nguồn'
-      toast.success(
-        `Đã dịch xong Ch.${chapter.number} từ ${srcLabel}`,
-        {
-          action: {
-            label: 'Đọc',
-            onClick: () => {
-              // The user just consented to read this version. Pin
-              // pref so future chapters auto-pick the matching
-              // (target_lang, source_lang) draft — same contract
-              // as tapping a row in the source picker.
-              if (work.targetLang) {
-                setSourcePref(workId, {
-                  kind:       'translation',
-                  lang:       tx.lang,
-                  sourceLang: tx.sourceLang ?? null,
-                })
-              }
-              if (chapter.number !== numberNorm) {
+
+      const isCurrentChapter = chapter.number === numberNorm
+
+      if (isCurrentChapter) {
+        // Dịch xong ngay chương đang đọc → tự switch sang bản dịch.
+        // Đặt pref ngay, useReader sẽ tự pick translation và reader
+        // sẽ tự reload sang bản dịch mà không cần user thao tác thêm.
+        if (work.targetLang) {
+          setSourcePref(workId, {
+            kind:       'translation',
+            lang:       tx.lang,
+            sourceLang: tx.sourceLang ?? null,
+          })
+        }
+        toast.success(`Đã dịch xong Ch.${chapter.number} từ ${srcLabel} — đang chuyển sang bản dịch`)
+      } else {
+        // Chương khác → toast + nút Đọc để user tự quyết.
+        toast.success(
+          `Đã dịch xong Ch.${chapter.number} từ ${srcLabel}`,
+          {
+            action: {
+              label: 'Đọc',
+              onClick: () => {
+                // The user just consented to read this version. Pin
+                // pref so future chapters auto-pick the matching
+                // (target_lang, source_lang) draft — same contract
+                // as tapping a row in the source picker.
+                if (work.targetLang) {
+                  setSourcePref(workId, {
+                    kind:       'translation',
+                    lang:       tx.lang,
+                    sourceLang: tx.sourceLang ?? null,
+                  })
+                }
                 nav({
                   to: '/r/$workId/$numberNorm',
                   params: {
@@ -286,11 +302,11 @@ function ReaderPage() {
                     numberNorm: chapter.number,
                   },
                 })
-              }
+              },
             },
           },
-        },
-      )
+        )
+      }
     }
   }, [
     work.chapters, work.targetLang,

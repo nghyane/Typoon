@@ -8,7 +8,7 @@
 // page. The wrapper width is the slider's source of truth — page
 // images use `width: 100%` to follow it.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { PageImage } from './PageImage'
 import { useReaderSettings } from './store'
@@ -36,7 +36,25 @@ export function StripView({
   const { pageWidth, pageGap, stripMargin } = useReaderSettings()
 
   const refs = useRef<Array<HTMLDivElement | null>>([])
+
+  // Stable key that changes whenever the page list is replaced.
+  // Keying on indices (not just length) catches chapter switches that
+  // happen to have the same number of pages — otherwise the IO effect
+  // wouldn't re-attach and stale `visible` indices would survive into
+  // the new chapter.
+  const pagesKey = pages.map((p) => p.index).join(',')
+
   const [visible, setVisible] = useState<Set<number>>(() => new Set([0, 1, 2]))
+
+  // Reset to the first few slots synchronously before the browser
+  // paints whenever the chapter changes, so the strip always starts
+  // at the top and never shows stale page indices from a previous chapter.
+  useLayoutEffect(() => {
+    setVisible(new Set([0, 1, 2]))
+  // pagesKey is the only trigger — exhaustive-deps would want pages
+  // which is referentially new every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagesKey])
 
   useEffect(() => {
     const io = new IntersectionObserver(
@@ -55,11 +73,17 @@ export function StripView({
           return dirty ? next : prev
         })
       },
-      { rootMargin: '200% 0px' },
+      // 150% gives ~1–1.5 screen of pre-load buffer without firing
+      // all slots at once on chapters whose pages have no aspect ratio
+      // (raw pages without width/height start at height 0, so 200%
+      // would make every slot intersect immediately and mount all images).
+      { rootMargin: '150% 0px' },
     )
     for (const el of refs.current) if (el) io.observe(el)
     return () => io.disconnect()
-  }, [pages.length])
+  // Re-attach whenever the page list identity changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagesKey])
 
   // Expand visible with neighbours so a slot just past the IO root
   // margin still mounts when its neighbour scrolls in.
