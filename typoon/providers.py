@@ -126,6 +126,15 @@ def _build_provider(
         case "gemini":
             from .llm.gemini import GeminiProvider
             inner = GeminiProvider(api_key=api_key, model=model)
+        case "gemini_web":
+            from .llm.gemini_web import GeminiWebProvider
+            inner = GeminiWebProvider(
+                model=model,
+                secure_1psid=pcfg.secure_1psid,
+                secure_1psidts=pcfg.secure_1psidts,
+                cookie_browser=pcfg.cookie_browser,
+                cookie_file=pcfg.cookie_file,
+            )
         case _:
             from .llm.openai import OpenAIProvider
             kwargs = {

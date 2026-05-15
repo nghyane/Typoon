@@ -8,7 +8,7 @@
 //
 // No URL state for source selection — chapters auto-merge across
 // every installed-source material attached to the Work. Each row's
-// `VersionLine` already shows the per-version source, so a chip rail
+// `ChapterRow` already shows the per-chapter source, so a chip rail
 // above the list would be redundant.
 
 import { useCallback, useMemo, useState } from 'react'
@@ -20,6 +20,7 @@ import { AlertTriangle } from 'lucide-react'
 
 import { api, WorkRedirectedError } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
+import { toast } from '@shared/ui/Toaster'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 
@@ -120,14 +121,18 @@ function WorkPage() {
     [materials, targetLang],
   )
 
-  // Spawn — wraps useSpawnChapter so only the active row reflects
-  // progress text. Spawn is per-raw-version: the user picks which
-  // source language they want the LLM to translate from.
-  const spawnCtl = useChapterSpawn(targetLang)
+  // Spawn — chapter-keyed pipeline. One slot per chapter so the same
+  // row tracks raw → upload → server-pending → done without ever
+  // moving in the list.
+  const spawnCtl = useChapterSpawn(targetLang, workIdNum)
   const handleSpawn = useCallback(
     (chapter: HubChapter, raw: HubVersion) => {
-      spawnCtl.spawn(raw, chapter.label)
+      spawnCtl.spawn(chapter, raw)
     },
+    [spawnCtl],
+  )
+  const handleAbort = useCallback(
+    (chapter: HubChapter) => spawnCtl.abort(chapter),
     [spawnCtl],
   )
 
@@ -135,10 +140,29 @@ function WorkPage() {
   // no upstream/material handles (only `translationId`), so the
   // upload-and-spawn pipeline would silently no-op. `redo` reuses the
   // server-side chapter bytes and re-runs the LLM stages.
+  //
+  // Server semantics (see typoon/api/routes/translate.py:redo_translation):
+  //   - error              → restart + state='pending', cache_hit=false
+  //   - done               → no-op, state='done', cache_hit=true
+  //   - pending/running    → no-op, returns live state, cache_hit=true
+  //   - blocked            → 409
+  // We surface a different toast per outcome so the user knows
+  // whether the click actually re-kicked the pipeline or just
+  // confirmed an already-running one.
   const qc = useQueryClient()
   const redoMut = useMutation({
     mutationFn: (translationId: number) => api.redoTranslation(translationId),
-    onSuccess:  () => { void qc.invalidateQueries({ queryKey: qk.work.all() }) },
+    onSuccess:  (res) => {
+      if (res.cache_hit && res.state === 'done') {
+        toast.success('Bản dịch đã hoàn tất, không cần thử lại.')
+      } else if (res.cache_hit) {
+        toast.success('Pipeline đang chạy — sẽ tự cập nhật khi xong.')
+      } else {
+        toast.success('Đã khởi động lại — đang dịch.')
+      }
+      void qc.invalidateQueries({ queryKey: qk.work.all() })
+    },
+    onError: (e: Error) => toast.error(`Thử lại thất bại: ${e.message}`),
   })
   const handleRetryTranslation = useCallback(
     (translationId: number) => {
@@ -214,12 +238,13 @@ function WorkPage() {
       />
 
       <WorkChapterList
+        workId={workIdNum}
         chapters={chapters}
         targetLang={targetLang}
         loading={manifestsLoading}
-        spawnState={spawnCtl.progress}
-        spawningKey={spawnCtl.spawningKey}
+        getSpawnState={spawnCtl.getSpawnState}
         onSpawn={handleSpawn}
+        onAbort={handleAbort}
         onRetryTranslation={handleRetryTranslation}
         onOpenVersion={handleOpenVersion}
       />

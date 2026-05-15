@@ -1,78 +1,95 @@
-"""Vision model runtime adapter."""
+"""VisionRuntime adapter — bridges Config/Paths into the vision runtime.
+
+Thin factory only. Callers receive a `vision.VisionRuntime` directly;
+this adapter exists to (a) read the typed Config/Paths, (b) resolve the
+spec preset + overrides, and (c) own the shared ModelHub.
+
+The returned `vision.VisionRuntime` is what scan/render stages consume.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-import numpy as np
 
 from typoon.models import ModelHub
-from typoon.vision.erase import Eraser
+from typoon.vision.pipeline import VisionPipelineSpec
+from typoon.vision.runtime import VisionRuntime, build_vision_runtime
 
 
-class VisionRuntime:
-    """Owns vision model instances and page-local scan primitives."""
+__all__ = ["VisionRuntimeAdapter", "build_from_config"]
 
-    def __init__(
-        self,
-        scanner,
-        eraser: Eraser,
-        hub: ModelHub,
-        *,
-        bubble_scope_imgsz: int = 640,
-    ) -> None:
-        self.scanner = scanner
-        self.eraser = eraser
-        self._hub = hub
-        self._bubble_scope_imgsz = bubble_scope_imgsz
-        self._yolo_model = None
+
+@dataclass(slots=True)
+class VisionRuntimeAdapter:
+    """Pair of (vision runtime, model hub) constructed from Config.
+
+    Worker code holds this via `ctx.runtime`. Stages use `.runtime` for
+    pipeline calls and `.hub` for ad-hoc model lookups.
+    """
+
+    runtime: VisionRuntime
+    hub:     ModelHub
 
     @staticmethod
     def from_config(config=None, paths=None, *, source_lang: str | None = None):
-        from typoon.config import load_config
-        from typoon.vision.scanner import create_scanner
+        return build_from_config(config, paths, source_lang=source_lang)
 
-        if config is None or paths is None:
-            config, paths = load_config()
-        hub = ModelHub(Path(config.models_dir))
-        runtime = VisionRuntime(
-            scanner=create_scanner(
-                hub=hub,
-                ocr_backend=config.ocr_backend,
-                source_lang=source_lang,
-                lens_endpoint=config.lens_endpoint or None,
-            ),
-            eraser=Eraser(str(hub.dir)),
-            hub=hub,
-            bubble_scope_imgsz=config.bubble_scope_imgsz,
+
+def build_from_config(
+    config=None, paths=None, *, source_lang: str | None = None,
+) -> tuple[VisionRuntimeAdapter, object, object]:
+    from typoon.config import load_config
+    if config is None or paths is None:
+        config, paths = load_config()
+    hub = ModelHub(Path(config.models_dir))
+    spec = _resolve_spec(config)
+    runtime = build_vision_runtime(
+        spec,
+        models_dir=hub.dir,
+        source_lang=source_lang,
+        lens_endpoint=config.lens_endpoint or None,
+    )
+    return VisionRuntimeAdapter(runtime=runtime, hub=hub), config, paths
+
+
+def _resolve_spec(config) -> VisionPipelineSpec:
+    """Read `config.vision` and resolve to a VisionPipelineSpec.
+
+    Schema (`config.toml`):
+        [vision]
+        preset = "lens"           # PRESETS key
+        # Optional per-stage overrides on top of the preset:
+        # detector = "ppocr_dbnet"
+        # grouper  = "ppocr_yolo_union_find"
+        # recognizer = "apple_vision"
+        # eraser  = "aot_gan"
+        # page_concurrency = 8
+
+    If `config.vision` is absent, defaults to the `lens` preset.
+    """
+    raw = getattr(config, "vision", None)
+    if raw is None:
+        return VisionPipelineSpec.preset("lens")
+
+    if isinstance(raw, str):
+        return VisionPipelineSpec.preset(raw)
+
+    preset_name = (
+        raw.get("preset") if isinstance(raw, dict)
+        else getattr(raw, "preset", "lens")
+    ) or "lens"
+    base = VisionPipelineSpec.preset(preset_name)
+
+    overrides: dict[str, object] = {}
+    for field_name in (
+        "detector", "grouper", "recognizer", "eraser",
+        "page_concurrency", "detect_concurrency", "erase_concurrency",
+    ):
+        value = (
+            raw.get(field_name) if isinstance(raw, dict)
+            else getattr(raw, field_name, None)
         )
-        return runtime, config, paths
-
-    def _get_yolo_model(self) -> Any | None:
-        if self._yolo_model is None:
-            from typoon.vision.bubble_scope import load_yolo_model
-            import sys
-            if sys.platform == "darwin":
-                path = self._hub.resolve("bubble-scope-yolov8m.mlpackage")
-            else:
-                path = self._hub.resolve("bubble-scope-yolov8m.pt")
-            self._yolo_model = load_yolo_model(path)
-        return self._yolo_model
-
-    def scan_page_state(self, image: np.ndarray, *, source_lang: str | None = None):
-        """Run full vision pipeline and return ScanState for artifact writing.
-
-        `source_lang` selects the OCR recognizer language (project's
-        ISO 639-1 code, e.g. "ja", "ko", "zh"). When omitted, the
-        backend falls back to English — pass it explicitly for any
-        non-English project or detected text gets dropped as noise.
-        """
-        from typoon.vision.grouping import scan_page
-        self.scanner.set_language(source_lang)
-        return scan_page(
-            self.scanner,
-            image,
-            yolo_model=self._get_yolo_model(),
-            yolo_imgsz=self._bubble_scope_imgsz,
-        )
+        if value is not None:
+            overrides[field_name] = value
+    return base.with_overrides(**overrides) if overrides else base

@@ -23,7 +23,6 @@ pipeline; API hosts share the public reader. Lifetime ends with
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from typoon.adapters.artifact_store import (
     ArtifactStore, HuggingFaceArtifactStore, LocalArtifactStore,

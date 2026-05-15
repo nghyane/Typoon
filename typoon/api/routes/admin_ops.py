@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from pydantic import BaseModel
 
 from typoon.api.deps import get_store, require_admin
 from typoon.api.models import (
@@ -237,6 +238,80 @@ async def force_fail_task(
     return None
 
 
+# ── Drafts ───────────────────────────────────────────────────────────
+
+
+class AdminRestartDraftIn(BaseModel):
+    """Body for `POST /api/admin/ops/drafts/{draft_id}/restart`.
+
+    `reason` is required so every restart has a written justification
+    in the audit log — admins should not be able to silently re-kick
+    pipelines."""
+    reason: str
+
+
+@router.post(
+    "/drafts/{draft_id}/restart",
+    status_code=204,
+)
+async def restart_draft(
+    draft_id:        int,
+    body:            AdminRestartDraftIn,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    user:            dict       = Depends(require_admin),
+    db:              Store      = Depends(get_store),
+):
+    """Force-restart a translation draft from its entry stage,
+    regardless of current state.
+
+    This is the admin equivalent of the user-facing `POST
+    /api/translate/{id}/redo`, with three differences:
+
+      - Works on any state, including `done` and `blocked`. User
+        redo refuses those (done is canonical, blocked is a policy
+        hold). Admin can override both — e.g. a model upgrade
+        invalidates a `done` output, or a blocked draft was
+        cleared by moderation review.
+      - No owner check. Admin acts on any user's draft.
+      - Writes an `admin_actions.draft.restart` row with the
+        previous draft state captured for forensic.
+
+    All translations pinned to this draft will see the new render
+    once the pipeline finishes — `archive_*` columns are overwritten
+    in place, so existing `translation_id` deep links stay valid.
+    No takedown / row-swap dance is needed for that to work.
+
+    Idempotent on `Idempotency-Key` header (collapses to one audit
+    row + one restart). Returns 404 if the draft has been deleted,
+    204 on success.
+    """
+    draft = await db.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(404, "Draft not found")
+    chapter = await db.get_chapter(int(draft["chapter_id"]))
+    if chapter is None:
+        raise HTTPException(500, "Draft references missing chapter")
+
+    # Same entry-stage logic as user spawn/redo, imported from the
+    # translate route so the two paths cannot drift on what "entry
+    # stage" means for a chapter at a given prepared/scan state.
+    from typoon.api.routes.translate import _resolve_entry_task
+    stage, kind, tid = await _resolve_entry_task(db, chapter, draft_id)
+
+    ok = await db.restart_draft_pipeline(
+        draft_id,
+        entry_stage=stage,
+        entry_target_kind=kind,
+        entry_target_id=tid,
+        audit_actor_id=user["id"],
+        audit_reason=body.reason,
+        audit_source=f"web:user:{user['id']}",
+        audit_idem_key=idempotency_key,
+    )
+    _ensure_mutation_landed(ok)
+    return None
+
+
 # ── Audit ────────────────────────────────────────────────────────────
 
 
@@ -286,6 +361,14 @@ def _task_out(r: dict) -> TaskOut:
         last_error        = r["last_error"],
         lifecycle_state   = r["lifecycle_state"],
         claim_age_seconds = r["claim_age_seconds"],
+        work_id           = r.get("work_id"),
+        work_chapter_id   = r.get("work_chapter_id"),
+        chapter_id        = r.get("chapter_id"),
+        chapter_label     = r.get("chapter_label"),
+        source_lang       = r.get("source_lang"),
+        target_lang       = r.get("target_lang"),
+        llm_model         = r.get("llm_model"),
+        owner_id          = r.get("owner_id"),
     )
 
 

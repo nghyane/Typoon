@@ -27,9 +27,7 @@ from pydantic import BaseModel
 from typoon.adapters.storage_registry import StorageRegistry
 from typoon.api.deps import get_config, get_storage, get_store, require_user
 from typoon.api.models import MaterialOut
-from typoon.api.routes._shared import (
-    require_material, require_material_admin,
-)
+from typoon.api.routes._shared import require_material_admin
 from typoon.storage import Store
 
 logger = logging.getLogger(__name__)

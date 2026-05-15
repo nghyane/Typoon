@@ -120,6 +120,30 @@ class TestParseReply:
         assert ops[0].text == "hi\n   @@ DEF5678 sfx\nignored"
         assert len(ops) == 1
 
+    def test_model_skip_for_chrome(self, key_map):
+        # Model can declare a leaked-chrome bubble via `kind=skip`. Body
+        # is ignored — empty or anything else, both produce a skip op.
+        text = "@@ ABC1234 skip\n@@ DEF5678 dialogue\nbar"
+        ops = _parse_translation_reply(text, {"ABC1234", "DEF5678"}, key_map)
+        assert [(o.key, o.kind, o.text) for o in ops] == [
+            ("ABC1234", "skip", ""),
+            ("DEF5678", "dialogue", "bar"),
+        ]
+
+    def test_model_skip_case_insensitive(self, key_map):
+        # The kind regex is IGNORECASE; downstream sees lowercase.
+        ops = _parse_translation_reply(
+            "@@ ABC1234 SKIP", {"ABC1234"}, key_map,
+        )
+        assert ops == [TranslationOp(key="ABC1234", kind="skip", text="")]
+
+    def test_model_skip_with_body_ignores_body(self, key_map):
+        # If the model emits `kind=skip` with a body anyway (against the
+        # prompt rule), we still treat it as skip — the body is dropped.
+        text = "@@ ABC1234 skip\nstray text the model wrote"
+        ops = _parse_translation_reply(text, {"ABC1234"}, key_map)
+        assert ops == [TranslationOp(key="ABC1234", kind="skip", text="")]
+
 
 class TestBuildPrompt:
     def test_active_flag_and_context(self, key_map):

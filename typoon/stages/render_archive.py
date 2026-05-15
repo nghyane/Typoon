@@ -21,7 +21,6 @@ caller's responsibility. Concurrency comes from
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Literal
 
@@ -29,7 +28,7 @@ from typoon.adapters.artifact_store import ArtifactStore
 from typoon.adapters.chapter_archive import pack_and_upload, render_key
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.prepared_reader import PreparedReader
-from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.vision.runtime import VisionRuntime
 from typoon.domain import translate
 from typoon.domain.scan import PageGeometry
 from typoon.runs.artifacts import ArtifactSink
@@ -68,8 +67,7 @@ async def render_chapter_to_archive(
         out_dir = tmp / "render_jpg"
         archive_path = tmp / "render.bnl"
 
-        rendered = await asyncio.to_thread(
-            render_chapter,
+        rendered = await render_chapter(
             translated, out_dir, reader, runtime, page_geoms, masks,
             chapter_id=chapter_id,
             target_kind=target_kind, target_id=target_id,

@@ -28,7 +28,7 @@
 // the metadata strip / status picker / bookmark / description; the
 // title and cover come from their own resolvers, biased toward the
 // viewer's reading language. The per-source picker rail is gone:
-// chapter rows expose source info inline via `VersionLine`.
+// chapter rows expose source info inline via `ChapterRow`.
 
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'

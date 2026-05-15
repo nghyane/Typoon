@@ -4,10 +4,29 @@
 models_dir = "models"
 default_target_lang = "vi"
 
-# OCR backend — "auto" picks the first available in priority order:
-# google_lens → apple_vision → windows_ocr → tesseract.
-# Pin explicitly when running on a host that has multiple available.
-# ocr_backend = "google_lens"
+# Vision pipeline composition. Pick a preset OR override per-stage.
+# Presets (see typoon/vision/pipeline.py PRESETS):
+#   lens          — Lens detector + native grouper, recognizer skipped.
+#                   Default. Best multilingual coverage, recall.
+#   lens_balanced — same stages, page_concurrency=8, detect_concurrency=15.
+#   bing          — Bing OCR + YOLO bubble grouper. Use when Lens
+#                   endpoint is rate-limited or unreachable from your
+#                   region; Bing returns line-level boxes so YOLO
+#                   bubble-scope merges them into bubbles.
+#   offline       — PP-OCR DBNet + YOLO + Apple Vision. No network.
+#   manga_ja      — PP-OCR + YOLO + manga-ocr (Japanese-optimised).
+#
+# [vision]
+# preset = "lens"
+#
+# Optional per-stage overrides applied on top of the preset:
+# detector            = "bing_blocks"
+# grouper             = "ppocr_yolo_union_find"
+# recognizer          = "none"
+# eraser              = "aot_gan"
+# page_concurrency    = 4
+# detect_concurrency  = 8
+# erase_concurrency   = 2
 
 # Override the Google Lens upstream endpoint. Empty = library default
 # (https://lensfrontend-pa.googleapis.com/v1/crupload). Setting this to
@@ -17,6 +36,12 @@ default_target_lang = "vi"
 # to map `/lens` → `lensfrontend-pa.googleapis.com` in the Developer
 # Portal. Same effect via env: `LENS_ENDPOINT=...`.
 # lens_endpoint = "https://<application_id>.discordsays.com/lens/v1/crupload"
+
+# Bing OCR (preset = "bing") talks to bing.com directly. Discord
+# Activity URL Mappings cannot proxy Bing because the upload step
+# returns a 302 with `insightsToken` in the query string, and CF Worker
+# `fetch()` auto-follows the redirect, losing the token. APAC users
+# pay direct latency.
 
 [providers.cf]
 type = "openai"
@@ -85,6 +110,42 @@ model = "dynamic/auto"
 # [vision_agent]
 # provider = "minimax"
 # model = "MiniMax-M2.5"    # cheaper model for context phase
+
+# Alternative: Gemini Web (reverse-engineered gemini.google.com).
+# Uses your Google One AI Pro account quota instead of the paid Gemini
+# API tier. Requires `pip install gemini-webapi browser-cookie3`.
+# No tool/function calling support: configure this provider only for
+# stages that pass an empty tools list — currently `translation` and
+# `vision_agent` both do.
+#
+# Cookie sourcing: either paste __Secure-1PSID/-1PSIDTS inline, or
+# point `cookie_browser` at a logged-in profile and let the auto-loader
+# pick them up.
+#
+# Models (Plus tier subset shown — see typoon/llm/gemini_web.py for full list):
+#   gemini-3-pro          gemini-3-flash          gemini-3-flash-thinking
+#   gemini-3-pro-plus     gemini-3-flash-plus     gemini-3-flash-thinking-plus
+#   auto                  (let Gemini pick the account's default)
+#
+# [providers.gemini_web]
+# type           = "gemini_web"
+# cookie_browser = "edge"           # or paste values below
+# # secure_1psid   = "$GEMINI_1PSID"
+# # secure_1psidts = "$GEMINI_1PSIDTS"
+# # Web Gemini is per-account; the server tolerates parallel one-shot
+# # turns surprisingly well — we measured 8 concurrent translate windows
+# # going through cleanly on a Plus account with no rate-limit kicks.
+# # Per-call latency dominates wall time (6–40 s/call), so going much
+# # higher than the number of windows in a typical chapter buys nothing.
+# concurrency = 8
+#
+# [translation]
+# provider = "gemini_web"
+# model    = "auto"
+#
+# [vision_agent]
+# provider = "gemini_web"
+# model    = "auto"                 # or "gemini-3-pro-plus" for image-heavy work
 
 # ── Per-user chapter quota (beta rate limit) ─────────────────────────
 # Counters are sliding-window over chapter_consumes; admins bypass.

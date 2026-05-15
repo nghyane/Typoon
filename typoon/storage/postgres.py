@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re as _re
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import asyncpg
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "27"  # library_entries title/cover_url dropped — resolved from materials
+SCHEMA_VERSION = "28"  # translations: allow multiple drafts per (work_chapter, owner, target_lang)
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
@@ -203,6 +203,33 @@ _TS_TRANSLATION = (
     f"{_ts('takedown_at')}, takedown_reason, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
 )
+
+# Effective translation state — the single source of truth for
+# "is this translation user-readable right now". A draft moves
+# `pending → running → done` as the LLM works; the render stage
+# materialises an archive AFTER the draft hits `done`. The gap
+# between those two events would leak as a "done in list, pending
+# in reader" desync if we exposed `d.state` raw.
+#
+# Rule: 'done' only when both the draft is done AND an archive
+# locator exists (per-translation override OR draft default).
+# Otherwise mirror the draft's stage, except we map "done without
+# archive" to 'running' so the reader knows the worker hasn't
+# rendered yet.
+#
+# `d` aliases `translation_drafts`; `t` aliases `translations`.
+# Callers MUST use those aliases.
+_EFFECTIVE_STATE_SQL = """
+    CASE
+        WHEN d.state IS NULL THEN 'done'
+        WHEN d.state = 'done' AND (
+            t.archive_locator IS NOT NULL
+            OR d.archive_locator IS NOT NULL
+        ) THEN 'done'
+        WHEN d.state = 'done' THEN 'running'
+        ELSE d.state
+    END
+"""
 _TS_LIBRARY_ENTRY = (
     "id, user_id, work_id, target_lang, status, "
     f"{_ts('created_at')}, {_ts('updated_at')}"
@@ -1042,7 +1069,7 @@ class PostgresStore:
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT
                     wc.id            AS work_chapter_id,
                     wc.number_norm,
@@ -1054,7 +1081,9 @@ class PostgresStore:
                     t.shared,
                     t.archive_locator IS NULL AND t.draft_id IS NOT NULL
                                      AS uses_default_render,
-                    COALESCE(d.state, 'done') AS state,
+                    -- Effective user-visible state (see
+                    -- `_EFFECTIVE_STATE_SQL` for the rule).
+                    ({_EFFECTIVE_STATE_SQL})              AS state,
                     d.error_message  AS error_message,
                     t.draft_id,
                     d.source_lang    AS draft_source_lang,
@@ -2007,7 +2036,7 @@ class PostgresStore:
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
+                """
                 WITH own AS (
                     SELECT id,
                            title,
@@ -2441,10 +2470,21 @@ class PostgresStore:
         target_lang: str,
         glossary_fp: str,
     ) -> dict | None:
-        """Cache lookup against the global community pool. Returns None
-        when no draft matches the key, or the only matches are taken
-        down. Schema 19 removed per-guild visibility — every alive
-        draft on the cache key is reusable.
+        """Lookup the live draft on a cache key, regardless of state.
+
+        The unique index `uniq_drafts_cache` guarantees at most one
+        non-taken-down row per (chapter, src, tgt, glossary_fp), so
+        this is effectively `SELECT WHERE PK`. State interpretation
+        is the caller's job:
+
+          - `done`              → real cache hit, attach + no quota.
+          - `pending`/`running` → in-flight; attach + no quota
+                                  (piggy-back on the existing run).
+          - `error`             → caller decides to restart or surface.
+          - `blocked`           → policy hold; do not auto-restart.
+
+        Returns None when the key has never been spawned, or every
+        prior draft on it has been taken down.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -2456,8 +2496,6 @@ class PostgresStore:
                   AND  d.target_lang=$3
                   AND  d.glossary_fp=$4
                   AND  d.takedown_at IS NULL
-                ORDER BY d.state = 'done' DESC, d.created_at DESC
-                LIMIT 1
                 """,
                 chapter_id, source_lang, target_lang, glossary_fp,
             )
@@ -2506,6 +2544,117 @@ class PostgresStore:
                 "WHERE id=$3",
                 state, error, draft_id,
             )
+
+    async def restart_draft_pipeline(
+        self,
+        draft_id: int,
+        *,
+        entry_stage:       str,
+        entry_target_kind: str,
+        entry_target_id:   int,
+        audit_actor_id:    int | None = None,
+        audit_reason:      str | None = None,
+        audit_source:      str | None = None,
+        audit_idem_key:    str | None = None,
+    ) -> bool:
+        """Atomic restart of a draft's pipeline.
+
+        Pipeline lifecycle has two parallel sources of truth that
+        *must* move together: `translation_drafts.state` (what the
+        UI reads) and `tasks` (what workers claim). A naive "reset
+        state then enqueue" leaves windows where the draft is
+        observed as `pending` with no live task (silent stall) or
+        `error` with a fresh task (zombie restart). Both have shipped
+        as bugs before — the only correct shape is a single txn that
+        owns both rows.
+
+        Operations performed in one transaction:
+
+          1. `translation_drafts`: state → 'pending', clear
+             error_message and progress_*. `progress_stage` reset
+             so the UI doesn't show stale "OCR 47/120" from the
+             failed run. The previous draft state is captured for
+             audit.
+
+          2. `tasks` for (entry_target_kind, entry_target_id,
+             entry_stage): UPSERT — if a row exists (typically
+             dead-lettered with attempts=MAX), reset attempts=0,
+             claimed_by=NULL, claimed_at=NULL, last_error=NULL so
+             a worker can re-claim. If no row exists, insert a
+             fresh pending one.
+
+          3. (admin only) `admin_actions`: one `draft.restart` row
+             with the previous draft state for forensic. Triggered
+             when `audit_reason` is provided. Idempotent on
+             `audit_idem_key` so a network retry collapses.
+
+        Note this only resets the *entry* task. Downstream tasks
+        from the previous run, if any, were already deleted by
+        `complete_task`/`advance_task` when their stage finished
+        successfully — they'll be re-enqueued naturally as the
+        worker advances stages.
+
+        Returns False only when the draft row vanished between the
+        caller's lookup and our SELECT FOR UPDATE (404-ish for the
+        admin route). Returns True on a successful reset.
+
+        Caller must derive entry_stage from the draft's chapter
+        state (prepared? has bubbles?) — this primitive trusts the
+        caller's choice and does not re-derive.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            prev = await conn.fetchrow(
+                "SELECT state, error_message, progress_stage, "
+                "       progress_index, progress_total, takedown_at "
+                "  FROM translation_drafts WHERE id=$1 FOR UPDATE",
+                draft_id,
+            )
+            if prev is None:
+                return False
+
+            await conn.execute(
+                "UPDATE translation_drafts SET "
+                "  state='pending', error_message=NULL, "
+                "  progress_stage=NULL, progress_index=NULL, "
+                "  progress_total=NULL "
+                "WHERE id=$1",
+                draft_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO tasks (target_kind, target_id, stage)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (target_kind, target_id, stage) DO UPDATE
+                SET attempts   = 0,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    last_error = NULL
+                """,
+                entry_target_kind, entry_target_id, entry_stage,
+            )
+
+            if audit_reason is not None:
+                await self._record_admin_action(
+                    conn,
+                    action="draft.restart",
+                    target_ref=_build_target_ref(
+                        stage=entry_stage,
+                        target_kind=entry_target_kind,
+                        target_id=entry_target_id,
+                        source=audit_source,
+                        idem_key=audit_idem_key,
+                    ) | {"draft_id": draft_id},
+                    reason=audit_reason,
+                    actor_id=audit_actor_id,
+                    prev_state={
+                        "state":          prev["state"],
+                        "error_message":  prev["error_message"],
+                        "progress_stage": prev["progress_stage"],
+                        "progress_index": prev["progress_index"],
+                        "progress_total": prev["progress_total"],
+                    },
+                )
+            return True
 
     async def set_draft_progress(
         self, draft_id: int, *, stage: str, index: int, total: int,
@@ -2636,8 +2785,8 @@ class PostgresStore:
                 "INSERT INTO translations "
                 "  (work_chapter_id, owner_id, target_lang, draft_id, shared) "
                 "VALUES ($1, $2, $3, $4, $5) "
-                "ON CONFLICT (work_chapter_id, owner_id, target_lang) DO UPDATE "
-                "  SET draft_id = EXCLUDED.draft_id "
+                "ON CONFLICT (work_chapter_id, owner_id, draft_id) DO UPDATE "
+                "  SET shared = translations.shared "
                 "RETURNING id",
                 work_chapter_id, owner_id, target_lang, draft_id, shared,
             )
@@ -2666,12 +2815,13 @@ class PostgresStore:
             return {}
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT
                     c.id AS chapter_id,
                     t.id, t.work_chapter_id, t.owner_id, t.target_lang,
                     t.draft_id, t.shared,
-                    COALESCE(d.state, 'done') AS state,
+                    -- Effective user-visible state.
+                    ({_EFFECTIVE_STATE_SQL}) AS state,
                     u.display_name AS creator_name,
                     (t.archive_locator IS NULL AND t.draft_id IS NOT NULL) AS uses_default_render
                 FROM chapters c
@@ -2737,7 +2887,8 @@ class PostgresStore:
                     t.id              AS translation_id,
                     t.target_lang,
                     {_ts('t.updated_at', 'updated_at')},
-                    COALESCE(d.state, 'done') AS state,
+                    -- Effective user-visible state.
+                    ({_EFFECTIVE_STATE_SQL}) AS state,
                     (t.archive_locator IS NOT NULL
                      OR d.archive_locator IS NOT NULL) AS has_archive,
                     c.id              AS chapter_id,
@@ -3834,8 +3985,55 @@ class PostgresStore:
                    t.claimed_by, t.claimed_at, t.last_error,
                    ({state_expr}) AS lifecycle_state,
                    EXTRACT(EPOCH FROM (NOW() - t.claimed_at))::INT
-                       AS claim_age_seconds
+                       AS claim_age_seconds,
+                   ctx.work_id,
+                   ctx.work_chapter_id,
+                   ctx.chapter_id,
+                   ctx.chapter_label,
+                   ctx.source_lang,
+                   ctx.target_lang,
+                   ctx.llm_model,
+                   ctx.owner_id
               FROM tasks t
+              -- LATERAL resolves human-context for the row's
+              -- (target_kind, target_id). One branch per kind, all
+              -- returning the same shape so callers can read uniformly.
+              -- Indexed PK lookups → cheap even at 100 rows / page.
+              LEFT JOIN LATERAL (
+                  SELECT
+                      wc.work_id      AS work_id,
+                      c.work_chapter_id AS work_chapter_id,
+                      c.id            AS chapter_id,
+                      wc.label        AS chapter_label,
+                      c.source_lang   AS source_lang,
+                      NULL::TEXT      AS target_lang,
+                      NULL::TEXT      AS llm_model,
+                      NULL::BIGINT    AS owner_id
+                  FROM chapters c
+                  JOIN work_chapters wc ON wc.id = c.work_chapter_id
+                  WHERE t.target_kind = 'chapter' AND c.id = t.target_id
+                  UNION ALL
+                  SELECT
+                      wc.work_id, c.work_chapter_id, c.id,
+                      wc.label, d.source_lang, d.target_lang,
+                      d.llm_model, d.created_by
+                  FROM translation_drafts d
+                  JOIN chapters c       ON c.id  = d.chapter_id
+                  JOIN work_chapters wc ON wc.id = c.work_chapter_id
+                  WHERE t.target_kind = 'draft' AND d.id = t.target_id
+                  UNION ALL
+                  SELECT
+                      wc.work_id,
+                      tr.work_chapter_id,
+                      d.chapter_id,
+                      wc.label,
+                      d.source_lang, tr.target_lang,
+                      d.llm_model, tr.owner_id
+                  FROM translations tr
+                  JOIN translation_drafts d ON d.id  = tr.draft_id
+                  JOIN work_chapters wc     ON wc.id = tr.work_chapter_id
+                  WHERE t.target_kind = 'translation' AND tr.id = t.target_id
+              ) ctx ON TRUE
               {where_sql}
              ORDER BY t.claimed_at NULLS LAST,
                       t.target_kind, t.target_id, t.stage
@@ -3855,6 +4053,14 @@ class PostgresStore:
                 "last_error":        r["last_error"],
                 "lifecycle_state":   r["lifecycle_state"],
                 "claim_age_seconds": r["claim_age_seconds"],
+                "work_id":           r["work_id"],
+                "work_chapter_id":   r["work_chapter_id"],
+                "chapter_id":        r["chapter_id"],
+                "chapter_label":     r["chapter_label"],
+                "source_lang":       r["source_lang"],
+                "target_lang":       r["target_lang"],
+                "llm_model":         r["llm_model"],
+                "owner_id":          r["owner_id"],
             }
             for r in rows[:limit]
         ]

@@ -7,6 +7,7 @@ the returned brief and translations.
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 
 from typoon.adapters.ctx import TranslateCtx
 from typoon.adapters.prepared_reader import PreparedReader
@@ -154,12 +155,29 @@ def _materialize_bubble(
 ) -> translate.Bubble:
     key = key_at.get((sb.page_index, sb.idx), f"p{sb.page_index}_b{sb.idx}")
     op = ops.get(key)
+    text = op.text if op else ""
     return translate.Bubble(
         source=sb,
         translation_key=key,
-        translated_text=op.text if op else "",
+        translated_text=_normalize_for_render(text),
         kind=op.kind if op else "skip",
     )
+
+
+def _normalize_for_render(text: str) -> str:
+    """Force NFC so combining diacritics merge into precomposed glyphs.
+
+    Some LLM providers emit decomposed Vietnamese (NFD): `nghĩa` arrives
+    as `n` `g` `h` `i` `\\u0303` `a` instead of `n` `g` `h` `\\u0129` `a`.
+    The embedded render font has glyphs for the precomposed codepoints
+    only; combining-mark codepoints render as blank advances → user
+    sees "Tôi  nghĩa" with a phantom space where the diacritic should
+    have sat. NFC normalisation is the standard fix and is a no-op on
+    text that's already precomposed (>99% of inputs).
+    """
+    if not text:
+        return text
+    return unicodedata.normalize("NFC", text)
 
 
 def _empty(scanned: scan.Chapter) -> translate.Chapter:

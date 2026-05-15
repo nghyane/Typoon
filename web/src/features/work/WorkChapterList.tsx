@@ -1,26 +1,25 @@
-// WorkChapterList — flat list of every readable version across every
-// chapter in this Work.
+// WorkChapterList — chapter-row view of every readable chapter in
+// the Work.
 //
-// One row per (chapter, version). No grouping, no headers, no
-// expand/collapse. Each row is a single tap/click action:
+// One chapter = one row = one primary button. The button is a state
+// machine (read / translate / progress / error / blocked) keyed by
+// chapter number, so the SAME row tracks every transition from raw
+// → client-download → upload → server pending → done. No new rows
+// appear next to the old one when a spawn lands.
 //
-//   • [VI] @userA …       →   opens the translated reader
-//   • [VI] @scanlator …   →   opens the raw reader
-//   • [EN] @scanlator … ✨ →   spawns a translation (target_lang
-//                              from the viewer's library entry)
+// Toolbar: search + lang filter + sort. The filter is the "I want to
+// see chapters readable in lang X" axis — `vi` shows chapters where
+// the viewer's target_lang is reachable (translation done or native
+// scanlation); other langs show chapters with a raw at that lang.
+// Defaults to target_lang when at least one chapter is reachable
+// there, otherwise "Tất cả".
 //
-// Toolbar:
-//   • search input (deferred for typing smoothness)
-//   • horizontal-scroll language chip rail (default: target_lang
-//     only; tap "Tất cả" to surface every lang)
-//   • sort tabs (Chương | Mới)
-//
-// Long lists (1k+ rows on Bleach/OP) are virtualized via
-// `@tanstack/react-virtual` so scroll stays at 60fps regardless of
-// total chapter count.
+// Long lists (1k+ rows on Bleach/OP) stay smooth via
+// `@tanstack/react-virtual` measuring against the AppLayout scroll
+// container.
 
 import {
-  useDeferredValue, useEffect, useMemo, useRef, useState,
+  useCallback, useDeferredValue, useEffect, useMemo, useRef, useState,
 } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -32,59 +31,61 @@ import { cn } from '@shared/lib/cn'
 import { EmptyState } from '@shared/ui/EmptyState'
 import { Spinner } from '@shared/ui/primitives'
 import { languageName } from '@shared/lib/lang'
-import {
-  preferredReadable, type HubChapter, type HubVersion,
-} from '@features/title/mergeChapters'
-import { useSpawnChapter, type SpawnProgress } from '@features/title/useSpawnChapter'
+import { useSources } from '@features/browse/sources'
 
-import { VersionLine, type VersionAction } from './VersionLine'
+import {
+  type HubChapter, type HubVersion,
+} from '@features/title/mergeChapters'
+import {
+  deriveChapterRows, type ChapterRow as ChapterRowModel,
+} from '@features/title/chapterRow'
+import { useSpawnChapters, type SpawnProgress } from '@features/title/useSpawnChapter'
+
+import { ChapterRow } from './ChapterRow'
+import {
+  useChapterListUiActions, useWorkListUi,
+} from './chapterListUi'
 
 
 export interface WorkChapterListProps {
-  chapters:        HubChapter[]
-  targetLang:      string | null
-  loading:         boolean
-  spawnState:      SpawnProgress | null
-  spawningKey:     string | null
-  onSpawn:         (chapter: HubChapter, raw: HubVersion) => void
-  /** Re-kick a translation that ended in `error`. Distinct from
+  workId:             number
+  chapters:           HubChapter[]
+  targetLang:         string | null
+  loading:            boolean
+  /** Per-chapter spawn state lookup keyed by `chapter.number`. */
+  getSpawnState:      (chapterNumber: string) => SpawnProgress | null
+  onSpawn:            (chapter: HubChapter, raw: HubVersion) => void
+  onAbort:            (chapter: HubChapter) => void
+  /** Re-kick a server-side `error` translation. Distinct from
    *  `onSpawn` — there's no raw to re-upload, the server already has
-   *  the chapter bytes and we just POST `/translate/{id}/redo`. */
+   *  the chapter bytes and we POST `/translate/{id}/redo`. */
   onRetryTranslation: (translationId: number) => void
-  onOpenVersion:   (chapter: HubChapter, v: HubVersion) => void
+  onOpenVersion:      (chapter: HubChapter, v: HubVersion) => void
 }
 
 
-/** Sort axis for the chapter list — always by chapter number;
- *  only the direction toggles. */
 type SortBy = 'newest' | 'oldest'
 
 
-type Row = {
-  chapter:       HubChapter
-  /** The version whose identity (creator, date, kind chip) the row
-   *  surfaces. For a done/in-flight/failed target translation this is
-   *  the translation; for a raw read this is the raw. */
-  version:       HubVersion
-  /** When the primary version is a non-done translation (running /
-   *  pending / error / blocked) we still want the user to be able to
-   *  open SOMETHING. If a raw on the same chapter is readable, this
-   *  carries it so the row click falls through to read-raw while the
-   *  state chip shows progress/retry/blocked. */
-  rawFallback:   HubVersion | null
-  readyInTarget: boolean
-  score:         number
-}
-
-
 export function WorkChapterList({
-  chapters, targetLang, loading,
-  spawnState, spawningKey,
-  onSpawn, onRetryTranslation, onOpenVersion,
+  workId, chapters, targetLang, loading,
+  getSpawnState, onSpawn, onAbort, onRetryTranslation, onOpenVersion,
 }: WorkChapterListProps) {
   const tgt = normalizeBcp(targetLang)
+  const installedMap = useSources((s) => s.sources)
+  const installedSourceIds = useMemo(
+    () => new Set(Object.keys(installedMap)),
+    [installedMap],
+  )
 
-  // Counts per BCP-47 lang for the filter chip rail.
+  // Derive one ChapterRowModel per chapter. Pure fold — re-runs only
+  // when chapter data or target lang changes.
+  const allRows = useMemo<ChapterRowModel[]>(
+    () => deriveChapterRows(chapters, tgt, { installedSourceIds }),
+    [chapters, tgt, installedSourceIds],
+  )
+
+  // Counts per BCP-47 lang for the filter dropdown.
   const langCounts = useMemo(() => {
     const m = new Map<string, number>()
     for (const c of chapters) {
@@ -97,38 +98,46 @@ export function WorkChapterList({
     })
   }, [chapters, tgt])
 
-  // Active lang filter — single-select. `null` = "Tất cả" (every
-  // lang). The initial pick is "let me see something useful": if
-  // the work has done translations in the viewer's target_lang we
-  // default to that filter (read experience); otherwise we default
-  // to "Tất cả" so the user actually sees the raws and can spawn a
-  // translation. A work that's all-raw with target_lang preselected
-  // = empty list = confusing.
-  const [activeLang, setActiveLang] = useState<string | null>(null)
-  const [userPickedLang, setUserPickedLang] = useState(false)
-  // Reconcile the default once the chapters payload lands. We don't
-  // override an explicit user pick — `setUserPickedLang` flips on the
-  // first manual change, and from there `activeLang` is the user's.
-  useEffect(() => {
-    if (userPickedLang) return
-    if (chapters.length === 0) return
-    if (!tgt) return
-    const hasTargetDone = chapters.some((c) =>
-      c.versions.some(
-        (v) => v.kind === 'translation' && v.lang === tgt && v.state === 'done',
-      ),
-    )
-    setActiveLang(hasTargetDone ? tgt : null)
-  }, [chapters, tgt, userPickedLang])
-  const [q,      setQ]      = useState('')
-  const [sortBy, setSortBy] = useState<SortBy>('newest')
+  // Persisted per-work UI state. `null` from the store = user hasn't
+  // pinned anything yet → fall back to the default policy below.
+  // Edits go through the store actions so a remount (reader → back)
+  // reads the same pick the user just made.
+  const persisted = useWorkListUi(workId)
+  const { setActiveLang: storeSetActiveLang, setSortBy: storeSetSortBy }
+    = useChapterListUiActions()
 
-  // Defer the search term so each keystroke doesn't block the row
-  // re-filter on huge chapter lists.
+  // Default-lang policy: filter target_lang IF the work has anything
+  // reachable there (translation done OR native scanlation), else
+  // "Tất cả". Computed only when the user has no pinned pick — once
+  // they pick, store wins.
+  const defaultLang = useMemo<string | null>(() => {
+    if (!tgt) return null
+    if (chapters.length === 0) return null
+    const hasTargetReachable = allRows.some(
+      (r) => r.status.kind === 'read-translation'
+          || r.status.kind === 'read-raw-target',
+    )
+    return hasTargetReachable ? tgt : null
+  }, [tgt, chapters.length, allRows])
+
+  const activeLang: string | null = persisted
+    ? persisted.activeLang
+    : defaultLang
+  const sortBy: SortBy = persisted?.sortBy ?? 'newest'
+
+  const setActiveLang = useCallback(
+    (lang: string | null) => storeSetActiveLang(workId, lang),
+    [workId, storeSetActiveLang],
+  )
+  const setSortBy = useCallback(
+    (next: SortBy) => storeSetSortBy(workId, next),
+    [workId, storeSetSortBy],
+  )
+
+  const [q, setQ] = useState('')
   const deferredQ = useDeferredValue(q)
 
-  // Pre-compute search haystack per chapter once. Avoids rebuilding
-  // the lowercase string on every keystroke.
+  // Pre-compute search haystack per chapter.
   const haystacks = useMemo(() => {
     const m = new Map<HubChapter, string>()
     for (const c of chapters) {
@@ -137,59 +146,41 @@ export function WorkChapterList({
     return m
   }, [chapters])
 
-  // Build rows: one row per chapter when the filter is target/all
-  // (the chapter's translation state, if any, owns the row); the
-  // legacy multi-row-per-chapter shape only kicks in when the user
-  // filters by a non-target lang — there they're explicitly browsing
-  // raws and want to see each scanlator option.
-  //
-  // No "in progress" bucket: a translation that's running / pending
-  // / error / blocked stays at its natural chapter position and the
-  // row chip describes the state. Raw fallback is attached so the
-  // user can read the upstream chapter while waiting (or after an
-  // error) without losing the retry affordance.
-  const mainRows = useMemo(() => {
+  // Filter + sort the chapter rows. Per-lang filter semantics:
+  //   • null    : every chapter.
+  //   • tgt     : chapters where the row reads in target lang (done
+  //               translation OR native scanlation).
+  //   • other   : chapters with at least one raw at that lang.
+  const rows = useMemo(() => {
     const term = deferredQ.trim().toLowerCase()
-    const targetMode = activeLang === null || activeLang === tgt
-    const rows: Row[] = []
-    for (const c of chapters) {
-      if (term && !haystacks.get(c)!.includes(term)) continue
-      const readyInTarget = preferredReadable(c, targetLang) !== null
+    const out: ChapterRowModel[] = []
+    for (const r of allRows) {
+      if (term && !haystacks.get(r.chapter)!.includes(term)) continue
 
-      if (targetMode) {
-        const row = pickTargetRow(c, tgt, readyInTarget)
-        if (row) rows.push(row)
+      if (activeLang === null) {
+        out.push(r)
         continue
       }
-
-      // Non-target filter — user is browsing raws in a specific lang.
-      // Surface every raw of that lang as its own row so they can
-      // pick scanlator/source.
-      for (const v of c.versions) {
-        if (v.lang !== activeLang) continue
-        if (v.kind !== 'raw') continue
-        rows.push({
-          chapter: c, version: v, rawFallback: null, readyInTarget,
-          score: versionScore(v, tgt),
-        })
+      if (activeLang === tgt) {
+        if (r.status.kind === 'read-translation'
+         || r.status.kind === 'read-raw-target') {
+          out.push(r)
+        }
+        continue
+      }
+      // Non-target filter: chapter has at least one raw at that lang.
+      if (r.chapter.versions.some(
+        (v) => v.kind === 'raw' && v.lang === activeLang,
+      )) {
+        out.push(r)
       }
     }
     const dir = sortBy === 'newest' ? 1 : -1
-    rows.sort((a, b) => {
-      if (a.chapter.sortKey !== b.chapter.sortKey) {
-        return (b.chapter.sortKey - a.chapter.sortKey) * dir
-      }
-      return a.score - b.score
-    })
-    return rows
-  }, [chapters, haystacks, deferredQ, activeLang, targetLang, tgt, sortBy])
+    out.sort((a, b) => (b.chapter.sortKey - a.chapter.sortKey) * dir)
+    return out
+  }, [allRows, haystacks, deferredQ, activeLang, tgt, sortBy])
 
-  // System-health banner: surface when ANY chapter in this work has
-  // a translation in `blocked` state. Inferred from rows (no extra
-  // endpoint) — if the workers paused a stage, every in-flight draft
-  // on that stage flips to `blocked` and the worker stamps the same
-  // reason on each, so we can derive both "is there a problem" and
-  // "what is it" from the existing payload.
+  // System-health banner: any chapter with a `blocked` translation.
   const blockedSummary = useMemo(() => {
     let count  = 0
     let reason: string | null = null
@@ -213,9 +204,9 @@ export function WorkChapterList({
         setSortBy={setSortBy}
         langCounts={langCounts}
         activeLang={activeLang}
-        setActiveLang={(v) => { setUserPickedLang(true); setActiveLang(v) }}
+        setActiveLang={setActiveLang}
         tgt={tgt}
-        count={mainRows.length}
+        count={rows.length}
       />
 
       {blockedSummary && (
@@ -229,7 +220,7 @@ export function WorkChapterList({
         <div className="py-16 flex justify-center">
           <Spinner size={20} />
         </div>
-      ) : mainRows.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyView
           totalChapters={chapters.length}
           q={deferredQ}
@@ -237,16 +228,110 @@ export function WorkChapterList({
         />
       ) : (
         <VirtualList
-          rows={mainRows}
-          tgt={tgt}
-          spawnState={spawnState}
-          spawningKey={spawningKey}
+          rows={rows}
+          getSpawnState={getSpawnState}
           onSpawn={onSpawn}
+          onAbort={onAbort}
           onRetryTranslation={onRetryTranslation}
           onOpenVersion={onOpenVersion}
         />
       )}
     </section>
+  )
+}
+
+
+// ── Virtual list ───────────────────────────────────────────────
+
+
+function VirtualList({
+  rows, getSpawnState, onSpawn, onAbort, onRetryTranslation, onOpenVersion,
+}: {
+  rows:               ChapterRowModel[]
+  getSpawnState:      (chapterNumber: string) => SpawnProgress | null
+  onSpawn:            (c: HubChapter, v: HubVersion) => void
+  onAbort:            (c: HubChapter) => void
+  onRetryTranslation: (translationId: number) => void
+  onOpenVersion:      (c: HubChapter, v: HubVersion) => void
+}) {
+  // AppLayout uses `<main className="flex-1 overflow-auto">` as the
+  // page scroll container — NOT the window. Find it via ancestor
+  // walk so the virtualizer can observe the right element.
+  const parentRef = useRef<HTMLDivElement>(null)
+  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)
+  const [scrollMargin, setScrollMargin] = useState(0)
+
+  useEffect(() => {
+    let el: HTMLElement | null = parentRef.current
+    while (el && el !== document.body) {
+      const overflowY = getComputedStyle(el).overflowY
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        setScrollEl(el)
+        break
+      }
+      el = el.parentElement
+    }
+    if (!el || el === document.body) {
+      setScrollEl((document.scrollingElement as HTMLElement) ?? null)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!scrollEl || !parentRef.current) return
+    const measure = () => {
+      if (!parentRef.current || !scrollEl) return
+      const listTop   = parentRef.current.getBoundingClientRect().top
+      const scrollTop = scrollEl.getBoundingClientRect().top
+      setScrollMargin(listTop - scrollTop + (scrollEl.scrollTop ?? 0))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(scrollEl)
+    if (parentRef.current.parentElement) {
+      ro.observe(parentRef.current.parentElement)
+    }
+    return () => ro.disconnect()
+  }, [scrollEl])
+
+  const virt = useVirtualizer({
+    count:            rows.length,
+    getScrollElement: () => scrollEl,
+    estimateSize:     () => 56,
+    overscan:         8,
+    getItemKey:       (i) => rows[i]!.chapter.number,
+    scrollMargin,
+  })
+
+  return (
+    <div
+      ref={parentRef}
+      className="relative w-full"
+      style={{ height: virt.getTotalSize() || undefined }}
+    >
+      {virt.getVirtualItems().map((vi) => {
+        const row = rows[vi.index]!
+        return (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            ref={virt.measureElement}
+            className="absolute left-0 right-0 border-b border-border-soft/60"
+            style={{
+              transform: `translateY(${vi.start - virt.options.scrollMargin}px)`,
+            }}
+          >
+            <ChapterRow
+              row={row}
+              spawn={getSpawnState(row.chapter.number)}
+              onRead={(v) => onOpenVersion(row.chapter, v)}
+              onSpawn={(raw) => onSpawn(row.chapter, raw)}
+              onAbort={() => onAbort(row.chapter)}
+              onRetryServer={onRetryTranslation}
+            />
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -278,8 +363,6 @@ function Toolbar({
         'flex items-center gap-2 flex-wrap sm:flex-nowrap',
       )}
     >
-      {/* Search — primary affordance, takes the leftmost slot. Capped
-          on desktop so it doesn't sprawl. */}
       <div className="relative flex-1 min-w-0 sm:max-w-xs order-1">
         <Search
           size={14}
@@ -297,7 +380,6 @@ function Toolbar({
         />
       </div>
 
-      {/* Lang picker — single-select dropdown. `null` = all langs. */}
       <LangPicker
         value={activeLang}
         onChange={setActiveLang}
@@ -306,8 +388,6 @@ function Toolbar({
         totalAll={totalAll}
       />
 
-      {/* Meta cluster — count + sort, pushed to the far right on
-          desktop, wraps to second line on very narrow phones. */}
       <div className="ml-auto inline-flex items-center gap-2 text-xs text-text-subtle order-3">
         <span className="tabular shrink-0">{count} chương</span>
         <span className="text-border-soft">·</span>
@@ -318,9 +398,6 @@ function Toolbar({
 }
 
 
-/** Single-select language dropdown. `null` = every lang. Target lang
- *  is pinned to the top of the menu and rendered with accent so the
- *  user can spot their default in one glance. */
 function LangPicker({
   value, onChange, options, tgt, totalAll,
 }: {
@@ -368,8 +445,6 @@ function LangPicker({
           'h-8 px-2.5 rounded-sm text-xs cursor-pointer transition-colors',
           'inline-flex items-center gap-1.5',
           'border border-border-soft bg-surface-2 hover:bg-hover',
-          // Active state shows via text color only — no accent
-          // background, no thicker border.
           isTarget          ? 'text-accent'
           : value !== null  ? 'text-text'
           :                   'text-text-muted hover:text-text',
@@ -434,8 +509,6 @@ function LangOption({
       className={cn(
         'w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left',
         'transition-colors cursor-pointer hover:bg-hover',
-        // Active state shows via text color only (matches the old
-        // chip rail behavior — no background highlight).
         accent ? 'text-accent'
           : active ? 'text-text font-medium'
           : 'text-text-muted hover:text-text',
@@ -462,370 +535,6 @@ function LangOption({
 }
 
 
-// ── Virtual list ───────────────────────────────────────────────
-
-
-function VirtualList({
-  rows, tgt, spawnState, spawningKey, onSpawn, onRetryTranslation, onOpenVersion,
-}: {
-  rows:              Row[]
-  tgt:               string
-  spawnState:        SpawnProgress | null
-  spawningKey:       string | null
-  onSpawn:           (c: HubChapter, v: HubVersion) => void
-  onRetryTranslation:(translationId: number) => void
-  onOpenVersion:     (c: HubChapter, v: HubVersion) => void
-}) {
-  // AppLayout uses `<main className="flex-1 overflow-auto">` as the
-  // page scroll container — NOT the window. Find it on mount via
-  // ancestor walk so the virtualizer can observe the right element.
-  const parentRef = useRef<HTMLDivElement>(null)
-  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null)
-  // Offset of the list relative to the scroll container's top. The
-  // hero, source rail, description, toolbar, and (optionally) the
-  // in-progress section all live ABOVE the list, so without this
-  // virtualizer-tracked offset the first visible row would draw at
-  // y=0 of the scroll container — i.e. behind the hero — and the
-  // user would scroll into a big empty band before items show up.
-  const [scrollMargin, setScrollMargin] = useState(0)
-
-  useEffect(() => {
-    let el: HTMLElement | null = parentRef.current
-    while (el && el !== document.body) {
-      const overflowY = getComputedStyle(el).overflowY
-      if (overflowY === 'auto' || overflowY === 'scroll') {
-        setScrollEl(el)
-        break
-      }
-      el = el.parentElement
-    }
-    if (!el || el === document.body) {
-      // Fall back to the document scrolling element (bare-chrome
-      // routes where window itself scrolls).
-      setScrollEl((document.scrollingElement as HTMLElement) ?? null)
-    }
-  }, [])
-
-  // Measure how far down the scroll container the list sits. Tracked
-  // via ResizeObserver because the hero (cover, description toggle)
-  // changes height after image load and on user interaction.
-  useEffect(() => {
-    if (!scrollEl || !parentRef.current) return
-    const measure = () => {
-      if (!parentRef.current || !scrollEl) return
-      const listTop   = parentRef.current.getBoundingClientRect().top
-      const scrollTop = scrollEl.getBoundingClientRect().top
-      setScrollMargin(
-        listTop - scrollTop + (scrollEl.scrollTop ?? 0),
-      )
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(scrollEl)
-    if (parentRef.current.parentElement) {
-      ro.observe(parentRef.current.parentElement)
-    }
-    return () => ro.disconnect()
-  }, [scrollEl])
-
-  // Track viewport size for estimateSize. Mobile rows are taller
-  // (2-line layout, ~56px). Desktop rows are single-line (~44px).
-  const [isWide, setIsWide] = useState(() => (
-    typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches
-  ))
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const mq = window.matchMedia('(min-width: 640px)')
-    const onChange = () => setIsWide(mq.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
-
-  const virt = useVirtualizer({
-    count:            rows.length,
-    getScrollElement: () => scrollEl,
-    estimateSize:     () => (isWide ? 44 : 56),
-    overscan:         8,
-    getItemKey:       (i) => rows[i]!.version.key,
-    scrollMargin,
-  })
-
-  return (
-    <div
-      ref={parentRef}
-      className="relative w-full"
-      style={{ height: virt.getTotalSize() || undefined }}
-    >
-      {virt.getVirtualItems().map((vi) => {
-        const row = rows[vi.index]!
-        const { chapter, version, readyInTarget, rawFallback } = row
-        const isSpawning = spawningKey === version.key
-        const action = resolveAction(
-          version, tgt, readyInTarget, isSpawning, spawnState, rawFallback,
-        )
-        return (
-          <div
-            key={vi.key}
-            data-index={vi.index}
-            ref={virt.measureElement}
-            className="absolute left-0 right-0 border-b border-border-soft/60"
-            style={{
-              // `vi.start` is in scroll-container coordinates; the
-              // list itself starts at `scrollMargin` from that
-              // origin, so subtract to get local Y.
-              transform: `translateY(${vi.start - virt.options.scrollMargin}px)`,
-            }}
-          >
-            <VersionLine
-              chapterNumber={chapter.number}
-              version={version}
-              action={action}
-              progressLabel={
-                isSpawning ? spawnLabel(spawnState) : undefined
-              }
-              errorMessage={
-                // Prefer the live spawn-pipeline error (only meaningful
-                // for the row currently being spawned by THIS client);
-                // otherwise fall back to whatever the worker stamped on
-                // the draft. Worker-stamped messages survive page
-                // refresh and apply to every viewer, so they're the
-                // authoritative source for `state ∈ {error,blocked}`.
-                isSpawning && spawnState?.phase === 'error'
-                  ? spawnState.error
-                  : version.errorMessage
-              }
-              onClick={() => {
-                if (action.kind === 'disabled') return
-                // In-flight / failed / blocked translation rows: row
-                // click opens the raw fallback if any (so the user can
-                // read while waiting / after error). Retry / progress
-                // / blocked indicators live on the chip.
-                if (action.kind === 'spawn-pending'
-                    || action.kind === 'spawn-progress'
-                    || action.kind === 'spawn-blocked'
-                    || action.kind === 'spawn-error') {
-                  if (rawFallback) onOpenVersion(chapter, rawFallback)
-                  return
-                }
-                if (action.kind === 'spawn-translate') {
-                  onSpawn(chapter, version)
-                } else if (action.kind === 'read-translation'
-                        || action.kind === 'read-raw'
-                        || action.kind === 'read-raw-with-spawn') {
-                  onOpenVersion(chapter, version)
-                }
-              }}
-              onSpawn={
-                action.kind === 'read-raw-with-spawn'
-                  && action.spawnState !== 'progress'
-                  ? () => onSpawn(chapter, version)
-                  : undefined
-              }
-              onRetry={
-                action.kind === 'spawn-error'
-                  && version.kind === 'translation'
-                  && version.translationId != null
-                  ? () => onRetryTranslation(version.translationId!)
-                  : undefined
-              }
-            />
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-
-// ── Action resolution ───────────────────────────────────────────
-
-
-/** Decide what clicking a row does given the (primary) version +
- *  chapter context. When the primary is an in-flight / failed
- *  translation, `rawFallback` is the raw the row falls back to so the
- *  user can read while waiting; the state chip stays the actionable
- *  affordance for retry / progress / blocked. */
-function resolveAction(
-  v:             HubVersion,
-  targetLang:    string,
-  readyInTarget: boolean,
-  isSpawning:    boolean,
-  progress:      SpawnProgress | null,
-  rawFallback:   HubVersion | null,
-): VersionAction {
-  if (v.kind === 'translation') {
-    const fb = rawFallback !== null
-    if (v.state === 'pending') return { kind: 'spawn-pending',  rawFallback: fb }
-    if (v.state === 'running') return { kind: 'spawn-progress', rawFallback: fb }
-    if (v.state === 'blocked') return { kind: 'spawn-blocked',  rawFallback: fb }
-    if (v.state === 'error')   return { kind: 'spawn-error',    rawFallback: fb }
-    return { kind: 'read-translation' }
-  }
-  // raw
-  if (!v.upstreamUrl || !v.sourceId) {
-    return { kind: 'disabled', reason: 'Plugin nguồn chưa cài.' }
-  }
-  if (v.lang === targetLang) return { kind: 'read-raw' }
-  if (!targetLang)           return { kind: 'read-raw' }
-  if (readyInTarget)         return { kind: 'read-raw' }
-  // Non-target raw with no target translation yet → row has BOTH a
-  // read-raw action (the row's click) AND a separate spawn affordance
-  // (the chip). The chip's onClick stops propagation so the user can
-  // pick "read upstream language verbatim" vs "translate" without
-  // ambiguity. See `onChipClick` plumbing in `VersionLine`.
-  if (isSpawning) {
-    return progress?.phase === 'error'
-      ? { kind: 'read-raw-with-spawn', spawnState: 'error' }
-      : { kind: 'read-raw-with-spawn', spawnState: 'progress' }
-  }
-  return { kind: 'read-raw-with-spawn', spawnState: 'idle' }
-}
-
-
-/** Pick the best translation among candidates for a given target lang.
- *  Priority: done > running > pending > error > blocked. Ties broken
- *  by `date` desc so the most recent attempt wins.
- *
- *  Why this order: the user-visible answer to "is this chapter ready
- *  in <lang>?" is the strongest yes (done), then "soon" (in-flight),
- *  then "needs me" (error), then "needs admin" (blocked). Putting
- *  blocked last keeps a single stuck row from masking a viable retry. */
-function pickBestTranslation(
-  versions: HubVersion[],
-  lang:     string,
-): HubVersion | null {
-  const stateRank = (v: HubVersion): number => {
-    if (v.state === 'done')    return 0
-    if (v.state === 'running') return 1
-    if (v.state === 'pending') return 2
-    if (v.state === 'error')   return 3
-    if (v.state === 'blocked') return 4
-    return 5
-  }
-  let best: HubVersion | null = null
-  for (const v of versions) {
-    if (v.kind !== 'translation' || v.lang !== lang) continue
-    if (!best) { best = v; continue }
-    const a = stateRank(v)
-    const b = stateRank(best)
-    if (a < b) { best = v; continue }
-    if (a > b) continue
-    // Same state → newer wins.
-    if ((v.date ?? '') > (best.date ?? '')) best = v
-  }
-  return best
-}
-
-
-/** Pick the best raw to read on a chapter — prefers target lang, then
- *  any installed-source raw with an upstream URL. Returns null when
- *  nothing is readable (raw missing / source uninstalled). */
-function pickBestRaw(
-  versions: HubVersion[],
-  tgt:      string,
-): HubVersion | null {
-  let best: HubVersion | null = null
-  let bestScore = Infinity
-  for (const v of versions) {
-    if (v.kind !== 'raw') continue
-    if (!v.upstreamUrl || !v.sourceId) continue
-    const s = versionScore(v, tgt)
-    if (s < bestScore) { best = v; bestScore = s }
-  }
-  return best
-}
-
-
-/** Build a single row for a chapter in target/all filter mode.
- *
- *  Policy: one row per chapter. The row's PRIMARY version owns the
- *  identity (creator, date, kind chip). When a target translation
- *  exists in any state, it's the primary — including running / error
- *  / blocked, so the user sees "their" translation row at the natural
- *  chapter position with a state chip. A raw fallback is attached so
- *  the row click can still open something readable while the worker
- *  finishes (or after an error).
- *
- *  Returns null only when the chapter has nothing at all to surface
- *  (no target translation, no installed-source raw, and no
- *  spawn-eligible raw to translate from). */
-function pickTargetRow(
-  c:             HubChapter,
-  tgt:           string,
-  readyInTarget: boolean,
-): Row | null {
-  // 1. Best target-lang translation (any state).
-  const trans = tgt ? pickBestTranslation(c.versions, tgt) : null
-  if (trans) {
-    const fallback = trans.state === 'done' ? null : pickBestRaw(c.versions, tgt)
-    return {
-      chapter: c, version: trans, rawFallback: fallback, readyInTarget,
-      score:   versionScore(trans, tgt),
-    }
-  }
-
-  // 2. No translation — fall back to raw. Prefer target-lang raw so
-  //    "VI raw" beats "EN raw" on the row.
-  if (tgt) {
-    const targetRaw = c.versions.find(
-      (v) => v.kind === 'raw' && v.lang === tgt
-          && v.upstreamUrl && v.sourceId,
-    ) ?? null
-    if (targetRaw) {
-      return {
-        chapter: c, version: targetRaw, rawFallback: null, readyInTarget,
-        score:   versionScore(targetRaw, tgt),
-      }
-    }
-  }
-
-  // 3. Other-lang raw — surfaced so the user has a "Dịch" affordance.
-  const otherRaw = pickBestRaw(c.versions, tgt)
-  if (otherRaw) {
-    return {
-      chapter: c, version: otherRaw, rawFallback: null, readyInTarget,
-      score:   versionScore(otherRaw, tgt),
-    }
-  }
-  return null
-}
-
-
-function spawnLabel(p: SpawnProgress | null): string {
-  if (!p) return 'Đang dịch…'
-  switch (p.phase) {
-    case 'fetching':    return 'Lấy trang…'
-    case 'downloading': return `${p.current}/${p.total}`
-    case 'packing':     return 'Đóng gói…'
-    case 'uploading':   return `Tải lên ${p.pct}%`
-    case 'spawning':    return 'Khởi tạo…'
-    default:            return 'Đang dịch…'
-  }
-}
-
-
-/** Smaller score → row sorts earlier within the same chapter.
- *  Target-lang reads first; spawn-eligible raws last. */
-function versionScore(v: HubVersion, targetLang: string): number {
-  const isTarget = v.lang === targetLang
-  if (v.kind === 'translation') {
-    if (v.state === 'done')                            return isTarget ? 0 : 10
-    if (v.state === 'pending' || v.state === 'running') return isTarget ? 1 : 11
-    return isTarget ? 2 : 12  // error
-  }
-  return isTarget ? 1 : 20
-}
-
-
-function normalizeBcp(code: string | null): string {
-  if (!code) return ''
-  return code.toLowerCase().split(/[-_]/)[0]!
-}
-
-
-/** Single toggle button that flips chapter sort direction. Label
- *  reflects the CURRENT order so the user reads "what they see"
- *  rather than "what will happen on click". */
 function SortToggle({
   sortBy, setSortBy,
 }: {
@@ -850,12 +559,6 @@ function SortToggle({
 }
 
 
-/** System-health banner shown above the chapter list when at least
- *  one translation is in `blocked` state. Tells the reader they
- *  haven't done anything wrong — the pipeline is paused for admin
- *  attention — so they don't spam-click "Dịch" trying to recover.
- *  Inferred from the chapters payload; no separate health endpoint.
- */
 function HealthBanner({
   count, reason,
 }: {
@@ -892,10 +595,6 @@ function HealthBanner({
 }
 
 
-/** Map the worker's raw error into the same short phrase
- *  `VersionLine` uses, so the banner reads consistently with the
- *  row chips below it. Kept here (not in VersionLine) so the banner
- *  works without the row context. */
 function humanizeBlockedReason(raw: string): string {
   const low = raw.toLowerCase()
   if (low.includes('model_not_found') || low.includes('model not found')) {
@@ -916,9 +615,6 @@ function humanizeBlockedReason(raw: string): string {
   }
   return 'Quản trị viên đã được thông báo, các chương sẽ tiếp tục khi xử lý xong.'
 }
-
-
-// ── Empty view ─────────────────────────────────────────────────
 
 
 function EmptyView({
@@ -952,24 +648,39 @@ function EmptyView({
 }
 
 
-// useChapterSpawn — wrapper around `useSpawnChapter` that exposes
-// "which version is currently spawning" so only that row reflects
-// progress. Key is HubVersion.key for the raw being translated.
-export function useChapterSpawn(targetLang: string | null) {
+function normalizeBcp(code: string | null): string {
+  if (!code) return ''
+  return code.toLowerCase().split(/[-_]/)[0]!
+}
+
+
+// useChapterSpawn — adapter over `useSpawnChapters` shaped for the
+// work-route call site. Progress is keyed by chapter number (not
+// version key), so the same slot tracks the spawn across the row's
+// raw → translation transition. Each row reads its own progress via
+// `getSpawnState(chapter.number)`; the full per-key map is also
+// exposed so reactive watchers (e.g. the reader's "spawn done →
+// toast" hook) can subscribe to phase transitions without polling.
+//
+// `workId` (optional) narrows the cache invalidation that fires when
+// a spawn finishes, so a successful translate doesn't refetch every
+// open work tab. Reader and work routes both know their work id and
+// thread it through; older call sites can omit it and pay the broad-
+// invalidate cost as before.
+export function useChapterSpawn(targetLang: string | null, workId?: number) {
   const lang = targetLang ?? ''
-  const { progress, spawn, reset } = useSpawnChapter(lang)
-  const [spawningKey, setSpawningKey] = useState<string | null>(null)
+  const ctl  = useSpawnChapters(lang)
 
   return {
-    progress,
-    spawningKey,
-    spawn: (version: HubVersion, label: string | null) => {
-      setSpawningKey(version.key)
-      spawn(version, label)
+    progressByKey: ctl.progressByKey,
+    /** Read progress for a chapter (keyed by chapter.number). */
+    getSpawnState: (chapterNumber: string) => ctl.getProgress(chapterNumber),
+    /** Kick the pipeline for `chapter`, uploading from `raw`. */
+    spawn: (chapter: HubChapter, raw: HubVersion) => {
+      ctl.spawn(chapter.number, raw, chapter.label, workId)
     },
-    reset: () => {
-      reset()
-      setSpawningKey(null)
-    },
+    abort:    (chapter: HubChapter) => ctl.abort(chapter.number),
+    reset:    (chapter: HubChapter) => ctl.reset(chapter.number),
+    resetAll: ctl.resetAll,
   }
 }

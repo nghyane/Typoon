@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from typoon.vision.types import TextMask
+from typoon.vision.contracts import TextMask
 
 
 class BubbleMasks:

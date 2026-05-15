@@ -1,22 +1,24 @@
 // useReader — composed hook driving the unified reader.
 //
-// Inputs from the URL: `workId` + `numberNorm` (+ optional `lang`).
+// Inputs from the URL: `workId` + `numberNorm`.
 // The hook:
 //
 //   1. fetches the Work payload (shared cache with detail page),
-//   2. picks the right HubVersion for the requested chapter based on
-//      user's lang preference: translation done > raw target-lang
-//      > any raw,
+//   2. picks the right HubVersion for the requested chapter:
+//      saved source pref → default fallback (translation done in
+//      target lang → raw target → any raw),
 //   3. dispatches to the right source query (translation archive /
 //      manifest pages),
 //   4. resolves prev/next neighbour chapters with the SAME preference
-//      so navigation feels stable,
+//      so navigation auto-follows the user's chosen source,
 //   5. records reading history,
 //   6. drives Discord presence + portrait lock.
 //
 // The Work payload auto-merges chapters across every installed
-// source, so the reader never needs a per-source URL param — lang
-// preference is all it takes to pick a version.
+// source, so the reader never needs a per-source URL param — the
+// per-work `SourcePreference` (set the moment the user taps Đọc
+// in the picker) is the only thing that decides which version
+// renders, and it sticks across chapter switches.
 //
 // Returns a `ReaderSource` shape the `<Reader>` shell consumes
 // without caring which kind of pixels backed it.
@@ -36,8 +38,10 @@ import { useWorkData } from '@features/work/useWorkData'
 import { pickPrimaryMaterial } from '@features/work/title'
 import { useChapterArchive } from './useChapterArchive'
 import { useTranslation, useChapterPages } from './queries'
+import { resolvePicked, pickByPref, resolveNav } from './resolvers'
+import { useReaderSettings, sourcePrefFor } from './store'
 import type {
-  ReaderSource, ReaderPage, ReaderNavTarget,
+  ReaderSource, ReaderPage,
 } from './types'
 
 
@@ -51,13 +55,20 @@ export interface UseReaderResult extends ReaderSource {
   /** What the shell should render at the top level. `not-found` =
    *  chapter doesn't exist in this work; `pending-render` = picked a
    *  translation that hasn't finished rendering; `no-source` = raw
-   *  picked but its source plugin isn't installed locally. */
+   *  picked but its source plugin isn't installed locally; `empty` =
+   *  the chapter exists in the spine but has no readable nor
+   *  spawnable version (a filler / cover the user can choose to
+   *  skip — different from `not-found` which means the slug is bogus). */
   status:        'loading' | 'ready' | 'not-found' | 'pending-render'
-                | 'no-source' | 'error'
+                | 'no-source' | 'empty' | 'error'
   /** Which HubVersion the reader ultimately picked. Exposed so the
    *  toolbar can show the right language chip / Đọc raw / Đọc bản
    *  dịch label. */
   picked:        HubVersion | null
+  /** True when the user has a source pref set for this work AND the
+   *  current chapter has no version matching that pref. Drives the
+   *  in-reader banner "Chương này không có bản dịch từ EN…". */
+  prefMismatch:  boolean
   /** The whole HubChapter so the toolbar / chapter-list panel can
    *  reach sibling versions (other translations, raw on a different
    *  source). */
@@ -70,29 +81,33 @@ export function useReader(input: UseReaderInput): UseReaderResult {
 
   const installed = useSources((s) => s.sources)
   const work = useWorkData(workId)
-  // `targetLang` from useWorkData already runs through the full
-  // resolver chain (entry override → user default → fallback), so
-  // the reader inherits the same answer the hub badge shows. No URL
-  // `?lang=` — shared links respect the recipient's own preference.
   const targetLang = work.targetLang
 
-  // Locate the current HubChapter + pick the version the user
-  // actually wants to read. Pure derivation — no extra queries.
-  const { chapter, picked } = useMemo(() => {
+  // Source preference — sticky per-work choice the user made via
+  // the in-reader source picker (e.g. "AI VI từ EN"). Every Đọc
+  // tap writes here, so navigating to the next chapter
+  // automatically re-uses the same (kind, lang, sourceLang) tuple.
+  const pref = useReaderSettings((s) => sourcePrefFor(s, workId))
+
+  // Locate the current HubChapter + resolve the picked version via
+  // pref → default fallback. When the chapter has no version
+  // matching the saved pref we silently fall back to `pickReadable`
+  // and surface `prefMismatch` so the route can render a banner.
+  const { chapter, picked, prefMismatch } = useMemo(() => {
     const ch = work.chapters.find((c) => c.number === numberNorm) ?? null
-    return {
-      chapter: ch,
-      picked:  ch ? pickReadable(ch, targetLang) : null,
-    }
-  }, [work.chapters, numberNorm, targetLang])
+    if (!ch) return { chapter: null, picked: null, prefMismatch: false }
+    const p = resolvePicked(ch, targetLang, pref)
+    const miss = pref !== null && pickByPref(ch, pref) === null
+    return { chapter: ch, picked: p, prefMismatch: miss }
+  }, [work.chapters, numberNorm, targetLang, pref])
 
   // Prev/next neighbours, resolved with the same preference. The
   // toolbar links to `/r/$workId/$numberNorm` so the URL is the
   // source of truth across chapter switches.
   const nav = useMemo(() => {
     if (!chapter) return { prev: null, next: null }
-    return resolveNav(work.chapters, chapter, workId, targetLang)
-  }, [work.chapters, chapter, workId, targetLang])
+    return resolveNav(work.chapters, chapter, workId)
+  }, [work.chapters, chapter, workId])
 
   // Dispatch to the right source query based on the picked version's
   // kind. Both queries `enable: false` until a version of the right
@@ -206,7 +221,12 @@ export function useReader(input: UseReaderInput): UseReaderResult {
     : !chapter
       ? 'not-found'
     : !picked
-      ? 'not-found'
+      // Chapter exists in the spine but every version is unreadable
+      // (raws without an installed source plugin or upstream URL,
+      // translations not yet done). Surface as `empty` so the reader
+      // can render a "filler / skip to next" affordance instead of
+      // the 404 page that `not-found` triggers.
+      ? 'empty'
     : isTranslation
       ? (translationQ.isPending
           ? 'loading'
@@ -242,77 +262,7 @@ export function useReader(input: UseReaderInput): UseReaderResult {
     error:   archive.error ?? (rawPagesQ.error as Error | null)?.message ?? null,
     status,
     picked,
+    prefMismatch,
     chapter,
-  }
-}
-
-
-// ── Pure resolvers ────────────────────────────────────────────
-
-
-/** Pick the best HubVersion for the requested lang. Priority:
- *    1. translation `done` in target lang
- *    2. raw whose lang matches target (read source verbatim)
- *    3. any spawnable raw
- *    4. anything (last resort).
- *
- *  Returns null only for empty chapters. */
-function pickReadable(
-  ch:         HubChapter,
-  targetLang: string | null,
-): HubVersion | null {
-  const lang = targetLang?.toLowerCase().split(/[-_]/)[0] ?? null
-
-  if (lang) {
-    const tx = ch.versions.find(
-      (v) => v.kind === 'translation'
-          && v.lang === lang
-          && v.state === 'done',
-    )
-    if (tx) return tx
-  }
-
-  if (lang) {
-    const rawTgt = ch.versions.find(
-      (v) => v.kind === 'raw' && v.lang === lang && !!v.upstreamUrl,
-    )
-    if (rawTgt) return rawTgt
-  }
-
-  const rawAny = ch.versions.find(
-    (v) => v.kind === 'raw' && !!v.upstreamUrl,
-  )
-  if (rawAny) return rawAny
-
-  return ch.versions[0] ?? null
-}
-
-
-/** Find the next / previous chapter that has at least one readable
- *  version under the same lang preference. The chapter spine is
- *  sorted latest-first (descending sortKey) — idx-1 is newer
- *  ("next" semantically) and idx+1 is older ("previous"). */
-function resolveNav(
-  chapters:   HubChapter[],
-  current:    HubChapter,
-  workId:     number,
-  targetLang: string | null,
-): { prev: ReaderNavTarget | null; next: ReaderNavTarget | null } {
-  const idx = chapters.findIndex((c) => c.number === current.number)
-  if (idx < 0) return { prev: null, next: null }
-
-  const find = (start: number, step: -1 | 1): ReaderNavTarget | null => {
-    for (let i = start; i >= 0 && i < chapters.length; i += step) {
-      const c = chapters[i]!
-      if (pickReadable(c, targetLang)) {
-        return { workId, numberNorm: c.number }
-      }
-    }
-    return null
-  }
-
-  return {
-    next: find(idx - 1, -1),
-    prev: find(idx + 1, +1),
   }
 }

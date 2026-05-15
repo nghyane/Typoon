@@ -23,7 +23,7 @@ from typoon.api.deps import (
 from typoon.api.models import TranslationOut
 from typoon.api.quota import enforce_chapter_quota, record_consume
 from typoon.api.routes._shared import (
-    require_chapter, require_material, require_translation_owner,
+    require_translation_owner,
     resolve_archive_url,
 )
 from typoon.config import AuthConfig, Config
@@ -133,7 +133,10 @@ async def spawn_translation(
     )
 
     if draft is not None:
-        # Cache hit. No quota; no pipeline enqueue.
+        # Lookup hit. The state of the existing draft decides whether
+        # we serve as cache, piggy-back on an in-flight run, or auto-
+        # restart a prior failure. Either way the user pays no quota
+        # for an existing key — that was charged at first spawn.
         translation_id = await db.get_or_create_translation(
             work_chapter_id=chapter["work_chapter_id"],
             owner_id=user["id"],
@@ -141,11 +144,32 @@ async def spawn_translation(
             draft_id=draft["id"],
             shared=not bool(material.get("nsfw")),
         )
+        state = draft.get("state") or "pending"
+        if state == "error":
+            # Auto-redo on spawn. The previous owner left a broken
+            # draft on this exact cache key; the new spawner expects
+            # a working pipeline, not an inherited error. Restarting
+            # is the only way to honor that without forcing them to
+            # discover the error and click redo themselves.
+            stage, kind, tid = await _resolve_entry_task(
+                db, chapter, int(draft["id"]),
+            )
+            # Race: if the draft was taken down between find and
+            # restart, the bool comes back False — we fall through
+            # to the cache-miss path below by re-running the lookup.
+            # Practically negligible; ignore.
+            await db.restart_draft_pipeline(
+                int(draft["id"]),
+                entry_stage=stage,
+                entry_target_kind=kind,
+                entry_target_id=tid,
+            )
+            state = "pending"
         return SpawnResult(
             translation_id=translation_id,
             draft_id=draft["id"],
-            state=draft.get("state") or "done",
-            cache_hit=True,
+            state=state,
+            cache_hit=(state == "done"),
             chapter_id=chapter["id"],
         )
 
@@ -179,20 +203,8 @@ async def spawn_translation(
 
     # Enqueue the entry stage. Worker fans out to subsequent stages
     # via advance_task with target_kind shifts.
-    if chapter.get("prepared_hash") is None:
-        await db.enqueue_task(
-            target_kind="chapter", target_id=chapter["id"],
-            stage="prepare",
-        )
-    elif not await db.has_bubbles(chapter["id"]):
-        await db.enqueue_task(
-            target_kind="chapter", target_id=chapter["id"],
-            stage="scan",
-        )
-    else:
-        await db.enqueue_task(
-            target_kind="draft", target_id=draft_id, stage="translate",
-        )
+    stage, kind, tid = await _resolve_entry_task(db, chapter, draft_id)
+    await db.enqueue_task(target_kind=kind, target_id=tid, stage=stage)
 
     return SpawnResult(
         translation_id=translation_id,
@@ -397,38 +409,112 @@ async def delete_edit(
         raise HTTPException(404, "Edit not found")
 
 
+async def _resolve_entry_task(
+    db:        Store,
+    chapter:   dict,
+    draft_id:  int,
+) -> tuple[str, str, int]:
+    """Derive (stage, target_kind, target_id) for the entry task of
+    a draft's pipeline.
+
+    The entry point depends on how far the chapter's *shared* state
+    has progressed:
+
+      - no prepared pixels   → start at chapter prepare
+      - prepared but no OCR  → start at chapter scan
+      - both done            → start at draft translate
+
+    Shared by spawn (cache miss path) and redo so the two never
+    disagree on where to enter.
+    """
+    if chapter.get("prepared_hash") is None:
+        return ("prepare", "chapter", int(chapter["id"]))
+    if not await db.has_bubbles(int(chapter["id"])):
+        return ("scan", "chapter", int(chapter["id"]))
+    return ("translate", "draft", int(draft_id))
+
+
 @router.post("/{translation_id}/redo", response_model=SpawnResult)
 async def redo_translation(
     translation_id: int,
-    user: dict        = Depends(require_user),
-    db:   Store       = Depends(get_store),
-    cfg:  Config      = Depends(get_config),
-    auth: AuthConfig  = Depends(get_auth_cfg),
+    user: dict   = Depends(require_user),
+    db:   Store  = Depends(get_store),
 ):
-    """Re-run pipeline for an owned translation.
+    """Re-run the pipeline for an owned translation.
 
-    Schema 19 made the draft cache pool global, so "redo" no longer
-    has a clean way to side-step the cache — the unique key is
-    (chapter, src, tgt, glossary_fp). If your glossary changed,
-    redo will naturally miss; otherwise the existing community
-    draft is the canonical output and a redo is a no-op cache hit.
+    The draft's current state decides what redo means:
 
-    For a true rebuild path (e.g. retry after error), use
-    `/api/admin/redo` which can take down the existing draft first.
+      - `done`              → nothing to do; the output is canonical.
+                              Returns cache_hit=True, no work queued.
+      - `error`             → reset draft + entry task atomically and
+                              re-enqueue. The user already paid quota
+                              for this (chapter, src, tgt, glossary)
+                              key when they spawned, so retry is free.
+      - `pending`/`running` → already in flight; nothing to do.
+                              Returns the live state so the SPA keeps
+                              polling rather than thrashing the queue.
+      - `blocked`           → policy hold; redo is not the right tool.
+                              Returns 409 so the UI surfaces the
+                              moderation state instead of pretending
+                              to retry.
+
+    For admin force-restart of a `done` or `blocked` draft (e.g. a
+    model upgrade invalidates an output, or moderation review
+    cleared a hold), see `POST /api/admin/ops/drafts/{draft_id}/restart`
+    which works regardless of state and writes an audit row.
     """
     t = await require_translation_owner(translation_id, user, db)
-    # Reuse the original draft's chapter as the spawn target so the
-    # "redo" reads from the same pixel scope; the cache key still
-    # collapses to the same draft when the glossary hasn't changed.
     draft = await db.get_draft(t["draft_id"])
     if draft is None:
         raise HTTPException(500, "Translation draft missing")
-    spawn_body = SpawnBody(
-        chapter_id=int(draft["chapter_id"]),
-        target_lang=t["target_lang"],
+
+    state = draft.get("state") or "pending"
+    chapter_id = int(draft["chapter_id"])
+
+    if state == "done":
+        return SpawnResult(
+            translation_id=translation_id,
+            draft_id=int(draft["id"]),
+            state="done",
+            cache_hit=True,
+            chapter_id=chapter_id,
+        )
+    if state in ("pending", "running"):
+        return SpawnResult(
+            translation_id=translation_id,
+            draft_id=int(draft["id"]),
+            state=state,
+            cache_hit=True,
+            chapter_id=chapter_id,
+        )
+    if state == "blocked":
+        raise HTTPException(
+            409, "Draft is moderation-blocked; redo is not allowed",
+        )
+
+    # state == 'error' (or any future terminal-failure state).
+    chapter = await db.get_chapter(chapter_id)
+    if chapter is None:
+        raise HTTPException(500, "Draft references missing chapter")
+    stage, kind, tid = await _resolve_entry_task(
+        db, chapter, int(draft["id"]),
     )
-    return await spawn_translation(
-        spawn_body, user=user, db=db, cfg=cfg, auth=auth,
+    ok = await db.restart_draft_pipeline(
+        int(draft["id"]),
+        entry_stage=stage,
+        entry_target_kind=kind,
+        entry_target_id=tid,
+    )
+    if not ok:
+        # Draft vanished between get_draft and the FOR UPDATE — treat
+        # as 404 so the SPA refetches and renders the empty state.
+        raise HTTPException(404, "Translation draft missing")
+    return SpawnResult(
+        translation_id=translation_id,
+        draft_id=int(draft["id"]),
+        state="pending",
+        cache_hit=False,
+        chapter_id=chapter_id,
     )
 
 
@@ -443,8 +529,6 @@ async def delete_translation(
     """Delete the per-user wrapper. Underlying draft + cache survive
     (other users may still reference it). Per-translation archive (if
     any) is removed before DB row is gone."""
-    from typoon.adapters.chapter_archive import render_key
-
     t = await require_translation_owner(translation_id, user, db)
     if t.get("archive_backend") and t.get("archive_locator"):
         try:

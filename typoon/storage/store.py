@@ -620,6 +620,38 @@ class Store(Protocol):
         error:    str | None = None,
     ) -> None: ...
 
+    async def restart_draft_pipeline(
+        self,
+        draft_id: int,
+        *,
+        entry_stage:       PipelineStage,
+        entry_target_kind: TaskTargetKind,
+        entry_target_id:   int,
+        audit_actor_id:    int | None = None,
+        audit_reason:      str | None = None,
+        audit_source:      str | None = None,
+        audit_idem_key:    str | None = None,
+    ) -> bool:
+        """Atomic reset of a draft + its entry task in one txn.
+
+        Resets `translation_drafts.state` to 'pending' (clears
+        error/progress) and upserts the entry task row so a worker
+        will re-claim it. Use for redo / retry; the two writes must
+        not be split because either ordering leaks an inconsistent
+        state to readers.
+
+        When `audit_reason` is provided, also writes a `draft.restart`
+        row to `admin_actions` in the same transaction (admin path).
+        Idempotent on `audit_idem_key` when present.
+
+        Returns True on a successful reset, False when the draft
+        row vanished (treat as 404).
+
+        Caller derives entry_stage from the chapter's prepared/scan
+        state — this primitive does not re-derive.
+        """
+        ...
+
     async def set_draft_progress(
         self, draft_id: int, *, stage: str, index: int, total: int,
     ) -> None: ...
@@ -668,10 +700,13 @@ class Store(Protocol):
         draft_id:        int,
         shared:          bool = True,
     ) -> int:
-        """Insert or fetch. UNIQUE (work_chapter_id, owner_id, target_lang)
-        ensures one row per (Work-chapter, owner, lang) tuple — so
-        spawning from material A then again from material B of the
-        same Work returns the same translation row.
+        """Insert or fetch. UNIQUE (work_chapter_id, owner_id, draft_id)
+        ensures one row per (Work-chapter, owner, draft) tuple — re-spawning
+        the same draft (cache hit on identical source_lang + glossary)
+        returns the same translation row, while spawning from a
+        DIFFERENT draft (e.g. AI VI từ EN MangaDex vs AI VI từ KR
+        Lezhin) creates an additional translation row so both source
+        choices coexist on the chapter.
 
         `draft_id` is required: every translation must point at the
         pixel-bound draft whose render it serves.

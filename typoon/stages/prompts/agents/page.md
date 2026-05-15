@@ -33,7 +33,7 @@ RẦM
 Hard rules — violations cause the block to be discarded:
 
 1. Header pattern: exactly `@@`, one space, the KEY copied verbatim, one space, the kind. Nothing else on that line.
-2. `kind` is lowercase, one of: `dialogue` | `sfx`. No other values, no capitalization variants.
+2. `kind` is lowercase, one of: `dialogue` | `sfx` | `skip`. No other values, no capitalization variants.
 3. Body is the {target_lang_name} translation. May span multiple lines. Trailing whitespace is trimmed.
 4. Use `@@` for output. NEVER `>>>`. NEVER echo `page=N` or `active` in your output.
 5. No code fences, no JSON, no XML, no preamble, no closing remarks. Just the blocks.
@@ -45,12 +45,33 @@ Hard rules — violations cause the block to be discarded:
 
 **sfx** — pure sound effect / onomatopoeia / impact / ambient (THUD, CRASH, SHHH, *crack*, ハァハァ). Translate or adapt to a punchy {target_lang_name} equivalent. Glossary and address rules do NOT apply to sfx.
 
+**skip** — non-diegetic chrome that leaked through the upstream filter. Use this when the ENTIRE bubble is chrome (see "Embedded chrome" below). Body is ignored; emit `@@ KEY skip` with no text. Never use `skip` for dialogue you simply don't want to translate.
+
 If a bubble mixes real text with OCR garbage (`ic WHERE`, `SLUMP TI`):
 - Recover the real content, translate that fragment as `dialogue`.
 - Do not invent missing words.
 - If only an onomatopoeia survives, use `sfx`.
 
-Non-diegetic UI (watermarks, page counters, platform chrome) is filtered upstream — you will not see it here.
+## Embedded chrome
+
+Most non-diegetic chrome (watermarks, page counters, platform UI) is filtered upstream — but some still slips through, especially when the OCR glued chrome onto the real dialogue text. Handle these inline.
+
+Chrome categories to recognize:
+
+- Watermarks / site brands: `菠萝包轻小说`, `BOOK.SFACG.COM`, `快看漫画`, `BRS MANHUA`, `HEAVENLY DEMON SCANS`, `DRAGON COMICS AGE`, `Baozi Manga`.
+- URLs / domains in any script: `www.baozimh.com`, `discord.gg/...`, `*.cloud`, `*.my.id`.
+- Production credits: `Cleaning: <name>`, `Typesetting: <name>`, `出品: <name> 作者: <name>`, `편집 지원 <name>`, `Art by ... Adaptation by ... Original Story by ...`.
+- Volume / chapter markers when they are the entire bubble: `CAPITULO 00`, `第N卷`, `Vol. N`, `Chapter N`, `Episode N` standalone.
+- Follow-us CTAs: `SIGA LA PAGINA DE FACEBOOK`, `JOIN US ON DISCORD`, `POTRZEBUJEMY OPINII`, `PATREON.COM/...`, `KO-FI`.
+- Translator notes prefix: `T/N:`, `TN:`, `[TL Note]`.
+
+Handling:
+
+- ENTIRE bubble is chrome → emit `@@ KEY skip` with empty body.
+- Chrome glued onto real dialogue (typically prefix or suffix) → translate ONLY the dialogue portion. Drop the chrome. Example: `"TOTAL, NADIE ME VE. 【菠萝包轻小说 BOOK.SFACG.COM"` → translate only `"TOTAL, NADIE ME VE."`.
+- Mixed-script accidents that look chromatic but are dialogue (e.g. character name in Latin inside a CJK bubble): keep them. Use judgment.
+
+Conservative rule: if you cannot confidently identify the bubble as chrome, translate it normally. False `skip` costs more than translating chrome.
 
 ## Script note
 
@@ -70,6 +91,8 @@ Input:
 おい、待てよ！
 >>> J6PWQRH page=3 active
 ドキドキ
+>>> 4K9XMPP page=3 active
+菠萝包轻小说 BOOK.SFACG.COM
 >>> X2YK4NP page=3
 （context-only background sign）
 ```
@@ -80,9 +103,10 @@ Output:
 Này, đợi đã!
 @@ J6PWQRH sfx
 THỊCH THỊCH
+@@ 4K9XMPP skip
 ```
 
-`X2YK4NP` is context-only — absent from output. `62BJED6` and `J6PWQRH` both present, in input order.
+`4K9XMPP` is a pure watermark bubble that slipped past the upstream filter — emit `skip` with no body. `X2YK4NP` is context-only — absent from output. `62BJED6` and `J6PWQRH` are real content.
 
 ---
 

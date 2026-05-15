@@ -52,9 +52,9 @@ from typoon.adapters.inbox import (
 from typoon.api.deps import (
     get_auth_cfg, get_config, get_inbox, get_store, require_user,
 )
-from typoon.api.models import ChapterOut, ChapterTranslationOverlay
-from typoon.api.quota import enforce_chapter_quota, record_consume
-from typoon.api.routes._shared import require_material, require_material_admin
+from typoon.api.models import ChapterOut
+from typoon.api.quota import enforce_chapter_quota
+from typoon.api.routes._shared import require_material
 from typoon.config import AuthConfig, Config
 from typoon.storage import Store
 

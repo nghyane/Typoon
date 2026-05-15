@@ -5,7 +5,7 @@ import {
 import { Cover } from '@shared/ui/Cover'
 import { Tag, type TagTone } from '@shared/ui/primitives'
 import { type LibraryStatus } from '@shared/api/api'
-import { useLibrary, type LibraryEntry } from '../store'
+import { type LibraryEntry } from '../store'
 import type { LibraryItem } from '../unified'
 
 // =============================================================================
@@ -178,7 +178,3 @@ export function LibraryRailCard({ entry }: RailProps) {
     </Link>
   )
 }
-
-// Keep useLibrary referenced so this module's store import survives
-// dead-code elimination during the M5 hub rebuild.
-useLibrary

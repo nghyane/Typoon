@@ -1,19 +1,14 @@
 """Render stage — TranslatedChapter + masks → RenderedChapter on disk.
 
-Receives pre-loaded geometry and an in-memory MaskStore. Source pixels
-come from a PreparedReader. Render output is written as JPEG q=92
-files into `out_dir`; the orchestrator (render_archive) packs them
-into a Bunle archive and uploads it.
-
-Render encoder matches the prepared encoder (cv2 JPEG q=92 with
-optimize). bunle stores JPEG byte-identical (format id 1 in the .bnl
-spec), so no transcode happens at pack time. JPEG q=92 measures
-slightly higher PSNR than the WebP q=92 it replaced (39.6 vs 38.4 dB)
-and encodes ~12× faster (29 ms vs 350 ms on a 10k×720 strip).
+Async, page-parallel. Erase + render run in asyncio.to_thread (GIL-free
+backends), gated by runtime.erase_gate. JPEG q=92 encoding matches the
+prepare encoder so bunle stores byte-identical.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 
 import cv2
@@ -21,14 +16,19 @@ import numpy as np
 
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.prepared_reader import PreparedReader
-from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.vision.runtime import VisionRuntime
 from typoon.domain import render, translate
 from typoon.domain.scan import PageGeometry
 from typoon.runs.artifacts import ArtifactSink
 from typoon.runs.events import Hook, PageDone
 
 
-def render_chapter(
+__all__ = ["render_chapter"]
+
+logger = logging.getLogger(__name__)
+
+
+async def render_chapter(
     translated: translate.Chapter,
     out_dir: Path,
     reader: PreparedReader,
@@ -37,104 +37,144 @@ def render_chapter(
     masks: MaskStore,
     *,
     chapter_id:  int = 0,
-    target_kind: str = "draft",   # 'draft' | 'translation'
+    target_kind: str = "draft",
     target_id:   int = 0,
     hook: Hook | None = None,
     artifacts: ArtifactSink | None = None,
     skip_pages: frozenset[int] = frozenset(),
 ) -> render.Chapter:
-    """Erase source text, render translations, write JPEG pages into out_dir.
+    """Erase source text, render translations, write JPEG pages.
 
-    page_geoms: pre-loaded from load_translated_with_geometry.
-    masks:      in-memory mask store (typically loaded from masks.npz).
-    skip_pages: page indices that are entirely non-diegetic — drop from
-                the output archive so they never reach the reader.
-                Output JPEGs are renumbered contiguously from 0 to
-                preserve a gapless reading experience.
+    Pages render concurrently up to runtime.runtime.erase_gate. Output
+    indices renumber contiguously to skip dropped pages.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    import typoon_render
+    # Determine output index per source page (skip-aware).
+    keep_pages = [tp for tp in translated.pages if tp.index not in skip_pages]
+    out_indices = {tp.index: i for i, tp in enumerate(keep_pages)}
 
-    rendered_pages = []
-    out_index = 0
+    rendered: list[render.Page | None] = [None] * len(translated.pages)
+    total = len(translated.pages)
 
-    for tp in translated.pages:
+    async def render_one(slot: int, tp: translate.Page) -> None:
         if tp.index in skip_pages:
             if artifacts is not None:
-                # Record the drop so visual verification can confirm
-                # which pages were excluded by the brief.
-                artifacts.write_image(
-                    "07_render", f"{tp.index:04d}_dropped.png", reader.read_rgb(tp.index)
+                image = await asyncio.to_thread(reader.read_rgb, tp.index)
+                await asyncio.to_thread(
+                    artifacts.write_image, "07_render",
+                    f"{tp.index:04d}_dropped.png", image,
                 )
             if hook is not None:
                 hook.on(_page_done(
-                    chapter_id=chapter_id,
-                    target_kind=target_kind, target_id=target_id,
-                    page_index=tp.index, page_total=len(translated.pages),
+                    chapter_id=chapter_id, target_kind=target_kind,
+                    target_id=target_id, page_index=tp.index, page_total=total,
                 ))
-            continue
+            return
 
-        original   = reader.read_rgb(tp.index)
-        canvas     = _to_rgba(original)
-        page_masks = masks.page_masks(tp.index)
-
-        erase_masks = [
-            m
-            for tb in tp.bubbles
-            for bm in [page_masks.get(tb.idx)]
-            if bm is not None
-            for m in bm.erase_masks
-        ]
-        if erase_masks and runtime.eraser is not None:
-            runtime.eraser.erase(canvas, erase_masks)
-
-        clean = canvas[:, :, :3]
-
-        pg_geom     = page_geoms.get(tp.index)
-        geom_by_idx = {bg.bubble_idx: bg for bg in pg_geom.bubbles} if pg_geom else {}
-
-        active_triples = [
-            (tb, geom_by_idx[tb.idx].polygon, tb.translated_text)
-            for tb in tp.bubbles
-            if tb.kind != "skip"
-            and tb.translated_text.strip()
-            and tb.idx in geom_by_idx
-        ]
-        active   = [t[0] for t in active_triples]
-        polygons = [t[1] for t in active_triples]
-        texts    = [t[2] for t in active_triples]
-
-        result = typoon_render.typoon_render.render(
-            original, clean, polygons, texts, original.shape[1]
+        page_out = await _render_one_page(
+            tp, reader, runtime, page_geoms, masks,
+            out_dir / f"{out_indices[tp.index]:04d}.jpg",
+            artifacts,
         )
-
-        active_info = {tb.idx: rb for tb, rb in zip(active, result.bubbles)}
-        rendered_bubbles = tuple(
-            render.Bubble(
-                source=tb,
-                font_size=active_info[tb.idx].font_size_px if tb.idx in active_info else 0,
-                overflow=active_info[tb.idx].overflow if tb.idx in active_info else False,
-            )
-            for tb in tp.bubbles
-        )
-
-        _write_jpeg(out_dir / f"{out_index:04d}.jpg", result.image)
-        out_index += 1
+        rendered[slot] = page_out
 
         if hook is not None:
             hook.on(_page_done(
-                chapter_id=chapter_id,
-                target_kind=target_kind, target_id=target_id,
-                page_index=tp.index, page_total=len(translated.pages),
+                chapter_id=chapter_id, target_kind=target_kind,
+                target_id=target_id, page_index=tp.index, page_total=total,
             ))
 
-        if artifacts is not None:
-            artifacts.write_image("07_render", f"{tp.index:04d}_rendered.png", result.image)
+    async with asyncio.TaskGroup() as tg:
+        for slot, tp in enumerate(translated.pages):
+            tg.create_task(render_one(slot, tp))
 
-        rendered_pages.append(render.Page(source=tp, bubbles=rendered_bubbles))
+    return render.Chapter(
+        source=translated,
+        pages=tuple(p for p in rendered if p is not None),
+    )
 
-    return render.Chapter(source=translated, pages=tuple(rendered_pages))
+
+async def _render_one_page(
+    tp: translate.Page,
+    reader: PreparedReader,
+    runtime: VisionRuntime,
+    page_geoms: dict[int, PageGeometry],
+    masks: MaskStore,
+    out_path: Path,
+    artifacts: ArtifactSink | None,
+) -> render.Page:
+    import typoon_render
+
+    original = await asyncio.to_thread(reader.read_rgb, tp.index)
+    canvas = _to_rgba(original)
+    page_masks = masks.page_masks(tp.index)
+
+    # Single predicate drives BOTH erase and re-render: LLM marks
+    # logo/credit/page-number/watermark bubbles as `kind="skip"`; their
+    # pixels must stay untouched and no Vietnamese text is laid over
+    # them. Keeping one predicate in one place prevents the two paths
+    # from drifting (which caused the earlier "logo erased but no text"
+    # regression).
+    renderable_bubbles = [tb for tb in tp.bubbles if _is_renderable(tb)]
+
+    erase_masks = tuple(
+        m
+        for tb in renderable_bubbles
+        for bm in [page_masks.get(tb.idx)]
+        if bm is not None
+        for m in bm.erase_masks
+    )
+    if erase_masks:
+        async with runtime.erase_gate:
+            await runtime.eraser.erase(canvas, erase_masks)
+
+    clean = canvas[:, :, :3]
+    pg_geom = page_geoms.get(tp.index)
+    geom_by_idx = {bg.bubble_idx: bg for bg in pg_geom.bubbles} if pg_geom else {}
+
+    active_triples = [
+        (tb, geom_by_idx[tb.idx], tb.translated_text)
+        for tb in renderable_bubbles
+        if tb.translated_text.strip()
+        and tb.idx in geom_by_idx
+    ]
+    active   = [t[0] for t in active_triples]
+    polygons = [t[1].polygon for t in active_triples]
+    texts    = [t[2] for t in active_triples]
+    hints    = [_geom_to_hint(t[1]) for t in active_triples]
+
+    # `geom_by_idx[idx].rotation_deg` is surfaced by detectors (Lens
+    # paragraph angle) but the current typoon_render binding does not
+    # accept per-bubble rotation. Once the Rust crate exposes a
+    # `rotations` arg, pass:
+    #   rotations = [t[1].rotation_deg for t in active_triples]
+    result = await asyncio.to_thread(
+        typoon_render.typoon_render.render,
+        original, clean, polygons, texts, original.shape[1], hints,
+    )
+
+    active_info = {tb.idx: rb for tb, rb in zip(active, result.bubbles)}
+    rendered_bubbles = tuple(
+        render.Bubble(
+            source=tb,
+            font_size=active_info[tb.idx].font_size_px if tb.idx in active_info else 0,
+            overflow=active_info[tb.idx].overflow if tb.idx in active_info else False,
+        )
+        for tb in tp.bubbles
+    )
+
+    await asyncio.to_thread(_write_jpeg, out_path, result.image)
+    if artifacts is not None:
+        await asyncio.to_thread(
+            artifacts.write_image, "07_render",
+            f"{tp.index:04d}_rendered.png", result.image,
+        )
+
+    return render.Page(source=tp, bubbles=rendered_bubbles)
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────
 
 
 def _page_done(
@@ -145,7 +185,6 @@ def _page_done(
     page_index:  int,
     page_total:  int,
 ) -> PageDone:
-    """Build PageDone with the right id field set for the target."""
     if target_kind == "draft":
         return PageDone(
             chapter_id=chapter_id, draft_id=target_id, stage="render",
@@ -160,6 +199,45 @@ def _page_done(
 def _to_rgba(image: np.ndarray) -> np.ndarray:
     h, w = image.shape[:2]
     return np.dstack([image, np.full((h, w), 255, dtype=np.uint8)])
+
+
+def _is_renderable(tb: translate.Bubble) -> bool:
+    """True if a bubble should be erased + re-rendered.
+
+    The render path has two consumer sites (erase mask gather +
+    active_triples build) that must agree on which bubbles to touch.
+    Centralising the predicate prevents the "erase but don't render"
+    regression where logos got wiped to grey but had no Vietnamese
+    text replacing them.
+
+    Currently the only skip signal is `kind == "skip"`, set by:
+      - `noise.is_auto_skip` upstream (URL / handle / page-counter /
+        platform brand patterns)
+      - `page._parse_blocks` defense-in-depth when the LLM emits a
+        block for a deterministically-noisy bubble
+      - LLM itself emitting `@@ KEY skip` (story-level decision)
+
+    Add new skip categories by extending this predicate, not by adding
+    parallel filters at the call sites.
+    """
+    return tb.kind != "skip"
+
+
+def _geom_to_hint(geom):
+    """Convert BubbleGeometry → typoon_render.TypesettingHint (or None).
+
+    Returns None when the detector did not surface line geometry
+    (`src_font_size_px == 0`), letting render's fit fall back to pure
+    binary search.
+    """
+    if geom.src_font_size_px <= 0 or geom.src_line_count <= 0:
+        return None
+    import typoon_render
+    return typoon_render.typoon_render.TypesettingHint(
+        font_size_px=geom.src_font_size_px,
+        line_count=geom.src_line_count,
+        avg_chars_per_line=geom.src_avg_chars_per_line,
+    )
 
 
 def _write_jpeg(path: Path, rgb: np.ndarray) -> None:

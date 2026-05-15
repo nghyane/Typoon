@@ -5,10 +5,16 @@ Single source of truth per data type:
   PreparedChapter   — metadata view derived from the reader's index
   scan.Chapter      — DB geometry + DB bubble text + reader-derived prepared
   translate.Chapter — same as scan, plus DB translations
+
+NFC normalisation is enforced here for `translated_text` so render
+never sees decomposed Vietnamese (NFD), which the embedded font cannot
+render properly. Some LLM responses and stored edits arrive in NFD;
+catching them at the load boundary keeps the render path simple.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from typoon.adapters.blob_store import BlobStore
@@ -97,9 +103,11 @@ async def load_translated_with_geometry(
                 translate.Bubble(
                     source=sb,
                     translation_key=f"p{sb.page_index}_b{sb.idx}",
-                    translated_text=text_by_pos.get(
-                        (sb.page_index, sb.idx), {},
-                    ).get("translated_text", ""),
+                    translated_text=_normalize_for_render(
+                        text_by_pos.get(
+                            (sb.page_index, sb.idx), {},
+                        ).get("translated_text", "")
+                    ),
                     kind=text_by_pos.get(
                         (sb.page_index, sb.idx), {},
                     ).get("kind", "skip"),
@@ -110,6 +118,24 @@ async def load_translated_with_geometry(
         for sp in scanned.pages
     )
     return translate.Chapter(scan=scanned, pages=pages), page_geoms
+
+
+def _normalize_for_render(text: str) -> str:
+    """Force NFC so combining diacritics merge into precomposed glyphs.
+
+    LLM providers (and human translation edits) can emit Vietnamese in
+    decomposed form (NFD): `nghĩa` arrives as `n g h i \\u0303 a`. The
+    embedded render font has glyphs only for precomposed codepoints, so
+    combining marks render as blank advances → visible as phantom
+    spaces in the output. NFC normalisation is a no-op on text that's
+    already precomposed.
+
+    Applied at the loader boundary (not at translate-stage save) so
+    historical bubbles in the DB also get the fix on read.
+    """
+    if not text:
+        return text
+    return unicodedata.normalize("NFC", text)
 
 
 async def _load_page_geometry(db: Store, chapter_id: int) -> dict[int, PageGeometry]:

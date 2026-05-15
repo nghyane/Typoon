@@ -7,6 +7,8 @@ import {
 } from 'lucide-react'
 import { SidebarQuota } from './SidebarQuota'
 import { useSession } from '@features/auth/session'
+import { BRAND } from '../shared/brand'
+import { useState } from 'react'
 
 // =============================================================================
 // Sidebar — 4-tab shell, Hội-first.
@@ -49,15 +51,16 @@ const W_EXPANDED  = 240
 const NAV_PAD_X   = 8
 const NAV_LANE    = W_COLLAPSED - NAV_PAD_X * 2  // 44px — icon column
 
-// No brand props — the backend stopped carrying guild_name/icon when
-// Discord became identity-only (schema 19). The sidebar renders a
-// solid "T" monogram; if guild branding ever comes back it'll live
-// on auth config (cached once), not on the per-user payload.
+// Brand (name + logo) is sourced from `shared/brand` — a build-time
+// constant decoupled from the Discord guild. The collapsed tile shows
+// the logo (falling back to the monogram on load error); the expanded
+// row appends the full brand name. See `shared/brand.ts` for the why.
 
 export function Sidebar() {
   const { collapsed, toggle } = useSidebar()
   const { location } = useRouterState()
   const { user } = useSession()
+  const [logoFailed, setLogoFailed] = useState(false)
 
   const navFoot = user?.is_admin
     ? [NAV_FOOT_ADMIN, ...NAV_FOOT_BASE]
@@ -116,13 +119,27 @@ export function Sidebar() {
             title={collapsed ? 'Mở rộng' : undefined}
             className={cn(
               'group relative size-7 rounded-sm flex items-center justify-center overflow-hidden',
-              'bg-accent text-accent-fg text-sm font-bold',
+              'bg-accent text-accent-fg text-[10px] font-bold leading-none',
               collapsed ? 'cursor-pointer' : 'cursor-default',
             )}
           >
+            {/* Monogram sits underneath; the logo image covers it when
+             *  it loads. `onError` hides the image and exposes the
+             *  monogram automatically — no manual fallback wiring. */}
             <span className={cn('transition-opacity', collapsed && 'group-hover:opacity-0')}>
-              T
+              {BRAND.monogram}
             </span>
+            {BRAND.logoUrl && !logoFailed && (
+              <img
+                src={BRAND.logoUrl}
+                alt=""
+                onError={() => setLogoFailed(true)}
+                className={cn(
+                  'absolute inset-0 size-full object-cover transition-opacity',
+                  collapsed && 'group-hover:opacity-0',
+                )}
+              />
+            )}
             {collapsed && (
               <ChevronRight
                 size={12}
@@ -132,7 +149,12 @@ export function Sidebar() {
           </button>
         </div>
 
-        <div className="flex-1" />
+        <span
+          className="flex-1 min-w-0 truncate text-sm font-semibold text-text transition-opacity duration-150"
+          style={{ opacity: collapsed ? 0 : 1 }}
+        >
+          {BRAND.name}
+        </span>
 
         <button
           onClick={toggle}

@@ -31,6 +31,10 @@ web/node_modules/
 web/dist/
 web/preview/
 
+# Rust build artifacts
+target/
+crates/*/target/
+
 # Browser extension
 ext/node_modules/
 ext/.output/

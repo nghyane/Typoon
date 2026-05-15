@@ -26,6 +26,18 @@ class ProviderConfig(BaseModel):
     # In-flight cap shared across agents resolving to this provider.
     # 0 disables the gate.
     concurrency: int = 24
+    # gemini_web only: cookies for gemini.google.com. Either set explicitly,
+    # or use `cookie_browser` to auto-load from a logged-in local browser
+    # profile (requires `browser-cookie3`).
+    secure_1psid:   str | None = None
+    secure_1psidts: str | None = None
+    cookie_browser: str | None = None
+    # gemini_web only: path to a Chromium-family Cookies SQLite (e.g. a
+    # dedicated Edge profile created by another tool). When set together
+    # with `cookie_browser`, the adapter passes this file to the browser's
+    # decrypt routine so the right keychain entry is used. Useful when
+    # Gemini is signed in inside a profile other than the OS default.
+    cookie_file:    str | None = None
 
 
 class TranslationConfig(BaseModel):
@@ -138,6 +150,23 @@ class DatabaseConfig(BaseModel):
     statement_cache_size: int = 0
 
 
+class VisionConfig(BaseModel):
+    """Vision pipeline composition.
+
+    `preset` selects a named composition from `vision.pipeline.PRESETS`.
+    The remaining fields are optional per-stage overrides applied on top
+    of the chosen preset (validated by VisionPipelineSpec.__post_init__).
+    """
+    preset: str = "lens"
+    detector:           str | None = None
+    grouper:            str | None = None
+    recognizer:         str | None = None
+    eraser:             str | None = None
+    page_concurrency:   int | None = None
+    detect_concurrency: int | None = None
+    erase_concurrency:  int | None = None
+
+
 class Config(BaseSettings):
     model_config = {"extra": "ignore"}
 
@@ -146,10 +175,7 @@ class Config(BaseSettings):
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
     translation: TranslationConfig = TranslationConfig()
     vision_agent: VisionAgentConfig = VisionAgentConfig()
-    bubble_scope_imgsz: int = 640
-    # "auto" tries google-lens → apple-vision → windows-ocr → tesseract.
-    # Japanese always uses manga-ocr if installed.
-    ocr_backend: str = "auto"
+    vision: VisionConfig = VisionConfig()
     # Empty → google-lens default endpoint. Override e.g. to route
     # through a Discord Activity proxy.
     lens_endpoint: str = ""

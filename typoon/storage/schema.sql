@@ -562,12 +562,19 @@ CREATE INDEX IF NOT EXISTS idx_draft_briefs_search_tsv
     ON draft_briefs USING GIN (search_tsv);
 
 -- ── Translation — per-user wrapper (Layer 3) ────────────────────────
--- One row per (work_chapter, owner, target_lang). Cross-source: the
--- translation lives at Work scope, not material scope, so user B can
--- discover user A's translation when user A spawned from a different
--- material of the same Work. The actual pixels (and the draft that
--- generated the render) still live at the material/chapter level via
--- the `draft_id` FK.
+-- One row per (work_chapter, owner, draft). A user can hold multiple
+-- translations on the same Work-chapter at the same target_lang as
+-- long as each one points at a different draft — i.e. dịch từ EN
+-- MangaDex và dịch từ KR Lezhin sống song song. Mỗi `draft_id` đã
+-- mã hoá (chapter pixel, source_lang, glossary_fp), nên dùng draft_id
+-- làm phần đuôi của UNIQUE key vừa đủ để chặn double-spawn cùng nguồn
+-- vừa cho phép song song khác nguồn.
+--
+-- Cross-source: translation lives at Work scope, not material scope,
+-- so user B can discover user A's translation when user A spawned
+-- from a different material of the same Work. The actual pixels (and
+-- the draft that generated the render) still live at the
+-- material/chapter level via the `draft_id` FK.
 --
 -- `shared` defaults TRUE for non-NSFW materials (set by the spawn
 -- route based on material.nsfw); user can toggle later. Cross-source
@@ -594,7 +601,7 @@ CREATE TABLE IF NOT EXISTS translations (
 
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (work_chapter_id, owner_id, target_lang)
+    UNIQUE (work_chapter_id, owner_id, draft_id)
 );
 CREATE INDEX IF NOT EXISTS idx_translations_owner ON translations(owner_id);
 CREATE INDEX IF NOT EXISTS idx_translations_work_chapter

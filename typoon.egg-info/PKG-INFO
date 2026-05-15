@@ -6,3 +6,10 @@ Provides-Extra: onnx
 Requires-Dist: onnxruntime>=1.17; extra == "onnx"
 Provides-Extra: cuda
 Requires-Dist: onnxruntime-gpu>=1.17; extra == "cuda"
+Provides-Extra: ja
+Requires-Dist: transformers>=4.45; extra == "ja"
+Requires-Dist: fugashi; extra == "ja"
+Requires-Dist: unidic-lite; extra == "ja"
+Provides-Extra: gemini-web
+Requires-Dist: gemini-webapi>=1.13; extra == "gemini-web"
+Requires-Dist: browser-cookie3>=0.20; extra == "gemini-web"

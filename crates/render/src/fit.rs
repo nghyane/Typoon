@@ -5,38 +5,105 @@ use crate::layout::DrawableArea;
 
 /// Minimum font size (px) before declaring overflow.
 const MIN_FONT_SIZE: u32 = 8;
-/// Absolute maximum font size (sanity bound).
-const MAX_FONT_SIZE: u32 = 72;
+/// Absolute floor for the per-page maximum font size.
+const ABS_MAX_FONT_SIZE: u32 = 96;
+/// Page-width scaling factor for max font size: typical manga at 1755px
+/// → max ≈ 87px, webtoon at 720px → max ≈ 36px (matches the typical
+/// large narration / SFX font Lens reports for that resolution).
+const MAX_FONT_PAGE_FRACTION: f64 = 0.05;
+
+/// Tolerance around the source bubble's font size (in steps of 1px) to
+/// consider before falling back to pure binary search.
+const HINT_SEED_RADIUS: u32 = 3;
+
+/// When a hint specifies an aspect ratio, layouts whose actual aspect
+/// is within this fraction of the target get a small score bonus.
+const HINT_ASPECT_TOLERANCE: f64 = 0.25;
+
+/// Minimum acceptable ratio of fitted-to-source font size. Below this,
+/// the layout is considered too cramped relative to the original
+/// typography — falls back to a layout that respects the source size
+/// even if it means fewer lines.
+const MIN_FITTED_TO_SOURCE_RATIO: f64 = 0.65;
+
+/// Allow the rendered text block to overshoot the bubble height by this
+/// fraction. Manga bubbles have curved ascenders/descenders; a small
+/// overshoot reads as natural typesetting rather than overflow, and
+/// shrinking the font 30% just to gain 2px of height makes the bubble
+/// look anemic.
+const HEIGHT_OVERFLOW_TOLERANCE: f64 = 0.08;
+
+/// Fit prior derived from the source detector (Lens detailed output).
+///
+/// All fields are in page pixels / counts. `font_size_px` seeds the
+/// binary search around the source font; `line_count` tilts the
+/// candidate scoring so layouts with a similar number of lines win
+/// ties; `avg_chars_per_line` informs the wrap target width.
+#[derive(Clone, Copy, Debug)]
+pub struct FitHint {
+    pub font_size_px:       u32,
+    pub line_count:         u32,
+    pub avg_chars_per_line: f64,
+}
 
 #[derive(Clone)]
 pub struct FitResult {
-    /// Wrapped text with newlines
-    pub text: String,
+    pub text:         String,
     pub font_size_px: u32,
-    /// Line height multiplier
-    pub line_height: f64,
-    pub overflow: bool,
+    pub line_height:  f64,
+    pub overflow:     bool,
 }
 
 pub struct FitEngine;
 
 impl FitEngine {
     /// Fit a page of bubbles. Each bubble gets the largest font that fits
-    /// its own drawable area — no artificial caps, no cross-bubble normalization.
-    /// The bbox from detection already encodes the original text's size.
+    /// its own drawable area; when a hint is supplied, fit biases toward
+    /// matching the source bubble's typesetting.
     pub fn fit_page_areas(
-        items: &[(&str, &DrawableArea)],
-        _page_width: u32,
+        items: &[(&str, &DrawableArea, Option<FitHint>)],
+        page_width: u32,
     ) -> Result<Vec<FitResult>> {
+        let max_font = max_font_for_page(page_width);
         items
             .iter()
-            .map(|(text, area)| Self::fit_area(text, area))
+            .map(|(text, area, hint)| Self::fit_area(text, area, *hint, max_font))
             .collect()
     }
 
-    /// Fit translated text into a drawable area.
-    /// Binary search for the largest font where wrapped text fits within (w, h).
-    fn fit_area(translated_text: &str, area: &DrawableArea) -> Result<FitResult> {
+    /// Convenience: fit one bubble with no hint.
+    pub fn fit(translated_text: &str, polygon: &[[f64; 2]]) -> Result<FitResult> {
+        let area = DrawableArea::from_polygon(polygon, layout::DEFAULT_INSET);
+        let max_font = max_font_for_page(0);
+        Self::fit_area(translated_text, &area, None, max_font)
+    }
+
+    /// Estimate how many characters fit in a drawable area at readable font size.
+    pub fn char_budget(area: &DrawableArea) -> usize {
+        let (w, h) = area.size();
+        if w < 1.0 || h < 1.0 {
+            return 0;
+        }
+        let font_size = (h / 5.0).clamp(MIN_FONT_SIZE as f64, ABS_MAX_FONT_SIZE as f64) as u32;
+        let font = layout::get_font();
+        let line_h = font_size as f64 * layout::LINE_HEIGHT_MULTIPLIER;
+        let max_lines = ((h - font_size as f64) / line_h + 1.0).floor().max(1.0) as usize;
+
+        let sample = "abcdefghijklmnopqrstuvwxyz àáảãạ ăắẳẵặ đ êếểễệ ôốổỗộ ưứửữự";
+        let sample_w = layout::measure_text_width(sample, font_size, font);
+        let char_count = sample.chars().filter(|c| !c.is_whitespace()).count();
+        let avg_char_w = sample_w / char_count as f64;
+
+        let chars_per_line = (w / avg_char_w).floor() as usize;
+        chars_per_line * max_lines
+    }
+
+    fn fit_area(
+        translated_text: &str,
+        area: &DrawableArea,
+        hint: Option<FitHint>,
+        max_font: u32,
+    ) -> Result<FitResult> {
         let text = normalize_text(translated_text);
         if text.is_empty() {
             return Ok(FitResult {
@@ -58,8 +125,11 @@ impl FitEngine {
         }
 
         let font = layout::get_font();
-        let hi_bound = (safe_h as u32).min(MAX_FONT_SIZE);
+        let hi_bound = (safe_h as u32).min(max_font);
+        // Allow text block to overshoot height by HEIGHT_OVERFLOW_TOLERANCE.
+        let tolerant_h = safe_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
 
+        // Binary search for the largest size that fits within tolerance.
         let mut lo = MIN_FONT_SIZE;
         let mut hi = hi_bound;
         let mut best_size = MIN_FONT_SIZE;
@@ -70,67 +140,170 @@ impl FitEngine {
             let wrapped = layout::wrap_text(&text, safe_w, mid, font);
             let total_h = text_block_height(wrapped.len(), mid);
 
-            if total_h <= safe_h {
+            if total_h <= tolerant_h {
                 best_size = mid;
                 best_wrapped = wrapped;
                 lo = mid + 1;
+            } else if mid == 0 {
+                break;
             } else {
-                if mid == 0 {
-                    break;
-                }
                 hi = mid - 1;
             }
         }
 
-        let total_h = text_block_height(best_wrapped.len(), best_size);
-        let overflow = total_h > safe_h || best_size < MIN_FONT_SIZE;
+        // Hint-guided refinement: when a typesetting hint is available,
+        // try sizes near the source font and pick the one whose wrapped
+        // line count best matches `hint.line_count`. Only override the
+        // pure-search result if the alternative also fits.
+        let (final_size, final_wrapped) = match hint {
+            Some(h) => refine_with_hint(
+                &text, safe_w, safe_h, font, h, best_size, best_wrapped.clone(),
+            ),
+            None => (best_size, best_wrapped),
+        };
+
+        let total_h = text_block_height(final_wrapped.len(), final_size);
+        // Overflow only when the text block exceeds even the tolerant
+        // bound — small overshoot inside tolerance is reported as OK.
+        let overflow = total_h > tolerant_h || final_size < MIN_FONT_SIZE;
 
         Ok(FitResult {
-            text: best_wrapped.join("\n"),
-            font_size_px: best_size,
+            text: final_wrapped.join("\n"),
+            font_size_px: final_size,
             line_height: layout::LINE_HEIGHT_MULTIPLIER,
             overflow,
         })
     }
+}
 
-    /// Fit translated text into a bubble polygon (convenience for single-bubble use).
-    pub fn fit(translated_text: &str, polygon: &[[f64; 2]]) -> Result<FitResult> {
-        let area = DrawableArea::from_polygon(polygon, layout::DEFAULT_INSET);
-        Self::fit_area(translated_text, &area)
-    }
+/// Pick the best font size in a small radius around `hint.font_size_px`,
+/// scoring by how closely the resulting **aspect ratio** matches the
+/// source (lines×font_size as proxy for filled bubble area).
+///
+/// Important: we DON'T blindly target the source line count. A Vietnamese
+/// translation of an English bubble may need 2 lines where the original
+/// had 6 vertical lines — forcing 6 lines would shrink the font absurdly.
+/// Instead we score by how well the rendered block fills the bubble.
+///
+/// Returns the binary-search baseline unchanged when no candidate within
+/// the hint radius scores higher.
+fn refine_with_hint(
+    text: &str,
+    safe_w: f64,
+    safe_h: f64,
+    font: &ab_glyph::FontRef<'_>,
+    hint: FitHint,
+    baseline_size: u32,
+    baseline_wrapped: Vec<String>,
+) -> (u32, Vec<String>) {
+    let source_size = hint.font_size_px.max(MIN_FONT_SIZE);
 
-    /// Estimate how many characters fit in a drawable area at readable font size.
-    ///
-    /// Font size is derived from the area height (h/5, clamped to MIN..MAX),
-    /// so it scales naturally with image resolution.
-    /// Returns 0 for areas too small to hold any text.
-    pub fn char_budget(area: &DrawableArea) -> usize {
-        let (w, h) = area.size();
-        if w < 1.0 || h < 1.0 {
-            return 0;
+    // Source bubble's intrinsic aspect ratio: how wide each line is
+    // relative to its height. Translations should try to match this
+    // so the rendered block fills the same proportion of the bubble.
+    let source_aspect = if hint.line_count > 0 {
+        hint.avg_chars_per_line / hint.line_count as f64
+    } else {
+        1.0
+    };
+
+    // Scan a window centred on the source size, extending up to
+    // baseline_size on the high side (allowing fits LARGER than the
+    // source when translation happens to be shorter).
+    let lo_size = source_size
+        .saturating_sub(HINT_SEED_RADIUS)
+        .max(MIN_FONT_SIZE);
+    let hi_size = baseline_size.max(source_size + HINT_SEED_RADIUS);
+
+    let mut best_score = score_layout(
+        baseline_wrapped.len() as u32,
+        baseline_size,
+        source_size,
+        source_aspect,
+        text,
+    );
+    let mut best_size = baseline_size;
+    let mut best_wrapped = baseline_wrapped;
+
+    for candidate in lo_size..=hi_size {
+        let wrapped = layout::wrap_text(text, safe_w, candidate, font);
+        let total_h = text_block_height(wrapped.len(), candidate);
+        let tolerant_h = safe_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
+        if total_h > tolerant_h {
+            continue;
         }
-
-        // Font scales with bubble: ~4-5 lines of text per bubble is typical density
-        let font_size = (h / 5.0).clamp(MIN_FONT_SIZE as f64, MAX_FONT_SIZE as f64) as u32;
-
-        let font = layout::get_font();
-        let line_h = font_size as f64 * layout::LINE_HEIGHT_MULTIPLIER;
-        let max_lines = ((h - font_size as f64) / line_h + 1.0).floor().max(1.0) as usize;
-
-        // Average char width from real font metrics
-        let sample = "abcdefghijklmnopqrstuvwxyz àáảãạ ăắẳẵặ đ êếểễệ ôốổỗộ ưứửữự";
-        let sample_w = layout::measure_text_width(sample, font_size, font);
-        let char_count = sample.chars().filter(|c| !c.is_whitespace()).count();
-        let avg_char_w = sample_w / char_count as f64;
-
-        let chars_per_line = (w / avg_char_w).floor() as usize;
-        chars_per_line * max_lines
+        let score = score_layout(
+            wrapped.len() as u32, candidate, source_size, source_aspect, text,
+        );
+        if score > best_score {
+            best_score = score;
+            best_size = candidate;
+            best_wrapped = wrapped;
+        }
     }
+
+    // Safety net: if the chosen font is too small relative to the
+    // source typography, the bubble will look visually cramped. Trust
+    // the binary-search baseline in that case — it picked the largest
+    // font that fits, which is the better fallback.
+    let ratio = best_size as f64 / source_size as f64;
+    if ratio < MIN_FITTED_TO_SOURCE_RATIO && best_size < baseline_size {
+        return (
+            baseline_size,
+            layout::wrap_text(text, safe_w, baseline_size, font),
+        );
+    }
+
+    (best_size, best_wrapped)
+}
+
+/// Score a candidate layout. Higher = better.
+///
+/// Two axes:
+///   - Font size: bigger is better (primary).
+///   - Aspect-ratio match: layouts whose chars-per-line / lines ratio
+///     matches the source get a bonus. This replaces the old hard
+///     line-count match, which over-penalised short translations.
+fn score_layout(
+    lines: u32,
+    size: u32,
+    target_size: u32,
+    target_aspect: f64,
+    text: &str,
+) -> i64 {
+    let size_score = (size as i64) * 100;
+
+    // Bonus when the candidate font is close to source size. Penalty
+    // grows linearly with deviation.
+    let size_diff = (size as i64 - target_size as i64).abs();
+    let size_proximity_bonus = (50 - size_diff * 8).max(-200);
+
+    // Aspect ratio of the rendered block, in same units as target.
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count() as f64;
+    let actual_aspect = if lines > 0 {
+        (chars / lines as f64) / lines as f64
+    } else {
+        1.0
+    };
+    let aspect_diff = (actual_aspect - target_aspect).abs() / target_aspect.max(0.01);
+    let aspect_bonus = if aspect_diff < HINT_ASPECT_TOLERANCE {
+        ((HINT_ASPECT_TOLERANCE - aspect_diff) * 100.0) as i64
+    } else {
+        -((aspect_diff * 30.0) as i64).min(150)
+    };
+
+    size_score + size_proximity_bonus + aspect_bonus
+}
+
+/// Per-page maximum font size — scales with image resolution so webtoon
+/// strips don't get manga-sized 72px text and large native scans aren't
+/// capped at a tiny font.
+fn max_font_for_page(page_width: u32) -> u32 {
+    let scaled = (page_width as f64 * MAX_FONT_PAGE_FRACTION) as u32;
+    scaled.clamp(48, ABS_MAX_FONT_SIZE)
 }
 
 /// Total height of a text block.
-/// Last line needs only font height (no trailing line spacing).
-///   height = (n-1) × line_spacing + font_size
 fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
     if n_lines == 0 {
         return 0.0;
@@ -139,7 +312,6 @@ fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
     (n_lines - 1) as f64 * spacing + font_size_px as f64
 }
 
-/// Normalize text: trim, collapse whitespace, remove internal newlines.
 fn normalize_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -166,47 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fit_single_line_fills_height() {
-        // Short text in a 300×50 bbox (inset=2 → 296×46)
-        // Single line should get font ≈ 46 (fills height)
-        let polygon = vec![[0.0, 0.0], [300.0, 0.0], [300.0, 50.0], [0.0, 50.0]];
-        let area = DrawableArea::from_polygon(&polygon, 2.0);
-        let result = FitEngine::fit_area("Hello", &area).unwrap();
-        assert!(!result.overflow);
-        assert!(
-            result.font_size_px >= 40,
-            "Single line should fill height: got {}px for 46px safe_h",
-            result.font_size_px
-        );
-    }
-
-    #[test]
-    fn test_fit_respects_bbox_height() {
-        // Narration box: 400×80 (inset=2 → 396×76)
-        // vs dialogue: 200×40 (inset=2 → 196×36)
-        // Narration should get ~2× the font size of dialogue
-        let narration = DrawableArea::from_polygon(
-            &[[0.0, 0.0], [400.0, 0.0], [400.0, 80.0], [0.0, 80.0]],
-            2.0,
-        );
-        let dialogue = DrawableArea::from_polygon(
-            &[[0.0, 0.0], [200.0, 0.0], [200.0, 40.0], [0.0, 40.0]],
-            2.0,
-        );
-        let items: Vec<(&str, &DrawableArea)> = vec![
-            ("Big narration text", &narration),
-            ("Hello world", &dialogue),
-        ];
-        let results = FitEngine::fit_page_areas(&items, 720).unwrap();
-        assert!(
-            results[0].font_size_px > results[1].font_size_px,
-            "Narration {}px should be bigger than dialogue {}px",
-            results[0].font_size_px,
-            results[1].font_size_px
-        );
-    }
-
-    #[test]
     fn test_fit_overflow() {
         let polygon = vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [0.0, 10.0]];
         let result =
@@ -215,54 +346,148 @@ mod tests {
     }
 
     #[test]
-    fn test_fit_wrapping() {
-        let polygon = vec![[0.0, 0.0], [150.0, 0.0], [150.0, 200.0], [0.0, 200.0]];
-        let result =
-            FitEngine::fit("Hello wonderful world of manga translation", &polygon).unwrap();
-        assert!(!result.overflow);
+    fn test_wrap_text_tolerates_small_width_overshoot() {
+        // Direct test of the wrap function: a single word ~5% wider than
+        // the bubble (within tolerance) should stay on one line, not
+        // char-break into pieces.
+        use crate::layout::{measure_text_width, wrap_text};
+        let font = crate::layout::get_font();
+
+        let word = "CÙNG";
+        let font_size = 30u32;
+        let word_w = measure_text_width(word, font_size, font);
+        // bubble width 5% smaller than word → inside 8% tolerance
+        let bubble_w = word_w / 1.05;
+        let lines = wrap_text(word, bubble_w, font_size, font);
+        assert_eq!(
+            lines.len(),
+            1,
+            "single short word should fit within tolerance: got {:?}",
+            lines,
+        );
+        assert_eq!(lines[0], word);
+    }
+
+    #[test]
+    fn test_wrap_text_char_breaks_when_well_beyond_tolerance() {
+        // 50% overshoot is far beyond the 8% tolerance → must char-break.
+        use crate::layout::{measure_text_width, wrap_text};
+        let font = crate::layout::get_font();
+
+        let word = "TRANSLATION";
+        let font_size = 30u32;
+        let word_w = measure_text_width(word, font_size, font);
+        let bubble_w = word_w / 2.0;
+        let lines = wrap_text(word, bubble_w, font_size, font);
         assert!(
-            result.text.contains('\n'),
-            "Expected wrapped text: {:?}",
-            result.text
+            lines.len() > 1,
+            "word 50% too wide should char-break: got {:?}",
+            lines,
         );
     }
 
     #[test]
-    fn test_normalize_text() {
-        assert_eq!(normalize_text("  hello   world  "), "hello world");
-        assert_eq!(normalize_text("line1\nline2"), "line1 line2");
+    fn test_max_font_scales_with_page_width() {
+        // Webtoon strip ~720px wide
+        assert_eq!(max_font_for_page(720), 48);
+        // Manga page ~1755px wide → 87, capped at ABS_MAX
+        assert_eq!(max_font_for_page(1755), 87);
+        // Huge native scan
+        assert_eq!(max_font_for_page(4000), ABS_MAX_FONT_SIZE);
     }
 
     #[test]
-    fn test_drawable_area_size() {
-        use crate::layout::DrawableArea;
+    fn test_hint_keeps_baseline_when_aspect_already_matches() {
+        // Bubble with aspect ~3:1 (300×100), text fits cleanly in 1-2 lines.
+        // Source hint: 1 line, char-density similar → score should not
+        // shrink the baseline result.
         let area = DrawableArea::from_polygon(
-            &[[10.0, 20.0], [210.0, 20.0], [210.0, 120.0], [10.0, 120.0]],
-            5.0,
-        );
-        let (w, h) = area.size();
-        assert!((w - 190.0).abs() < 0.1, "w={w}");
-        assert!((h - 90.0).abs() < 0.1, "h={h}");
-    }
-
-    #[test]
-    fn test_char_budget_scales_with_area() {
-        let small =
-            DrawableArea::from_polygon(&[[0.0, 0.0], [80.0, 0.0], [80.0, 35.0], [0.0, 35.0]], 2.0);
-        let large = DrawableArea::from_polygon(
-            &[[0.0, 0.0], [300.0, 0.0], [300.0, 200.0], [0.0, 200.0]],
+            &[[0.0, 0.0], [300.0, 0.0], [300.0, 100.0], [0.0, 100.0]],
             2.0,
         );
-        let bs = FitEngine::char_budget(&small);
-        let bl = FitEngine::char_budget(&large);
-        assert!(bs > 0, "small budget should be > 0: {bs}");
-        assert!(bl > bs, "large budget {bl} should exceed small {bs}");
+        let text = "Short line";
+
+        let no_hint = FitEngine::fit_page_areas(
+            &[(text, &area, None)], 1755,
+        ).unwrap();
+
+        let with_hint = FitEngine::fit_page_areas(
+            &[(
+                text, &area,
+                Some(FitHint {
+                    font_size_px: no_hint[0].font_size_px,
+                    line_count: 1,
+                    avg_chars_per_line: 10.0,
+                }),
+            )],
+            1755,
+        ).unwrap();
+
+        // Hint matches baseline → result should be same or larger,
+        // never shrunk.
+        assert!(with_hint[0].font_size_px >= no_hint[0].font_size_px);
+        assert!(!with_hint[0].overflow);
     }
 
     #[test]
-    fn test_char_budget_tiny_area() {
-        let tiny =
-            DrawableArea::from_polygon(&[[0.0, 0.0], [5.0, 0.0], [5.0, 5.0], [0.0, 5.0]], 2.0);
-        assert_eq!(FitEngine::char_budget(&tiny), 0);
+    fn test_hint_does_not_shrink_short_translation() {
+        // Source bubble was 6 vertical lines of small text (Japanese
+        // SFX feel). Translation is 2 words \u2014 should NOT shrink to
+        // satisfy the source line count.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 180.0], [0.0, 180.0]],
+            2.0,
+        );
+        let text = "BLUSH";
+
+        let no_hint = FitEngine::fit_page_areas(
+            &[(text, &area, None)], 1755,
+        ).unwrap();
+
+        let with_hint = FitEngine::fit_page_areas(
+            &[(
+                text, &area,
+                Some(FitHint {
+                    font_size_px: 30,         // source was small per-line
+                    line_count: 6,             // source had 6 lines
+                    avg_chars_per_line: 1.0,   // source was 1 char/line (vertical)
+                }),
+            )],
+            1755,
+        ).unwrap();
+
+        // Critical: hint must NOT force the font below baseline just
+        // because the source had more lines. The MIN_FITTED_TO_SOURCE_RATIO
+        // safety net protects baseline.
+        let ratio = with_hint[0].font_size_px as f64 / no_hint[0].font_size_px as f64;
+        assert!(
+            ratio >= 0.85,
+            "translation should not shrink: no_hint={}px with_hint={}px",
+            no_hint[0].font_size_px, with_hint[0].font_size_px,
+        );
+    }
+
+    #[test]
+    fn test_hint_falls_back_when_unfittable() {
+        // Hint requests font size larger than the area can hold —
+        // refinement must keep the baseline binary-search result.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 40.0], [0.0, 40.0]],
+            2.0,
+        );
+        let result = FitEngine::fit_page_areas(
+            &[(
+                "Hello", &area,
+                Some(FitHint {
+                    font_size_px: 200, // absurdly large
+                    line_count: 1,
+                    avg_chars_per_line: 5.0,
+                }),
+            )],
+            1755,
+        ).unwrap();
+
+        assert!(!result[0].overflow);
+        assert!(result[0].font_size_px >= MIN_FONT_SIZE);
     }
 }

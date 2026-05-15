@@ -31,8 +31,21 @@ fn draw_translated_text(canvas: &mut RgbaImage, bubbles: &[RenderBubble]) {
 
         let bg = sample_bg_color(canvas, draw_x1 as u32, draw_y1 as u32, draw_w as u32, draw_h as u32);
         let dark_bg = luminance(&bg) < 128;
-        let text_color = if dark_bg { Rgba([255, 255, 255, 255]) } else { Rgba([0, 0, 0, 255]) };
-        let stroke_color = if dark_bg { Rgba([0, 0, 0, 180]) } else { Rgba([255, 255, 255, 180]) };
+        // Text vs stroke: opaque text + nearly-opaque stroke. The stroke
+        // serves dual purpose: legibility on busy backgrounds AND a
+        // visible halo separating text from the cleaned bubble fill.
+        // Alpha 230 (was 180) makes the halo readable on screentone /
+        // gradient backgrounds without looking hard-edged.
+        let text_color = if dark_bg {
+            Rgba([255, 255, 255, 255])
+        } else {
+            Rgba([0, 0, 0, 255])
+        };
+        let stroke_color = if dark_bg {
+            Rgba([0, 0, 0, 230])
+        } else {
+            Rgba([255, 255, 255, 230])
+        };
 
         if bubble.area.is_rotated() {
             draw_rotated_bubble(canvas, bubble, font, text_color, stroke_color);
@@ -152,10 +165,18 @@ fn draw_stroked_text(
     stroke_color: Rgba<u8>,
     font_size_px: u32,
 ) {
-    let sw = ((font_size_px as f64 * 0.04).round() as i32).max(1);
+    // Stroke width as a fraction of font height. 0.07 was empirically
+    // chosen on the fixture chapters: legible on solid white bubbles
+    // (problem case at 0.04) and on screentone overlap, without
+    // becoming chunky at large SFX font sizes. Floor of 2px ensures
+    // small UI font (16-20px in webtoons) gets a 2px halo, not 1px
+    // that disappears against grey.
+    let sw = ((font_size_px as f64 * 0.07).round() as i32).max(2);
     for dy in -sw..=sw {
         for dx in -sw..=sw {
-            if (dx == 0 && dy == 0) || dx * dx + dy * dy > sw * sw { continue; }
+            if (dx == 0 && dy == 0) || dx * dx + dy * dy > sw * sw {
+                continue;
+            }
             draw_text_mut(img, stroke_color, ix + dx, iy + dy, scale, font, text);
         }
     }

@@ -34,7 +34,7 @@ export function AdminTopBar({ user }: { user: SessionUser }) {
       <div className="flex-1 min-w-0 flex items-center gap-2 justify-center sm:justify-start sm:pl-4">
         <Shield size={14} className="text-accent-text shrink-0" />
         <span className="text-sm font-semibold text-text tracking-tight truncate">
-          Quản trị pipeline
+          Vận hành pipeline
         </span>
       </div>
 
@@ -54,7 +54,7 @@ export function AdminTopBar({ user }: { user: SessionUser }) {
             className="size-7 rounded-sm object-cover"
           />
         ) : (
-          <Monogram label={user.display_name} />
+          <Monogram name={user.display_name} />
         )}
       </Link>
     </header>

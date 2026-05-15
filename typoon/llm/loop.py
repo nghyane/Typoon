@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 
 from typoon.llm.ir import ContentPart, Message, Provider, ToolCallMsg, ToolResponse
 from typoon.llm.tool import Tool
@@ -18,7 +19,7 @@ async def tool_loop(
     messages: list[Message],
     tools: list[Tool],
     *,
-    is_done: "Callable[[], bool]",
+    is_done: Callable[[], bool],
     agent: str = "agent",
     max_turns: int = 20,
     hook: Hook = _NO_HOOK,
@@ -29,8 +30,6 @@ async def tool_loop(
     Returns turns used. Raises on provider error or max_turns exceeded.
     Callers own the messages list and may pre-populate it.
     """
-    from collections.abc import Callable  # noqa: PLC0415 — avoid circular at module level
-
     tool_map = {t.definition.name: t for t in tools}
     defs = [t.definition for t in tools]
 

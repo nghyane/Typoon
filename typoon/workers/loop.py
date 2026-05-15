@@ -61,7 +61,7 @@ from typoon.adapters.loader import (
 )
 from typoon.adapters.mask_store import MaskStore
 from typoon.adapters.storage_registry import StorageRegistry, build_storage
-from typoon.adapters.vision_runtime import VisionRuntime
+from typoon.adapters.vision_runtime import VisionRuntimeAdapter
 from typoon.config import Config
 from typoon.llm import OperatorActionRequired, UpstreamUnavailable
 from typoon.paths import Paths
@@ -156,7 +156,7 @@ class StageContext:
     paths:        Paths
     config:       Config
     archive_salt: bytes
-    runtime:      VisionRuntime | None = None
+    runtime:      VisionRuntimeAdapter | None = None
     inbox:        ChapterInbox | None = None
 
 
@@ -374,8 +374,8 @@ async def _handle_scan(
             pipeline, prepared_key(chapter_id), tmp,
         ) as reader:
             prepared = reader.chapter()
-            result = await asyncio.to_thread(
-                scan_chapter, prepared, reader, ctx.runtime,
+            result = await scan_chapter(
+                prepared, reader, ctx.runtime.runtime,
                 source_lang=source_lang,
                 chapter_id=chapter_id, hook=ctx.hook,
             )
@@ -577,7 +577,7 @@ async def _handle_render(
                 target_id=target_id,
                 chapter_id=chapter_id,
                 reader=reader,
-                runtime=ctx.runtime,
+                runtime=ctx.runtime.runtime,
                 page_geoms=page_geoms,
                 masks=masks,
                 store=public,
@@ -789,9 +789,9 @@ async def run_workers(
         ProgressPersistingHook(db, loop),
     )
 
-    runtime: VisionRuntime | None = None
+    runtime: VisionRuntimeAdapter | None = None
     if role in (Role.vision, Role.full):
-        runtime = VisionRuntime.from_config(config)[0]
+        runtime = VisionRuntimeAdapter.from_config(config)[0]
 
     inbox = build_inbox(
         config.storage,

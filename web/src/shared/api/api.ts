@@ -451,6 +451,7 @@ export type TaskState        = 'pending' | 'running' | 'stale' | 'blocked' | 'fa
 export type AdminActionKind  =
   | 'stage.pause' | 'stage.resume'
   | 'task.requeue' | 'task.release' | 'task.force_fail'
+  | 'draft.restart' | 'draft.takedown'
 
 export interface ApiPausedStage {
   stage:     PipelineStage
@@ -470,6 +471,19 @@ export interface ApiTask {
   lifecycle_state:   TaskState
   /** Wall-clock seconds since `claimed_at`. null when unclaimed. */
   claim_age_seconds: number | null
+
+  // Joined context from chapter / draft / translation. Lets the
+  // dashboard show "which work, which language pair, which model"
+  // for a failing task without a second round-trip. NULL when the
+  // backing row was deleted between task enqueue and snapshot.
+  work_id:           number | null
+  work_chapter_id:   number | null
+  chapter_id:        number | null
+  chapter_label:     string | null
+  source_lang:       string | null
+  target_lang:       string | null
+  llm_model:         string | null
+  owner_id:          number | null
 }
 
 export interface ApiTaskList {
@@ -1103,6 +1117,18 @@ export const api = {
         `/admin/ops/tasks/${t.stage}/${t.target_kind}/${t.target_id}/fail`,
         body, opts,
       ),
+
+    /** Force-restart a draft regardless of state — admin equivalent
+     *  of the user-facing redo, with the extra power of restarting
+     *  `done` and `blocked` drafts (which user redo refuses). The
+     *  draft's entry stage is server-derived; clients only pass
+     *  reason + optional idempotency key. */
+    restartDraft: (
+      draftId: number,
+      body:    { reason: string },
+      opts?:   { idemKey?: string },
+    ) =>
+      opsMutate(`/admin/ops/drafts/${draftId}/restart`, body, opts),
 
     listActions: (q: {
       action?:      AdminActionKind

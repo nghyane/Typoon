@@ -19,12 +19,16 @@ class Box:
 @dataclass(frozen=True)
 class Bubble:
     """One accepted text group after detect → group → OCR."""
-    idx:         int
-    page_index:  int
-    source_text: str
-    confidence:  float
-    box:         Box
-    shape_kind:  str = "dialogue"   # dialogue | burst
+    idx:                  int
+    page_index:           int
+    source_text:          str
+    confidence:           float
+    box:                  Box
+    shape_kind:           str = "dialogue"   # dialogue | burst
+    rotation_deg:         float = 0.0        # block-level rotation propagated to render
+    src_font_size_px:     int = 0            # 0 = no hint; from detector line geometry
+    src_line_count:       int = 0
+    src_avg_chars_per_line: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -69,11 +73,15 @@ class Chapter:
 @dataclass(frozen=True)
 class BubbleGeometry:
     """Polygon + render boxes for one bubble — stored in scan.npz."""
-    bubble_idx: int
-    polygon:    list[list[float]]
-    fit_box:    list[int]
-    erase_box:  list[int]
-    text_box:   list[int]
+    bubble_idx:             int
+    polygon:                list[list[float]]
+    fit_box:                list[int]
+    erase_box:              list[int]
+    text_box:               list[int]
+    rotation_deg:           float = 0.0
+    src_font_size_px:       int   = 0
+    src_line_count:         int   = 0
+    src_avg_chars_per_line: float = 0.0
 
 
 @dataclass(frozen=True)

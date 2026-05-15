@@ -14,6 +14,7 @@ include = ["typoon*"]
 onnx = ["onnxruntime>=1.17"]
 cuda = ["onnxruntime-gpu>=1.17"]
 ja   = ["transformers>=4.45", "fugashi", "unidic-lite"]
+gemini_web = ["gemini-webapi>=1.13", "browser-cookie3>=0.20"]
 
 [project.scripts]
 typoon = "typoon.cli:app"

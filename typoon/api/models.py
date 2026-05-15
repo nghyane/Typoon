@@ -466,6 +466,7 @@ TaskStateLit      = Literal["pending", "running", "stale", "blocked", "failed"]
 AdminActionLit    = Literal[
     "stage.pause", "stage.resume",
     "task.requeue", "task.release", "task.force_fail",
+    "draft.restart", "draft.takedown",
 ]
 
 
@@ -478,7 +479,12 @@ class PausedStageOut(BaseModel):
 
 class TaskOut(BaseModel):
     """One row of the queue, projected for the ops dashboard. The
-    `lifecycle_state` is computed in SQL — UI just renders it."""
+    `lifecycle_state` is computed in SQL — UI just renders it.
+
+    The `*_lang`, `chapter_*`, `work_id`, `llm_model`, `owner_id` block
+    is human-context joined from the (chapter / draft / translation)
+    row that backs the task. Lets the dashboard answer "which work,
+    which language pair, which model" without a second round-trip."""
     stage:             PipelineStageLit
     target_kind:       TaskTargetKindLit
     target_id:         int
@@ -491,6 +497,21 @@ class TaskOut(BaseModel):
     # since `claimed_at`. Lets the UI flag "stuck N minutes" without
     # the client doing date math.
     claim_age_seconds: int | None = None
+
+    # ── Joined context (best-effort; NULL if the backing row is gone) ──
+    work_id:           int | None = None
+    work_chapter_id:   int | None = None
+    chapter_id:        int | None = None
+    chapter_label:     str | None = None
+    # BCP-47. `target_lang` is NULL for `chapter`-kind tasks (no
+    # target language yet — chapter rows are pre-translation).
+    source_lang:       str | None = None
+    target_lang:       str | None = None
+    # Only populated for draft/translation tasks.
+    llm_model:         str | None = None
+    # users.id of the draft creator (draft) or translation owner
+    # (translation). NULL for chapter-kind tasks.
+    owner_id:          int | None = None
 
 
 class TaskListOut(BaseModel):

@@ -19,10 +19,13 @@ Output we parse back::
     translated text
     @@ KEY2 sfx
     RẦM
+    @@ KEY3 skip
 
-`@@ <7-char KEY> <dialogue|sfx>` at column 0 cannot collide with bubble
+`@@ <7-char KEY> <dialogue|sfx|skip>` at column 0 cannot collide with bubble
 text. Keys are opaque to the model — generated from chapter_id + bubble
-position by `stages.keys.assign_keys`.
+position by `stages.keys.assign_keys`. `skip` is the translator's escape
+hatch for chrome that leaked past upstream noise filters (see page.md
+"Embedded chrome").
 """
 
 from __future__ import annotations
@@ -51,7 +54,9 @@ _CONTEXT_SIZE = 20
 # back as a fake output header). Key is exactly 7 chars of [A-Z0-9] —
 # matches assign_keys output (keys.py: 7 chars from a 32-char alphabet).
 # Kind is a closed whitelist; we accept any case and lowercase it on parse.
-_HEADER_RE = re.compile(r"^@@ ([A-Z0-9]{7}) (dialogue|sfx)\s*$", re.IGNORECASE)
+# `skip` is allowed so the model can drop chrome bubbles that leaked
+# past the upstream noise filter (see page.md "Embedded chrome").
+_HEADER_RE = re.compile(r"^@@ ([A-Z0-9]{7}) (dialogue|sfx|skip)\s*$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -264,6 +269,13 @@ def _parse_translation_reply(
             continue
         seen.add(block.key)
         if is_auto_skip(key_map[block.key].source_text):
+            ops.append(TranslationOp(key=block.key, kind="skip"))
+            continue
+        if block.kind == "skip":
+            # Model declared the bubble is leaked chrome — honor it,
+            # body is ignored. This is how the translator drops noise
+            # that the upstream brief/scan filters missed (e.g. brand
+            # names glued onto OCR output as their own bubble).
             ops.append(TranslationOp(key=block.key, kind="skip"))
             continue
         if not block.text:
