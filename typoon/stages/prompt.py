@@ -55,7 +55,29 @@ def load_source_policy(source_lang: str) -> str:
 
 
 def load_target_policy(target_lang: str) -> str:
-    return load_policy(f"targets/{target_lang}.md")
+    """Translator mechanics section of the target policy."""
+    full = load_policy(f"targets/{target_lang}.md")
+    # The file has two sections separated by the heading
+    # "### Translator mechanics". Return only that half.
+    marker = "### Translator mechanics"
+    idx = full.find(marker)
+    if idx == -1:
+        return full  # legacy file without sections — return whole
+    return full[idx:].strip()
+
+
+def load_target_agent_policy(target_lang: str) -> str:
+    """Context-agent rules section of the target policy."""
+    full = load_policy(f"targets/{target_lang}.md")
+    marker_agent      = "### Context agent policy"
+    marker_translator = "### Translator mechanics"
+    start = full.find(marker_agent)
+    end   = full.find(marker_translator)
+    if start == -1:
+        return ""  # legacy file without sections
+    if end == -1:
+        return full[start:].strip()
+    return full[start:end].strip()
 
 
 class Template:

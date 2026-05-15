@@ -21,8 +21,15 @@ class Page:
 
 @dataclass(frozen=True)
 class Chapter:
-    source: str
-    pages:  tuple[Page, ...]
+    source:   str
+    pages:    tuple[Page, ...]
+    # Color signal from prepare's HSV saturation sampling. Used by the
+    # context agent as a prior for tradition inference (color → manhua /
+    # manhwa / colored webcomic; mono → manga / B&W manhua). The agent
+    # makes the final tradition call from visual content; this flag is
+    # just an explicit hint so the agent does not have to guess from the
+    # storyboard alone.
+    is_color: bool = False
 
     @property
     def page_count(self) -> int:

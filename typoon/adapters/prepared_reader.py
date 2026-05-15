@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 
 import bunle
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -41,7 +42,7 @@ class PreparedReader:
     def page_count(self) -> int:
         return self._reader.page_count
 
-    def chapter(self, source: str = "") -> Chapter:
+    def chapter(self, source: str = "", *, is_color: bool | None = None) -> Chapter:
         pages = tuple(
             Page(
                 index=i,
@@ -50,7 +51,23 @@ class PreparedReader:
             )
             for i in range(self._reader.page_count)
         )
-        return Chapter(source=source, pages=pages)
+        if is_color is None:
+            is_color = self._detect_is_color()
+        return Chapter(source=source, pages=pages, is_color=is_color)
+
+    # HSV saturation sample on the middle page. Matches the threshold used
+    # by stages.prepare (_COLOR_RATIO_THRESHOLD=0.15, _SAT_THRESHOLD=30) so
+    # archives that round-trip through PreparedReader recover the same flag
+    # prepare_chapter originally wrote.
+    def _detect_is_color(self) -> bool:
+        n = self._reader.page_count
+        if n == 0:
+            return False
+        img = self.read_rgb(n // 2)
+        small = cv2.resize(img, (256, 256)) if min(img.shape[:2]) > 256 else img
+        hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
+        ratio = float(np.count_nonzero(hsv[:, :, 1] > 30)) / (hsv.shape[0] * hsv.shape[1])
+        return ratio >= 0.15
 
     def read_rgb(self, index: int) -> np.ndarray:
         data = self._reader.page(index)

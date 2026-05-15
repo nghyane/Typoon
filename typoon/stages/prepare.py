@@ -61,33 +61,39 @@ def prepare_chapter(
     """Write `<i:04d>.jpg` (JPEG q=92) into `out_dir`. Returns PreparedChapter."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    color_ratio = _chapter_color_ratio(source)
+    is_color    = color_ratio >= _COLOR_RATIO_THRESHOLD
+
     if strategy == "auto":
-        strategy = _detect_strategy(source)
+        strategy = "stitch" if is_color else "one_to_one"
 
     if strategy == "stitch":
         pages, groups = _prepare_stitch(source, out_dir, artifacts)
     else:
         pages, groups = _prepare_one_to_one(source, out_dir, artifacts)
 
-    chapter = Chapter(source=source_label, pages=tuple(pages))
+    chapter = Chapter(source=source_label, pages=tuple(pages), is_color=is_color)
 
     if artifacts is not None:
         artifacts.write_json("01_prepare", "groups.json", {
-            "version": 1,
-            "strategy": strategy,
-            "groups": groups,
+            "version":     1,
+            "strategy":    strategy,
+            "is_color":    is_color,
+            "color_ratio": round(color_ratio, 4),
+            "groups":      groups,
         })
 
     return chapter
 
 
-def _detect_strategy(source: RawChapterSource) -> Literal["one_to_one", "stitch"]:
+def _chapter_color_ratio(source: RawChapterSource) -> float:
+    """Mean color ratio over three sample pages. 0.0 for empty chapters."""
     n = source.page_count()
     if n == 0:
-        return "one_to_one"
+        return 0.0
     indices = sorted({n // 4, n // 2, 3 * n // 4})
     ratios  = [_color_ratio(source.load_page(i)) for i in indices]
-    return "stitch" if sum(ratios) / len(ratios) >= _COLOR_RATIO_THRESHOLD else "one_to_one"
+    return sum(ratios) / len(ratios)
 
 
 def _color_ratio(image: np.ndarray) -> float:

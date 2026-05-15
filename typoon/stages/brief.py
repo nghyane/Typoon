@@ -116,10 +116,13 @@ def _is_foreign_script(scripts: list[str], source_lang: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class _ChunkResult:
-    characters: list[Character]
-    speakers:   dict[str, str]
-    noise:      set[str]
-    style:      list[str]
+    characters:    list[Character]
+    speakers:      dict[str, str]   # key → "SPEAKER_NAME [-> LISTENER_NAME]"
+    noise:         set[str]
+    style:         list[str]
+    glossary:      dict[str, str]           # source token → target rendering
+    address_pairs: dict[tuple[str, str], str]  # (speaker, listener) → pair
+    brief_prose:   str
 
 
 async def build_chapter_brief(
@@ -172,16 +175,17 @@ def _merge_chunks(
     results: Iterable[_ChunkResult | BaseException],
 ) -> ChapterBrief:
     """Combine per-chunk results into a single ChapterBrief."""
-    characters: list[Character] = []
-    speakers: dict[str, str] = {}
-    noise: set[str] = set(deterministic_noise)
-    style: list[str] = []
-    seen_names: set[str] = set()
+    characters:    list[Character]             = []
+    speakers:      dict[str, str]              = {}
+    noise:         set[str]                    = set(deterministic_noise)
+    style:         list[str]                   = []
+    glossary:      dict[str, str]              = {}
+    address_pairs: dict[tuple[str, str], str]  = {}
+    brief_parts:   list[str]                   = []
+    seen_names:    set[str]                    = set()
 
     for r in results:
         if isinstance(r, BaseException):
-            # OperatorActionRequired / UpstreamUnavailable bubble up;
-            # parse-level failures are absorbed (returned as empty chunk).
             if isinstance(r, (OperatorActionRequired, UpstreamUnavailable)):
                 raise r
             logger.warning("brief chunk failed: %s", r)
@@ -194,26 +198,45 @@ def _merge_chunks(
             characters.append(c)
         speakers.update(r.speakers)
         noise.update(r.noise)
-        # Style: dedupe by content, preserve order of first sighting.
         for line in r.style:
             if line not in style:
                 style.append(line)
+        # Glossary: first chunk wins per token (deterministic across retries).
+        for src, tgt in r.glossary.items():
+            glossary.setdefault(src, tgt)
+        # Address pairs: first chunk wins per pair.
+        for pair_key, pair_val in r.address_pairs.items():
+            address_pairs.setdefault(pair_key, pair_val)
+        if r.brief_prose:
+            brief_parts.append(r.brief_prose)
 
-    # Translator's key_notes carries one speaker hint per bubble; drop
-    # narrator/sfx/unknown — the translator prompt already handles those
-    # as the neutral fallback.
-    key_notes = {
-        k: f"Speaker: {sp.strip()}"
-        for k, sp in speakers.items()
-        if sp.strip() and sp.strip().lower() != "unknown"
-    }
+    # key_notes: "Speaker: NAME" or "Speaker: NAME -> LISTENER" per bubble.
+    # Skip narrator/sfx/unknown — translator handles these via neutral fallback.
+    key_notes: dict[str, str] = {}
+    for k, raw in speakers.items():
+        # raw is "SPEAKER [-> LISTENER]" or just "SPEAKER"
+        name_part = raw.strip()
+        if not name_part:
+            continue
+        low = name_part.lower()
+        if low in ("narrator", "sfx", "unknown"):
+            continue
+        # Resolve source name → target display name for the hint text.
+        if "->" in name_part:
+            sp_raw, _, li_raw = name_part.partition("->")
+            sp = sp_raw.strip()
+            li = li_raw.strip()
+            key_notes[k] = f"Speaker: {sp} → {li}"
+        else:
+            key_notes[k] = f"Speaker: {name_part}"
 
-    # Source-side names verbatim; target rendering is the translator's
-    # job (informed by glossary + style + speaker hint together).
-    glossary = {c.name: c.name for c in characters}
+    # Combine brief prose across chunks (each chunk covers a page range).
+    brief_prose = "\n\n".join(brief_parts)
 
     return ChapterBrief(
+        brief_prose=brief_prose,
         glossary=glossary,
+        address_pairs=address_pairs,
         style_notes=style,
         key_notes=key_notes,
         characters=characters,
@@ -242,7 +265,12 @@ async def _process_chunk(
     jpeg = encode_jpeg(storyboard.image)
     bubbles = [bk for bk in keyed if bk.bubble.page_index in pages]
 
-    system = prompt.STORYBOARD_SYSTEM.format(target_lang=ctx.target_lang)
+    system = prompt.STORYBOARD_SYSTEM.format(
+        source_lang_name=prompt.lang_name(ctx.source_lang),
+        target_lang_name=prompt.lang_name(ctx.target_lang),
+        is_color=reader.chapter().is_color,
+        target_agent_policy=prompt.load_target_agent_policy(ctx.target_lang),
+    )
     user = _build_brief_prompt(bubbles, ctx.source_lang, ctx.target_lang)
 
     data_uri = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
@@ -344,6 +372,9 @@ def _parse_reply(text: str, *, valid_keys: set[str]) -> _ChunkResult:
         speakers=_parse_speakers(sections.get("SPEAKERS", []), valid_keys),
         noise=_parse_noise(sections.get("NOISE", []), valid_keys),
         style=_parse_style(sections.get("STYLE", [])),
+        glossary=_parse_glossary(sections.get("GLOSSARY", [])),
+        address_pairs=_parse_address(sections.get("ADDRESS", [])),
+        brief_prose=_parse_brief(sections.get("BRIEF", [])),
     )
 
 
@@ -355,7 +386,13 @@ def _strip_think(text: str) -> str:
 
 
 def _split_sections(text: str) -> dict[str, list[str]]:
-    """Group `@@ ...` body lines under their preceding `@@@ SECTION` header."""
+    """Group body lines under their preceding `@@@ SECTION` header.
+
+    For most sections, only `@@ ...` lines are collected (structured data).
+    For the BRIEF section, ALL non-empty lines are collected as free prose —
+    the agent writes that section as natural-language text without `@@` prefixes.
+    """
+    PROSE_SECTIONS = {"BRIEF"}
     sections: dict[str, list[str]] = {}
     current: str | None = None
     for raw in text.splitlines():
@@ -364,7 +401,15 @@ def _split_sections(text: str) -> dict[str, list[str]]:
             current = m.group(1).upper()
             sections.setdefault(current, [])
             continue
-        if current is not None and (m := _LINE_RE.match(line)):
+        if current is None:
+            continue
+        if current in PROSE_SECTIONS:
+            # Collect every non-empty line as prose.
+            if line.strip():
+                # Strip leading @@ prefix if agent mistakenly adds it.
+                content = _LINE_RE.match(line)
+                sections[current].append(content.group(1).strip() if content else line.strip())
+        elif m := _LINE_RE.match(line):
             sections[current].append(m.group(1).strip())
     return sections
 
@@ -378,22 +423,91 @@ def _parse_characters(bodies: list[str]) -> list[Character]:
             continue
         out.append(Character(
             name=name,
+            target_name=kv.get("target", "").strip(),
             gender=(kv.get("gender", "").strip().lower() or "unknown"),
             role=kv.get("role", "").strip(),
+            voice=kv.get("voice", "").strip(),
         ))
     return out
 
 
 def _parse_speakers(bodies: list[str], valid_keys: set[str]) -> dict[str, str]:
+    """Parse SPEAKERS lines: `KEY SPEAKER_NAME [-> LISTENER_NAME]`.
+
+    Returns raw string value per key so _merge_chunks can build key_notes
+    with full speaker→listener info when available.
+    """
     out: dict[str, str] = {}
     for body in bodies:
+        # Format: KEY REST (where REST may be "Name" or "Name -> Other")
         parts = body.split(None, 1)
         if len(parts) != 2:
             continue
-        key, speaker = parts[0].strip(), parts[1].strip()
+        key, rest = parts[0].strip(), parts[1].strip()
         if key in valid_keys:
-            out[key] = speaker
+            out[key] = rest
     return out
+
+
+def _parse_glossary(bodies: list[str]) -> dict[str, str]:
+    """Parse GLOSSARY lines: `SOURCE_TOKEN = TARGET_RENDERING`.
+
+    Strips surrounding quotes (the model sometimes emits `"token" = "value"`).
+    Skips: identity-map entries, URLs/domains, known platform brand tokens.
+    """
+    import re
+    _url_re      = re.compile(r'\.(com|net|org|io|app|id)(/|$)', re.I)
+    _platform_re = re.compile(
+        r'包子|baozi|快看|kuaikan|sfacg|baozimh|快快看|漫画.*网|小说.*网|patreon|discord|ko.fi',
+        re.I,
+    )
+    out: dict[str, str] = {}
+    for body in bodies:
+        if "=" not in body:
+            continue
+        src, _, tgt = body.partition("=")
+        src = src.strip().strip('"\'')
+        tgt = tgt.strip().strip('"\'')
+        if not src or not tgt:
+            continue
+        if src == tgt:
+            continue
+        if _url_re.search(src):
+            continue
+        if _platform_re.search(src):
+            continue
+        out[src] = tgt
+    return out
+
+
+def _parse_address(bodies: list[str]) -> dict[tuple[str, str], str]:
+    """Parse ADDRESS lines: `SPEAKER → LISTENER: PAIR`.
+
+    Tolerates both ASCII `->` and Unicode `→` as the arrow.
+    Drops pairs where speaker or listener is "unknown" — those carry
+    no usable information for the translator.
+    """
+    out: dict[tuple[str, str], str] = {}
+    for body in bodies:
+        body = body.replace("→", "->")
+        if "->" not in body or ":" not in body:
+            continue
+        speaker_listener, _, pair = body.rpartition(":")
+        speaker, _, listener = speaker_listener.partition("->")
+        speaker  = speaker.strip()
+        listener = listener.strip()
+        pair     = pair.strip()
+        if not speaker or not listener or not pair:
+            continue
+        if speaker.lower() == "unknown" or listener.lower() == "unknown":
+            continue
+        out[(speaker, listener)] = pair
+    return out
+
+
+def _parse_brief(bodies: list[str]) -> str:
+    """BRIEF is free prose — join all non-@@ lines under the section."""
+    return "\n".join(bodies).strip()
 
 
 def _parse_noise(bodies: list[str], valid_keys: set[str]) -> set[str]:
@@ -471,40 +585,57 @@ def brief_slice(
 ) -> str:
     """Render the subset of brief data relevant to one translation window.
 
-    `page_indices` is reserved for future per-page context; currently
-    unused but kept in the signature so the caller (`stages.page`) does
-    not need to change shape when we reintroduce it.
+    Injects into the translator's user message. Order matters — most
+    important context first:
+      1. BRIEF prose (tradition, genre, pacing, fallback register)
+      2. Glossary (resolved name/term renderings)
+      3. Address table (confirmed xưng hô pairs)
+      4. Characters (voice descriptors)
+      5. Speaker hints (per-bubble speaker → listener)
     """
-    _ = page_indices  # reserved
+    _ = page_indices  # reserved for per-page filtering
 
     parts: list[str] = []
 
+    if brief.brief_prose:
+        parts.append(f"## Chapter brief\n{brief.brief_prose}")
+
     if brief.glossary:
-        parts.append("Glossary:\n" + "\n".join(
-            f"- {k} → {v}" for k, v in brief.glossary.items()
+        parts.append("## Glossary\n" + "\n".join(
+            f"- {src} → {tgt}" for src, tgt in brief.glossary.items()
+        ))
+
+    if brief.address_pairs:
+        parts.append("## Address\n" + "\n".join(
+            f"- {sp} → {li}: {pair}"
+            for (sp, li), pair in brief.address_pairs.items()
         ))
 
     if brief.characters:
-        parts.append("Characters:\n" + "\n".join(
+        parts.append("## Characters\n" + "\n".join(
             _render_character(c) for c in brief.characters
         ))
 
-    if brief.style_notes:
-        parts.append("Style:\n" + "\n".join(f"- {n}" for n in brief.style_notes))
+    # Legacy style_notes: only emit when no brief_prose (old chapters).
+    if brief.style_notes and not brief.brief_prose:
+        parts.append("## Style\n" + "\n".join(f"- {n}" for n in brief.style_notes))
 
     relevant_notes = [
         f"#{k}: {brief.key_notes[k]}"
         for k in keys if k in brief.key_notes
     ]
     if relevant_notes:
-        parts.append("Speaker hints:\n" + "\n".join(relevant_notes))
+        parts.append("## Speaker hints\n" + "\n".join(relevant_notes))
 
     return "\n\n".join(parts) if parts else "(none)"
 
 
 def _render_character(c: Character) -> str:
-    gender = c.gender if c.gender and c.gender != "unknown" else "?"
-    line = f"- {c.name} ({gender})"
+    display = c.display_name
+    gender  = c.gender if c.gender and c.gender != "unknown" else "?"
+    line    = f"- {display} ({gender})"
     if c.role:
         line += f": {c.role}"
+    if c.voice:
+        line += f" — voice: {c.voice}"
     return line

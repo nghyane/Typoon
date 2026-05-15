@@ -9,9 +9,17 @@ produces, stages.page consumes, storage persists it as JSON) and has no
 behavior that depends on adapters or runs.
 
 What the translator reads (via `brief_slice` in stages.brief):
-  - glossary  → name mappings discovered by vision
-  - style_notes → register/mood/translator-guidance lines
-  - key_notes → per-bubble speaker hint
+  - brief_prose    → free-form briefing prose from context agent
+                     (tradition, genre, pacing, fallback guidance).
+                     Injected verbatim into translator system prompt.
+  - glossary       → source-token → target-rendering decisions
+                     (e.g. `周妍 → Chu Nghiên`). Not identity-mapped.
+  - address_pairs  → (speaker, listener) → pronoun pair phrase, e.g.
+                     `("Tanaka", "Suzuki") → "tôi ↔ anh"`.
+  - style_notes    → register/mood/translator-guidance lines (legacy;
+                     superseded by brief_prose for new chapters).
+  - key_notes      → per-bubble "Speaker: X → Y" hint
+  - characters     → name + target_name + gender + role + voice
 
 What the render path reads:
   - noise_keys / noise_pages → skip rendering
@@ -31,51 +39,91 @@ class Character:
     """One character discovered by the vision pass.
 
     `gender` is one of "male" | "female" | "unknown". `role` is a short
-    free-text descriptor ("young man", "elderly devil hunter", etc.) —
-    helpful for the translator + material memory, not enforced.
+    free-text descriptor ("young man", "elderly devil hunter", etc.).
+    `voice` is a short character-voice descriptor for the translator
+    ("cold", "rough", "polite", "teasing", "shy", "threatening"); empty
+    when the agent cannot tell.
+    `target_name` is the resolved rendering in the target language
+    (e.g. "Chu Nghiên" for zh source → vi target). Falls back to `name`
+    when the agent did not emit a target form.
     """
-    name:   str
-    gender: str = "unknown"
-    role:   str = ""
+    name:        str
+    target_name: str = ""
+    gender:      str = "unknown"
+    role:        str = ""
+    voice:       str = ""
+
+    @property
+    def display_name(self) -> str:
+        """Resolved target name, falling back to source name."""
+        return self.target_name or self.name
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "gender": self.gender, "role": self.role}
+        return {
+            "name":        self.name,
+            "target_name": self.target_name,
+            "gender":      self.gender,
+            "role":        self.role,
+            "voice":       self.voice,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Character":
         return cls(
             name=d["name"],
+            target_name=d.get("target_name", ""),
             gender=d.get("gender", "unknown"),
             role=d.get("role", ""),
+            voice=d.get("voice", ""),
         )
 
 
 @dataclass(slots=True)
 class ChapterBrief:
-    glossary:    dict[str, str]      = field(default_factory=dict)
-    style_notes: list[str]           = field(default_factory=list)
-    key_notes:   dict[str, str]      = field(default_factory=dict)
-    characters:  list[Character]     = field(default_factory=list)
-    noise_keys:  set[str]            = field(default_factory=set)
+    # Free-form briefing prose written by the context agent in the
+    # target language. Injected verbatim into the translator's system
+    # prompt. Contains: tradition inference, genre, pacing, SFX policy,
+    # fallback register. Empty string when the context pass failed.
+    brief_prose:   str                         = ""
+    glossary:      dict[str, str]              = field(default_factory=dict)
+    # (speaker_name, listener_name) → pronoun pair phrase, e.g.
+    # "anh ↔ em" or "tôi ↔ ông". Speaker/listener names match
+    # Character.name (source form). Special tokens "narrator" /
+    # "unknown" are ignored by the translator.
+    address_pairs: dict[tuple[str, str], str]  = field(default_factory=dict)
+    style_notes:   list[str]                   = field(default_factory=list)
+    key_notes:     dict[str, str]              = field(default_factory=dict)
+    characters:    list[Character]             = field(default_factory=list)
+    noise_keys:    set[str]                    = field(default_factory=set)
     # Page indices that are entirely non-diegetic (full-page credits,
     # ads, platform banners). These pages are dropped from the public
     # render archive entirely.
-    noise_pages: set[int]            = field(default_factory=set)
+    noise_pages:   set[int]                    = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "glossary":    self.glossary,
-            "style_notes": self.style_notes,
-            "key_notes":   self.key_notes,
-            "characters":  [c.to_dict() for c in self.characters],
-            "noise_keys":  sorted(self.noise_keys),
-            "noise_pages": sorted(self.noise_pages),
+            "brief_prose":   self.brief_prose,
+            "glossary":      self.glossary,
+            "address_pairs": [
+                {"speaker": s, "listener": l, "pair": p}
+                for (s, l), p in self.address_pairs.items()
+            ],
+            "style_notes":   self.style_notes,
+            "key_notes":     self.key_notes,
+            "characters":    [c.to_dict() for c in self.characters],
+            "noise_keys":    sorted(self.noise_keys),
+            "noise_pages":   sorted(self.noise_pages),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "ChapterBrief":
         return cls(
+            brief_prose=d.get("brief_prose", ""),
             glossary=dict(d.get("glossary", {})),
+            address_pairs={
+                (item["speaker"], item["listener"]): item["pair"]
+                for item in d.get("address_pairs", [])
+            },
             style_notes=list(d.get("style_notes", [])),
             key_notes=dict(d.get("key_notes", {})),
             characters=[Character.from_dict(c) for c in d.get("characters", [])],
