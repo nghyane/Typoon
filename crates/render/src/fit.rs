@@ -131,11 +131,7 @@ impl FitEngine {
 
         // Tall-narrow bubbles (vertical label style — aspect > threshold):
         // fit against safe_h as the wrap width so words are never wider
-        // than the long axis and char-break is impossible. The renderer
-        // still draws lines top-to-bottom inside safe_w; each word
-        // becomes one line and overshots safe_w slightly, which is
-        // acceptable — the alternative (char-breaking ĐỨC → ĐỨ / C)
-        // is unreadable.
+        // than the long axis and char-break is impossible.
         let aspect = if safe_w > 0.0 { safe_h / safe_w } else { 0.0 };
         let (fit_w, fit_h) = if aspect > TALL_NARROW_ASPECT_THRESHOLD {
             (safe_h, safe_w)
@@ -145,10 +141,21 @@ impl FitEngine {
 
         let font = layout::get_font();
         let hi_bound = (fit_h as u32).min(max_font);
-        // Allow text block to overshoot height by HEIGHT_OVERFLOW_TOLERANCE.
         let tolerant_h = fit_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
 
-        // Binary search for the largest size that fits within tolerance.
+        // Soft-break path: the translator emitted explicit \n anchors.
+        // Try to honour them at the largest font where every segment fits
+        // within fit_w. If at the binary-search best_size the soft-break
+        // layout fits in height, prefer it — it reflects the translator's
+        // semantic intent. Otherwise fall through to the free-wrap path.
+        let has_soft_breaks = text.contains('\n');
+        let soft_result = if has_soft_breaks {
+            try_soft_break_fit(&text, fit_w, fit_h, tolerant_h, hi_bound, font)
+        } else {
+            None
+        };
+
+        // Binary search for the largest size that fits (free wrap fallback).
         let mut lo = MIN_FONT_SIZE;
         let mut hi = hi_bound;
         let mut best_size = MIN_FONT_SIZE;
@@ -170,12 +177,26 @@ impl FitEngine {
             }
         }
 
-        // Hint-guided refinement.
-        let (final_size, final_wrapped) = match hint {
+        // Hint-guided refinement (only for free-wrap path).
+        let (free_size, free_wrapped) = match hint {
             Some(h) => refine_with_hint(
                 &text, fit_w, fit_h, font, h, best_size, best_wrapped.clone(),
             ),
             None => (best_size, best_wrapped),
+        };
+
+        // Choose between soft-break and free-wrap results.
+        // Prefer soft-break when it produces a font >= free-wrap result
+        // (translator breaks are "free") or when it's within 15% smaller
+        // (small size cost is worth keeping semantic breaks).
+        let (final_size, final_wrapped) = match soft_result {
+            Some((sb_size, sb_lines))
+                if sb_size >= free_size
+                    || sb_size as f64 >= free_size as f64 * 0.85 =>
+            {
+                (sb_size, sb_lines)
+            }
+            _ => (free_size, free_wrapped),
         };
 
         let total_h = text_block_height(final_wrapped.len(), final_size);
@@ -317,6 +338,56 @@ fn max_font_for_page(page_width: u32) -> u32 {
     scaled.clamp(48, ABS_MAX_FONT_SIZE)
 }
 
+/// Try to fit text honouring the translator's explicit `\n` soft-break anchors.
+///
+/// Each `\n`-delimited segment is treated as a fixed line. We binary-search
+/// for the largest font where every segment fits within `fit_w` (with the
+/// normal width tolerance) AND the total block fits within `fit_h`.
+///
+/// Returns `Some((font_size, lines))` when a valid fit exists above
+/// `MIN_FONT_SIZE`, or `None` when the soft breaks produce a layout that
+/// is too wide or too tall at any readable size.
+fn try_soft_break_fit(
+    text: &str,
+    fit_w: f64,
+    fit_h: f64,
+    tolerant_h: f64,
+    hi_bound: u32,
+    font: &ab_glyph::FontRef<'_>,
+) -> Option<(u32, Vec<String>)> {
+    let segments: Vec<&str> = text.lines().collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(u32, Vec<String>)> = None;
+    let mut lo = MIN_FONT_SIZE;
+    let mut hi = hi_bound;
+
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        // Each segment becomes exactly one line — no further wrapping.
+        // Check that no segment exceeds fit_w by more than the tolerance.
+        let tolerance = layout::WIDTH_OVERFLOW_TOLERANCE;
+        let tolerant_w = fit_w * (1.0 + tolerance);
+        let all_fit = segments.iter().all(|seg| {
+            layout::measure_text_width(seg, mid, font) <= tolerant_w
+        });
+        let total_h = text_block_height(segments.len(), mid);
+
+        if all_fit && total_h <= tolerant_h {
+            best = Some((mid, segments.iter().map(|s| s.to_string()).collect()));
+            lo = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    best
+}
+
 /// Total height of a text block.
 fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
     if n_lines == 0 {
@@ -327,7 +398,13 @@ fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
 }
 
 fn normalize_text(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    // Preserve explicit newlines from the translator as soft break hints.
+    // Only collapse intra-line whitespace; do not flatten across lines.
+    text.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -537,3 +614,34 @@ mod tests {
         }
     }
 }
+    #[test]
+    fn test_normalize_text_preserves_soft_breaks() {
+        let text = "Không…\nkhông có gì.";
+        let normalized = normalize_text(text);
+        assert!(normalized.contains('\n'), "soft break lost: {:?}", normalized);
+        assert_eq!(normalized, "Không…\nkhông có gì.");
+    }
+
+    #[test]
+    fn test_soft_break_respected_when_fits() {
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [300.0, 0.0], [300.0, 100.0], [0.0, 100.0]],
+            2.0,
+        );
+        let text = "Anh không thể\nlàm được điều đó.";
+        let result = FitEngine::fit_page_areas(&[(text, &area, None)], 1200).unwrap();
+        assert!(result[0].text.contains('\n'), "soft break not preserved: {:?}", result[0].text);
+        assert_eq!(result[0].text.lines().count(), 2);
+        assert!(!result[0].overflow);
+    }
+
+    #[test]
+    fn test_soft_break_fallback_when_too_wide() {
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [60.0, 0.0], [60.0, 120.0], [0.0, 120.0]],
+            2.0,
+        );
+        let text = "Anh không thể làm được\nđiều đó cả đời này đâu.";
+        let result = FitEngine::fit_page_areas(&[(text, &area, None)], 800).unwrap();
+        assert!(result[0].font_size_px >= MIN_FONT_SIZE);
+    }

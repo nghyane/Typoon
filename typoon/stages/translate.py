@@ -165,19 +165,50 @@ def _materialize_bubble(
 
 
 def _normalize_for_render(text: str) -> str:
-    """Force NFC so combining diacritics merge into precomposed glyphs.
+    """NFC + typesetting post-process.
 
-    Some LLM providers emit decomposed Vietnamese (NFD): `nghĩa` arrives
-    as `n` `g` `h` `i` `\\u0303` `a` instead of `n` `g` `h` `\\u0129` `a`.
-    The embedded render font has glyphs for the precomposed codepoints
-    only; combining-mark codepoints render as blank advances → user
-    sees "Tôi  nghĩa" with a phantom space where the diacritic should
-    have sat. NFC normalisation is the standard fix and is a no-op on
-    text that's already precomposed (>99% of inputs).
+    Runs after LLM output, before render. Two jobs:
+    1. NFC normalisation — force precomposed Vietnamese glyphs so the
+       embedded render font can find them (LLM providers sometimes emit NFD).
+    2. Typesetting cleanup — normalize punctuation to comic lettering
+       standards so the render output looks professional regardless of
+       what the LLM emitted.
     """
     if not text:
         return text
-    return unicodedata.normalize("NFC", text)
+    import re
+    # NFC first so subsequent regex operates on precomposed codepoints.
+    text = unicodedata.normalize("NFC", text)
+
+    # ── Ellipsis normalization ──────────────────────────────────────────
+    # Collapse any run of 4+ dots (....., .............) to the two-beat
+    # pause (……). Three dots stay as-is (standard hesitation ellipsis).
+    # One or two dots are left alone (sentence-final or abbreviation).
+    text = re.sub(r'\.{7,}', '……', text)   # 7+ dots → heavy pause
+    text = re.sub(r'\.{4,6}', '…',  text)  # 4-6 dots → single ellipsis
+    # Normalize Unicode ellipsis runs: …… is the max (two beats).
+    text = re.sub(r'…{3,}', '……', text)
+
+    # ── Trailing / leading whitespace per line ──────────────────────────
+    text = '\n'.join(line.strip() for line in text.splitlines())
+
+    # ── Strip blank lines ───────────────────────────────────────────────
+    lines = [l for l in text.splitlines() if l]
+    text = '\n'.join(lines)
+
+    # ── Punctuation glued to last word, never stranded alone ───────────
+    # Move a lone punctuation-only last line back onto the previous line.
+    # e.g. "Không có gì\n." → "Không có gì."
+    _PUNCT_ONLY = re.compile(r'^[.!?…,]+$')
+    result_lines = lines[:]
+    i = len(result_lines) - 1
+    while i > 0 and _PUNCT_ONLY.match(result_lines[i]):
+        result_lines[i - 1] = result_lines[i - 1] + result_lines[i]
+        result_lines.pop(i)
+        i -= 1
+    text = '\n'.join(result_lines)
+
+    return text
 
 
 def _empty(scanned: scan.Chapter) -> translate.Chapter:

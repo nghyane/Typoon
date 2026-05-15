@@ -7,7 +7,7 @@ was the dominant failure mode of the previous symmetric format.
 
 Input we send to the model::
 
-    >>> KEY page=3 active
+    >>> KEY page=3 active w=280 h=60 lines=2
     source line 1
     source line 2
     >>> KEY2 page=3
@@ -189,16 +189,38 @@ def _build_window_prompt(
 ) -> str:
     """Render the user message for one translation window.
 
-    Input sentinel is `>>>`, distinct from the `@@` we ask the model to
-    emit on output. Different sentinels block the most common parser
-    failure: model mirroring the input header verbatim.
+    Each active bubble header includes `w=`, `h=`, `lines=` so the
+    translator LLM can make informed line-break decisions.
     """
     blocks = []
     for key in context_keys:
         bk = key_map[key]
         flag = " active" if key in active else ""
-        blocks.append(f">>> {key} page={bk.page_index}{flag}\n{bk.source_text}")
+        dims = _bubble_dims(bk)
+        blocks.append(f">>> {key} page={bk.page_index}{flag}{dims}\n{bk.source_text}")
     return f"{context_block}\n\n" + "\n".join(blocks)
+
+
+def _bubble_dims(bk: BubbleKey) -> str:
+    """Return ` w=NNN h=NNN lines=N` string for active bubble headers.
+
+    Derived from the bubble's fit_box [x, y, w, h] in prepared-page
+    pixels. `lines` is estimated from height / (font_size * line_height)
+    using the source font size hint when available, falling back to
+    height / 28 (≈ median comic font at typical resolution).
+    """
+    fit = bk.bubble.box.fit  # [x, y, w, h]
+    w, h = fit[2], fit[3]
+    if w <= 0 or h <= 0:
+        return ""
+    # Source font hint → estimate lines; fallback to h/28.
+    src_font = bk.bubble.src_font_size_px or 0
+    if src_font > 0:
+        line_h = src_font * 1.22
+        lines = max(1, round(h / line_h))
+    else:
+        lines = max(1, round(h / 28))
+    return f" w={w} h={h} lines={lines}"
 
 
 # ---------------------------------------------------------------------------
