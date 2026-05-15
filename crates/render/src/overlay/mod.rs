@@ -73,10 +73,15 @@ fn draw_horizontal_bubble(
         (lines.len() - 1) as f64 * line_spacing + bubble.font_size_px as f64
     };
     let start_y = (draw_y1 + (draw_h - total_text_h) / 2.0).max(draw_y1);
+    // Center anchor: always the horizontal midpoint of the bubble.
+    // When line_w > draw_w (tall-narrow bubble, each word on its own line)
+    // we let the text expand symmetrically past both edges rather than
+    // clipping it to the left wall.
+    let center_x = draw_x1 + draw_w / 2.0;
 
     for (i, line) in lines.iter().enumerate() {
         let line_w = layout::measure_text_width(line, bubble.font_size_px, font);
-        let x = draw_x1 + (draw_w - line_w) / 2.0;
+        let x = center_x - line_w / 2.0;
         let y = start_y + i as f64 * line_spacing;
         draw_stroked_text(canvas, font, line, x as i32, y as i32, scale, text_color, stroke_color, bubble.font_size_px);
     }
@@ -90,10 +95,6 @@ fn draw_rotated_bubble(
     stroke_color: Rgba<u8>,
 ) {
     let (safe_w, safe_h) = bubble.area.size();
-    let buf_w = (safe_w.ceil() as u32).max(1);
-    let buf_h = (safe_h.ceil() as u32).max(1);
-
-    let mut buf = RgbaImage::from_pixel(buf_w, buf_h, Rgba([0, 0, 0, 0]));
     let scale = PxScale::from(bubble.font_size_px as f32);
     let line_spacing = bubble.font_size_px as f64 * bubble.line_height;
 
@@ -103,11 +104,26 @@ fn draw_rotated_bubble(
     } else {
         (lines.len() - 1) as f64 * line_spacing + bubble.font_size_px as f64
     };
+
+    // Buffer must be wide enough for the widest line — text is centered
+    // in the buffer, and the composite step maps buffer coords back to
+    // page coords via the bubble's rotation angle. Using safe_w as the
+    // buffer width clips lines that are wider than the bubble (happens
+    // in rotated narrow bubbles), shifting text off-center.
+    let max_line_w = lines
+        .iter()
+        .map(|l| layout::measure_text_width(l, bubble.font_size_px, font))
+        .fold(0.0_f64, f64::max);
+    let buf_w = (max_line_w.max(safe_w).ceil() as u32).max(1);
+    let buf_h = (safe_h.ceil() as u32).max(1);
+
+    let mut buf = RgbaImage::from_pixel(buf_w, buf_h, Rgba([0, 0, 0, 0]));
     let start_y = ((safe_h - total_text_h) / 2.0).max(0.0);
 
     for (i, line) in lines.iter().enumerate() {
         let line_w = layout::measure_text_width(line, bubble.font_size_px, font);
-        let x = ((safe_w - line_w) / 2.0).max(0.0);
+        // Center within the (possibly wider) buffer.
+        let x = (buf_w as f64 - line_w) / 2.0;
         let y = start_y + i as f64 * line_spacing;
         draw_stroked_text(&mut buf, font, line, x as i32, y as i32, scale, text_color, stroke_color, bubble.font_size_px);
     }
@@ -115,15 +131,19 @@ fn draw_rotated_bubble(
     let [cx, cy] = bubble.area.center;
     let cos_a = bubble.area.angle_rad.cos();
     let sin_a = bubble.area.angle_rad.sin();
+    // Map buffer center → bubble center in page coords.
     let local_cx = buf_w as f64 / 2.0;
     let local_cy = buf_h as f64 / 2.0;
     let (cw, ch) = canvas.dimensions();
 
+    // Scan area: bbox padded by the half-width overflow so pixels that
+    // spill outside the tight bbox still get composited.
+    let pad = ((max_line_w - safe_w) / 2.0).max(0.0).ceil() as i32;
     let [bx1, by1, bx2, by2] = bubble.area.bbox;
-    let scan_x1 = (bx1.floor() as i32).max(0) as u32;
-    let scan_y1 = (by1.floor() as i32).max(0) as u32;
-    let scan_x2 = (bx2.ceil() as u32).min(cw);
-    let scan_y2 = (by2.ceil() as u32).min(ch);
+    let scan_x1 = ((bx1.floor() as i32 - pad).max(0)) as u32;
+    let scan_y1 = ((by1.floor() as i32 - pad).max(0)) as u32;
+    let scan_x2 = ((bx2.ceil() as i32 + pad) as u32).min(cw);
+    let scan_y2 = ((by2.ceil() as i32 + pad) as u32).min(ch);
 
     for py in scan_y1..scan_y2 {
         for px in scan_x1..scan_x2 {

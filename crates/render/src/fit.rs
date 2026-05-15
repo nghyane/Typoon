@@ -33,6 +33,11 @@ const MIN_FITTED_TO_SOURCE_RATIO: f64 = 0.65;
 /// look anemic.
 const HEIGHT_OVERFLOW_TOLERANCE: f64 = 0.08;
 
+/// Aspect ratio threshold above which a bubble is considered "tall narrow"
+/// (oriented_h / oriented_w). In these bubbles each word becomes one line;
+/// we fit against the long axis so individual words never char-break.
+const TALL_NARROW_ASPECT_THRESHOLD: f64 = 2.5;
+
 /// Fit prior derived from the source detector (Lens detailed output).
 ///
 /// All fields are in page pixels / counts. `font_size_px` seeds the
@@ -124,20 +129,34 @@ impl FitEngine {
             });
         }
 
+        // Tall-narrow bubbles (vertical label style — aspect > threshold):
+        // fit against safe_h as the wrap width so words are never wider
+        // than the long axis and char-break is impossible. The renderer
+        // still draws lines top-to-bottom inside safe_w; each word
+        // becomes one line and overshots safe_w slightly, which is
+        // acceptable — the alternative (char-breaking ĐỨC → ĐỨ / C)
+        // is unreadable.
+        let aspect = if safe_w > 0.0 { safe_h / safe_w } else { 0.0 };
+        let (fit_w, fit_h) = if aspect > TALL_NARROW_ASPECT_THRESHOLD {
+            (safe_h, safe_w)
+        } else {
+            (safe_w, safe_h)
+        };
+
         let font = layout::get_font();
-        let hi_bound = (safe_h as u32).min(max_font);
+        let hi_bound = (fit_h as u32).min(max_font);
         // Allow text block to overshoot height by HEIGHT_OVERFLOW_TOLERANCE.
-        let tolerant_h = safe_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
+        let tolerant_h = fit_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
 
         // Binary search for the largest size that fits within tolerance.
         let mut lo = MIN_FONT_SIZE;
         let mut hi = hi_bound;
         let mut best_size = MIN_FONT_SIZE;
-        let mut best_wrapped = layout::wrap_text(&text, safe_w, MIN_FONT_SIZE, font);
+        let mut best_wrapped = layout::wrap_text(&text, fit_w, MIN_FONT_SIZE, font);
 
         while lo <= hi {
             let mid = (lo + hi) / 2;
-            let wrapped = layout::wrap_text(&text, safe_w, mid, font);
+            let wrapped = layout::wrap_text(&text, fit_w, mid, font);
             let total_h = text_block_height(wrapped.len(), mid);
 
             if total_h <= tolerant_h {
@@ -151,20 +170,15 @@ impl FitEngine {
             }
         }
 
-        // Hint-guided refinement: when a typesetting hint is available,
-        // try sizes near the source font and pick the one whose wrapped
-        // line count best matches `hint.line_count`. Only override the
-        // pure-search result if the alternative also fits.
+        // Hint-guided refinement.
         let (final_size, final_wrapped) = match hint {
             Some(h) => refine_with_hint(
-                &text, safe_w, safe_h, font, h, best_size, best_wrapped.clone(),
+                &text, fit_w, fit_h, font, h, best_size, best_wrapped.clone(),
             ),
             None => (best_size, best_wrapped),
         };
 
         let total_h = text_block_height(final_wrapped.len(), final_size);
-        // Overflow only when the text block exceeds even the tolerant
-        // bound — small overshoot inside tolerance is reported as OK.
         let overflow = total_h > tolerant_h || final_size < MIN_FONT_SIZE;
 
         Ok(FitResult {
@@ -489,5 +503,37 @@ mod tests {
 
         assert!(!result[0].overflow);
         assert!(result[0].font_size_px >= MIN_FONT_SIZE);
+    }
+
+    #[test]
+    fn test_tall_narrow_bubble_does_not_char_break() {
+        // Reproduces the "MỘ LÂM ĐỨC HỮU" bug: a vertical name banner
+        // (~35px wide, ~220px tall). Before the fix ĐỨC was char-broken
+        // into ĐỨ / C because safe_w was narrower than the word.
+        // After the fix fit uses safe_h as wrap width → each word = 1 line.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [35.0, 0.0], [35.0, 220.0], [0.0, 220.0]],
+            2.0,
+        );
+        let text = "MỘ LÂM ĐỨC HỮU";
+        let result = FitEngine::fit_page_areas(&[(text, &area, None)], 800).unwrap();
+
+        // Must not overflow.
+        assert!(
+            !result[0].overflow,
+            "tall-narrow bubble should not overflow"
+        );
+        // Font must be readable (not collapsed to minimum).
+        assert!(
+            result[0].font_size_px >= 12,
+            "font too small: {}px", result[0].font_size_px,
+        );
+        // No line should be a single character (char-break sign).
+        for line in result[0].text.lines() {
+            assert!(
+                line.chars().count() >= 2,
+                "char-broken line detected: {:?} in {:?}", line, result[0].text,
+            );
+        }
     }
 }
