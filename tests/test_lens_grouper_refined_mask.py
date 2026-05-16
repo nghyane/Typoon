@@ -136,3 +136,89 @@ def test_refined_mask_fills_per_word_padding():
     # plus dilate radius 10 → still painted at lx~308
     # (in block-local coords; word at 100..300 → block-local 100..300)
     assert tm.image[100, 305] == 255
+
+
+# ─── Row-gap aware mask ───────────────────────────────────────────────────
+
+
+def test_row_gap_mask_stretches_short_middle_row():
+    """When a non-edge row is anomalously narrow vs the others, the
+    mask must paint the full block width at that row's y-range.
+
+    This covers the case where Lens drops glyphs around dense
+    decoration (e.g. CJK ellipsis 「······」). The block geometry is
+    fine but the word bboxes only cover the surviving suffix; erase
+    must wipe the dropped glyphs from canvas too.
+    """
+    # 4-row block: rows 0, 1, 3 are 200 wide; row 2 only covers the
+    # right-most word band (x=300..360). Median of others = 200 → row 2
+    # ratio 60/200 = 0.30 < 0.5 → flagged.
+    block = _block_with_lines(
+        (0, 0, 400, 200),
+        "row0 row1 short row3",
+        words=[
+            WordBox(bbox=(20, 5,   220, 35),  text="row0"),
+            WordBox(bbox=(20, 55,  220, 85),  text="row1"),
+            # row 2 only has a tail word at the far right
+            WordBox(bbox=(300, 105, 360, 135), text="short"),
+            WordBox(bbox=(20, 155, 220, 185), text="row3"),
+        ],
+        lines=[
+            LineBox(bbox=(20, 5,   220, 35),  text="row0"),
+            LineBox(bbox=(20, 55,  220, 85),  text="row1"),
+            LineBox(bbox=(300, 105, 360, 135), text="short"),
+            LineBox(bbox=(20, 155, 220, 185), text="row3"),
+        ],
+    )
+    det = DetectionResult(
+        blocks=(block,),
+        text_already_recognized=True,
+        page_size=(500, 500),
+    )
+    groups = _run(det)
+    tm = groups[0].text_masks[0]
+    # In block-local coords. Row 2 y-range is 105..135.
+    # Without row-gap recovery, x ∈ [10, 290] in that band would be 0.
+    # With recovery, the whole band x ∈ [0, 400) should be painted.
+    assert tm.image[120, 10]  == 255, "row 2 left half should be painted"
+    assert tm.image[120, 200] == 255, "row 2 middle should be painted"
+    assert tm.image[120, 350] == 255, "row 2 right (tail word) painted"
+    # Rows 1 and 3 should NOT bleed sideways — verify a point far from
+    # any word but in their y-band is still 0 (mask did not become a
+    # full block rect).
+    # Row 1 y=55..85. Mid x=300 is outside word bbox, far from row 0/2.
+    # Expanded pad ~12% × font (=30) ≈ 4 px; with dilate 3, total reach
+    # is small. Pixel at row1_y=70, x=295 must be 0.
+    assert tm.image[70, 295] == 0, "row 1 right gap stayed clean"
+
+
+def test_row_gap_mask_does_not_trigger_on_edge_rows():
+    """First and last rows being short is legitimate. Mask must not
+    stretch the edges to block width when only edge rows are narrow."""
+    block = _block_with_lines(
+        (0, 0, 400, 200),
+        "x mid mid x",
+        words=[
+            WordBox(bbox=(20, 5,   80,  35),  text="x"),     # short edge
+            WordBox(bbox=(20, 55,  380, 85),  text="middle 1"),
+            WordBox(bbox=(20, 105, 380, 135), text="middle 2"),
+            WordBox(bbox=(20, 155, 80,  185), text="x"),     # short edge
+        ],
+        lines=[
+            LineBox(bbox=(20, 5,   80,  35),  text="x"),
+            LineBox(bbox=(20, 55,  380, 85),  text="middle 1"),
+            LineBox(bbox=(20, 105, 380, 135), text="middle 2"),
+            LineBox(bbox=(20, 155, 80,  185), text="x"),
+        ],
+    )
+    det = DetectionResult(
+        blocks=(block,),
+        text_already_recognized=True,
+        page_size=(500, 500),
+    )
+    groups = _run(det)
+    tm = groups[0].text_masks[0]
+    # Row 0 right of word (x=200, y=20) — must stay 0. If edge-row
+    # stretching kicked in this would be 255.
+    assert tm.image[20, 300]  == 0, "edge row 0 right gap stayed clean"
+    assert tm.image[170, 300] == 0, "edge row 3 right gap stayed clean"
