@@ -18,6 +18,8 @@ Filters (from poc_lens_v3 empirical evidence):
   - tiny_bbox       — < 25×18 (decoration star/dots)
   - decoration_only — only symbols, no letter/digit
   - huge_bbox       — area/char > 6000 (Lens hallucinated on art region)
+  - cross_column    — paragraph whose lines sit inside ≥2 other paragraphs
+                      (tile-boundary artefact gluing tategaki column tails).
 """
 
 from __future__ import annotations
@@ -25,13 +27,16 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import math
 import os
+import statistics
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from functools import cache
 
 import numpy as np
+from PIL import Image as _PILImage
 
 from ..contracts import DetectionResult, LineBox, TextBlock, WordBox
 
@@ -60,6 +65,57 @@ _MIN_BBOX_AREA   = 700
 _MAX_AREA_PER_CHAR = 6000
 
 _DECORATION_CHARS = frozenset("★☆●○◎◇◆□■▲△▽▼※・…—–-_=+×÷")
+
+# Cross-column artefact: at least this many of a paragraph's lines must
+# land inside (line area / parent area) other paragraphs to call it a
+# tile-boundary union hallucination.
+_CROSS_COLUMN_MIN_LINES_ABSORBED = 2
+_CROSS_COLUMN_LINE_INSIDE_RATIO  = 0.70  # fraction of line area that must overlap parent
+
+# Row recognition gap: a row whose width is below this fraction of the
+# block's other rows' median width is flagged for re-OCR. Empirically
+# Lens drops glyphs around dense ellipsis runs (e.g. "难道······他 才是")
+# and emits only the unaffected suffix; the row geometry stays correct
+# so the y-band still localises the missed glyphs.
+_ROW_GAP_SHORT_RATIO = 0.5
+_ROW_GAP_MIN_LINES   = 3      # need >=3 lines to compute a meaningful median
+_ROW_REOCR_MIN_DIM   = 200    # min(h, w) target for the re-OCR crop (upscale below)
+_ROW_REOCR_PAD_Y_FRAC = 0.45  # vertical breathing room around the row crop
+_ROW_REOCR_PAD_X_PX   = 6
+
+# Mapping from our `source_lang` to Lens `ocr_language`. English / unset
+# stays "" (auto) so mixed-script pages (e.g. JP manga with EN SFX) keep
+# both scripts. Other source languages pass through as an explicit hint.
+_LENS_LANG_HINTS: dict[str, str] = {
+    "ja":      "ja",
+    "ja-JP":   "ja",
+    "zh":      "zh-Hans",
+    "zh-CN":   "zh-Hans",
+    "zh-Hans": "zh-Hans",
+    "zh-Hant": "zh-Hant",
+    "zh-TW":   "zh-Hant",
+    "zh-HK":   "zh-Hant",
+    "ko":      "ko",
+    "ko-KR":   "ko",
+    "vi":      "vi",
+    "vi-VN":   "vi",
+}
+
+
+def _lens_lang_hint(source_lang: str | None) -> str:
+    """Map our `source_lang` to a Lens `ocr_language` argument.
+
+    Returns ``""`` (auto-detect) for English or unset — manga pages
+    routinely mix scripts (JP dialogue with EN sound effects) and a
+    hard English hint suppresses non-Latin recognition. JP/CN/KO/VI
+    pass through as explicit hints; unknown locales fall through to
+    auto as well.
+    """
+    if not source_lang:
+        return ""
+    if source_lang.lower().startswith("en"):
+        return ""
+    return _LENS_LANG_HINTS.get(source_lang, "")
 
 
 # ─── Errors ───────────────────────────────────────────────────────────────
@@ -113,7 +169,212 @@ def _filter_blocks(
             rejected.append((b, "huge_bbox"))
         else:
             kept.append(b)
+
+    kept, cross_rejected = _drop_cross_column_artifacts(kept)
+    rejected.extend(cross_rejected)
     return kept, rejected
+
+
+def _bbox_inside_ratio(child: tuple[int, int, int, int],
+                       parent: tuple[int, int, int, int]) -> float:
+    """Fraction of `child` area that lies inside `parent`."""
+    cx1, cy1, cx2, cy2 = child
+    px1, py1, px2, py2 = parent
+    ix1, iy1 = max(cx1, px1), max(cy1, py1)
+    ix2, iy2 = min(cx2, px2), min(cy2, py2)
+    if ix1 >= ix2 or iy1 >= iy2:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area = max(1, (cx2 - cx1) * (cy2 - cy1))
+    return inter / area
+
+
+def _drop_cross_column_artifacts(
+    blocks: list[TextBlock],
+) -> tuple[list[TextBlock], list[tuple[TextBlock, str]]]:
+    """Drop paragraphs whose lines are absorbed by ≥2 other paragraphs.
+
+    Lens occasionally emits a phantom horizontal "paragraph" near a tile
+    overlap by stitching together the tail line of multiple adjacent
+    tategaki columns. Each constituent line bbox geometrically sits inside
+    a different real column paragraph, but pairwise bbox-IoU never reaches
+    the dedup threshold because the phantom spans across the columns.
+
+    Signal: line bboxes contained in ≥2 distinct other paragraphs.
+    Substring text match is intentionally not required — Lens often
+    mis-OCRs the partial glyphs in the union (e.g. "军答" instead of
+    "答"), so we rely on geometry only.
+    """
+    if len(blocks) < 3:
+        return list(blocks), []
+
+    kept: list[TextBlock] = []
+    rejected: list[tuple[TextBlock, str]] = []
+    for i, b in enumerate(blocks):
+        if len(b.lines) < _CROSS_COLUMN_MIN_LINES_ABSORBED:
+            kept.append(b)
+            continue
+        absorbing_parents: set[int] = set()
+        for ln in b.lines:
+            for j, other in enumerate(blocks):
+                if j == i:
+                    continue
+                if _bbox_inside_ratio(ln.bbox, other.bbox) >= _CROSS_COLUMN_LINE_INSIDE_RATIO:
+                    absorbing_parents.add(j)
+                    break
+        if len(absorbing_parents) >= _CROSS_COLUMN_MIN_LINES_ABSORBED:
+            rejected.append((b, "cross_column"))
+        else:
+            kept.append(b)
+    return kept, rejected
+
+
+# ─── Row-level recognition gap recovery ───────────────────────────────────
+
+
+def _suspicious_line_indices(block: TextBlock) -> list[int]:
+    """Non-edge rows whose width is anomalously short vs the rest.
+
+    Lens occasionally drops glyphs around a dense run of decoration
+    characters (e.g. CJK ellipsis 「······」), keeping only the
+    unaffected suffix on that row. The row's bbox geometry stays
+    correct so we can localise the dropped glyphs by re-OCRing the
+    full-width band at that y-range.
+
+    First / last lines are excluded — those are often legitimately
+    short (closing punctuation, ragged justification at paragraph
+    edges) and shouldn't trigger recovery.
+    """
+    lines = block.lines
+    if len(lines) < _ROW_GAP_MIN_LINES:
+        return []
+    widths = [max(1, l.bbox[2] - l.bbox[0]) for l in lines]
+    out: list[int] = []
+    for i in range(1, len(lines) - 1):
+        others = widths[:i] + widths[i + 1:]
+        median_w = statistics.median(others)
+        if widths[i] / median_w < _ROW_GAP_SHORT_RATIO:
+            out.append(i)
+    return out
+
+
+def _row_recover_crop_bbox(
+    block: TextBlock,
+    line_idx: int,
+    page_w: int,
+    page_h: int,
+) -> tuple[int, int, int, int]:
+    """Crop spanning the full block width at the row's y-range plus padding."""
+    line = block.lines[line_idx]
+    lh = max(1, line.bbox[3] - line.bbox[1])
+    pad_y = int(lh * _ROW_REOCR_PAD_Y_FRAC)
+    x1 = max(0, block.bbox[0] - _ROW_REOCR_PAD_X_PX)
+    x2 = min(page_w, block.bbox[2] + _ROW_REOCR_PAD_X_PX)
+    y1 = max(0, line.bbox[1] - pad_y)
+    y2 = min(page_h, line.bbox[3] + pad_y)
+    return (x1, y1, x2, y2)
+
+
+async def _reocr_row(
+    api,
+    image: np.ndarray,
+    crop_bbox: tuple[int, int, int, int],
+    lang_hint: str,
+) -> str:
+    """Re-OCR one row crop; return concatenated paragraph text.
+
+    Crops shorter than `_ROW_REOCR_MIN_DIM` on the short axis are
+    upscaled with Lanczos resampling. Lens recognition quality drops
+    sharply below ~200px on the short side; the upscale is the only
+    thing that consistently recovers missed glyphs in the
+    full-page→full-row path.
+    """
+    x1, y1, x2, y2 = crop_bbox
+    crop = image[y1:y2, x1:x2]
+    if crop.size == 0:
+        return ""
+    h, w = crop.shape[:2]
+    if min(h, w) < _ROW_REOCR_MIN_DIM:
+        scale = max(1, int(np.ceil(_ROW_REOCR_MIN_DIM / min(h, w))))
+        pil = _PILImage.fromarray(crop).resize(
+            (w * scale, h * scale), _PILImage.LANCZOS
+        )
+        crop = np.asarray(pil)
+    try:
+        result = await api.process_image(
+            crop,
+            ocr_language=lang_hint,
+            output_format="detailed",
+        )
+    except Exception as e:
+        logger.warning("lens row re-OCR failed: %s", e)
+        return ""
+    paragraphs = result.get("detailed_blocks") or []
+    chunks: list[str] = []
+    for p in paragraphs:
+        t = (p.get("text") or "").replace("\n", " ").strip()
+        if t:
+            chunks.append(t)
+    return "  ".join(chunks)
+
+
+async def _recover_row_gaps(
+    api,
+    image: np.ndarray,
+    blocks: list[TextBlock],
+    lang_hint: str,
+) -> list[TextBlock]:
+    """Re-OCR suspicious rows; splice recovered text back into the block.
+
+    Only mutates `block.text` and `block.lines[i].text` — geometry and
+    word-level bboxes are preserved. Words are intentionally NOT
+    rewritten: their bboxes correspond to glyphs Lens did detect, and
+    grouper mask building handles the recognition gap on its own
+    (row-aware glyph mask in `lens_native._build_glyph_mask`).
+    """
+    page_h, page_w = image.shape[:2]
+    out: list[TextBlock] = []
+    for block in blocks:
+        sus = _suspicious_line_indices(block)
+        if not sus:
+            out.append(block)
+            continue
+        new_lines = list(block.lines)
+        recovered_any = False
+        for idx in sus:
+            crop_bbox = _row_recover_crop_bbox(block, idx, page_w, page_h)
+            new_text = await _reocr_row(api, image, crop_bbox, lang_hint)
+            if not new_text or new_text == new_lines[idx].text:
+                continue
+            old = new_lines[idx]
+            new_lines[idx] = LineBox(
+                bbox=old.bbox,
+                text=new_text,
+                rotation_deg=old.rotation_deg,
+            )
+            recovered_any = True
+            logger.info(
+                "lens row recovery: %r -> %r", old.text, new_text,
+            )
+        if not recovered_any:
+            out.append(block)
+            continue
+        merged_text = " ".join(l.text for l in new_lines if l.text.strip())
+        out.append(
+            TextBlock(
+                bbox=block.bbox,
+                polygon=block.polygon,
+                confidence=block.confidence,
+                text=merged_text,
+                detector=block.detector,
+                text_mask=block.text_mask,
+                rotation_deg=block.rotation_deg,
+                words=block.words,
+                lines=tuple(new_lines),
+                text_direction=block.text_direction,
+            )
+        )
+    return out
 
 
 # ─── Tile dedup ───────────────────────────────────────────────────────────
@@ -209,19 +470,28 @@ class LensBlocksDetector:
     async def detect(self, image: np.ndarray, lang: str | None) -> DetectionResult:
         """Run Lens OCR on the image.
 
-        `lang` is currently ignored — Lens auto-detects script per tile,
-        which produces better results than a forced hint (verified on
-        mixed JP/EN manga pages with embedded Japanese SFX). The detected
-        language is surfaced via `DetectionResult.detected_lang`.
+        `lang` is the upstream source-language hint (BCP-47-ish, e.g.
+        ``"zh-Hans"``, ``"ja"``). It maps via `_lens_lang_hint` to a
+        Lens `ocr_language` argument; English / unset stay on Lens
+        auto-detect so mixed-script pages (JP dialogue + EN SFX) keep
+        both scripts. The Lens-detected language is still surfaced via
+        `DetectionResult.detected_lang`.
+
+        After the main tile pass, blocks with a suspiciously short
+        non-edge line are re-OCRed at row granularity to recover glyphs
+        Lens dropped around dense decoration runs (e.g. ellipsis).
         """
         api = await self._get_api()
         h, w = image.shape[:2]
+        lang_hint = _lens_lang_hint(lang)
 
         tiles = list(_iter_tiles(image))
         try:
             async with asyncio.TaskGroup() as tg:
                 tasks = [
-                    tg.create_task(_ocr_tile(api, tile, origin_y, w))
+                    tg.create_task(
+                        _ocr_tile(api, tile, origin_y, w, lang_hint)
+                    )
                     for origin_y, tile in tiles
                 ]
         except* Exception as eg:
@@ -248,10 +518,16 @@ class LensBlocksDetector:
         ]
         kept, rejected = _filter_blocks(all_blocks)
 
-        tile_langs = [lang for _, lang in per_tile if lang]
+        tile_langs = [tl for _, tl in per_tile if tl]
         detected_lang = (
             Counter(tile_langs).most_common(1)[0][0] if tile_langs else None
         )
+
+        # Row-level recovery for blocks where Lens dropped glyphs in the
+        # middle of a line. The hint passed here prefers the upstream
+        # `lang` over Lens's per-page detection, but falls back to it.
+        recovery_hint = lang_hint or _lens_lang_hint(detected_lang)
+        kept = await _recover_row_gaps(api, image, kept, recovery_hint)
 
         return DetectionResult(
             blocks=tuple(kept),
@@ -302,16 +578,18 @@ async def _ocr_tile(
     tile: np.ndarray,
     origin_y: int,
     page_width: int,
+    lang_hint: str = "",
 ) -> tuple[list[_RawBlock], str | None]:
-    """OCR one tile; let Lens auto-detect the script.
+    """OCR one tile.
 
     Returns (blocks, detected_language). Per-tile errors are non-fatal:
     Lens commonly returns nothing on a tile of pure art, which is fine.
+    `lang_hint` is the Lens `ocr_language` argument; ``""`` = auto.
     """
     try:
         result = await api.process_image(
             tile,
-            ocr_language="",  # "" = Lens auto-detect (DEFAULT_OCR_LANG)
+            ocr_language=lang_hint,
             output_format="detailed",
         )
     except Exception as e:
@@ -403,7 +681,20 @@ def _collect_words(
 def _norm_geom_to_pixels(
     geom: dict, origin_y: int, page_width: int, tile_h: int,
 ) -> tuple[int, int, int, int] | None:
-    """Convert Lens normalised geometry (center+size in [0, 1]) to page pixels."""
+    """Convert Lens normalised geometry (center+size in [0, 1]) to page pixels.
+
+    Lens reports ``width`` and ``height`` in the text box's **own axes**,
+    paired with ``rotation_z`` (radians, converted to ``angle_deg``
+    upstream). For axis-aligned text the rotation is ≈0 and the bbox is
+    width×height around (cx, cy). For rotated text — manga SFX (10–45°),
+    side-rotated watermarks (~90°) — naively using width/height as page
+    AABB swaps the visual extents (a watermark "manhuaren.com" rotated
+    90° gets reported as 93px wide × 14px tall when its on-page extent
+    is the opposite).
+
+    We rotate the four corners around the centre and take the axis-aligned
+    page bounding box. Result: bbox always reflects on-page pixel extent.
+    """
     try:
         cx = float(geom["center_x"]) * page_width
         cy = float(geom["center_y"]) * tile_h
@@ -411,13 +702,31 @@ def _norm_geom_to_pixels(
         bh = float(geom["height"]) * tile_h
     except (KeyError, TypeError, ValueError):
         return None
-    x1 = max(0, int(cx - bw / 2))
-    x2 = min(page_width, int(cx + bw / 2))
-    y1 = origin_y + int(cy - bh / 2)
-    y2 = origin_y + int(cy + bh / 2)
-    if x2 <= x1 or y2 <= y1:
+    angle_deg = float(geom.get("angle_deg") or 0.0)
+    if abs(angle_deg) < 0.5:
+        # Cheap path — axis-aligned (most paragraphs).
+        x1 = cx - bw / 2
+        x2 = cx + bw / 2
+        y1 = cy - bh / 2
+        y2 = cy + bh / 2
+    else:
+        rad = math.radians(angle_deg)
+        cos_t = math.cos(rad)
+        sin_t = math.sin(rad)
+        hx, hy = bw / 2, bh / 2
+        # Four corners of the local rect, rotated around (0, 0)
+        corners = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
+        xs = [cx + x * cos_t - y * sin_t for x, y in corners]
+        ys = [cy + x * sin_t + y * cos_t for x, y in corners]
+        x1, x2 = min(xs), max(xs)
+        y1, y2 = min(ys), max(ys)
+    x1_i = max(0, int(x1))
+    x2_i = min(page_width, int(x2))
+    y1_i = origin_y + int(y1)
+    y2_i = origin_y + int(y2)
+    if x2_i <= x1_i or y2_i <= y1_i:
         return None
-    return (x1, y1, x2, y2)
+    return (x1_i, y1_i, x2_i, y2_i)
 
 
 def _extract_content_language(result: dict) -> str | None:
