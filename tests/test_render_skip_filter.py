@@ -43,13 +43,13 @@ class _RecordingEraser:
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _box(x: int) -> scan.Box:
-    return scan.Box(
-        polygon=[[float(x), 0], [float(x + 10), 0], [float(x + 10), 10], [float(x), 10]],
-        fit=[x, 0, x + 10, 10],
-        erase=[x, 0, x + 10, 10],
-        text=[x, 0, x + 10, 10],
-    )
+def _polygon(x: int) -> list[list[float]]:
+    return [
+        [float(x), 0.0],
+        [float(x + 10), 0.0],
+        [float(x + 10), 10.0],
+        [float(x), 10.0],
+    ]
 
 
 def _bubble(
@@ -60,7 +60,7 @@ def _bubble(
         page_index=0,
         source_text=source_text,
         confidence=1.0,
-        box=_box(idx * 20),
+        polygon=_polygon(idx * 20),
     )
     return translate.Bubble(
         source=src,

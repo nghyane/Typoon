@@ -46,6 +46,7 @@ export function ReaderBody({
       <StripView
         pages={source.pages}
         urls={source.urls}
+        rawSource={source.rawSource}
         onVisiblePageChange={onVisiblePageChange}
         endSlot={endSlot}
       />
@@ -56,6 +57,7 @@ export function ReaderBody({
         <PagerView
           pages={source.pages}
           urls={source.urls}
+          rawSource={source.rawSource}
           page={page}
           onPastEnd={onPastEnd}
         />

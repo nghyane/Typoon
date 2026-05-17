@@ -9,7 +9,6 @@
   "icon":      "https://mangadex.org/pwa/icons/icon-180.png",
 
   "defaults": {
-    "rating":  ["safe", "suggestive"],
     "language": ["en"]
   },
 
@@ -19,9 +18,34 @@
       "label": "Nội dung",
       "type":  "multi",
       "options": [
-        { "id": "safe",         "label": "Lành mạnh",    "param": "contentRating[]=safe" },
-        { "id": "suggestive",   "label": "Gợi cảm",      "param": "contentRating[]=suggestive" },
-        { "id": "erotica",      "label": "Erotica",      "param": "contentRating[]=erotica" }
+        { "id": "erotica", "label": "18+", "param": "contentRating[]=erotica", "nsfw": true }
+      ]
+    },
+    {
+      "id":    "genre",
+      "label": "Thể loại",
+      "type":  "multi",
+      "options": [
+        { "id": "action",       "label": "Action",       "param": "includedTags[]=391b0423-d847-456f-aff0-8b0cfc03066b" },
+        { "id": "adventure",    "label": "Adventure",    "param": "includedTags[]=87cc87cd-a395-47af-b27a-93258283bbc6" },
+        { "id": "comedy",       "label": "Comedy",       "param": "includedTags[]=4d32cc48-9f00-4cca-9b5a-a839f0764984" },
+        { "id": "drama",        "label": "Drama",        "param": "includedTags[]=b9af3a63-f058-46de-a9a0-e0c13906197a" },
+        { "id": "fantasy",      "label": "Fantasy",      "param": "includedTags[]=cdc58593-87dd-415e-bbc0-2ec27bf404cc" },
+        { "id": "horror",       "label": "Horror",       "param": "includedTags[]=cdad7e68-1419-41dd-bdce-27753074a640" },
+        { "id": "isekai",       "label": "Isekai",       "param": "includedTags[]=ace04997-f6bd-436e-b261-779182193d3d" },
+        { "id": "mystery",      "label": "Mystery",      "param": "includedTags[]=ee968100-4191-4968-93d3-f82d72be7e46" },
+        { "id": "psychological","label": "Psychological","param": "includedTags[]=3b60b75c-a2d7-4860-ab56-05f391bb889c" },
+        { "id": "romance",      "label": "Romance",      "param": "includedTags[]=423e2eae-a7a2-4a8b-ac03-a8351462d71d" },
+        { "id": "sci-fi",       "label": "Sci-Fi",       "param": "includedTags[]=256c8bd9-4904-4360-bf4f-508a76d67183" },
+        { "id": "slice-of-life","label": "Slice of Life","param": "includedTags[]=e5301a23-ebd9-49dd-a0cb-2add944c7fe9" },
+        { "id": "sports",       "label": "Sports",       "param": "includedTags[]=69964a64-2f90-4d33-beeb-f3ed2875eb4c" },
+        { "id": "thriller",     "label": "Thriller",     "param": "includedTags[]=07251805-a27e-4d59-b488-f0bfbec15168" },
+        { "id": "tragedy",      "label": "Tragedy",      "param": "includedTags[]=f8f62932-27da-4fe4-8ee1-6779a8c5edba" },
+        { "id": "historical",   "label": "Historical",   "param": "includedTags[]=33771934-028e-4cb3-8744-691e866a923e" },
+        { "id": "mecha",        "label": "Mecha",        "param": "includedTags[]=50880a9d-5440-4732-9afb-8f457127e836" },
+        { "id": "boys-love",    "label": "Boys' Love",   "param": "includedTags[]=5920b825-4181-4a17-beeb-9918b0ff7a30" },
+        { "id": "girls-love",   "label": "Girls' Love",  "param": "includedTags[]=a3c67850-4684-404e-9b7f-c69850ee5da6" },
+        { "id": "supernatural", "label": "Supernatural", "param": "includedTags[]=eabc5b4c-6aff-42f3-b657-3e90cbd00b75" }
       ]
     },
     {
@@ -33,7 +57,7 @@
         { "id": "vi",    "label": "Tiếng Việt",  "param": "availableTranslatedLanguage[]=vi" },
         { "id": "ja",    "label": "日本語",       "param": "availableTranslatedLanguage[]=ja" },
         { "id": "ko",    "label": "한국어",       "param": "availableTranslatedLanguage[]=ko" },
-        { "id": "zh",    "label": "中文",        "param": "availableTranslatedLanguage[]=zh" },
+        { "id": "zh",    "label": "中文",         "param": "availableTranslatedLanguage[]=zh" },
         { "id": "pt-br", "label": "Português",   "param": "availableTranslatedLanguage[]=pt-br" },
         { "id": "es",    "label": "Español",     "param": "availableTranslatedLanguage[]=es" },
         { "id": "fr",    "label": "Français",    "param": "availableTranslatedLanguage[]=fr" },
@@ -50,7 +74,7 @@
         "label": "Phổ biến",
         "endpoint": {
           "method": "GET",
-          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[followedCount]=desc{filterParams}",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[followedCount]=desc&contentRating[]=safe&contentRating[]=suggestive{filterParams}",
           "parse":  "json",
           "pagination": { "type": "offset", "pageSize": 24 },
           "list":   "$.data[*]",
@@ -70,7 +94,7 @@
         "label": "Mới cập nhật",
         "endpoint": {
           "method": "GET",
-          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[latestUploadedChapter]=desc{filterParams}",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[latestUploadedChapter]=desc&contentRating[]=safe&contentRating[]=suggestive{filterParams}",
           "parse":  "json",
           "pagination": { "type": "offset", "pageSize": 24 },
           "list":   "$.data[*]",
@@ -90,7 +114,7 @@
         "label": "Mới ra mắt",
         "endpoint": {
           "method": "GET",
-          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[createdAt]=desc{filterParams}",
+          "url":    "https://api.mangadex.org/manga?limit=24&offset={offset}&includes[]=cover_art&order[createdAt]=desc&contentRating[]=safe&contentRating[]=suggestive{filterParams}",
           "parse":  "json",
           "pagination": { "type": "offset", "pageSize": 24 },
           "list":   "$.data[*]",
@@ -109,7 +133,7 @@
 
     "search": {
       "method": "GET",
-      "url":    "https://api.mangadex.org/manga?title={q:q}&limit=24&offset={offset}&includes[]=cover_art{filterParams}",
+      "url":    "https://api.mangadex.org/manga?title={q:q}&limit=24&offset={offset}&includes[]=cover_art&contentRating[]=safe&contentRating[]=suggestive{filterParams}",
       "parse":  "json",
       "pagination": { "type": "offset", "pageSize": 24 },
       "list":   "$.data[*]",

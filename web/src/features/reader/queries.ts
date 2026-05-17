@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { api } from '@shared/api/api'
 import { qk } from '@shared/api/keys'
-import { fetchChapterPages } from '@features/browse/manifest/runtime'
+import { fetchChapterPages, resolvePageUrl } from '@features/browse/manifest/runtime'
 import type { InstalledSource } from '@features/browse/manifest/types'
 
 
@@ -62,5 +62,35 @@ export function useChapterPages(
     retry:     2,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
     placeholderData: undefined,
+  })
+}
+
+
+/** Lazily resolve one page URL from a token. Fires only when the
+ *  slot is in the viewport (`enabled`). Each token maps to its own
+ *  React Query cache entry so resolved URLs survive chapter re-opens
+ *  without re-fetching.
+ *
+ *  Cache design:
+ *   - staleTime: Infinity — resolved URL for a token never changes
+ *     within a session (same content, same CDN path).
+ *   - gcTime: 30 min — keeps warm pages across chapter switches
+ *     without holding memory forever.
+ *   - retry: 1 — transient CDN errors are common; one retry is cheap. */
+export function usePageUrl(
+  source:    InstalledSource | null,
+  token:     string | null | undefined,
+  enabled:   boolean,
+) {
+  return useQuery({
+    queryKey: source && token
+      ? qk.manifest.pageUrl(source.manifest.id, token)
+      : ['manifest', 'page-url', 'invalid'] as const,
+    queryFn:  () => resolvePageUrl(source!.manifest, token!),
+    enabled:  enabled && source != null && !!token,
+    staleTime: Infinity,
+    gcTime:    30 * 60_000,
+    retry:     1,
+    retryDelay: 1000,
   })
 }

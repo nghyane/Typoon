@@ -108,6 +108,10 @@ async def _render_one_page(
 
     original = await asyncio.to_thread(reader.read_rgb, tp.index)
     canvas = _to_rgba(original)
+    # `original` is just the source for `canvas`; we no longer pass it
+    # separately to the renderer. Drop the reference so numpy can reclaim
+    # the buffer if the GC runs before render_page completes.
+    del original
     page_masks = masks.page_masks(tp.index)
 
     # Single predicate drives BOTH erase and re-render: LLM marks
@@ -129,7 +133,20 @@ async def _render_one_page(
         async with runtime.erase_gate:
             await runtime.eraser.erase(canvas, erase_masks)
 
-    clean = canvas[:, :, :3]
+    # Inpaint output IS the render input. The eraser mutated `canvas`
+    # in place; the renderer's border-inset detector reads bubble
+    # outlines from the same RGBA buffer (inpaint preserves them).
+    #
+    # Dump the inpainted intermediate before render writes glyphs on top
+    # — the only visual signal for AOT erase quality (text-bleed,
+    # over-erase onto art, fallback colour). Production worker passes
+    # `artifacts=None`, so no overhead in the hot path.
+    if artifacts is not None:
+        await asyncio.to_thread(
+            artifacts.write_image, "07_render",
+            f"{tp.index:04d}_inpainted.png", canvas,
+        )
+
     pg_geom = page_geoms.get(tp.index)
     geom_by_idx = {bg.bubble_idx: bg for bg in pg_geom.bubbles} if pg_geom else {}
 
@@ -144,14 +161,11 @@ async def _render_one_page(
     texts    = [t[2] for t in active_triples]
     hints    = [_geom_to_hint(t[1]) for t in active_triples]
 
-    # `geom_by_idx[idx].rotation_deg` is surfaced by detectors (Lens
-    # paragraph angle) but the current typoon_render binding does not
-    # accept per-bubble rotation. Once the Rust crate exposes a
-    # `rotations` arg, pass:
-    #   rotations = [t[1].rotation_deg for t in active_triples]
+    # Polygon already carries the drawable area (Lens word union +
+    # padding); no border scan, no bubble-mask expansion needed.
     result = await asyncio.to_thread(
         typoon_render.typoon_render.render,
-        original, clean, polygons, texts, original.shape[1], hints,
+        canvas, polygons, texts, canvas.shape[1], hints,
     )
 
     active_info = {tb.idx: rb for tb, rb in zip(active, result.bubbles)}
@@ -229,6 +243,9 @@ def _geom_to_hint(geom):
     Returns None when the detector did not surface line geometry
     (`src_font_size_px == 0`), letting render's fit fall back to pure
     binary search.
+
+    Passes `text_direction` so Rust can skip hint refinement for
+    vertical-source (Japanese tategaki) bubbles.
     """
     if geom.src_font_size_px <= 0 or geom.src_line_count <= 0:
         return None
@@ -237,12 +254,16 @@ def _geom_to_hint(geom):
         font_size_px=geom.src_font_size_px,
         line_count=geom.src_line_count,
         avg_chars_per_line=geom.src_avg_chars_per_line,
+        text_direction=geom.text_direction,
     )
 
 
-def _write_jpeg(path: Path, rgb: np.ndarray) -> None:
+def _write_jpeg(path: Path, rgba: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    # Renderer outputs RGBA; JPEG is RGB-only. Drop alpha at the
+    # encoder boundary, not at the renderer — keeps the rest of the
+    # pipeline single-format.
+    bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
     if not cv2.imwrite(
         str(path), bgr,
         [cv2.IMWRITE_JPEG_QUALITY, 92, cv2.IMWRITE_JPEG_OPTIMIZE, 1],

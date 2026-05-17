@@ -13,7 +13,11 @@ export type ViewMode = 'continuous' | 'single'
 /** One page in the reader. `url` is null while the page is still
  *  being fetched; the slot still reserves its aspect-ratio box so
  *  the layout never jumps. `width`/`height` are 0 when unknown —
- *  raw sources rarely ship dimensions until the <img> loads. */
+ *  raw sources rarely ship dimensions until the <img> loads.
+ *
+ *  When `token` is set the page URL must be resolved lazily via
+ *  `usePageUrl` — `url` will be null until the slot enters the
+ *  viewport and the resolution completes. */
 export interface ReaderPage {
   /** Stable index. Streaming sources (BNL) deliver out of order; the
    *  index is the authoritative position regardless of arrival. */
@@ -21,6 +25,9 @@ export interface ReaderPage {
   url:    string | null
   width:  number
   height: number
+  /** Opaque per-page token from `ChapterPages.tokens`. When present,
+   *  the reader resolves the real URL lazily on viewport entry. */
+  token?: string
 }
 
 
@@ -59,6 +66,9 @@ export interface ReaderSource {
   /** Streaming source's blob-URL map (BNL). When present the page
    *  list prefers `urls.get(index)` over `pages[i].url`. */
   urls?:   ReadonlyMap<number, string>
+  /** Raw source — set when pages carry tokens that need lazy
+   *  resolution via `usePageUrl`. */
+  rawSource?: import('@features/browse/manifest/types').InstalledSource
   meta:    ReaderMeta
   nav:     ReaderNav
   loading: boolean

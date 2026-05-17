@@ -465,9 +465,6 @@ CREATE TABLE IF NOT EXISTS bubble_geometry (
     page_index   INTEGER NOT NULL,
     bubble_idx   INTEGER NOT NULL,
     polygon      JSONB NOT NULL,
-    fit_box      JSONB NOT NULL,
-    erase_box    JSONB NOT NULL,
-    text_box     JSONB NOT NULL,
     PRIMARY KEY (chapter_id, page_index, bubble_idx)
 );
 

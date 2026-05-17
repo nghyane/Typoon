@@ -9,13 +9,60 @@ edition = "2024"
 name = "typoon_render"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# `python` and `wasm` are mutually exclusive entry-point selectors.
+#
+# - `python` (default): build a CPython extension module via PyO3. Used by the
+#   Mac-native pipeline (`maturin develop`). Pulls in `pyo3`, `numpy`, `ndarray`.
+# - `wasm`: build a `wasm32-unknown-unknown` cdylib via wasm-bindgen for the
+#   Cloudflare Workers typeset stage. Pulls in `wasm-bindgen`, `js-sys`,
+#   `serde_json`, `console_error_panic_hook`. No `pyo3`/`numpy`/`ndarray`.
+#
+# Core typesetting logic in `border`, `fit`, `font`, `layout`, `overlay`,
+# `shape`, `types` is feature-independent and used by both entry points.
+default = ["python"]
+python  = ["dep:pyo3", "dep:numpy", "dep:ndarray"]
+wasm    = [
+    "dep:wasm-bindgen",
+    "dep:serde-wasm-bindgen",
+    "dep:js-sys",
+    "dep:serde_json",
+    "dep:console_error_panic_hook",
+]
+
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
-numpy = "0.23"
-ndarray = "0.16"
-image = "0.25"
-imageproc = "0.25"
-ab_glyph = "0.2"
-anyhow = "1"
-serde = { version = "1", features = ["derive"] }
-base64 = "0.22"
+# Image buffers only — no codecs. Workers don't need PNG/JPEG decode in this
+# stage (JS-side does that via @jsquash); Python side already has Pillow.
+# Disabling default features cuts ~1.5 MiB of dead codec code from the WASM bundle.
+image    = { version = "0.25", default-features = false }
+anyhow   = "1"
+serde    = { version = "1", features = ["derive"] }
+
+# Text pipeline:
+#   harfrust  → HarfBuzz shaping (em-based advances)
+#   skrifa    → outline glyph paths
+#   tiny-skia → vector rasterisation (fill + proper stroke halo)
+# All three build cleanly on wasm32-unknown-unknown and use no_std-compatible
+# math; nothing here needs platform-specific code.
+harfrust         = "0.6"
+skrifa           = "0.42"
+tiny-skia        = { version = "0.12", default-features = false, features = ["std", "simd"] }
+
+# ─── Python entry (default) ────────────────────────────────────────────────
+pyo3     = { version = "0.23", features = ["extension-module"], optional = true }
+numpy    = { version = "0.23", optional = true }
+ndarray  = { version = "0.16", optional = true }
+
+# ─── WASM entry ────────────────────────────────────────────────────────────
+wasm-bindgen              = { version = "0.2", optional = true }
+serde-wasm-bindgen        = { version = "0.6", optional = true }
+js-sys                    = { version = "0.3", optional = true }
+serde_json                = { version = "1",   optional = true }
+console_error_panic_hook  = { version = "0.1", optional = true }
+
+[profile.release]
+# `wasm` builds get an extra `opt-level = "z"` pass via the worker build script
+# (wasm-opt --enable-simd -Oz). Native builds prefer 3 for inference speed.
+opt-level = 3
+lto       = "fat"
+codegen-units = 1

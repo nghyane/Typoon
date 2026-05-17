@@ -8,7 +8,7 @@ validated against the same evidence.
 from __future__ import annotations
 
 from typoon.vision.contracts import TextBlock
-from typoon.vision.groupers.lens_native import _classify_block
+from typoon.vision.groupers._classify import classify_block as _classify_block
 
 
 def _b(bbox, text, rotation_deg=0.0):

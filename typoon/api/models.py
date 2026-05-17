@@ -147,16 +147,39 @@ class WorkChapterTranslation(BaseModel):
     updated_at:          str | None = None
 
 
+class UploadingChapter(BaseModel):
+    """An upload-origin chapter that has been finalized (chapter row
+    created, inbox handle persisted, prepare task enqueued) but whose
+    pipeline has not yet produced a prepared archive
+    (``prepared_hash`` IS NULL).
+
+    Exposed so the SPA can show a "Đang xử lý" chip on the chapter
+    row immediately after upload, before the prepare worker runs.
+    The viewer only sees their own uploads (``imported_by = viewer``).
+    """
+    chapter_id:  int
+    material_id: int
+    source_lang: str | None = None
+    uploaded_by: int
+    created_at:  str | None = None
+
+
 class WorkChapterOut(BaseModel):
     """A logical chapter inside a Work plus every (shared or
-    viewer-owned) translation on it. Empty `translations` when no
+    viewer-owned) translation on it. Empty ``translations`` when no
     one in the community has touched this chapter yet — the SPA
     augments with the live manifest list of the active source.
+
+    ``uploading_chapters`` carries upload-origin chapter rows whose
+    pipeline has not finished prepare yet. Non-empty only for the
+    viewer's own uploads in the pending window between finalize and
+    the first successful prepare.
     """
-    id:            int
-    number_norm:   str
-    label:         str | None = None
-    translations:  list[WorkChapterTranslation] = []
+    id:                 int
+    number_norm:        str
+    label:              str | None = None
+    translations:       list[WorkChapterTranslation] = []
+    uploading_chapters: list[UploadingChapter] = []
 
 
 class WorkViewerEntry(BaseModel):

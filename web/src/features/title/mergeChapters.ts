@@ -40,7 +40,7 @@ import type {
 } from '@features/browse/manifest/types'
 
 
-export type VersionKind = 'raw' | 'translation'
+export type VersionKind = 'raw' | 'translation' | 'upload'
 
 export interface HubVersion {
   /** stable React key */
@@ -48,22 +48,23 @@ export interface HubVersion {
   kind:           VersionKind
 
   /** What lang the user reads in. raw = source lang; translation =
-   *  target_lang. */
+   *  target_lang; upload = source_lang of the uploaded pixels. */
   lang:           string
 
   /** raw — the active source that owns the manifest URL.
    *  translation — the source whose pixels back the rendered draft
-   *  (= the material the reader opens on click). */
+   *  (= the material the reader opens on click).
+   *  upload — the upload-origin material the chapter belongs to. */
   materialId:     number | null
   sourceId:       string | null
   sourceName:     string | null
 
   /** raw: manifest chapter URL the reader opens directly.
-   *  translation: null. */
+   *  translation / upload: null. */
   upstreamUrl:    string | null
 
   /** raw: manifest-normalised chapter key (mirror of HubChapter.number).
-   *  translation: null. */
+   *  translation / upload: null. */
   numberNorm:     string | null
 
   /** translation only — id + state + creator. */
@@ -91,6 +92,9 @@ export interface HubVersion {
   fromCache:      boolean
   /** Whether the translation is publicly visible (false → owner only). */
   shared:         boolean
+  /** upload only — chapter.id of the pending upload chapter.
+   *  Lets the row spawn a translation once prepare finishes. */
+  chapterId:      number | null
 }
 
 export interface HubChapter {
@@ -176,17 +180,18 @@ export function mergeChapters(input: MergeInput): HubChapter[] {
         date:           mc.date,
         fromCache:      false,
         shared:         false,
+        chapterId:      null,
       })
       ch.updatedAt = newer(ch.updatedAt, mc.date)
     }
   }
 
-  // 2) Work chapters from the server → translation versions, attached
-  //    to the matching chapter row (creating it if no manifest row
-  //    surfaced it — e.g. a chapter the active source dropped but
-  //    a sibling still hosts).
+  // 2) Work chapters from the server → translation versions + pending
+  //    upload versions, attached to the matching chapter row (creating
+  //    it if no manifest raw surfaced it).
   for (const wc of work.chapters) {
     const ch = ensureChapter(byNumber, wc.number_norm, wc.label)
+
     for (const t of wc.translations) {
       const draftMaterial = t.draft_material_id != null
         ? materialsById.get(t.draft_material_id) ?? null
@@ -211,8 +216,35 @@ export function mergeChapters(input: MergeInput): HubChapter[] {
         date:           t.updated_at,
         fromCache:      t.uses_default_render,
         shared:         t.shared,
+        chapterId:      null,
       })
       ch.updatedAt = newer(ch.updatedAt, t.updated_at)
+    }
+
+    // Upload-origin chapters pending prepare — viewer's own uploads
+    // not yet processed by the worker. Shown as "Đang xử lý" chip.
+    for (const up of wc.uploading_chapters) {
+      const upMaterial = materialsById.get(up.material_id) ?? null
+      ch.versions.push({
+        key:            `up::${up.chapter_id}`,
+        kind:           'upload',
+        lang:           normalizeLang(up.source_lang),
+        materialId:     up.material_id,
+        sourceId:       upMaterial?.source ?? null,
+        sourceName:     null,
+        upstreamUrl:    null,
+        numberNorm:     null,
+        translationId:  null,
+        state:          null,
+        errorMessage:   null,
+        creatorName:    null,
+        sourceLang:     up.source_lang,
+        date:           up.created_at,
+        fromCache:      false,
+        shared:         false,
+        chapterId:      up.chapter_id,
+      })
+      ch.updatedAt = newer(ch.updatedAt, up.created_at)
     }
   }
 
@@ -223,9 +255,9 @@ export function mergeChapters(input: MergeInput): HubChapter[] {
     // in case future code paths layer raws again).
     const seen = new Set<string>()
     ch.versions = ch.versions.filter((v) => {
-      const k = v.kind === 'raw'
-        ? `raw:${v.materialId}:${v.upstreamUrl}`
-        : `tr:${v.translationId}`
+      const k = v.kind === 'raw'    ? `raw:${v.materialId}:${v.upstreamUrl}`
+              : v.kind === 'upload' ? `up:${v.chapterId}`
+              :                       `tr:${v.translationId}`
       if (seen.has(k)) return false
       seen.add(k)
       return true

@@ -2,6 +2,10 @@
 
 Frozen, slotted, validated at construction. Discriminated unions via Literal
 let the type-checker enumerate every backend.
+
+Supported stacks:
+  lens      — Lens OCR + Comic-DETR + LensNativeGrouper   (primary, online)
+  ctd_manga — CTD detector + CTDNativeGrouper + MangaOCR  (offline manga JP)
 """
 
 from __future__ import annotations
@@ -16,30 +20,26 @@ __all__ = [
     "RecognizerId",
     "EraserId",
     "DETECTORS_SHIPPING_TEXT",
-    "GROUPERS_REQUIRING_LENS",
     "VisionPipelineSpec",
     "PRESETS",
 ]
 
 
-DetectorId   = Literal["lens_blocks", "ppocr_dbnet", "bing_blocks"]
-GrouperId    = Literal["lens_native", "ppocr_yolo_union_find"]
+DetectorId   = Literal["lens_blocks", "ctd_blocks"]
+GrouperId    = Literal["lens_native", "ctd_native"]  # ppocr_yolo_union_find removed
 RecognizerId = Literal["none", "manga_ocr", "apple_vision",
                        "windows_ocr", "tesseract"]
 EraserId     = Literal["aot_gan", "median_only"]
 
 
-# Capability sets — single source of truth for cross-stage validation.
-# A detector "ships text" if it returns recognised text inside TextBlock,
-# making the recognizer stage redundant (recognizer="none" is valid).
-DETECTORS_SHIPPING_TEXT: frozenset[DetectorId] = frozenset({
-    "lens_blocks",
-    "bing_blocks",
-})
+# Detectors that ship recognised text inside TextBlock (recognizer=none valid)
+DETECTORS_SHIPPING_TEXT: frozenset[DetectorId] = frozenset({"lens_blocks"})
 
-# A grouper that exclusively consumes one detector's bubble-shaped output
-# (vs line-shaped output that needs YOLO scope merging).
-GROUPERS_REQUIRING_LENS: frozenset[GrouperId] = frozenset({"lens_native"})
+# Grouper → required detector constraint
+_GROUPER_REQUIRES: dict[GrouperId, DetectorId] = {
+    "lens_native": "lens_blocks",
+    "ctd_native":  "ctd_blocks",
+}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -55,17 +55,15 @@ class VisionPipelineSpec:
     recognizer: RecognizerId = "none"
     eraser:     EraserId     = "aot_gan"
 
-    page_concurrency:   int = 4    # how many pages scan in parallel (RAM-bound)
-    detect_concurrency: int = 8    # detector calls in flight (HTTP / GPU)
-    erase_concurrency:  int = 2    # eraser calls in flight (GPU contention)
+    page_concurrency:   int = 4
+    detect_concurrency: int = 8
+    erase_concurrency:  int = 2
 
     def __post_init__(self) -> None:
-        if (
-            self.grouper in GROUPERS_REQUIRING_LENS
-            and self.detector != "lens_blocks"
-        ):
+        required_detector = _GROUPER_REQUIRES.get(self.grouper)
+        if required_detector and self.detector != required_detector:
             raise ValueError(
-                f"grouper={self.grouper!r} only consumes lens_blocks output; "
+                f"grouper={self.grouper!r} requires detector={required_detector!r}; "
                 f"got detector={self.detector!r}"
             )
         if (
@@ -99,25 +97,11 @@ PRESETS: dict[str, VisionPipelineSpec] = {
         page_concurrency=8,
         detect_concurrency=15,
     ),
-    "bing": VisionPipelineSpec(
-        detector="bing_blocks",
-        grouper="ppocr_yolo_union_find",
-        recognizer="none",
-        # Bing has stricter rate limits than Lens — keep concurrency low
-        page_concurrency=2,
-        detect_concurrency=2,
-    ),
-    "offline": VisionPipelineSpec(
-        detector="ppocr_dbnet",
-        grouper="ppocr_yolo_union_find",
-        recognizer="apple_vision",
-        page_concurrency=2,
-        detect_concurrency=2,
-    ),
-    "manga_ja": VisionPipelineSpec(
-        detector="ppocr_dbnet",
-        grouper="ppocr_yolo_union_find",
+    "ctd_manga": VisionPipelineSpec(
+        detector="ctd_blocks",
+        grouper="ctd_native",
         recognizer="manga_ocr",
         page_concurrency=2,
+        detect_concurrency=2,
     ),
 }

@@ -9,6 +9,18 @@
 //   {css-selector}@attr       HTML attribute value
 //   @attr                     attribute of current row root
 //
+//   script:json({var})        extract a JS variable from an inline
+//                             <script> tag as JSON. Matches the first
+//                             <script> whose textContent contains the
+//                             variable name, then regex-extracts the
+//                             JSON object/array that follows `var =`.
+//                             e.g. `script:json(g_th)` extracts
+//                             `g_th = $.parseJSON('{"1":"j,..."}')`.
+//
+//   script:match({regex})     return capture group 1 of `regex` from
+//                             the first matching <script> textContent.
+//                             Useful for scalar vars like page counts.
+//
 //   $.path.to.field           JSON node (single-value path)
 //   $.list[*]                 JSON array (use with queryJsonAll)
 //   $.list[*]@field.subfield  for each element in list, read
@@ -36,6 +48,59 @@ function isEmpty(v: unknown): boolean {
   return false
 }
 
+// ── script:json / script:match helpers ────────────────────────────
+
+/** Extract a JS variable value from inline <script> tags.
+ *  `script:json(varName)` → parsed JSON object/array.
+ *  `script:match(regex)`  → capture group 1 as string. */
+function queryScriptSpecial(
+  root:     Element | Document,
+  selector: string,
+): string | null {
+  const jsonMatch  = selector.match(/^script:json\(([^)]+)\)$/)
+  const regexMatch = selector.match(/^script:match\((.+)\)$/)
+
+  if (!jsonMatch && !regexMatch) return null
+
+  const scripts = Array.from(root.querySelectorAll('script'))
+
+  if (jsonMatch) {
+    const varName = jsonMatch[1]!.trim()
+    for (const s of scripts) {
+      const text = s.textContent ?? ''
+      if (!text.includes(varName)) continue
+      // Match: varName = <json> OR varName = $.parseJSON('<json>')
+      // Capture the raw JSON object/array.
+      const patterns = [
+        new RegExp(String.raw`\b${varName}\s*=\s*(\{[\s\S]*?\})\s*[;,\n]`),
+        new RegExp(String.raw`\b${varName}\s*=\s*(\[[\s\S]*?\])\s*[;,\n]`),
+        // $.parseJSON('...') or JSON.parse('...')
+        new RegExp(String.raw`\b${varName}\s*=\s*(?:\$\.parseJSON|JSON\.parse)\s*\(\s*['"](.+?)['"]\s*\)`),
+      ]
+      for (const re of patterns) {
+        const m = re.exec(text)
+        if (m?.[1]) {
+          // Validate it's parseable JSON before returning.
+          try { JSON.parse(m[1]); return m[1] } catch { /* try next */ }
+        }
+      }
+    }
+    return null
+  }
+
+  // script:match(regex)
+  const userRegex = regexMatch![1]!.trim()
+  let re: RegExp
+  try { re = new RegExp(userRegex) } catch { return null }
+
+  for (const s of scripts) {
+    const text = s.textContent ?? ''
+    const m = re.exec(text)
+    if (m?.[1] != null) return m[1]
+  }
+  return null
+}
+
 export function queryHtmlOne(
   root: Element | Document, selector: string,
 ): string | null {
@@ -49,6 +114,9 @@ export function queryHtmlOne(
 function queryHtmlOneSingle(
   root: Element | Document, selector: string,
 ): string | null {
+  // script:json / script:match — special forms
+  if (selector.startsWith('script:')) return queryScriptSpecial(root, selector)
+
   const { sel, attr } = splitAttr(selector)
   const el = sel ? root.querySelector(sel) : (root as Element)
   if (!el) return null
@@ -209,9 +277,16 @@ function evalJsonPath(root: unknown, path: string): unknown {
         }
         const rest = path.slice(i + 2)
         if (!rest) return firstNonEmpty(cur as unknown[])
-        return (cur as unknown[]).map((item) =>
+        const mapped = (cur as unknown[]).map((item) =>
           evalJsonPath(item, `$${rest}`),
         )
+        // Flatten one level when the next segment is [*] or .* —
+        // handles $.titleListMap.*[*] where each object value is an
+        // array and the caller wants a single merged flat list.
+        if (rest.startsWith('[*]') || rest.startsWith('.*')) {
+          return (mapped as unknown[][]).flat()
+        }
+        return mapped
       }
       const m = /^\.([A-Za-z_][\w-]*)/.exec(path.slice(i))
       if (!m) return null

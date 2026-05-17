@@ -20,13 +20,14 @@ interface Props { user: SessionUser }
 
 
 export function Header({ user }: Props) {
-  const { crumbs, title } = useHeaderStore()
+  const { crumbs, title, slot } = useHeaderStore()
   const back = crumbs[0]
   const [, setSearchOpen] = useState(false)
 
   return (
-    <header className="flex items-center gap-3 px-3 sm:px-5 h-bar bg-bg shrink-0">
-      <div className="flex-1 min-w-0">
+    <header className="flex items-center gap-2 px-3 sm:px-5 h-bar bg-bg shrink-0">
+      {/* left — back / title */}
+      <div className={cn('min-w-0', slot ? 'shrink-0' : 'flex-1')}>
         {back ? (
           <Link
             to={back.to}
@@ -42,18 +43,23 @@ export function Header({ user }: Props) {
         ) : null}
       </div>
 
-      {/* search — input shape (not fake button) */}
-      <button
-        onClick={() => setSearchOpen(true)}
-        title="Tìm nhanh (⌘K)"
-        className="hidden sm:flex items-center gap-2 h-8 px-2.5 w-56 rounded-sm bg-surface-2 text-text-subtle hover:bg-hover transition-colors cursor-pointer"
-      >
-        <Search size={14} className="shrink-0" />
-        <span className="flex-1 text-left text-sm select-none">Tìm nhanh…</span>
-        <kbd className="text-xs font-mono bg-black/30 rounded-xs px-1.5 py-0.5 text-text-subtle leading-none">
-          ⌘K
-        </kbd>
-      </button>
+      {/* center slot — route-injected (e.g. search input on /explore) */}
+      {slot && <div className="flex-1 min-w-0">{slot}</div>}
+
+      {/* global search — desktop only, hidden when slot is active */}
+      {!slot && (
+        <button
+          onClick={() => setSearchOpen(true)}
+          title="Tìm nhanh (⌘K)"
+          className="hidden sm:flex items-center gap-2 h-8 px-2.5 w-56 rounded-sm bg-surface-2 text-text-subtle hover:bg-hover transition-colors cursor-pointer"
+        >
+          <Search size={14} className="shrink-0" />
+          <span className="flex-1 text-left text-sm select-none">Tìm nhanh…</span>
+          <kbd className="text-xs font-mono bg-black/30 rounded-xs px-1.5 py-0.5 text-text-subtle leading-none">
+            ⌘K
+          </kbd>
+        </button>
+      )}
 
       <WorkersIndicator />
 

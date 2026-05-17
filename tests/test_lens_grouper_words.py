@@ -1,4 +1,4 @@
-"""Lens-native grouper word-union mask + rotation propagation tests."""
+"""Lens-native grouper mask + rotation propagation tests."""
 
 from __future__ import annotations
 
@@ -7,19 +7,21 @@ import asyncio
 import numpy as np
 
 from typoon.vision.contracts import (
-    BubbleGroup,
     DetectionResult,
+    LineBox,
     TextBlock,
     WordBox,
 )
 from typoon.vision.groupers.lens_native import LensNativeGrouper
 
 
-def _block(bbox, text, *, words=(), rotation_deg=0.0):
+def _block(bbox, text, *, words=(), lines=(), rotation_deg=0.0):
     return TextBlock(
         bbox=bbox, polygon=None, confidence=1.0,
         text=text, detector="lens_blocks",
-        words=tuple(words), rotation_deg=rotation_deg,
+        words=tuple(words),
+        lines=tuple(lines) or (LineBox(bbox=bbox, text=text),),
+        rotation_deg=rotation_deg,
     )
 
 
@@ -29,64 +31,56 @@ def _run(detection):
     return asyncio.run(grouper.group(image, detection, "en"))
 
 
-def test_word_union_mask_when_words_available():
+def test_mask_is_filled_paragraph_aabb_with_small_dilation():
+    """Erase / text masks are a single filled rect per member, sized
+    to the paragraph bbox plus a small dilation. The dilation stays
+    smaller than the container's word_union padding so the mask never
+    leaks past the render polygon."""
     block = _block(
         (100, 100, 300, 200), "hello world",
         words=[
             WordBox(bbox=(110, 110, 180, 180), text="hello"),
             WordBox(bbox=(200, 110, 280, 180), text="world"),
         ],
+        lines=[LineBox(bbox=(110, 110, 280, 180), text="hello world")],
     )
     det = DetectionResult(
         blocks=(block,),
         text_already_recognized=True,
         page_size=(500, 500),
     )
-    groups = _run(det)
-    g = groups[0]
-    assert not g.used_fallback
+    g = _run(det)[0]
+
+    # text_masks and erase_masks are the same object — one filled
+    # rect per member.
+    assert g.text_masks is g.erase_masks
+    assert len(g.text_masks) == 1
     tm = g.text_masks[0]
-    # In block-local coords: word1 x∈[10,80), word2 x∈[100,180); gap is
-    # x∈[80, 100). Row y=10 is inside both word y-bands.
-    assert tm.image[10, 30] == 255      # inside word1
-    assert tm.image[10, 90] == 0        # gap between words
-    assert tm.image[10, 140] == 255     # inside word2
+
+    # Filled (no holes between words).
+    assert (tm.image == 255).all()
+    # Mask sits inside the container polygon — every corner of the
+    # mask rect must lie within the bbox axis-aligned bounds.
+    mw = tm.image.shape[1]; mh = tm.image.shape[0]
+    bx1, by1, bx2, by2 = g.bbox
+    assert bx1 <= tm.x and tm.x + mw <= bx2
+    assert by1 <= tm.y and tm.y + mh <= by2
 
 
-def test_word_union_mask_smaller_than_block_rect():
-    block = _block(
-        (0, 0, 300, 100), "hi there",
-        words=[
-            WordBox(bbox=(10, 10, 40, 90), text="hi"),
-            WordBox(bbox=(60, 10, 250, 90), text="there"),
-        ],
-    )
-    det = DetectionResult(
-        blocks=(block,),
-        text_already_recognized=True,
-        page_size=(500, 500),
-    )
-    groups = _run(det)
-    tm = groups[0].text_masks[0]
-    painted = (tm.image == 255).sum()
-    total = tm.image.size
-    # Painted area should be strictly less than the full block rect
-    assert painted < total
-    # ... but more than zero (at least the two word rects)
-    assert painted > 0
-
-
-def test_block_rect_fallback_when_words_empty():
+def test_mask_uses_block_bbox_when_words_empty():
+    """No word geometry → mask still anchored to the paragraph bbox."""
     block = _block((10, 10, 110, 60), "fallback")
     det = DetectionResult(
         blocks=(block,),
         text_already_recognized=True,
         page_size=(500, 500),
     )
-    groups = _run(det)
-    g = groups[0]
-    assert g.used_fallback
-    assert (g.text_masks[0].image == 255).all()
+    g = _run(det)[0]
+    tm = g.text_masks[0]
+    # Covers the original block extent plus the small dilation.
+    assert tm.x <= 10 and tm.y <= 10
+    assert tm.x + tm.image.shape[1] >= 110
+    assert tm.y + tm.image.shape[0] >= 60
 
 
 def test_rotation_propagated_from_block_to_group():
@@ -96,23 +90,4 @@ def test_rotation_propagated_from_block_to_group():
         text_already_recognized=True,
         page_size=(500, 500),
     )
-    groups = _run(det)
-    assert groups[0].rotation_deg == 12.5
-
-
-def test_word_outside_block_bbox_clipped():
-    """A word whose bbox sits partly outside the block should not crash
-    and should only paint inside the block."""
-    block = _block(
-        (100, 100, 200, 200), "x",
-        words=[WordBox(bbox=(50, 50, 250, 250), text="x")],
-    )
-    det = DetectionResult(
-        blocks=(block,),
-        text_already_recognized=True,
-        page_size=(500, 500),
-    )
-    groups = _run(det)
-    tm = groups[0].text_masks[0]
-    assert tm.image.shape == (100, 100)
-    assert (tm.image == 255).all()
+    assert _run(det)[0].rotation_deg == 12.5

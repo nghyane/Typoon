@@ -17,10 +17,10 @@
 // The panel only renders when the Work has ≥2 materials — a single-
 // material work has nothing to split / nothing to compare against.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import {
-  Layers, RotateCcw, Undo2, X,
+  ChevronDown, Layers, RotateCcw, Undo2, X,
 } from 'lucide-react'
 
 import type { ApiWorkMember } from '@shared/api/api'
@@ -37,6 +37,10 @@ import {
 } from './linkVotes'
 
 
+/** Number of rows always visible before the "Xem thêm" affordance. */
+const INITIAL_VISIBLE = 3
+
+
 interface Props {
   workId: number
 }
@@ -45,14 +49,31 @@ interface Props {
 export function WorkMembersPanel({ workId }: Props) {
   const q = useWorkMembers(workId)
   const members = q.data ?? []
+  const [expanded, setExpanded] = useState(false)
+
+  // Ref used only for scroll-into-view on collapse.
+  const headerRef = useRef<HTMLElement>(null)
 
   // Single-material works have nothing meaningful to surface — skip
   // the section entirely so the hub stays tight.
   if (!q.isPending && members.length < 2) return null
 
+  const hiddenCount = Math.max(0, members.length - INITIAL_VISIBLE)
+
+  function handleToggle() {
+    const wasExpanded = expanded
+    setExpanded((v) => !v)
+    if (wasExpanded) {
+      requestAnimationFrame(() => {
+        headerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      })
+    }
+  }
+
   return (
-    <section className="px-4 sm:px-6 py-3 space-y-3">
-      <header className="flex items-center gap-2">
+    <section ref={headerRef} className="px-4 sm:px-6 py-3">
+      {/* ── Header ─────────────────────────────────────────── */}
+      <header className="flex items-center gap-2 mb-2">
         <h2 className="text-xs uppercase tracking-wide text-text-subtle inline-flex items-center gap-1.5">
           <Layers size={12} />
           Nguồn đang đọc
@@ -63,26 +84,104 @@ export function WorkMembersPanel({ workId }: Props) {
       </header>
 
       {q.isPending ? (
-        <div className="py-4 flex justify-center">
+        <div className="py-2 flex justify-center">
           <Spinner size={16} />
         </div>
+      ) : expanded ? (
+        // ── Expanded — full rows ──────────────────────────
+        <>
+          <ul className="space-y-1">
+            {members.map((m) => (
+              <MemberRow
+                key={m.material_id}
+                member={m}
+                workId={workId}
+              />
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={handleToggle}
+            className={cn(
+              'mt-2 flex items-center gap-1 text-xs cursor-pointer',
+              'text-text-subtle hover:text-text transition-colors',
+            )}
+          >
+            <ChevronDown size={12} className="rotate-180 transition-transform duration-200" />
+            Thu gọn
+          </button>
+        </>
       ) : (
-        <ul className="space-y-1">
-          {members.map((m) => (
-            <MemberRow
-              key={m.material_id}
-              member={m}
-              workId={workId}
-            />
+        // ── Collapsed — pill chips, ultra-compact ─────────
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {members.slice(0, INITIAL_VISIBLE).map((m) => (
+            <MemberChip key={m.material_id} member={m} workId={workId} />
           ))}
-        </ul>
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={handleToggle}
+              className={cn(
+                'inline-flex items-center gap-1 h-6 px-2 rounded-full',
+                'text-xs text-text-subtle bg-surface-2 hover:bg-hover',
+                'border border-border-soft/40 hover:border-border-soft/70',
+                'transition-colors cursor-pointer',
+              )}
+            >
+              +{hiddenCount}
+              <ChevronDown size={11} />
+            </button>
+          )}
+        </div>
       )}
     </section>
   )
 }
 
 
-// ── Member row ─────────────────────────────────────────────────
+// ── Member chip (collapsed view) ──────────────────────────────
+//
+// Ultra-compact pill: source name + lang tag, tapping it expands the
+// full list. No action affordances in this state — keeps the surface
+// scannable at a glance.
+
+
+function MemberChip({
+  member, workId: _workId,
+}: {
+  member:  ApiWorkMember
+  workId:  number
+}) {
+  const installed   = useSources((s) => s.sources)
+  const sourceLabel = member.source
+    ? (installed[member.source]?.manifest.name ?? member.source)
+    : 'Tải lên'
+  const langLabel = (member.languages[0] ?? '').toUpperCase()
+
+  const hasAlert = member.viewer_split_vote === 1
+
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 h-6 px-2 rounded-full',
+        'text-xs text-text-muted bg-surface-2',
+        'border',
+        hasAlert
+          ? 'border-warning/40 text-warning-text'
+          : 'border-border-soft/30',
+      )}
+    >
+      {langLabel && (
+        <span className="font-medium text-text-subtle">{langLabel}</span>
+      )}
+      <span className="truncate max-w-[8rem]">{sourceLabel}</span>
+      {hasAlert && <span className="text-warning shrink-0">·</span>}
+    </span>
+  )
+}
+
+
+// ── Member row (expanded view) ─────────────────────────────────
 
 
 function MemberRow({

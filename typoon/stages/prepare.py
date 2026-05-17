@@ -38,6 +38,13 @@ from typoon.runs.artifacts import ArtifactSink
 _COLOR_RATIO_THRESHOLD = 0.15
 _SAT_THRESHOLD         = 30       # HSV saturation, out of 255
 
+# Aspect-ratio confirmation for the colour signal. A page is "tall"
+# when its H/W ≥ this — typical of vertical-scroll formats (webtoon
+# strips are 3-6×) and atypical of printed manga (1.3-1.5×) or spreads
+# (< 1×). Used ONLY to confirm the colour vote — colour-and-tall
+# stitches, colour-but-not-tall keeps one_to_one.
+_TALL_ASPECT_RATIO = 2.0
+
 _MAX_PAGE_HEIGHT = 4096           # target prepared page height for stitch
 _MIN_PAGE_HEIGHT = 2048           # minimum — prevents cluster of cuts in whitespace
 _SENSITIVITY     = 97             # 0-100; higher = stricter valid-row check
@@ -65,14 +72,35 @@ def prepare_chapter(
     is_color    = color_ratio >= _COLOR_RATIO_THRESHOLD
 
     if strategy == "auto":
-        strategy = "stitch" if is_color else "one_to_one"
+        # Two signals must agree before we commit to stitch:
+        #
+        #   colour (primary) — webtoon / manhwa are almost always
+        #     coloured; printed manga is overwhelmingly greyscale.
+        #     Greyscale pages alone never stitch.
+        #
+        #   aspect (confirming) — vertical-scroll pages are tall
+        #     (H/W ≥ 2). Colour-but-not-tall sources are usually
+        #     colour-edition manga, doujin, or covers — those must
+        #     stay one_to_one. Without this guard, a single colour
+        #     misread on a chapter that is actually a printed manga
+        #     would corrupt every downstream stage.
+        #
+        # Aspect alone is not enough either: some scanlation groups
+        # output webtoons as single tall PNGs (would pass) AND
+        # cropped landscape banners (would fail). Coupling the two
+        # gives a high-precision, low-recall trigger — fine, because
+        # false negatives just lose the stitch optimisation while
+        # false positives break the chapter.
+        is_tall  = _chapter_is_tall(source)
+        strategy = "stitch" if (is_color and is_tall) else "one_to_one"
 
     if strategy == "stitch":
         pages, groups = _prepare_stitch(source, out_dir, artifacts)
     else:
         pages, groups = _prepare_one_to_one(source, out_dir, artifacts)
 
-    chapter = Chapter(source=source_label, pages=tuple(pages), is_color=is_color)
+    chapter = Chapter(source=source_label, pages=tuple(pages),
+                      is_color=is_color, strategy=strategy)
 
     if artifacts is not None:
         artifacts.write_json("01_prepare", "groups.json", {
@@ -94,6 +122,40 @@ def _chapter_color_ratio(source: RawChapterSource) -> float:
     indices = sorted({n // 4, n // 2, 3 * n // 4})
     ratios  = [_color_ratio(source.load_page(i)) for i in indices]
     return sum(ratios) / len(ratios)
+
+
+def _chapter_is_tall(source: RawChapterSource) -> bool:
+    """True only when EVERY sampled middle+late page is tall (H/W ≥
+    `_TALL_ASPECT_RATIO`).
+
+    Picks a few pages from the middle and end of the chapter — the first
+    few entries in a ZIP are usually cover / credits / table-of-contents
+    which can have any aspect, so we ignore them. A page is "tall" when
+    it looks like a webtoon strip (3-6× tall) rather than a printed
+    manga page (1.3-1.5×) or a spread (≤ 1×).
+
+    Defaults SAFE: if the chapter is empty or any sampled page is not
+    clearly tall, we return False so the caller falls back to
+    `one_to_one`. Stitch is only correct on confirmed vertical-scroll
+    formats; getting it wrong on a printed manga corrupts every
+    downstream stage. False negatives (treating a real webtoon as
+    one_to_one) just disable the stitch optimisation, which is
+    recoverable; false positives (stitching a manga) are not.
+    """
+    n = source.page_count()
+    if n == 0:
+        return False
+    # Middle and end-of-chapter samples; dedup and clamp to valid indices.
+    candidates = {n // 2, (2 * n) // 3, (3 * n) // 4, max(0, n - 2)}
+    indices    = sorted(i for i in candidates if 0 <= i < n)
+    if not indices:
+        return False
+    for i in indices:
+        img  = source.load_page(i)
+        h, w = img.shape[:2]
+        if w <= 0 or h / w < _TALL_ASPECT_RATIO:
+            return False
+    return True
 
 
 def _color_ratio(image: np.ndarray) -> float:

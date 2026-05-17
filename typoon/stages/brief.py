@@ -75,14 +75,22 @@ _SCRIPT_RANGES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("arabic",   re.compile(r"[\u0600-\u06ff]")),
 )
 
-# Languages whose primary script matches a tag above. Anything not
-# listed defaults to latin.
-_LANG_PRIMARY_SCRIPT: dict[str, str] = {
-    "zh": "han",
-    "ja": "kana",   # ja text mixes kana+han; either counts as native
-    "ko": "hangul",
-    "ru": "cyrillic",
-    "ar": "arabic",
+# Languages → set of scripts that count as *native* (non-foreign).
+# Latin is implicitly permissive everywhere via the `"latin" in scripts`
+# short-circuit below, so it never needs to appear here.
+#
+# Japanese uses kana + kanji (han) inseparably — a kanji-only bubble
+# (`田中`, `東京`, sect/technique names) is fully native Japanese, not a
+# foreign-script noise candidate. The earlier `dict[str, str]` mapping
+# treated "ja" as kana-only and mis-flagged kanji bubbles as foreign,
+# inflating the vision agent's noise candidate pool with real dialogue.
+# Korean has the same issue for legacy hanja inclusions.
+_LANG_NATIVE_SCRIPTS: dict[str, frozenset[str]] = {
+    "zh": frozenset({"han"}),
+    "ja": frozenset({"kana", "han"}),
+    "ko": frozenset({"hangul", "han"}),
+    "ru": frozenset({"cyrillic"}),
+    "ar": frozenset({"arabic"}),
 }
 
 
@@ -99,14 +107,15 @@ def _detect_scripts(text: str) -> list[str]:
 def _is_foreign_script(scripts: list[str], source_lang: str) -> bool:
     """True if every detected script is foreign to `source_lang`.
 
-    Mixed-script bubbles (han + latin, kana + latin) are NOT foreign:
-    latin is permissive everywhere and we don't want to flag loanwords,
-    publisher marks, or punctuation as suspicious.
+    Latin counts as native everywhere: loanwords, publisher marks, and
+    punctuation are not suspicious. Otherwise, a bubble is foreign only
+    when ALL its detected scripts are outside the source language's
+    native script set.
     """
     if "latin" in scripts:
         return False
-    native = _LANG_PRIMARY_SCRIPT.get(source_lang, "latin")
-    return all(s != native for s in scripts)
+    native = _LANG_NATIVE_SCRIPTS.get(source_lang, frozenset({"latin"}))
+    return all(s not in native for s in scripts)
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +156,20 @@ async def build_chapter_brief(
     deterministic_noise = {
         bk.key for bk in keyed if is_auto_skip(bk.bubble.source_text)
     }
+    # Whole-page noise is only meaningful when one prepared page maps
+    # 1:1 to one source page. Under `stitch`, a prepared page bundles
+    # several raw entries — a noise classification on the stitched page
+    # would drop real dialogue that happens to share a strip with a
+    # noisy cover. Skip the heuristic; per-bubble `noise_keys` still apply.
+    strategy = reader.chapter().strategy
+    full_page_noise = strategy != "stitch"
+
     if all(bk.key in deterministic_noise for bk in keyed):
         return ChapterBrief(
             noise_keys=deterministic_noise,
-            noise_pages=_full_noise_pages(keyed, deterministic_noise),
+            noise_pages=(
+                _full_noise_pages(keyed, deterministic_noise) if full_page_noise else set()
+            ),
         )
 
     chunks = chunk_pages(reader.page_count)
@@ -166,13 +185,16 @@ async def build_chapter_brief(
         return_exceptions=True,
     )
 
-    return _merge_chunks(keyed, deterministic_noise, results)
+    return _merge_chunks(keyed, deterministic_noise, results,
+                         full_page_noise=full_page_noise)
 
 
 def _merge_chunks(
     keyed: list[BubbleKey],
     deterministic_noise: set[str],
     results: Iterable[_ChunkResult | BaseException],
+    *,
+    full_page_noise: bool = True,
 ) -> ChapterBrief:
     """Combine per-chunk results into a single ChapterBrief."""
     characters:    list[Character]             = []
@@ -241,7 +263,7 @@ def _merge_chunks(
         key_notes=key_notes,
         characters=characters,
         noise_keys=noise,
-        noise_pages=_full_noise_pages(keyed, noise),
+        noise_pages=(_full_noise_pages(keyed, noise) if full_page_noise else set()),
     )
 
 

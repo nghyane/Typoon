@@ -30,6 +30,15 @@ class Chapter:
     # just an explicit hint so the agent does not have to guess from the
     # storyboard alone.
     is_color: bool = False
+    # How prepare produced this chapter:
+    #   - "one_to_one": each prepared page is one raw entry.
+    #   - "stitch":     each prepared page concatenates several raw
+    #     entries (webtoon vertical-scroll re-cut).
+    # Downstream stages that reason about per-page semantics (brief's
+    # whole-page noise heuristic, render's stripping of cover pages)
+    # must check this flag — under `stitch` a "page" is an aggregate
+    # of source-page slices and per-page labels lose their meaning.
+    strategy: str = "one_to_one"
 
     @property
     def page_count(self) -> int:

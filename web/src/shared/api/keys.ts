@@ -21,10 +21,10 @@
 export const qk = {
   // ── Server domain payloads ──────────────────────────────────
   work: {
-    all:           ()                  => ['work'] as const,
-    byId:          (workId: number)    => ['work', workId] as const,
-    linkSuggest:   (workId: number)    => ['work', workId, 'link-suggestions'] as const,
-    members:       (workId: number)    => ['work', workId, 'members'] as const,
+    all:           ()                  => ['work', 2] as const,
+    byId:          (workId: number)    => ['work', 2, workId] as const,
+    linkSuggest:   (workId: number)    => ['work', 2, workId, 'link-suggestions'] as const,
+    members:       (workId: number)    => ['work', 2, workId, 'members'] as const,
   },
 
   translation: {
@@ -68,6 +68,8 @@ export const qk = {
       ['manifest', 'detail', sourceId ?? null, upstreamRef ?? null] as const,
     chapterPages:  (sourceId: string, chapterUrl: string) =>
       ['manifest', 'chapter-pages', sourceId, chapterUrl] as const,
+    pageUrl:       (sourceId: string, token: string) =>
+      ['manifest', 'page-url', sourceId, token] as const,
     search:        (sourceId: string, q: string) =>
       ['manifest', 'search', sourceId, q] as const,
   },

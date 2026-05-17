@@ -32,7 +32,11 @@ def test_one_block_yields_one_group():
     assert len(groups) == 1
     g = groups[0]
     assert g.text == "Hello world"
-    assert g.bbox == (10, 10, 110, 60)
+    # bbox is the Lens block (no word geometry → falls back to block bbox)
+    # expanded by the minimum container padding (4 px) and clipped to page.
+    # +1 on the high edge: container polygon AABB rounds up at the
+    # bottom-right so the rect still encloses the original polygon.
+    assert g.bbox == (6, 6, 115, 65)
     assert g.source == "lens"
     assert len(g.text_masks) == 1
     assert len(g.erase_masks) == 1
@@ -92,7 +96,11 @@ def test_lowercase_classified_as_dialogue():
     assert groups[0].shape_kind == "dialogue"
 
 
-def test_erase_mask_dilated_around_block():
+def test_erase_mask_matches_block_extent():
+    """Erase mask follows the tight Lens word_union polygon (no per-block
+    dilation). When the block has no word geometry the polygon collapses
+    to the block bbox itself, expanded by the minimum mask padding.
+    """
     grouper = LensNativeGrouper()
     detection = DetectionResult(
         blocks=(_block((50, 50, 150, 150), "test"),),
@@ -102,9 +110,9 @@ def test_erase_mask_dilated_around_block():
     image = np.zeros((500, 500, 3), dtype=np.uint8)
     groups = asyncio.run(grouper.group(image, detection, "en"))
     em = groups[0].erase_masks[0]
-    # Erase mask origin should sit above-left of glyph mask
-    tm = groups[0].text_masks[0]
-    assert em.x < tm.x
-    assert em.y < tm.y
-    assert em.image.shape[0] > tm.image.shape[0]
-    assert em.image.shape[1] > tm.image.shape[1]
+    # No words / no line geometry → word_union fallback = block bbox 100×100,
+    # dilated by `_MASK_PAD_MIN_PX` (= 2 px) — bumped from 1 so Lens
+    # under-coverage on diagonal strokes / ascenders no longer ghosts.
+    assert (em.x, em.y) == (48, 48)
+    assert em.image.shape == (104, 104)
+    assert (em.image == 255).all()

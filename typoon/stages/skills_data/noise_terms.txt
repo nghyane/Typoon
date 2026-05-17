@@ -25,6 +25,7 @@
 ^(?:o\s+)?(?:reset[\s\-]*scan(?:[\s.\-]*c[o0])?)$
 ^(?:u?toon(?:\s*nex)?)$
 ^(?:webtoon|webtoons|kakao(?:page)?|naver|line\s*webtoon|piccoma|bilibili|mangadex|mangaplus|asuratoon|asurascans)$
+^(?:快看漫画|快看|包子漫画|包子漫畫|腾讯动漫|哔哩哔哩漫画|知音漫客|漫画岛|动漫之家)$
 ^(?:read\s*on|read\s*next|next\s*chapter|next\s*episode|continue\s*reading|tap\s*to\s*read)$
 ^(?:like|share|subscribe|follow|comment)$
 

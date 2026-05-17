@@ -1,0 +1,111 @@
+{
+  "id":        "e-hentai",
+  "name":      "E-Hentai",
+  "host":      "e-hentai.org",
+  "homepage":  "https://e-hentai.org",
+  "languages": ["en", "ja", "zh", "ko", "multi"],
+  "version":   "1.0",
+  "accent":    "blue",
+  "nsfw":      true,
+  "adapter":   "ehentai",
+
+  "defaults": {
+    "category": "all"
+  },
+
+  "filters": [
+    {
+      "id":    "category",
+      "label": "Thể loại",
+      "type":  "select",
+      "options": [
+        { "id": "all",        "label": "Tất cả",     "param": "" },
+        { "id": "doujinshi",  "label": "Doujinshi",  "param": "f_cats=1021" },
+        { "id": "manga",      "label": "Manga",      "param": "f_cats=1019" },
+        { "id": "artistcg",   "label": "Artist CG",  "param": "f_cats=1015" },
+        { "id": "gamecg",     "label": "Game CG",    "param": "f_cats=1007" },
+        { "id": "western",    "label": "Western",    "param": "f_cats=511"  },
+        { "id": "imageset",   "label": "Image Set",  "param": "f_cats=991"  },
+        { "id": "cosplay",    "label": "Cosplay",    "param": "f_cats=959"  },
+        { "id": "asianporn",  "label": "Asian Porn", "param": "f_cats=895", "nsfw": true },
+        { "id": "misc",       "label": "Misc",       "param": "f_cats=1022" },
+        { "id": "non-h",      "label": "Non-H",      "param": "f_cats=767"  }
+      ]
+    }
+  ],
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới nhất",
+        "hint":  "Cursor-based — mỗi tải thêm 25 gallery",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://e-hentai.org/?page={page}{filterParams}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 25 },
+          "list":   ".itg tr:not(:first-child)",
+          "fields": {
+            "url":   ".gl3c.glname a@href",
+            "title": ".glink",
+            "cover": ".gl2c .glthumb img@data-src || .gl2c .glthumb img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://e-hentai.org/popular",
+          "parse":  "html",
+          "list":   ".itg tr:not(:first-child)",
+          "fields": {
+            "url":   ".gl3c.glname a@href",
+            "title": ".glink",
+            "cover": ".gl2c .glthumb img@data-src || .gl2c .glthumb img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://e-hentai.org/?f_search={q:q}&page={page}{filterParams}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 25 },
+      "list":   ".itg tr:not(:first-child)",
+      "fields": {
+        "url":   ".gl3c.glname a@href",
+        "title": ".glink",
+        "cover": ".gl2c .glthumb img@data-src || .gl2c .glthumb img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title": "#gn"
+      },
+      "chapters": {
+        "list": "#gd1",
+        "fields": {
+          "url":    "=mangaUrl",
+          "number": "=1",
+          "label":  "=Ch.1"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   "#img",
+      "fields": { "url": "@src" }
+    }
+  }
+}

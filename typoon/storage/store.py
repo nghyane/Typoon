@@ -194,19 +194,24 @@ class Store(Protocol):
         viewer_id: int,
     ) -> list[dict]:
         """Per-Work chapter list joined with every shared (or
-        viewer-owned) translation.
+        viewer-owned) translation plus the viewer's own upload-origin
+        chapters that are still in the prepare pipeline.
 
-        Each row carries the `work_chapter` plus a `translations` list
-        of dicts shaped like
-        ``{id, target_lang, owner_id, creator_name, state, draft_id,
-           draft_material_id, uses_default_render, shared}`` where
-        `draft_material_id` is the source whose pixels the draft was
-        rendered against (= the material the reader opens). Drives the
-        cross-source overlay on `GET /work/{id}`.
+        Each returned dict has:
+          ``id``, ``number_norm``, ``label`` — from work_chapters.
+          ``translations`` — list of dicts shaped like
+            ``{id, target_lang, source_lang, owner_id, creator_name,
+               state, error_message, draft_id, draft_chapter_id,
+               draft_material_id, uses_default_render, shared,
+               updated_at}``.
+          ``uploading_chapters`` — list of dicts shaped like
+            ``{chapter_id, material_id, source_lang, uploaded_by,
+               created_at}`` for upload-origin chapters belonging to
+            this work_chapter whose ``prepared_hash`` is still NULL
+            (prepare worker has not finished yet) and whose material
+            was imported by the viewer.
 
-        Empty list when the Work has no community-touched chapter yet
-        (no spawn / upload / raw history). The SPA augments with the
-        live manifest chapter list of the active source.
+        Empty list when the Work has no community-touched chapter yet.
         """
         ...
 

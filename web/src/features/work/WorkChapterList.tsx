@@ -162,8 +162,16 @@ export function WorkChapterList({
         continue
       }
       if (activeLang === tgt) {
+        // Show chapters readable at target lang, plus chapters that
+        // are in-pipeline for target lang (translating, error, blocked,
+        // or still being prepared from an upload). Hiding these would
+        // make the user think nothing happened after they kicked a job.
         if (r.status.kind === 'read-translation'
-         || r.status.kind === 'read-raw-target') {
+         || r.status.kind === 'read-raw-target'
+         || r.status.kind === 'translating-server'
+         || r.status.kind === 'translation-error'
+         || r.status.kind === 'translation-blocked'
+         || r.status.kind === 'preparing') {
           out.push(r)
         }
         continue

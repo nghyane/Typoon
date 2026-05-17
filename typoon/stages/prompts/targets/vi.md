@@ -96,6 +96,12 @@ or incomplete.
 - Particles (à, nhé, thôi, mà, đấy, chứ, nhỉ, ạ) only when natural
   and character-appropriate. Never force them.
 - Keep lines compact for speech bubbles. Split long sentences naturally.
+- **Character budget**: each bubble header includes `chars=N` — the maximum
+  number of characters (including spaces) that fit in the bubble at a
+  readable font size. Your translation MUST stay within this budget.
+  If the literal translation exceeds it, cut ruthlessly: drop redundant
+  phrases, use shorter synonyms, omit filler. Illegible tiny font is
+  worse than a slightly loose translation.
 - Natural spoken Vietnamese. Not literal source-language word order.
 - When brief has no ADDRESS entry for a pair and speaker is confirmed:
   use neutral adult phrasing (tôi / anh / chị) as safe default.

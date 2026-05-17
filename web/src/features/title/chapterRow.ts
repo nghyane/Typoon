@@ -41,6 +41,7 @@ export type ChapterRowStatus =
   | { kind: 'translating-server'; via: HubVersion }
   | { kind: 'translation-error';  via: HubVersion }
   | { kind: 'translation-blocked'; via: HubVersion }
+  | { kind: 'preparing';          via: HubVersion }
   | { kind: 'unavailable' }
 
 
@@ -145,10 +146,14 @@ export function deriveChapterRow(
   let status: ChapterRowStatus
   let read: HubVersion | null = null
 
-  const tDone    = translations.find((v) => v.state === 'done')
-  const tRunning = translations.find((v) => v.state === 'pending' || v.state === 'running')
-  const tError   = translations.find((v) => v.state === 'error')
-  const tBlocked = translations.find((v) => v.state === 'blocked')
+  const tDone      = translations.find((v) => v.state === 'done')
+  const tRunning   = translations.find((v) => v.state === 'pending' || v.state === 'running')
+  const tError     = translations.find((v) => v.state === 'error')
+  const tBlocked   = translations.find((v) => v.state === 'blocked')
+  // Viewer's own upload awaiting prepare. Lowest priority — any real
+  // translation or raw suppresses this chip. The worker sets
+  // prepared_hash when done; the next refetch drops the upload version.
+  const upPending  = versions.find((v) => v.kind === 'upload') ?? null
 
   if (tDone) {
     status = { kind: 'read-translation', via: tDone }
@@ -173,6 +178,10 @@ export function deriveChapterRow(
   } else if (spawnFrom) {
     status = { kind: 'translatable', from: spawnFrom }
     read = spawnFrom
+  } else if (upPending) {
+    // Upload finalized, prepare worker not done yet. Show chip so the
+    // user sees the chapter exists and the pipeline is running.
+    status = { kind: 'preparing', via: upPending }
   } else {
     status = { kind: 'unavailable' }
   }

@@ -152,11 +152,25 @@ export interface ApiWorkChapterTranslation {
   updated_at:          string | null
 }
 
+export interface ApiUploadingChapter {
+  /** chapter.id of the upload-origin chapter still in prepare pipeline. */
+  chapter_id:  number
+  material_id: number
+  source_lang: string | null
+  uploaded_by: number
+  created_at:  string | null
+}
+
 export interface ApiWorkChapter {
   id:           number
   number_norm:  string
   label:        string | null
   translations: ApiWorkChapterTranslation[]
+  /** Upload-origin chapters belonging to this work_chapter whose
+   *  prepare pipeline has not finished yet (``prepared_hash`` IS NULL).
+   *  Non-empty only for the viewer's own pending uploads. The SPA
+   *  renders these as "Đang xử lý" chips while the worker runs. */
+  uploading_chapters: ApiUploadingChapter[]
 }
 
 export interface ApiWorkViewerEntry {
@@ -951,6 +965,17 @@ export const api = {
 
   deleteLibraryEntry: (id: number) =>
     request<void>(`/library/entry/${id}`, { method: 'DELETE' }),
+
+  /** Delete a user-created Work (upload/extension materials only).
+   *  Server returns 403 if the Work has any source-backed material. */
+  deleteWork: (workId: number) =>
+    request<void>(`/work/${workId}`, { method: 'DELETE' }),
+
+  /** Delete the viewer's own upload material on a shared Work.
+   *  Call after unfollowing when deleteWork returns 403. No-op if
+   *  the viewer has no upload material on this work. */
+  deleteMyUploadMaterial: (workId: number) =>
+    request<void>(`/work/${workId}/my-upload`, { method: 'DELETE' }),
 
   linkMaterial: (entryId: number, body: {
     material_id: number; link_origin?: LinkOrigin;

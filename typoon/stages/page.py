@@ -202,24 +202,44 @@ def _build_window_prompt(
 
 
 def _bubble_dims(bk: BubbleKey) -> str:
-    """Return ` w=NNN h=NNN lines=N` string for active bubble headers.
+    """Return ` w=NNN h=NNN lines=N chars=NN` for active bubble headers.
 
-    Derived from the bubble's fit_box [x, y, w, h] in prepared-page
-    pixels. `lines` is estimated from height / (font_size * line_height)
-    using the source font size hint when available, falling back to
-    height / 28 (≈ median comic font at typical resolution).
+    `chars` is the character budget — computed by typoon_render.char_budget()
+    which runs the actual HarfBuzz measurement at the estimated render font,
+    accounting for bubble geometry and source typesetting hint.
     """
-    fit = bk.bubble.box.fit  # [x, y, w, h]
-    w, h = fit[2], fit[3]
+    poly = bk.bubble.polygon
+    if not poly:
+        return ""
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    w = int(max(xs) - min(xs))
+    h = int(max(ys) - min(ys))
     if w <= 0 or h <= 0:
         return ""
-    # Source font hint → estimate lines; fallback to h/28.
+
     src_font = bk.bubble.src_font_size_px or 0
-    if src_font > 0:
-        line_h = src_font * 1.22
-        lines = max(1, round(h / line_h))
-    else:
-        lines = max(1, round(h / 28))
+    src_lines = bk.bubble.src_line_count or 0
+
+    try:
+        import typoon_render
+        chars_per_line, n_lines, _font = typoon_render.typoon_render.char_budget(
+            int(w), int(h), 800,   # 800px = typical page width fallback
+            int(src_font), int(src_lines),
+        )
+        budget = chars_per_line * n_lines
+        lines  = n_lines
+    except Exception:
+        # Fallback to geometry estimate if Rust call fails
+        if src_font > 0:
+            line_h = src_font * 1.22
+            lines  = max(1, round(h / line_h))
+        else:
+            lines  = max(1, round(h / 28))
+        budget = 0
+
+    if budget > 0:
+        return f" w={w} h={h} lines={lines} chars={budget}"
     return f" w={w} h={h} lines={lines}"
 
 

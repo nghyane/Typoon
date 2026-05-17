@@ -4,7 +4,7 @@
   "host":      "otruyenapi.com",
   "homepage":  "https://otruyen.cc",
   "languages": ["vi"],
-  "version":   "2.1",
+  "version":   "2.2",
   "accent":    "emerald",
 
   "endpoints": {
@@ -18,8 +18,10 @@
           "parse":  "json",
           "pagination": { "type": "page", "pageSize": 24 },
           "list":   "$.data.items[*]",
+          "rootExtras": {
+            "cdn": "$.data.APP_DOMAIN_CDN_IMAGE"
+          },
           "extras": {
-            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
             "thumb": "@thumb_url",
             "slug":  "@slug"
           },
@@ -39,8 +41,10 @@
           "parse":  "json",
           "pagination": { "type": "page", "pageSize": 24 },
           "list":   "$.data.items[*]",
+          "rootExtras": {
+            "cdn": "$.data.APP_DOMAIN_CDN_IMAGE"
+          },
           "extras": {
-            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
             "thumb": "@thumb_url",
             "slug":  "@slug"
           },
@@ -60,8 +64,10 @@
           "parse":  "json",
           "pagination": { "type": "page", "pageSize": 24 },
           "list":   "$.data.items[*]",
+          "rootExtras": {
+            "cdn": "$.data.APP_DOMAIN_CDN_IMAGE"
+          },
           "extras": {
-            "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
             "thumb": "@thumb_url",
             "slug":  "@slug"
           },
@@ -79,8 +85,10 @@
       "url":    "https://otruyenapi.com/v1/api/tim-kiem?keyword={q:q}",
       "parse":  "json",
       "list":   "$.data.items[*]",
+      "rootExtras": {
+        "cdn": "$.data.APP_DOMAIN_CDN_IMAGE"
+      },
       "extras": {
-        "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
         "thumb": "@thumb_url",
         "slug":  "@slug"
       },
@@ -96,7 +104,7 @@
       "url":     "{mangaUrl}",
       "parse":   "json",
       "extract": "/truyen-tranh/(?<slug>[^/?#]+)",
-      "extras": {
+      "rootExtras": {
         "cdn":   "$.data.APP_DOMAIN_CDN_IMAGE",
         "thumb": "$.data.item.thumb_url"
       },

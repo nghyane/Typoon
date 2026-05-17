@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from typoon.domain.scan import Box, Bubble, BubbleKey
+from typoon.domain.scan import Bubble, BubbleKey
 from typoon.stages.page import (
     TranslationOp,
     _build_window_prompt,
@@ -12,12 +12,7 @@ from typoon.stages.page import (
 )
 
 
-_BOX = Box(
-    polygon=[[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
-    fit=[0, 0, 10, 5],
-    erase=[0, 0, 10, 5],
-    text=[0, 0, 10, 5],
-)
+_POLY = [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]]
 
 
 def _bk(key: str, idx: int, text: str, page: int = 0) -> BubbleKey:
@@ -25,7 +20,7 @@ def _bk(key: str, idx: int, text: str, page: int = 0) -> BubbleKey:
         key=key,
         bubble=Bubble(
             idx=idx, page_index=page, source_text=text,
-            confidence=0.9, box=_BOX,
+            confidence=0.9, polygon=_POLY,
         ),
     )
 

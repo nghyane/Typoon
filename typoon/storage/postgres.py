@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when schema.sql changes shape. Mismatch on boot ⇒ refuse to
 # start, instruct the operator to nuke the volume.
-SCHEMA_VERSION = "28"  # translations: allow multiple drafts per (work_chapter, owner, target_lang)
+SCHEMA_VERSION = "29"  # bubble_geometry: drop fit_box/erase_box/text_box (collapsed into polygon)
 
 # Hard cap on retry attempts per task. Deterministic crashes (NameError,
 # malformed input, persistent OOM) must not loop forever — after this
@@ -344,26 +344,40 @@ def _resolve_work_cover(
     materials: list[dict], target: str | None,
 ) -> str | None:
     """Cover priority:
-      1. material whose `languages` covers target AND has cover_url
-      2. first material with any cover_url
-      3. None
+      1. source material whose `languages` covers target AND has cover_url
+      2. any source material with cover_url
+      3. any material with cover_url (extension / upload fallback)
+      4. None
 
-    No fallback lang chain — covers are mostly identical across
-    sources for the same Work, so picking "the en cover before the
-    zh cover" doesn't help the viewer. Just take whatever's there.
+    Source materials (scraped from external sites) carry canonical
+    cover art. Upload/extension materials may have a user-supplied
+    cover that is work-specific or low quality — they should never
+    shadow the source cover.
     """
     if not materials:
         return None
+
+    source_mats = [m for m in materials if m.get("origin") == "source"]
+    other_mats  = [m for m in materials if m.get("origin") != "source"]
+
+    # Pass 1: source material at target lang
     if target:
-        for m in materials:
+        for m in source_mats:
             langs = m.get("languages") or []
             if any(_norm_lang(l) == target for l in langs) and m.get("cover_url"):
                 return m["cover_url"]
-    for m in materials:
+
+    # Pass 2: any source material with cover
+    for m in source_mats:
         if m.get("cover_url"):
             return m["cover_url"]
-    return None
 
+    # Pass 3: fallback to upload/extension (e.g. user created blank work)
+    for m in other_mats:
+        if m.get("cover_url"):
+            return m["cover_url"]
+
+    return None
 
 # Chapter `progress_stage/index/total` are also columns on
 # translation_drafts. Define progress dict shape once.
@@ -1060,12 +1074,19 @@ class PostgresStore:
         viewer_id: int,
     ) -> list[dict]:
         """Single-query overlay: every work_chapter of the work plus
-        each shared / viewer-owned translation, ordered by chapter
-        number_norm desc (latest first, NULLS LAST behaviour) and
-        translation created_at desc.
+        each shared / viewer-owned translation and the viewer's own
+        upload-origin chapters that are still in the prepare pipeline.
+
+        Two separate LEFT JOINs fan out from work_chapters:
+          1. translations (shared or viewer-owned, not taken down)
+          2. upload-origin chapters whose prepared_hash is NULL
+             and whose material was imported by the viewer — these
+             are the "Đang xử lý" rows the SPA shows immediately
+             after upload-finalize while the prepare worker runs.
 
         Output rows aggregated by chapter in Python so the SQL stays
-        flat — translations array assembled below.
+        flat — translations and uploading_chapters arrays assembled
+        below.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1075,70 +1096,108 @@ class PostgresStore:
                     wc.number_norm,
                     wc.label,
                     wc.created_at    AS wc_created_at,
+                    -- translation columns (NULL when no translation)
                     t.id             AS translation_id,
                     t.target_lang,
                     t.owner_id,
                     t.shared,
                     t.archive_locator IS NULL AND t.draft_id IS NOT NULL
                                      AS uses_default_render,
-                    -- Effective user-visible state (see
-                    -- `_EFFECTIVE_STATE_SQL` for the rule).
                     ({_EFFECTIVE_STATE_SQL})              AS state,
                     d.error_message  AS error_message,
                     t.draft_id,
                     d.source_lang    AS draft_source_lang,
                     d.chapter_id     AS draft_chapter_id,
-                    c.material_id    AS draft_material_id,
+                    c_draft.material_id AS draft_material_id,
                     u.display_name   AS creator_name,
                     to_char(t.updated_at AT TIME ZONE 'UTC',
-                            'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS t_updated_at
+                            'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS t_updated_at,
+                    -- upload-pending columns (NULL when no pending upload)
+                    c_up.id          AS up_chapter_id,
+                    c_up.material_id AS up_material_id,
+                    c_up.source_lang AS up_source_lang,
+                    m_up.imported_by AS up_uploaded_by,
+                    to_char(c_up.created_at AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS up_created_at
                 FROM work_chapters wc
                 LEFT JOIN translations t
                   ON t.work_chapter_id = wc.id
                  AND t.takedown_at IS NULL
                  AND (t.shared = TRUE OR t.owner_id = $2)
                 LEFT JOIN translation_drafts d ON d.id = t.draft_id
-                LEFT JOIN chapters c ON c.id = d.chapter_id
+                LEFT JOIN chapters c_draft ON c_draft.id = d.chapter_id
                 LEFT JOIN users u ON u.id = t.owner_id
+                -- pending upload chapters: upload-origin, not yet prepared,
+                -- belonging to the viewer's upload material on this work.
+                LEFT JOIN chapters c_up
+                  ON c_up.work_chapter_id = wc.id
+                 AND c_up.prepared_hash IS NULL
+                LEFT JOIN materials m_up
+                  ON m_up.id = c_up.material_id
+                 AND m_up.origin = 'upload'
+                 AND m_up.work_id = wc.work_id
+                 AND m_up.imported_by = $2
                 WHERE wc.work_id = $1
-                ORDER BY wc.id, t.created_at DESC
+                ORDER BY wc.id, t.created_at DESC NULLS LAST,
+                         c_up.created_at DESC NULLS LAST
                 """,
                 work_id, viewer_id,
             )
 
-        # Group translations under their work_chapter, preserving the
-        # SQL order (newest translation first per chapter).
         by_wc: dict[int, dict] = {}
         for r in rows:
             wc_id = int(r["work_chapter_id"])
             chapter = by_wc.get(wc_id)
             if chapter is None:
                 chapter = {
-                    "id":          wc_id,
-                    "number_norm": r["number_norm"],
-                    "label":       r["label"],
-                    "translations": [],
+                    "id":                 wc_id,
+                    "number_norm":        r["number_norm"],
+                    "label":              r["label"],
+                    "translations":       [],
+                    "uploading_chapters": [],
                 }
                 by_wc[wc_id] = chapter
-            if r["translation_id"] is None:
-                continue
-            chapter["translations"].append({
-                "id":                  int(r["translation_id"]),
-                "target_lang":         r["target_lang"],
-                "source_lang":         r.get("draft_source_lang"),
-                "owner_id":            int(r["owner_id"]),
-                "creator_name":        r.get("creator_name"),
-                "state":               r["state"],
-                "error_message":       r.get("error_message"),
-                "shared":              bool(r["shared"]),
-                "draft_id":            int(r["draft_id"]) if r["draft_id"] else None,
-                "draft_chapter_id":    int(r["draft_chapter_id"]) if r["draft_chapter_id"] else None,
-                "draft_material_id":   int(r["draft_material_id"]) if r["draft_material_id"] else None,
-                "uses_default_render": bool(r["uses_default_render"]),
-                "updated_at":          r.get("t_updated_at"),
-            })
-        # Sort chapters latest-first by number_norm (numeric where it
-        # parses, lexicographic fallback for non-numeric like "extra").
+
+            # --- translation ---
+            if r["translation_id"] is not None:
+                tr = {
+                    "id":                  int(r["translation_id"]),
+                    "target_lang":         r["target_lang"],
+                    "source_lang":         r.get("draft_source_lang"),
+                    "owner_id":            int(r["owner_id"]),
+                    "creator_name":        r.get("creator_name"),
+                    "state":               r["state"],
+                    "error_message":       r.get("error_message"),
+                    "shared":              bool(r["shared"]),
+                    "draft_id":            int(r["draft_id"]) if r["draft_id"] else None,
+                    "draft_chapter_id":    int(r["draft_chapter_id"]) if r["draft_chapter_id"] else None,
+                    "draft_material_id":   int(r["draft_material_id"]) if r["draft_material_id"] else None,
+                    "uses_default_render": bool(r["uses_default_render"]),
+                    "updated_at":          r.get("t_updated_at"),
+                }
+                # deduplicate: the upload JOIN can multiply translation rows
+                if not any(x["id"] == tr["id"] for x in chapter["translations"]):
+                    chapter["translations"].append(tr)
+
+            # --- pending upload ---
+            # m_up only JOINs when the chapter belongs to the viewer's upload
+            # material (imported_by = $2). If up_chapter_id is set but
+            # up_uploaded_by is NULL it means the chapter is unprepared but
+            # owned by a different user — skip it for this viewer.
+            if r["up_chapter_id"] is not None and r["up_uploaded_by"] is not None:
+                up = {
+                    "chapter_id":  int(r["up_chapter_id"]),
+                    "material_id": int(r["up_material_id"]),
+                    "source_lang": r.get("up_source_lang"),
+                    "uploaded_by": int(r["up_uploaded_by"]),
+                    "created_at":  r.get("up_created_at"),
+                }
+                if not any(
+                    x["chapter_id"] == up["chapter_id"]
+                    for x in chapter["uploading_chapters"]
+                ):
+                    chapter["uploading_chapters"].append(up)
+
         def _sortkey(c: dict) -> tuple[int, float, str]:
             n = _try_float(c["number_norm"] or "")
             if n is None:
@@ -2394,8 +2453,8 @@ class PostgresStore:
         self, chapter_id: int, pages: list[dict],
     ) -> None:
         """`pages` items: { page_index, width, height, bubbles: [...] }
-        where each bubble has bubble_idx, polygon, fit_box, erase_box,
-        text_box. Atomic replace per chapter."""
+        where each bubble has bubble_idx, polygon. Atomic replace per
+        chapter."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM bubble_geometry WHERE chapter_id=$1", chapter_id,
@@ -2415,16 +2474,11 @@ class PostgresStore:
                 if bubbles:
                     await conn.executemany(
                         "INSERT INTO bubble_geometry "
-                        "  (chapter_id, page_index, bubble_idx, "
-                        "   polygon, fit_box, erase_box, text_box) "
-                        "VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, "
-                        "        $6::jsonb, $7::jsonb)",
+                        "  (chapter_id, page_index, bubble_idx, polygon) "
+                        "VALUES ($1, $2, $3, $4::jsonb)",
                         [
                             (chapter_id, page["page_index"], b["bubble_idx"],
-                             b["polygon"],
-                             b["fit_box"],
-                             b["erase_box"],
-                             b["text_box"])
+                             b["polygon"])
                             for b in bubbles
                         ],
                     )
@@ -2440,8 +2494,7 @@ class PostgresStore:
                 chapter_id,
             )
             bubbles = await conn.fetch(
-                "SELECT page_index, bubble_idx, polygon, fit_box, "
-                "       erase_box, text_box "
+                "SELECT page_index, bubble_idx, polygon "
                 "FROM bubble_geometry WHERE chapter_id=$1 "
                 "ORDER BY page_index, bubble_idx",
                 chapter_id,
@@ -3223,6 +3276,99 @@ class PostgresStore:
             )
         return result.startswith("DELETE ") and not result.endswith("0")
 
+
+    async def delete_user_work(self, *, work_id: int, user_id: int) -> None:
+        """Delete a user-created Work when safe to do so.
+
+        Safe = ALL of:
+          1. Work exists.
+          2. No source-backed materials — those are shared community data.
+          3. No other users follow this work (library entries by others).
+          4. No shared translations by other users on this work's chapters.
+
+        If any condition fails the method raises HTTPException with a
+        descriptive status so the caller can surface it or silently skip.
+        On success: deletes materials (upload/extension), chapters via
+        FK CASCADE, all library entries, then the work itself.
+        """
+        from fastapi import HTTPException
+        async with self._pool.acquire() as conn, conn.transaction():
+            work = await conn.fetchrow(
+                "SELECT id FROM works WHERE id=$1", work_id,
+            )
+            if work is None:
+                raise HTTPException(404, "Work not found")
+
+            # Guard 1: no source material
+            source_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM materials "
+                "WHERE work_id=$1 AND origin='source'",
+                work_id,
+            )
+            if source_count:
+                raise HTTPException(
+                    403, "Work has source-backed materials — unfollow only",
+                )
+
+            # Guard 2: no other users following this work
+            other_followers = await conn.fetchval(
+                "SELECT COUNT(*) FROM library_entries "
+                "WHERE work_id=$1 AND user_id != $2",
+                work_id, user_id,
+            )
+            if other_followers:
+                raise HTTPException(
+                    403, "Other users follow this work — unfollow only",
+                )
+
+            # Guard 3: no shared translations by other users
+            other_translations = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM translations t
+                JOIN work_chapters wc ON wc.id = t.work_chapter_id
+                WHERE wc.work_id = $1
+                  AND t.owner_id != $2
+                  AND t.shared = TRUE
+                  AND t.takedown_at IS NULL
+                """,
+                work_id, user_id,
+            )
+            if other_translations:
+                raise HTTPException(
+                    403, "Work has shared translations by others — unfollow only",
+                )
+
+            # Safe to delete — cascade order matters
+            await conn.execute(
+                "DELETE FROM library_entries WHERE work_id=$1", work_id,
+            )
+            # chapters delete via FK ON DELETE CASCADE from materials
+            await conn.execute(
+                "DELETE FROM materials WHERE work_id=$1",
+                work_id,
+            )
+            await conn.execute("DELETE FROM works WHERE id=$1", work_id)
+
+    async def delete_user_upload_material(
+        self, *, work_id: int, user_id: int,
+    ) -> bool:
+        """Delete the viewer's upload-origin material for a Work, if any.
+
+        Called when the user unfollows a shared work — their personal
+        upload material (chapters they uploaded) is removed, but the
+        work itself stays intact for other followers.
+
+        Returns True if a material was deleted, False if none existed.
+        Chapters cascade-delete via FK ON DELETE CASCADE.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM materials "
+                "WHERE work_id=$1 AND imported_by=$2 AND origin='upload'",
+                work_id, user_id,
+            )
+        return result.endswith("1")
+
     async def link_material_to_entry(
         self,
         *,
@@ -3329,7 +3475,7 @@ class PostgresStore:
 
         async with self._pool.acquire() as conn:
             mat_rows = await conn.fetch(
-                "SELECT id, work_id, title, cover_url, title_native, "
+                "SELECT id, work_id, origin, title, cover_url, title_native, "
                 "       languages, title_locale "
                 "FROM materials WHERE work_id = ANY($1::bigint[])",
                 work_ids,

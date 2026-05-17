@@ -63,6 +63,7 @@ class ScanOutput:
                 "src_font_size_px":       b.src_font_size_px,
                 "src_line_count":         b.src_line_count,
                 "src_avg_chars_per_line": b.src_avg_chars_per_line,
+                "text_direction":          b.text_direction,
             }
             for b in self.chapter.all_bubbles
         ]
@@ -77,13 +78,11 @@ class ScanOutput:
                     {
                         "bubble_idx":             bg.bubble_idx,
                         "polygon":                bg.polygon,
-                        "fit_box":                bg.fit_box,
-                        "erase_box":              bg.erase_box,
-                        "text_box":               bg.text_box,
                         "rotation_deg":           bg.rotation_deg,
                         "src_font_size_px":       bg.src_font_size_px,
                         "src_line_count":         bg.src_line_count,
                         "src_avg_chars_per_line": bg.src_avg_chars_per_line,
+                        "text_direction":          bg.text_direction,
                     }
                     for bg in pg.bubbles
                 ],
@@ -131,6 +130,7 @@ async def scan_chapter(
         async with runtime.page_gate:
             image = await asyncio.to_thread(reader.read_rgb, index)
             h, w = image.shape[:2]
+            detection = None
 
             if min(h, w) < _MIN_PAGE_DIM:
                 page_results[index] = _PageOutput(
@@ -157,6 +157,9 @@ async def scan_chapter(
             async with masks_lock:
                 for bubble, bm in zip(result.page.bubbles, result.bubble_masks):
                     masks_store.put(index, bubble.idx, bm)
+                # Store CTD UNet bubble mask if provided (ctd_blocks detector)
+                if detection is not None and detection.bubble_mask is not None:
+                    masks_store.put_bubble_mask(index, detection.bubble_mask)
 
             if hook is not None:
                 hook.on(PageDone(
@@ -242,44 +245,41 @@ def _assemble_page(
     bubble_masks: list[BubbleMasks]      = []
 
     for i, g in enumerate(groups):
-        bbox_list = list(g.bbox)
         polygon_list = [list(p) for p in g.polygon]
-        text_box  = bbox_list
-        erase_box = _masks_bbox(g.erase_masks, bbox_list)
 
         ts = g.typesetting
         src_font  = ts.font_size_px if ts else 0
         src_lines = ts.line_count if ts else 0
         src_chars = ts.avg_chars_per_line if ts else 0.0
 
+        # Strip inline noise tokens (watermark domains, logo emoji,
+        # scanlation tags) that Lens OCR appended to dialogue text.
+        # This keeps the story content while making is_auto_skip accurate.
+        from typoon.stages.noise import strip_noise_tokens
+        clean_text = strip_noise_tokens(g.text)
+
         bubble = scan.Bubble(
             idx=i,
             page_index=index,
-            source_text=g.text,
+            source_text=clean_text,
             confidence=g.confidence,
-            box=scan.Box(
-                polygon=polygon_list,
-                fit=bbox_list,
-                erase=erase_box,
-                text=text_box,
-            ),
+            polygon=polygon_list,
             shape_kind=g.shape_kind,
             rotation_deg=g.rotation_deg,
             src_font_size_px=src_font,
             src_line_count=src_lines,
             src_avg_chars_per_line=src_chars,
+            text_direction=g.text_direction,
         )
         bubbles.append(bubble)
         geom_list.append(BubbleGeometry(
             bubble_idx=i,
             polygon=polygon_list,
-            fit_box=bbox_list,
-            erase_box=erase_box,
-            text_box=text_box,
             rotation_deg=g.rotation_deg,
             src_font_size_px=src_font,
             src_line_count=src_lines,
             src_avg_chars_per_line=src_chars,
+            text_direction=g.text_direction,
         ))
         bubble_masks.append(BubbleMasks(
             erase_masks=tuple(g.erase_masks),
@@ -298,19 +298,6 @@ def _assemble_page(
         bubble_masks=tuple(bubble_masks),
         detected_lang=detected_lang,
     )
-
-
-def _masks_bbox(masks, fallback: list[int]) -> list[int]:
-    if not masks:
-        return list(fallback)
-    boxes = []
-    for m in masks:
-        mh, mw = m.image.shape[:2]
-        boxes.append((m.x, m.y, m.x + mw, m.y + mh))
-    return [
-        min(b[0] for b in boxes), min(b[1] for b in boxes),
-        max(b[2] for b in boxes), max(b[3] for b in boxes),
-    ]
 
 
 def _vote_lang(samples: list[str | None]) -> str | None:

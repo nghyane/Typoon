@@ -79,26 +79,39 @@ export interface ResolvedWorkCover {
 }
 
 
-/** Cover priority — viewer-lang material first, then any cover.
- *  No fallback lang chain: covers are mostly identical across sources
- *  for the same Work, so picking "the en cover before the zh cover"
- *  doesn't help the viewer. Just take whatever's there. */
+/** Cover priority:
+ *  1. source material whose languages cover target  + has cover_url
+ *  2. any source material with cover_url
+ *  3. upload/extension material with cover_url (fallback)
+ *
+ *  Source materials carry canonical cover art from upstream sites.
+ *  Upload/extension materials may have user-supplied covers that
+ *  should never shadow the source cover. Mirrors server-side
+ *  `_resolve_work_cover` in `typoon/storage/postgres.py`. */
 export function resolveWorkCover(
   materials:  ApiMaterial[],
   targetLang: string | null,
 ): ResolvedWorkCover {
-  if (materials.length === 0) {
-    return { coverUrl: null, materialId: null }
-  }
-  const norm = normalizeLang(targetLang)
+  if (materials.length === 0) return { coverUrl: null, materialId: null }
+
+  const norm        = normalizeLang(targetLang)
+  const sourceMats  = materials.filter((m) => m.origin === 'source')
+  const otherMats   = materials.filter((m) => m.origin !== 'source')
+
+  // Pass 1: source material at target lang
   if (norm) {
-    const byLang = materials.find(
-      (m) => hasLang(m, norm) && !!m.cover_url,
-    )
+    const byLang = sourceMats.find((m) => hasLang(m, norm) && !!m.cover_url)
     if (byLang) return { coverUrl: byLang.cover_url, materialId: byLang.id }
   }
-  const anyCover = materials.find((m) => !!m.cover_url)
-  if (anyCover) return { coverUrl: anyCover.cover_url, materialId: anyCover.id }
+
+  // Pass 2: any source material with cover
+  const anySource = sourceMats.find((m) => !!m.cover_url)
+  if (anySource) return { coverUrl: anySource.cover_url, materialId: anySource.id }
+
+  // Pass 3: fallback to upload/extension
+  const anyOther = otherMats.find((m) => !!m.cover_url)
+  if (anyOther) return { coverUrl: anyOther.cover_url, materialId: anyOther.id }
+
   return { coverUrl: null, materialId: null }
 }
 

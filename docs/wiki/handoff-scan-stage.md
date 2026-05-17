@@ -95,5 +95,5 @@ typoon/adapters/vision_runtime.py  VisionRuntime.scan_page()
 typoon/runs/artifacts.py        ArtifactSink, FileArtifactSink
 typoon/vision/inspect.py        overlay helpers để tái dùng
 typoon/stages/prepare.py        pattern tham khảo cho stage structure
-docs/wiki/vision-grouping-pipeline.md  hiểu output của scan_page()
+docs/wiki/lens-native-grouping.md     hiểu output của scan_page()
 ```

@@ -50,3 +50,4 @@ ext/*.zip
 
 # Workspace packages
 packages/*/node_modules/
+spike/

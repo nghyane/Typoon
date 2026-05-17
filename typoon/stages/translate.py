@@ -180,6 +180,22 @@ def _normalize_for_render(text: str) -> str:
     # NFC first so subsequent regex operates on precomposed codepoints.
     text = unicodedata.normalize("NFC", text)
 
+    # ── Romaji macron strip ─────────────────────────────────────────────
+    # The embedded render font (SamaritanTall-TB) has no glyphs for
+    # Latin Extended-A precomposed macrons (Ō ō Ā ā Ē ē Ī ī Ū ū,
+    # U+0100–U+017F). LLMs writing Japanese-romanised proper nouns
+    # ("Shōwa", "Tōkyō", "Ryūnosuke") emit them constantly; without
+    # this strip they shape to glyph 0 (no outline, full advance) and
+    # render as "Sh wa" / "T kyo".
+    #
+    # Vietnamese never uses U+0304 (combining macron) — every VI tone
+    # mark is one of U+0300/0301/0303/0309/0323 over a base that uses
+    # U+0302 (â) / U+0306 (ă) / U+031B (ơ ư). NFD-strip-macron-then-NFC
+    # is therefore lossless for VI and unambiguously fixes romaji.
+    nfd = unicodedata.normalize("NFD", text)
+    if "\u0304" in nfd:
+        text = unicodedata.normalize("NFC", nfd.replace("\u0304", ""))
+
     # ── Ellipsis normalization ──────────────────────────────────────────
     # Collapse any run of 4+ dots (....., .............) to the two-beat
     # pause (……). Three dots stay as-is (standard hesitation ellipsis).

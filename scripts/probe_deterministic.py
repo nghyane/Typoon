@@ -208,7 +208,7 @@ async def main() -> None:
             "idx": b.idx,
             "text": b.source_text,
             "shape_kind": b.shape_kind,
-            "polygon": b.box.polygon,
+            "polygon": b.polygon,
         })
 
     page_dims = [(p.width, p.height) for p in reader._pages]

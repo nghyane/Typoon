@@ -53,8 +53,8 @@ from typoon.api.deps import (
 )
 from typoon.api.models import (
     LinkSuggestionOut, LinkVoteResult, SplitVoteResult,
-    MaterialOut, WorkChapterOut, WorkChapterTranslation, WorkDetailOut,
-    WorkMemberOut, WorkOut, WorkViewerEntry,
+    MaterialOut, UploadingChapter, WorkChapterOut, WorkChapterTranslation,
+    WorkDetailOut, WorkMemberOut, WorkOut, WorkViewerEntry,
 )
 from typoon.api.routes._shared import require_material, require_work
 from typoon.api.routes.upload import (
@@ -123,6 +123,9 @@ async def get_work_detail(
                 label=c.get("label"),
                 translations=[
                     WorkChapterTranslation(**t) for t in c["translations"]
+                ],
+                uploading_chapters=[
+                    UploadingChapter(**u) for u in c["uploading_chapters"]
                 ],
             )
             for c in chapters
@@ -198,6 +201,42 @@ async def create_blank_work(
             if entry is not None else None
         ),
     )
+
+
+@router.delete("/{work_id}", status_code=204)
+async def delete_user_work(
+    work_id: int,
+    user:  dict  = Depends(require_user),
+    db:    Store = Depends(get_store),
+):
+    """Delete a user-created Work (origin='upload' materials only).
+
+    Only allowed when the Work has no source-backed materials —
+    those are shared community data and must not be deleted by a
+    single user. Upload/extension materials are user-owned and can
+    be removed with the Work.
+
+    Cascade: deletes all upload/extension materials, their chapters,
+    and all library entries for this Work belonging to this user.
+    Raises 403 if the Work has any source material.
+    Raises 404 if the Work does not exist.
+    """
+    await db.delete_user_work(work_id=work_id, user_id=user["id"])
+
+
+@router.delete("/{work_id}/my-upload", status_code=204)
+async def delete_my_upload_material(
+    work_id: int,
+    user:  dict  = Depends(require_user),
+    db:    Store = Depends(get_store),
+):
+    """Delete the viewer's upload-origin material for a Work.
+
+    Used when unfollowing a shared work to clean up the viewer's own
+    uploaded chapters. The work and other materials are left intact.
+    No-op (204) if the viewer has no upload material on this work.
+    """
+    await db.delete_user_upload_material(work_id=work_id, user_id=user["id"])
 
 
 @router.post(

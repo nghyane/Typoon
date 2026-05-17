@@ -219,7 +219,7 @@ async def main() -> None:
             "page": b.page_index,
             "text": b.source_text,
             "shape_kind": b.shape_kind,
-            "polygon": b.box.polygon,
+            "polygon": b.polygon,
         }
         per_page[b.page_index].append(entry)
         flat.append(entry)

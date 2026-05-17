@@ -15,14 +15,18 @@
 // directional callbacks.
 
 import { PageImage } from './PageImage'
+import { LazyPageImage } from './LazyPageImage'
 import { useReaderSettings } from './store'
 import { cn } from '@shared/lib/cn'
 import type { ReaderPage } from './types'
+import type { InstalledSource } from '@features/browse/manifest/types'
 
 
 interface Props {
   pages:    ReaderPage[]
   urls?:    ReadonlyMap<number, string>
+  /** Raw source for lazy token resolution. Set when pages carry tokens. */
+  rawSource?: InstalledSource
   page:     number
   /** Triggered when the user attempts to advance past the last page.
    *  Caller surfaces the end-of-chapter card. */
@@ -30,7 +34,7 @@ interface Props {
 }
 
 
-export function PagerView({ pages, urls, page, onPastEnd }: Props) {
+export function PagerView({ pages, urls, rawSource, page, onPastEnd }: Props) {
   const { pageWidth, imageFit } = useReaderSettings()
 
   const total = pages.length
@@ -77,11 +81,10 @@ export function PagerView({ pages, urls, page, onPastEnd }: Props) {
       }}
     >
       <div style={wrapperStyle}>
-        <PageImage
-          page={p}
-          src={urls?.get(p.index) ?? p.url}
-          inWindow
-        />
+        {p.token && rawSource
+          ? <LazyPageImage page={p} source={rawSource} inWindow />
+          : <PageImage page={p} src={urls?.get(p.index) ?? p.url} inWindow />
+        }
       </div>
     </div>
   )

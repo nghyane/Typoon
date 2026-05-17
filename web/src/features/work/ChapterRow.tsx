@@ -64,6 +64,7 @@ type UnifiedState =
   | { kind: 'server-pending';  read: HubVersion | null }
   | { kind: 'server-error';    translation: HubVersion; read: HubVersion | null }
   | { kind: 'server-blocked';  read: HubVersion | null }
+  | { kind: 'preparing' }
   | { kind: 'unavailable' }
 
 
@@ -110,6 +111,8 @@ function unify(row: ChapterRowModel, spawn: SpawnProgress | null): UnifiedState 
       }
     case 'translation-blocked':
       return { kind: 'server-blocked', read: row.read }
+    case 'preparing':
+      return { kind: 'preparing' }
     case 'unavailable':
       return { kind: 'unavailable' }
   }
@@ -238,6 +241,7 @@ function pickReadTarget(state: UnifiedState): HubVersion | null {
     case 'server-pending':    return state.read
     case 'server-error':      return state.read
     case 'server-blocked':    return state.read
+    case 'preparing':         return null
     case 'unavailable':       return null
   }
 }
@@ -281,6 +285,7 @@ function identityVersion(row: ChapterRowModel, state: UnifiedState): HubVersion 
     case 'server-error':
     case 'server-blocked':
       return row.translation ?? row.read ?? row.spawnFrom ?? null
+    case 'preparing':         return null
     case 'unavailable':       return null
   }
 }
@@ -405,6 +410,16 @@ function ActionChip({
           icon={<PauseCircle size={12} />}
           label="Tạm ngưng"
           hideLabelOnMobile
+        />
+      )
+    case 'preparing':
+      return (
+        <Chip
+          tone="info"
+          icon={<Spinner />}
+          label="Đang xử lý"
+          hideLabelOnMobile
+          title="Đang chuẩn bị trang — sẽ sẵn sàng dịch sau ít phút"
         />
       )
     case 'unavailable':

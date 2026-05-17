@@ -308,10 +308,11 @@ function injectOptimisticTranslation(
         chapters[idx] = { ...ch, translations }
       } else {
         chapters.push({
-          id:           stub.chapterId,
-          number_norm:  stub.chapterNumber,
-          label:        stub.chapterLabel,
-          translations: [newTx],
+          id:                 stub.chapterId,
+          number_norm:        stub.chapterNumber,
+          label:              stub.chapterLabel,
+          translations:       [newTx],
+          uploading_chapters: [],
         })
       }
       return { ...old, chapters }

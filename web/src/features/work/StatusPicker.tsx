@@ -60,10 +60,14 @@ interface Props {
    *  Required to create the library entry (server resolves
    *  `work_id` from material_id and dedupes per user+Work). */
   materialId: number | null
+  /** True when the Work has no source-backed materials (user-created
+   *  blank work). When true, "Xóa khỏi thư viện" also deletes the
+   *  Work itself instead of just the library entry. */
+  isUserCreated?: boolean
 }
 
 
-export function StatusPicker({ workId, entryId, status, materialId }: Props) {
+export function StatusPicker({ workId, entryId, status, materialId, isUserCreated }: Props) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
@@ -113,7 +117,19 @@ export function StatusPicker({ workId, entryId, status, materialId }: Props) {
   })
 
   const remove = useMutation({
-    mutationFn: () => api.deleteLibraryEntry(entryId!),
+    mutationFn: async () => {
+      await api.deleteLibraryEntry(entryId!)
+      if (isUserCreated) {
+        // Work cá nhân: thử xóa work hoàn toàn.
+        // Server trả 403 nếu có người khác follow hoặc có source material
+        // → fallback: chỉ xóa upload material của mình.
+        try {
+          await api.deleteWork(workId)
+        } catch {
+          await api.deleteMyUploadMaterial(workId)
+        }
+      }
+    },
     onSuccess: () => { invalidate(); setOpen(false) },
   })
 

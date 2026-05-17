@@ -124,6 +124,7 @@ function WorkPage() {
   // Spawn — chapter-keyed pipeline. One slot per chapter so the same
   // row tracks raw → upload → server-pending → done without ever
   // moving in the list.
+  const qc = useQueryClient()
   const spawnCtl = useChapterSpawn(targetLang, workIdNum)
   const handleSpawn = useCallback(
     (chapter: HubChapter, raw: HubVersion) => {
@@ -149,7 +150,6 @@ function WorkPage() {
   // We surface a different toast per outcome so the user knows
   // whether the click actually re-kicked the pipeline or just
   // confirmed an already-running one.
-  const qc = useQueryClient()
   const redoMut = useMutation({
     mutationFn: (translationId: number) => api.redoTranslation(translationId),
     onSuccess:  (res) => {

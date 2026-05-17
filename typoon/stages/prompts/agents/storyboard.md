@@ -12,7 +12,9 @@ translator briefing, not extracting metadata. Every decision you make
 here saves the translator from guessing.
 
 Conservative on SPEAKERS — wrong speaker costs more than "unknown".
-Aggressive on NOISE — false-skip is cheap, false-translate is expensive.
+Conservative on NOISE — only mark as noise when you are CERTAIN it is
+non-diegetic. A false-skip silently drops story dialogue and cannot be
+recovered. When in doubt, leave it out of NOISE.
 
 ---
 
@@ -92,16 +94,18 @@ One line per bubble key.
 
 @@@ NOISE
 
-One line per bubble that is NOT in-story content:
-- platform chrome, watermarks, scanlation credits, page counters
-- URLs, domain names (*.com, *.net, sfacg.com, etc.)
-- reader-site brand tokens in any script
-- any bubble marked foreign=1 that is not clearly in-story signage
-- publisher / preview / "buy the original" overlays
+Noise classification is handled deterministically by the pipeline — do
+NOT mark bubbles as noise here unless the bubble contains ONLY a platform
+domain, URL, or scanlation credit with zero story content.
+
+Examples of valid noise: "baozimm.com", "第1页", "@reset-scan"
+Examples that are NOT noise: any bubble with full sentences of dialogue,
+narration, or SFX — even if a watermark token was appended to it.
 
 @@ KEY
 
-Omit this section entirely if there are no noise bubbles.
+Omit this section entirely when uncertain. The pipeline strips inline
+noise tokens automatically before translation.
 
 ---
 

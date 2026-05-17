@@ -1,0 +1,102 @@
+{
+  "id":        "baozimh",
+  "name":      "包子漫畫",
+  "host":      "www.baozimh.com",
+  "homepage":  "https://www.baozimh.com",
+  "languages": ["zh"],
+  "version":   "1.0",
+  "accent":    "amber",
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "第\\s*([0-9]+(?:\\.[0-9]+)?)\\s*[話话回]",
+      "^([0-9]+(?:\\.[0-9]+)?)(?:[話话]|\\s|$)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.baozimh.com/classify?page={page}",
+          "parse":  "html",
+          "headers": { "Referer": "https://www.baozimh.com/" },
+          "pagination": { "type": "page", "pageSize": 36 },
+          "list":   ".comics-card",
+          "fields": {
+            "url":   ".comics-card__poster@href",
+            "title": ".comics-card__poster@title",
+            "cover": ".comics-card__poster amp-img@src"
+          }
+        }
+      },
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.baozimh.com/list/new",
+          "parse":  "html",
+          "headers": { "Referer": "https://www.baozimh.com/" },
+          "list":   ".comics-card",
+          "fields": {
+            "url":   ".comics-card__poster@href",
+            "title": ".comics-card__poster@title",
+            "cover": ".comics-card__poster amp-img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://www.baozimh.com/search?q={q:q}",
+      "parse":  "html",
+      "headers": { "Referer": "https://www.baozimh.com/" },
+      "list":   ".comics-card",
+      "fields": {
+        "url":   ".comics-card__poster@href",
+        "title": ".comics-card__poster@title",
+        "cover": ".comics-card__poster amp-img@src"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "html",
+      "extract": "/comic/(?<comicId>[^/?#]+)",
+      "headers": { "Referer": "https://www.baozimh.com/" },
+      "fields": {
+        "title":       "h1.comics-detail__title",
+        "cover":       ".pure-u-md-1-6 amp-img@src",
+        "description": "p.comics-detail__desc",
+        "author":      "h2.comics-detail__author",
+        "status":      ".tag-list span.tag"
+      },
+      "chapters": {
+        "list":   "#chapter-items .comics-chapters, #chapters_other_list .comics-chapters",
+        "fields": {
+          "url":   "a@href",
+          "label": "span"
+        }
+      }
+    },
+
+    "chapter": {
+      "method":  "GET",
+      "url":     "https://appgb3.baozimh.com/baozimhapp/comic/chapter/{comicId}/{section}_{slot}.html",
+      "extract": "comic_id=(?<comicId>[^&]+)&(?:amp;)?section_slot=(?<section>\\d+)&(?:amp;)?chapter_slot=(?<slot>\\d+)",
+      "parse":   "html",
+      "headers": { "Referer": "https://appgb3.baozimh.com/" },
+      "list":    "img[data-w]",
+      "fields":  { "url": "@data-src" }
+    }
+  }
+}

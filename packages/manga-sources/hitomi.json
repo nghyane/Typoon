@@ -1,0 +1,91 @@
+{
+  "id":        "hitomi",
+  "name":      "Hitomi.la",
+  "host":      "hitomi.la",
+  "homepage":  "https://hitomi.la",
+  "languages": ["ja", "zh", "en", "ko", "multi"],
+  "version":   "1.0",
+  "accent":    "violet",
+  "nsfw":      true,
+  "adapter":   "hitomi",
+
+  "defaults": {
+    "type":     "all",
+    "language": "all"
+  },
+
+  "filters": [
+    {
+      "id":    "type",
+      "label": "Thể loại",
+      "type":  "select",
+      "options": [
+        { "id": "all",       "label": "Tất cả",    "param": "" },
+        { "id": "doujinshi", "label": "Doujinshi", "param": "type=doujinshi", "value": "doujinshi" },
+        { "id": "manga",     "label": "Manga",     "param": "type=manga",     "value": "manga" },
+        { "id": "artistcg",  "label": "Artist CG", "param": "type=artistcg",  "value": "artistcg" },
+        { "id": "gamecg",    "label": "Game CG",   "param": "type=gamecg",    "value": "gamecg" },
+        { "id": "imageset",  "label": "Image Set", "param": "type=imageset",  "value": "imageset" },
+        { "id": "anime",     "label": "Anime",     "param": "type=anime",     "value": "anime" }
+      ]
+    },
+    {
+      "id":    "language",
+      "label": "Ngôn ngữ",
+      "type":  "select",
+      "options": [
+        { "id": "all",      "label": "Tất cả",  "param": "" },
+        { "id": "ja",       "label": "日本語",  "param": "language=japanese",  "value": "japanese" },
+        { "id": "zh",       "label": "中文",    "param": "language=chinese",   "value": "chinese" },
+        { "id": "en",       "label": "English", "param": "language=english",   "value": "english" },
+        { "id": "ko",       "label": "한국어",  "param": "language=korean",    "value": "korean" }
+      ]
+    }
+  ],
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới nhất",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://hitomi.la/",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 25 },
+          "list":   ".gallery-content > div",
+          "fields": {
+            "url":   "h1.lillie a@href",
+            "title": "h1.lillie a",
+            "cover": "a.lillie img@data-src || a.lillie img@src"
+          }
+        }
+      }
+    ],
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title": "h1.lillie"
+      },
+      "chapters": {
+        "list": "h1.lillie",
+        "fields": {
+          "url":    "=mangaUrl",
+          "number": "=1",
+          "label":  "=Ch.1"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   "img",
+      "fields": { "url": "@src" }
+    }
+  }
+}

@@ -26,7 +26,7 @@ def test_presets_all_valid():
 def test_lens_native_grouper_requires_lens_detector():
     with pytest.raises(ValueError, match="lens_native"):
         VisionPipelineSpec(
-            detector="ppocr_dbnet",
+            detector="ctd_blocks",
             grouper="lens_native",
             recognizer="apple_vision",
         )
@@ -35,38 +35,10 @@ def test_lens_native_grouper_requires_lens_detector():
 def test_recognizer_none_requires_text_shipping_detector():
     with pytest.raises(ValueError, match="recognizer=none"):
         VisionPipelineSpec(
-            detector="ppocr_dbnet",
-            grouper="ppocr_yolo_union_find",
+            detector="ctd_blocks",
+            grouper="ctd_native",
             recognizer="none",
         )
-
-
-def test_bing_blocks_pairs_with_yolo_grouper():
-    """Bing emits line-level boxes — needs YOLO scope to merge into bubbles."""
-    spec = VisionPipelineSpec(
-        detector="bing_blocks",
-        grouper="ppocr_yolo_union_find",
-        recognizer="none",
-    )
-    assert spec.detector == "bing_blocks"
-    assert spec.recognizer == "none"
-
-
-def test_bing_blocks_rejects_lens_native_grouper():
-    """lens_native is bubble-shaped; Bing line output would mis-group."""
-    with pytest.raises(ValueError, match="lens_native"):
-        VisionPipelineSpec(
-            detector="bing_blocks",
-            grouper="lens_native",
-            recognizer="none",
-        )
-
-
-def test_bing_preset_compose():
-    spec = VisionPipelineSpec.preset("bing")
-    assert spec.detector == "bing_blocks"
-    assert spec.grouper == "ppocr_yolo_union_find"
-    assert spec.recognizer == "none"
 
 
 def test_concurrency_must_be_positive():
@@ -82,7 +54,7 @@ def test_with_overrides_returns_validated_copy():
     assert tuned.detector == base.detector
     # Invalid overrides re-trigger validation
     with pytest.raises(ValueError):
-        base.with_overrides(grouper="lens_native", detector="ppocr_dbnet")
+        base.with_overrides(grouper="ctd_native", detector="lens_blocks")
 
 
 def test_preset_unknown_raises():
@@ -90,13 +62,8 @@ def test_preset_unknown_raises():
         VisionPipelineSpec.preset("does_not_exist")
 
 
-def test_offline_preset_uses_local_stack():
-    spec = VisionPipelineSpec.preset("offline")
-    assert spec.detector == "ppocr_dbnet"
-    assert spec.grouper == "ppocr_yolo_union_find"
-    assert spec.recognizer != "none"
-
-
-def test_manga_ja_preset_uses_manga_ocr():
-    spec = VisionPipelineSpec.preset("manga_ja")
+def test_ctd_manga_preset_uses_manga_ocr():
+    spec = VisionPipelineSpec.preset("ctd_manga")
+    assert spec.detector == "ctd_blocks"
+    assert spec.grouper == "ctd_native"
     assert spec.recognizer == "manga_ocr"

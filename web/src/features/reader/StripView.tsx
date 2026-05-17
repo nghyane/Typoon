@@ -11,13 +11,17 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { PageImage } from './PageImage'
+import { LazyPageImage } from './LazyPageImage'
 import { useReaderSettings } from './store'
 import type { ReaderPage } from './types'
+import type { InstalledSource } from '@features/browse/manifest/types'
 
 
 interface Props {
   pages: ReaderPage[]
   urls?: ReadonlyMap<number, string>
+  /** Raw source for lazy token resolution. Set when pages carry tokens. */
+  rawSource?: InstalledSource
   /** Notified when the topmost intersecting page changes. Drives
    *  the page slider and resume-position writer. */
   onVisiblePageChange?: (index: number) => void
@@ -31,7 +35,7 @@ const BUFFER = 3   // slots above + below the viewport that pre-mount <img>
 
 
 export function StripView({
-  pages, urls, onVisiblePageChange, endSlot,
+  pages, urls, rawSource, onVisiblePageChange, endSlot,
 }: Props) {
   const { pageWidth, pageGap, stripMargin } = useReaderSettings()
 
@@ -123,11 +127,10 @@ export function StripView({
           data-idx={i}
           style={i < pages.length - 1 ? { marginBottom: pageGap } : undefined}
         >
-          <PageImage
-            page={p}
-            src={urls?.get(p.index) ?? p.url}
-            inWindow={window.has(i)}
-          />
+          {p.token && rawSource
+            ? <LazyPageImage page={p} source={rawSource} inWindow={window.has(i)} />
+            : <PageImage page={p} src={urls?.get(p.index) ?? p.url} inWindow={window.has(i)} />
+          }
         </div>
       ))}
       {endSlot}

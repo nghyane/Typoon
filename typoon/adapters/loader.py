@@ -149,9 +149,11 @@ async def _load_page_geometry(db: Store, chapter_id: int) -> dict[int, PageGeome
                 BubbleGeometry(
                     bubble_idx=b["bubble_idx"],
                     polygon=b["polygon"],
-                    fit_box=b["fit_box"],
-                    erase_box=b["erase_box"],
-                    text_box=b["text_box"],
+                    rotation_deg=b.get("rotation_deg", 0.0),
+                    src_font_size_px=b.get("src_font_size_px", 0),
+                    src_line_count=b.get("src_line_count", 0),
+                    src_avg_chars_per_line=b.get("src_avg_chars_per_line", 0.0),
+                    text_direction=b.get("text_direction", "horizontal"),
                 )
                 for b in p["bubbles"]
             ),
@@ -182,13 +184,13 @@ def _build_scanned(
             page_index=pi,
             source_text=bd["source_text"],
             confidence=bd["confidence"],
-            box=scan.Box(
-                polygon=bg.polygon,
-                fit=bg.fit_box,
-                erase=bg.erase_box,
-                text=bg.text_box,
-            ),
+            polygon=bg.polygon,
             shape_kind=bd.get("shape_kind", "dialogue"),
+            rotation_deg=bd.get("rotation_deg", 0.0),
+            src_font_size_px=bd.get("src_font_size_px", 0),
+            src_line_count=bd.get("src_line_count", 0),
+            src_avg_chars_per_line=bd.get("src_avg_chars_per_line", 0.0),
+            text_direction=bd.get("text_direction", "horizontal"),
         ))
 
     pages = tuple(

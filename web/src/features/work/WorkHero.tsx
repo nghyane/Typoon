@@ -82,6 +82,7 @@ export function WorkHero({
   const cover                  = resolveWorkCover(materials, targetLang)
   const primary                = pickPrimaryMaterial(materials, targetLang)
   const altTitles              = collectAltTitles(materials, title)
+  const isUserCreated          = materials.every((m) => m.origin !== 'source')
 
   return (
     <div className="px-4 sm:px-6 pt-6 pb-4">
@@ -113,6 +114,7 @@ export function WorkHero({
             workId={workId}
             material={primary}
             targetLang={targetLang}
+            isUserCreated={isUserCreated}
             onResume={onResume}
             onShare={onShare}
             onUpload={onUpload}
@@ -349,16 +351,18 @@ function MetaStrip({ material }: { material: ApiMaterial | null }) {
 
 function ActionBar({
   resumeFrom, viewerEntry, workId, material, targetLang,
+  isUserCreated,
   onResume, onShare, onUpload,
 }: {
-  resumeFrom:  ApiRecentRead | null
-  viewerEntry: ApiWorkViewerEntry | null
-  workId:      number
-  material:    ApiMaterial | null
-  targetLang:  string
-  onResume:    () => void
-  onShare:     () => void
-  onUpload:    () => void
+  resumeFrom:    ApiRecentRead | null
+  viewerEntry:   ApiWorkViewerEntry | null
+  workId:        number
+  material:      ApiMaterial | null
+  targetLang:    string
+  isUserCreated: boolean
+  onResume:      () => void
+  onShare:       () => void
+  onUpload:      () => void
 }) {
   return (
     <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -383,6 +387,7 @@ function ActionBar({
         entryId={viewerEntry?.entry_id ?? null}
         status={viewerEntry?.status ?? null}
         materialId={material?.id ?? null}
+        isUserCreated={isUserCreated}
       />
 
       {viewerEntry && (

@@ -85,6 +85,7 @@ class TextBlock:
     rotation_deg: float = 0.0   # block-level rotation; 0 = axis-aligned horizontal
     words:        tuple[WordBox, ...] = ()  # per-word geometry when available
     lines:        tuple[LineBox, ...] = ()  # per-line geometry when available
+    text_direction: str = "horizontal"      # "vertical" | "horizontal" — source script
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,13 @@ class DetectionResult:
     page_size:               tuple[int, int]               # (width, height)
     rejected:                tuple[tuple[TextBlock, str], ...] = ()  # (block, reason)
     detected_lang:           str | None = None             # ISO 639-1 from detector, if surfaced
+    bubble_mask:             "np.ndarray | None" = None    # uint8 (H,W) bubble segmentation
+    # Optional bubble-anchor regions from a side-detector (e.g. comic_detr).
+    # Each entry: (class_name, (x1, y1, x2, y2), confidence). Class is
+    # one of "bubble" | "text_bubble" | "text_free". When present, the
+    # grouper uses these as spatial anchors to merge TextBlocks into
+    # BubbleGroups (replacing geometry-only heuristics).
+    bubble_regions:          tuple[tuple[str, tuple[int, int, int, int], float], ...] = ()
 
 
 # ─── Grouping contract ────────────────────────────────────────────────────
@@ -122,11 +130,12 @@ class BubbleGroup:
     confidence:     float
     text_masks:     tuple[TextMask, ...]
     erase_masks:    tuple[TextMask, ...]
-    source:         str                  # "lens" | "ppocr_yolo" | etc.
+    source:         str                  # "lens" | "ppocr_yolo" | "ctd" | etc.
     shape_kind:     str = "dialogue"     # "dialogue" | "burst"
     used_fallback:  bool = False         # erase mask = full bbox rectangle
     rotation_deg:   float = 0.0          # block-level rotation, propagated to render
     typesetting:    TypesettingHint | None = None  # detector-derived fit hint
+    text_direction: str = "horizontal"   # "vertical" | "horizontal" — source script direction
 
 
 # ─── Stage protocols ──────────────────────────────────────────────────────

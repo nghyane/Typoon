@@ -8,27 +8,26 @@ from .prepared import Chapter as PreparedChapter
 
 
 @dataclass(frozen=True)
-class Box:
-    """Render and erase geometry for one bubble, in prepared-page coordinates."""
-    polygon:  list[list[float]]
-    fit:      list[int]
-    erase:    list[int]
-    text:     list[int]
-
-
-@dataclass(frozen=True)
 class Bubble:
-    """One accepted text group after detect → group → OCR."""
+    """One accepted text group after detect → group → OCR.
+
+    ``polygon`` is the rendered drawable area in prepared-page
+    coordinates — already padded by the grouper; the renderer treats it
+    as the fit polygon directly. The erase mask is stored separately in
+    the MaskStore alongside the page (pixel-level, not derivable from
+    geometry).
+    """
     idx:                  int
     page_index:           int
     source_text:          str
     confidence:           float
-    box:                  Box
-    shape_kind:           str = "dialogue"   # dialogue | burst
-    rotation_deg:         float = 0.0        # block-level rotation propagated to render
-    src_font_size_px:     int = 0            # 0 = no hint; from detector line geometry
+    polygon:              list[list[float]]
+    shape_kind:           str = "dialogue"
+    rotation_deg:         float = 0.0
+    src_font_size_px:     int = 0
     src_line_count:       int = 0
     src_avg_chars_per_line: float = 0.0
+    text_direction:       str = "horizontal"
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,7 @@ class BubbleKey:
     @property
     def source_text(self) -> str: return self.bubble.source_text
     @property
-    def box(self) -> Box:         return self.bubble.box
+    def polygon(self) -> list[list[float]]: return self.bubble.polygon
 
 
 @dataclass(frozen=True)
@@ -72,21 +71,19 @@ class Chapter:
 
 @dataclass(frozen=True)
 class BubbleGeometry:
-    """Polygon + render boxes for one bubble — stored in scan.npz."""
+    """Polygon for one bubble — stored in scan.npz / DB."""
     bubble_idx:             int
     polygon:                list[list[float]]
-    fit_box:                list[int]
-    erase_box:              list[int]
-    text_box:               list[int]
     rotation_deg:           float = 0.0
     src_font_size_px:       int   = 0
     src_line_count:         int   = 0
     src_avg_chars_per_line: float = 0.0
+    text_direction:         str   = "horizontal"
 
 
 @dataclass(frozen=True)
 class PageGeometry:
-    """All geometry for one page — stored in scan.npz."""
+    """All geometry for one page — stored in scan.npz / DB."""
     page_index: int
     width:      int
     height:     int

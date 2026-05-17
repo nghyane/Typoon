@@ -143,9 +143,11 @@ export function useReader(input: UseReaderInput): UseReaderResult {
       }))
     }
     if (isRaw && rawPagesQ.data) {
+      const tokens = rawPagesQ.data.tokens
       return rawPagesQ.data.pages.map((u, i) => ({
         index:  i,
-        url:    proxify(u),
+        url:    tokens ? null : proxify(u),
+        token:  tokens?.[i],
         width:  0,
         height: 0,
       }))
@@ -249,7 +251,8 @@ export function useReader(input: UseReaderInput): UseReaderResult {
 
   return {
     pages,
-    urls: isTranslation ? archive.urls : undefined,
+    urls:      isTranslation ? archive.urls : undefined,
+    rawSource: isRaw ? rawSource ?? undefined : undefined,
     meta: {
       workId,
       workTitle,

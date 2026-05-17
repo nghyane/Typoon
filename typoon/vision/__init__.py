@@ -25,7 +25,6 @@ from .contracts import (
 )
 from .pipeline import (
     DETECTORS_SHIPPING_TEXT,
-    GROUPERS_REQUIRING_LENS,
     PRESETS,
     DetectorId,
     EraserId,
@@ -40,7 +39,6 @@ __all__ = [
     "VisionPipelineSpec",
     "PRESETS",
     "DETECTORS_SHIPPING_TEXT",
-    "GROUPERS_REQUIRING_LENS",
     "DetectorId",
     "GrouperId",
     "RecognizerId",

@@ -1,0 +1,122 @@
+{
+  "id":        "naver-webtoon",
+  "name":      "Naver Webtoon",
+  "host":      "comic.naver.com",
+  "homepage":  "https://comic.naver.com",
+  "languages": ["ko"],
+  "version":   "1.1",
+  "accent":    "emerald",
+
+  "chapterNumberNorm": {
+    "input": "number",
+    "patterns": [
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://comic.naver.com/api/webtoon/titlelist/weekday?week=SAT&order=VIEW",
+          "parse":   "json",
+          "list":    "$.titleListMap.*[*]",
+          "extras":  { "titleId": "@titleId" },
+          "fields": {
+            "title": "@titleName",
+            "url":   "=https://comic.naver.com/webtoon/list?titleId={titleId}",
+            "cover": "@thumbnailUrl"
+          }
+        }
+      },
+      {
+        "id":    "today",
+        "label": "Hôm nay",
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://comic.naver.com/api/home/component?type=DAILY_WEBTOON&order=",
+          "parse":   "json",
+          "list":    "$.titleList[*]",
+          "extras":  { "titleId": "@titleId" },
+          "fields": {
+            "title": "@titleName",
+            "url":   "=https://comic.naver.com/webtoon/list?titleId={titleId}",
+            "cover": "@thumbnailUrl"
+          }
+        }
+      },
+      {
+        "id":    "new",
+        "label": "Mới ra mắt",
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://comic.naver.com/api/webtoon/titlelist/new?order=VIEW&page={page}&pageSize=20",
+          "parse":   "json",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":    "$.titleList[*]",
+          "extras":  { "titleId": "@titleId" },
+          "fields": {
+            "title": "@titleName",
+            "url":   "=https://comic.naver.com/webtoon/list?titleId={titleId}",
+            "cover": "@thumbnailUrl"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method":     "GET",
+      "url":        "https://comic.naver.com/api/search/webtoon?keyword={q:q}&page={page}",
+      "parse":      "json",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":       "$.searchList[*]",
+      "extras":     { "titleId": "@titleId" },
+      "fields": {
+        "title": "@titleName",
+        "url":   "=https://comic.naver.com/webtoon/list?titleId={titleId}",
+        "cover": "@thumbnailUrl"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "https://comic.naver.com/api/article/list/info?titleId={titleId}",
+      "extract": "titleId=(?<titleId>\\d+)",
+      "parse":   "json",
+      "fields": {
+        "title":       "$.titleName",
+        "cover":       "$.thumbnailUrl",
+        "description": "$.synopsis",
+        "author":      "$.communityArtists[0].name",
+        "updatedAt":   "$.publishDescription"
+      }
+    },
+
+    "chaptersApi": {
+      "method":     "GET",
+      "url":        "https://comic.naver.com/api/article/list?titleId={titleId}&page={page}&pageSize=20&sortOrder=ASC",
+      "parse":      "json",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":       "$.articleList[*]",
+      "extras":     { "no": "@no" },
+      "fields": {
+        "url":    "=https://comic.naver.com/webtoon/detail?titleId={titleId}&no={no}",
+        "number": "@subtitle",
+        "date":   "@serviceDateDescription"
+      }
+    },
+
+    "chapter": {
+      "method":  "GET",
+      "url":     "{chapterUrl}",
+      "parse":   "html",
+      "list":    "#sectionContWide img[id^=\"content_image_\"]",
+      "fields":  { "url": "@src" }
+    }
+  }
+}

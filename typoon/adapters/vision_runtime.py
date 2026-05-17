@@ -60,8 +60,6 @@ def _resolve_spec(config) -> VisionPipelineSpec:
         [vision]
         preset = "lens"           # PRESETS key
         # Optional per-stage overrides on top of the preset:
-        # detector = "ppocr_dbnet"
-        # grouper  = "ppocr_yolo_union_find"
         # recognizer = "apple_vision"
         # eraser  = "aot_gan"
         # page_concurrency = 8
@@ -86,6 +84,7 @@ def _resolve_spec(config) -> VisionPipelineSpec:
         "detector", "grouper", "recognizer", "eraser",
         "page_concurrency", "detect_concurrency", "erase_concurrency",
     ):
+
         value = (
             raw.get(field_name) if isinstance(raw, dict)
             else getattr(raw, field_name, None)

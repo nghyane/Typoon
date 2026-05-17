@@ -63,7 +63,12 @@ class FileArtifactSink:
     def write_image(self, stage: str, name: str, image: np.ndarray) -> Path:
         out = self._path(stage, name)
         out.parent.mkdir(parents=True, exist_ok=True)
-        bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) if image.ndim == 3 else image
+        if image.ndim == 3 and image.shape[2] == 4:
+            bgr = cv2.cvtColor(image, cv2.COLOR_RGBA2BGRA)
+        elif image.ndim == 3:
+            bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        else:
+            bgr = image
         if not cv2.imwrite(str(out), bgr):
             raise RuntimeError(f"Failed to write image: {out}")
         return out

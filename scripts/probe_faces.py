@@ -198,7 +198,7 @@ async def main() -> None:
     for bk in keyed:
         b = bk.bubble
         e = {"key": bk.key, "page": b.page_index, "text": b.source_text,
-             "shape_kind": b.shape_kind, "polygon": b.box.polygon}
+             "shape_kind": b.shape_kind, "polygon": b.polygon}
         per_page[b.page_index].append(e)
         flat.append(e)
 

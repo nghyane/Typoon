@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from typoon.domain.brief import Character, ChapterBrief
-from typoon.domain.scan import Box, Bubble, BubbleKey
+from typoon.domain.scan import Bubble, BubbleKey
 from typoon.stages.brief import (
     _parse_kv,
     _parse_reply,
@@ -15,12 +15,7 @@ from typoon.stages.brief import (
 from typoon.stages.storyboard import chunk_pages
 
 
-_BOX = Box(
-    polygon=[[10.0, 10.0], [100.0, 10.0], [100.0, 80.0], [10.0, 80.0]],
-    fit=[10, 10, 100, 80],
-    erase=[10, 10, 100, 80],
-    text=[10, 10, 100, 80],
-)
+_POLY = [[10.0, 10.0], [100.0, 10.0], [100.0, 80.0], [10.0, 80.0]]
 
 
 def _bk(key: str, idx: int, text: str, page: int = 0) -> BubbleKey:
@@ -28,7 +23,7 @@ def _bk(key: str, idx: int, text: str, page: int = 0) -> BubbleKey:
         key=key,
         bubble=Bubble(
             idx=idx, page_index=page, source_text=text,
-            confidence=0.9, box=_BOX,
+            confidence=0.9, polygon=_POLY,
         ),
     )
 

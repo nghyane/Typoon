@@ -47,13 +47,17 @@ export interface HttpRequest {
 
 // ─── pagination ────────────────────────────────────────────────────
 
-/** How the source paginates a list endpoint. The runtime increments
- *  `{page}` or `{offset}` between fetches; if a page returns fewer
- *  rows than `pageSize`, paging stops. */
+/** How the source paginates a list endpoint.
+ *
+ *  `page`   — `{page}` starts at 1, increments by 1. Stop when a
+ *             page returns fewer rows than `pageSize`.
+ *  `offset` — `{offset}` starts at 0, increments by `pageSize`.
+ *  `cursor` — source uses an opaque cursor token; adapter-only, the
+ *             declarative runtime does not support cursor pagination.
+ *             `pageSize` still declared so the UI knows how many items
+ *             to expect per load. */
 export interface Pagination {
-  /** `page`   — `{page}` starts at 1 and increments by 1.
-   *  `offset` — `{offset}` starts at 0 and increments by `pageSize`. */
-  type:     'page' | 'offset'
+  type:     'page' | 'offset' | 'cursor'
   pageSize: number
 }
 
@@ -77,10 +81,24 @@ export interface Filter {
 export interface FilterOption {
   id:    string
   label: string
-  /** Raw query fragment(s) appended to the request URL when this
-   *  option is active. Multiple `key=value` separated by `&`, no
-   *  leading `&`. Empty string = no-op (e.g. "any" option). */
+  /** Raw query fragment appended to the request URL when this option
+   *  is active, e.g. `"f_cats=1021"` or `"status=ongoing"`. Multiple
+   *  `key=value` pairs separated by `&`, no leading `&`. Empty string
+   *  = no-op (e.g. "any" option).
+   *
+   *  Used by the declarative runtime to assemble `{filterParams}`.
+   *  Adapters that need structured filter data should read
+   *  `BrowseArgs.filterState` instead. */
   param: string
+  /** Structured value passed to adapters via
+   *  `BrowseArgs.filterState[filterId]`. Falls back to `id` when
+   *  absent so simple adapters can read the option id directly. Use
+   *  when the adapter needs a value different from the option id
+   *  (e.g. nozomi index name `"japanese"` vs option id `"ja"`). */
+  value?: string
+  /** When true, renders as a standalone toggle chip instead of inside
+   *  the filter group popover. For 18+/NSFW toggles. */
+  nsfw?: boolean
 }
 
 // ─── endpoints ─────────────────────────────────────────────────────
@@ -97,10 +115,18 @@ export interface BrowseEndpoint extends HttpRequest {
     title:  Selector
     cover?: Selector
   }
-  /** Extra fields the manifest may resolve to feed `cover` template
-   *  (e.g. MangaDex `fileName` from relationships).  Resolved
-   *  BEFORE `fields.cover` so cover templates can reference them. */
-  extras?: Record<string, Selector>
+  /** Extras resolved ONCE against the response root before row
+   *  iteration. Use for values shared across all rows (CDN host,
+   *  base URL, API version string). Available as vars in `extras`
+   *  templates and in `fields` templates. */
+  rootExtras?: Record<string, Selector>
+  /** Per-row extras — resolved against each row element/node.
+   *  May reference `rootExtras` values via `=template` syntax. */
+  extras?:     Record<string, Selector>
+  /** Optional row filter. A row is kept only when every predicate
+   *  resolves to a non-empty, non-falsy value. Same semantics as
+   *  `ChaptersApiEndpoint.keepIf`. */
+  keepIf?:     Record<string, Selector>
 }
 
 /** Manga detail endpoint. Returns metadata + (optionally) inline
@@ -122,8 +148,14 @@ export interface MangaEndpoint extends HttpRequest {
      *  latest chapter so the row still surfaces something. Other
      *  chapters stay date-less. */
     updatedAt?:   Selector
+    /** Comma/JSON-array of BCP-47 codes available on this source.
+     *  When present, overrides `manifest.languages` for this work. */
+    availableLangs?: Selector
   }
-  extras?: Record<string, Selector>
+  /** Root-level extras — resolved once against the response root. */
+  rootExtras?: Record<string, Selector>
+  /** Per-row extras (applies to the root row for manga endpoints). */
+  extras?:     Record<string, Selector>
   /** Inline chapter list when the manga response carries it. */
   chapters?: ChapterListSpec
 }
@@ -135,6 +167,11 @@ export interface ChaptersApiEndpoint extends HttpRequest {
   pagination?: Pagination
   list:        Selector
   fields:      ChapterFields
+  /** Per-row extras resolved before field templates. Values are
+   *  available as `{key}` in `=template` fields — use when a URL
+   *  template needs a value that can't be selected directly in
+   *  `fields` (e.g. `no` from `@no` needed in a chapter URL). */
+  extras?: Record<string, Selector>
   /** Per-endpoint override of `manifest.chapterNumberNorm`. Use when
    *  this endpoint emits chapters in a different shape than the rest
    *  of the source. */
@@ -224,23 +261,34 @@ export interface ChapterNumberNorm {
  *  Two output shapes:
  *
  *    1. `list` + `fields.url` — each row already has a URL.
- *    2. `pages.iterate` + `pages.template` — root response has a
- *       baseUrl + hash + array of file names; runtime maps each
- *       file through the template.
+ *  Only one of `list` / `pages` may be set.
  *
- *  Only one of `list` / `pages` may be set. */
+ *  `pages` shapes:
+ *    A. `iterate` — extras key whose selector returns an array;
+ *       `{file}` = each element. (OTruyen)
+ *    B. `count`   — extras key whose selector returns an integer N;
+ *       runtime generates range ["1".."N"], `{file}` = page number.
+ *       (HentaiFox, nhentai-style sites)
+ */
 export interface ChapterEndpoint extends HttpRequest {
   extract?: string
   list?:    Selector
   fields?:  { url: Selector }
+  /** Root-level extras resolved once before page generation. */
+  rootExtras?: Record<string, Selector>
   pages?:   {
-    /** Field map resolved against the response root; the final
-     *  field "files" must produce an array (JSONPath wildcard). */
-    extras:   Record<string, Selector>
-    /** Name of the array field inside `extras`. */
-    iterate:  string
-    /** Per-iteration template; `{file}` plus any other extras. */
-    template: string
+    /** Extras resolved against the response root. Values are
+     *  available as `{key}` in `template`. */
+    extras:    Record<string, Selector>
+    /** Key in `extras` whose selector returns an array of file
+     *  names/paths. Mutually exclusive with `count`. */
+    iterate?:  string
+    /** Key in `extras` whose selector returns an integer N.
+     *  Runtime generates ["1","2",...,"N"] and binds each to
+     *  `{file}`. Mutually exclusive with `iterate`. */
+    count?:    string
+    /** URL template. Available vars: all `extras` keys + `{file}`. */
+    template:  string
   }
 }
 
@@ -270,6 +318,34 @@ export interface SourceManifest {
   kind?:     'external' | 'internal'
   nsfw?:     boolean
   version:   string
+
+  /** When set, runtime delegates to this named adapter for operations
+   *  that cannot be expressed declaratively (JS-rendered pages, binary
+   *  index protocols, signed CDN URLs, etc.).
+   *
+   *  Adapter id must match a key in `ADAPTERS` (browse/adapters/index.ts).
+   *
+   *  Delegation rules (each is optional — omit to keep declarative):
+   *    `fetchChapterPages` — always supported; override when image URLs
+   *                          require imperative computation.
+   *    `fetchMangaDetail`  — override when gallery metadata requires
+   *                          API calls beyond what selectors can express.
+   *    `fetchBrowse`       — override for fully JS-rendered listings or
+   *                          binary index protocols (e.g. nozomi). When
+   *                          present, `endpoints.shelves` / `endpoints.search`
+   *                          are ignored and `hasSearch` returns true. */
+  adapter?: string
+
+  /** Whether this source requires user-supplied credentials.
+   *
+   *    `'none'`    (default) — no auth needed.
+   *    `'cookie'`  — source is behind Cloudflare or login wall;
+   *                  user must supply cookies in source settings.
+   *                  Runtime injects them via the proxy `Cookie` header.
+   *    `'token'`   — Bearer/API-key auth; user supplies the token. */
+  authRequired?: 'none' | 'cookie' | 'token'
+  /** Names of cookies the user must supply when `authRequired:'cookie'`. */
+  cookieNames?:  string[]
 
   /** Visual identity for source tiles. Two options:
    *
@@ -384,8 +460,35 @@ export interface MangaDetail extends MangaSummary {
 }
 
 export interface ChapterPages {
-  url:   string
-  pages: string[]
+  url:    string
+  pages:  string[]
+  /** Opaque tokens parallel to `pages`. When present, each
+   *  `pages[i]` entry may be an empty placeholder — the real URL
+   *  must be resolved lazily via `SourceAdapter.resolvePageUrl`.
+   *  The reader fetches per-page, keyed by token, only when the
+   *  slot enters the viewport. */
+  tokens?: string[]
+}
+
+// ─── browse args ──────────────────────────────────────────────────
+
+export interface BrowseArgs {
+  q?:            string
+  page?:         number
+  /** Assembled URL fragment for declarative endpoints, e.g.
+   *  `"&f_cats=1021&status=ongoing"`. Produced by `assembleFilterParams`
+   *  and injected into URL templates as `{filterParams}`. Adapters
+   *  should use `filterState` instead of parsing this string. */
+  filterParams?: string
+  /** Typed filter selections keyed by filter id. Each value is the
+   *  `FilterOption.value ?? FilterOption.id` of the active option(s).
+   *  `select` filter → single string. `multi` filter → string[].
+   *  Adapters use this to route to the correct API/index without having
+   *  to re-parse `filterParams`. */
+  filterState?:  Record<string, string | string[]>
+  /** User-supplied cookies keyed by cookie name (used when
+   *  `manifest.authRequired === 'cookie'`). */
+  userCookies?:  Record<string, string>
 }
 
 // ─── installed source registry ────────────────────────────────────

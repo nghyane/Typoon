@@ -1,0 +1,96 @@
+{
+  "id":        "hentaifox",
+  "name":      "HentaiFox",
+  "host":      "hentaifox.com",
+  "homepage":  "https://hentaifox.com",
+  "languages": ["en", "ja"],
+  "version":   "2.0",
+  "accent":    "rose",
+  "nsfw":      true,
+  "adapter":   "hentaifox",
+
+  "authRequired": "cookie",
+  "cookieNames":  ["cf_clearance"],
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới nhất",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://hentaifox.com/?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   ".thumb",
+          "extras": { "href": ".inner_thumb a@href" },
+          "fields": {
+            "title": ".g_title a",
+            "url":   "=https://hentaifox.com{href}",
+            "cover": ".inner_thumb img@data-src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://hentaifox.com/popular/?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   ".thumb",
+          "extras": { "href": ".inner_thumb a@href" },
+          "fields": {
+            "title": ".g_title a",
+            "url":   "=https://hentaifox.com{href}",
+            "cover": ".inner_thumb img@data-src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://hentaifox.com/search/?q={q:q}&page={page}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":   ".thumb",
+      "extras": { "href": ".inner_thumb a@href" },
+      "fields": {
+        "title": ".g_title a",
+        "url":   "=https://hentaifox.com{href}",
+        "cover": ".inner_thumb img@data-src"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "html",
+      "extract": "hentaifox\\.com/gallery/(?<galleryId>\\d+)",
+      "fields": {
+        "title":  ".gallery_title h1 || h1",
+        "cover":  ".cover img@src",
+        "status": "=completed"
+      },
+      "chapters": {
+        "list": ".cover",
+        "fields": {
+          "url":    "=https://hentaifox.com/g/{galleryId}/1/",
+          "number": "=1",
+          "label":  "=Ch.1"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "https://hentaifox.com/g/{galleryId}/1/",
+      "extract": "hentaifox\\.com/(?:gallery|g)/(?<galleryId>\\d+)",
+      "parse":  "html",
+      "list":   "img#gimg",
+      "fields": { "url": "@data-src" }
+    }
+  }
+}

@@ -105,7 +105,7 @@ def _draw_key_labels(
     """
     draw = ImageDraw.Draw(cell, "RGBA")
     for bk in keyed_on_page:
-        poly = bk.bubble.box.polygon
+        poly = bk.bubble.polygon
         if not poly:
             continue
         xs = [p[0] * scale for p in poly]

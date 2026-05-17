@@ -354,9 +354,10 @@ export function useSignIn() {
   return useCallback(async (token: string) => {
     setToken(token)
     sessionStorage.removeItem(INVALIDATED_KEY)
-    await qc.invalidateQueries({ queryKey: qk.session.self() })
-    // Block on the first refetch so the post-login navigate sees
-    // `status: 'authenticated'` instead of `'loading'`.
+    // Clear stale data from any previous session before fetching
+    // the new user's session. Prevents cross-user data leaks when
+    // multiple people sign in on the same browser tab.
+    qc.clear()
     await qc.refetchQueries({ queryKey: qk.session.self() })
   }, [qc])
 }
@@ -369,7 +370,10 @@ export function useSignOut() {
   const qc = useQueryClient()
   return useCallback(async () => {
     clearToken()
-    qc.setQueryData(qk.session.self(), null)
+    // Clear the entire React Query cache so no user-scoped data
+    // (recent-reads, library, translations, work state) leaks to the
+    // next user who signs in on the same browser tab.
+    qc.clear()
     void authFetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
   }, [qc])
 }
@@ -389,5 +393,7 @@ export function useSignOut() {
 export function handleUnauthorized(qc: QueryClient): void {
   clearToken()
   markSessionInvalidated()
-  qc.setQueryData(qk.session.self(), null)
+  // Clear all cached data — on forced logout, no user data should
+  // persist in memory for whoever opens the app next.
+  qc.clear()
 }

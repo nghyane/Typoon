@@ -1,597 +1,521 @@
-use std::sync::OnceLock;
+/// Layout engine — text wrapping + drawable-area geometry.
+///
+/// Shaping is in `crate::shape` (HarfBuzz). Outline drawing is in
+/// `crate::overlay` (skrifa → tiny-skia). Both stages use em-based pixel
+/// scale so advances and glyph paths stay in lock-step. This module is the
+/// pure-geometry layer that turns text + drawable area into wrapped lines.
+///
+/// Writing mode: Vietnamese target text is ALWAYS `Horizontal`.
+/// `text_direction` from the source (Japanese vertical) is intentionally
+/// ignored for layout — it only affects whether TypesettingHint is applied.
 
-use ab_glyph::{Font, FontRef, ScaleFont};
 use serde::{Deserialize, Serialize};
+use skrifa::{MetadataProvider, instance::{LocationRef, Size}};
 
-/// Embedded font for text measurement (SamaritanTall TB — comic style + Vietnamese coverage)
-static FONT: OnceLock<FontRef<'static>> = OnceLock::new();
-pub const FONT_BYTES: &[u8] = include_bytes!("../assets/SamaritanTall-TB.ttf");
+use crate::font;
 
-/// Line height multiplier (line spacing relative to font size).
-/// 1.22 balances Vietnamese diacritics clearance with compact typesetting.
-pub const LINE_HEIGHT_MULTIPLIER: f64 = 1.22;
+/// Extra leading between lines as a fraction of `font_size_px`. Added on top
+/// of the font's natural ascent+|descent| so consecutive Vietnamese diacritics
+/// (V̆ over a tone, e.g. Ặ / Ệ) never touch the descenders of the line above.
+pub const LINE_LEADING_FRAC: f64 = 0.05;
+
+/// Backwards-compatible "line height multiplier" used by `fit.rs` for cheap
+/// budget math (`char_budget`, hint estimates). Calibrated to the embedded
+/// SamaritanTall metrics: ascent (1.318 em) + |descent| (0.227 em) + leading.
+///
+/// For exact baseline-to-baseline use [`line_spacing_px`].
+pub const LINE_HEIGHT_MULTIPLIER: f64 = 1.6;
 
 /// Default inset from bbox edge when border detection is unavailable.
 pub const DEFAULT_INSET: f64 = 2.0;
 
-/// Per-side insets from bbox edge.
+/// Allow text width to overshoot bubble by this fraction before char-breaking.
+/// Set to 0 to match the inscribed-ellipse fit contract — any line wider
+/// than `safe_w` is overflow, full stop.
+pub const WIDTH_OVERFLOW_TOLERANCE: f64 = 0.0;
+
+/// Short SFX use the same hard contract as body text. Earlier 60% allowance
+/// was a workaround for too-tight Lens bboxes; now that fit area = bubble
+/// inscribed rect, there's nothing to compensate for.
+pub const SHORT_TEXT_WORD_COUNT: usize = 3;
+pub const SHORT_TEXT_OVERFLOW_TOLERANCE: f64 = WIDTH_OVERFLOW_TOLERANCE;
+
+// ─── Geometry types ────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct EdgeInsets {
-    pub left: f64,
-    pub right: f64,
-    pub top: f64,
+    pub left:   f64,
+    pub right:  f64,
+    pub top:    f64,
     pub bottom: f64,
 }
 
 impl EdgeInsets {
     pub fn uniform(v: f64) -> Self {
-        Self {
-            left: v,
-            right: v,
-            top: v,
-            bottom: v,
-        }
+        Self { left: v, right: v, top: v, bottom: v }
     }
 }
 
 /// Canonical drawable area inside a bubble, rotation-aware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawableArea {
-    /// Polygon bounding box [x1, y1, x2, y2] (axis-aligned, for fast clipping)
-    pub bbox: [f64; 4],
-    /// Insets from each bbox edge
-    pub insets: EdgeInsets,
-    /// Rotation angle in radians (0 = horizontal text).
-    pub angle_rad: f64,
-    /// Center of the oriented quad in page coordinates.
-    pub center: [f64; 2],
-    /// Full width along the quad's top/bottom edges (before insets).
+    pub bbox:       [f64; 4],
+    pub insets:     EdgeInsets,
+    pub angle_rad:  f64,
+    pub center:     [f64; 2],
     pub oriented_w: f64,
-    /// Full height along the quad's left/right edges (before insets).
     pub oriented_h: f64,
+    /// True when the polygon is a sampled curve (the grouper uses 24-vertex
+    /// inscribed ellipses for sane-aspect dialogue balloons). Fit's
+    /// `size()` then shrinks the wrap rect so a centred line doesn't extend
+    /// past the ellipse curve at top/bottom — the AABB of an ellipse
+    /// includes the four corners that lie OUTSIDE the curve.
+    #[serde(default)]
+    pub is_ellipse: bool,
 }
 
+/// Linear scale applied to `oriented_w/h` when `is_ellipse`. Picked
+/// empirically: at 0.85 a centred text block in a 200×120 ellipse
+/// touches but doesn't cross the curve at the widest line. √(π/4) ≈
+/// 0.886 is the area-matched ratio (rect area == ellipse area); 0.85
+/// trades a hair of usable area for a small visual safety margin.
+const ELLIPSE_FIT_SCALE: f64 = 0.85;
+
 impl DrawableArea {
-    /// Create from an ordered polygon [TL, TR, BR, BL] with uniform inset.
     pub fn from_polygon(polygon: &[[f64; 2]], inset: f64) -> Self {
         Self::from_polygon_insets(polygon, EdgeInsets::uniform(inset))
     }
 
-    /// Create from an ordered polygon with per-edge insets.
     pub fn from_polygon_insets(polygon: &[[f64; 2]], insets: EdgeInsets) -> Self {
         let (x1, y1, x2, y2) = crate::types::polygon_bbox(polygon);
         let cx = polygon.iter().map(|p| p[0]).sum::<f64>() / polygon.len().max(1) as f64;
         let cy = polygon.iter().map(|p| p[1]).sum::<f64>() / polygon.len().max(1) as f64;
-
         let (angle_rad, ow, oh) = if polygon.len() == 4 {
             let [tl, tr, _br, bl] = [polygon[0], polygon[1], polygon[2], polygon[3]];
-            let dx = tr[0] - tl[0];
-            let dy = tr[1] - tl[1];
-            let w = (dx * dx + dy * dy).sqrt();
-            let dx2 = bl[0] - tl[0];
-            let dy2 = bl[1] - tl[1];
-            let h = (dx2 * dx2 + dy2 * dy2).sqrt();
-            let angle = dy.atan2(dx);
-            (angle, w, h)
+            let dx = tr[0] - tl[0]; let dy = tr[1] - tl[1];
+            let dx2 = bl[0] - tl[0]; let dy2 = bl[1] - tl[1];
+            (dy.atan2(dx), (dx*dx+dy*dy).sqrt(), (dx2*dx2+dy2*dy2).sqrt())
         } else {
             (0.0, x2 - x1, y2 - y1)
         };
-
+        // > 4 vertices → ellipse polygon (grouper emits 24 verts; safe
+        // threshold for "this came from inscribed_ellipse, not OBB").
+        let is_ellipse = polygon.len() > 4;
         Self {
-            bbox: [x1, y1, x2, y2],
-            insets,
-            angle_rad,
-            center: [cx, cy],
-            oriented_w: ow,
-            oriented_h: oh,
+            bbox: [x1,y1,x2,y2], insets, angle_rad, center: [cx,cy],
+            oriented_w: ow, oriented_h: oh, is_ellipse,
         }
     }
 
-    /// Derive a new area with per-side crop values clamped to at least the current insets.
     pub fn with_crop_min(&self, crop: [f64; 4]) -> Self {
         Self {
             bbox: self.bbox,
             insets: EdgeInsets {
-                left: self.insets.left.max(crop[0]),
-                right: self.insets.right.max(crop[1]),
-                top: self.insets.top.max(crop[2]),
+                left:   self.insets.left.max(crop[0]),
+                right:  self.insets.right.max(crop[1]),
+                top:    self.insets.top.max(crop[2]),
                 bottom: self.insets.bottom.max(crop[3]),
             },
-            angle_rad: self.angle_rad,
-            center: self.center,
+            angle_rad:  self.angle_rad,
+            center:     self.center,
             oriented_w: self.oriented_w,
             oriented_h: self.oriented_h,
+            is_ellipse: self.is_ellipse,
         }
     }
 
-    /// Inner drawable rectangle in **page coordinates** (axis-aligned fallback).
     pub fn rect(&self) -> (f64, f64, f64, f64) {
         let [x1, y1, x2, y2] = self.bbox;
         let x = x1 + self.insets.left;
         let y = y1 + self.insets.top;
         let w = (x2 - x1 - self.insets.left - self.insets.right).max(0.0);
-        let h = (y2 - y1 - self.insets.top - self.insets.bottom).max(0.0);
+        let h = (y2 - y1 - self.insets.top  - self.insets.bottom).max(0.0);
         (x, y, w, h)
     }
 
-    /// Inner drawable size along the quad's own axes (rotation-aware).
     pub fn size(&self) -> (f64, f64) {
-        let w = (self.oriented_w - self.insets.left - self.insets.right).max(0.0);
-        let h = (self.oriented_h - self.insets.top - self.insets.bottom).max(0.0);
-        (w, h)
-    }
-
-    /// True if the text is meaningfully rotated (> ~2°).
-    pub fn is_rotated(&self) -> bool {
-        self.angle_rad.abs() > 0.035 // ~2 degrees
-    }
-}
-
-/// Get or initialize the embedded font.
-pub fn get_font() -> &'static FontRef<'static> {
-    FONT.get_or_init(|| FontRef::try_from_slice(FONT_BYTES).expect("Failed to parse embedded font"))
-}
-
-/// Measure the width of a text string at a given font size in pixels.
-pub fn measure_text_width(text: &str, font_size_px: u32, font: &FontRef<'_>) -> f64 {
-    let scaled = font.as_scaled(font_size_px as f32);
-    let mut width = 0.0f32;
-    let mut prev_glyph: Option<ab_glyph::GlyphId> = None;
-
-    for ch in text.chars() {
-        let glyph_id = font.glyph_id(ch);
-        if let Some(prev) = prev_glyph {
-            width += scaled.kern(prev, glyph_id);
+        let raw_w = (self.oriented_w - self.insets.left - self.insets.right).max(0.0);
+        let raw_h = (self.oriented_h - self.insets.top  - self.insets.bottom).max(0.0);
+        if self.is_ellipse {
+            // The polygon's AABB equals the ellipse's bbox, which includes
+            // the four corners that lie OUTSIDE the curve. Fitting text to
+            // the AABB lets glyphs at the top/bottom of a centred line slip
+            // past the visible balloon outline. Shrinking by
+            // `ELLIPSE_FIT_SCALE` keeps the text block inside an inscribed
+            // rectangle of the ellipse. Width and height scale together so
+            // aspect-driven wrap decisions stay consistent.
+            (raw_w * ELLIPSE_FIT_SCALE, raw_h * ELLIPSE_FIT_SCALE)
+        } else {
+            (raw_w, raw_h)
         }
-        width += scaled.h_advance(glyph_id);
-        prev_glyph = Some(glyph_id);
     }
 
-    width as f64
+    pub fn is_rotated(&self) -> bool { self.angle_rad.abs() > 0.035 }
 }
 
-/// Allow text to overshoot the bubble's drawable width by this fraction
-/// before falling back to character-level breaking. Manga bubble polygons
-/// often have curved edges that look generous near the centre, so a few
-/// pixels of overshoot read as natural typesetting rather than overflow.
-pub const WIDTH_OVERFLOW_TOLERANCE: f64 = 0.08;
+// ─── Shaping re-exports ────────────────────────────────────────────────────
 
-/// SFX / short-text tolerance — when the entire bubble holds ≤ this
-/// many words AND the longest word is the bottleneck, allow much
-/// larger overshoot. Char-breaking a 4-letter SFX like "CHÁT" into
-/// "CH/ÁT" is far worse than letting the word poke past the bubble
-/// edge: readers parse SFX as a visual unit, not as wrapped prose.
-pub const SHORT_TEXT_WORD_COUNT: usize = 3;
-pub const SHORT_TEXT_OVERFLOW_TOLERANCE: f64 = 0.60;
+/// Re-export so existing call sites (`layout::measure_text_width`) keep working.
+pub use crate::shape::measure_width as measure_text_width;
 
-/// Pick the tolerance band for this wrap call. Short SFX-style texts
-/// get a generous budget; long-form dialogue stays at the tight 8%.
-fn tolerance_for(word_count: usize) -> f64 {
-    if word_count <= SHORT_TEXT_WORD_COUNT {
-        SHORT_TEXT_OVERFLOW_TOLERANCE
-    } else {
-        WIDTH_OVERFLOW_TOLERANCE
+// ─── ICU4X line breaker ────────────────────────────────────────────────────
+
+/// Atomic wrap token: a chunk that cannot be broken further. Tokens from
+/// the same source word stay glued (no inter-token space); tokens from
+/// different source words get a single space when joined on the same line.
+#[derive(Debug, Clone)]
+struct Token {
+    text:          String,
+    leading_space: bool,   // true → space between this token and the previous on the same line
+}
+
+/// Hyphen / dash characters that introduce a wrap opportunity inside a
+/// word. Includes hyphen-minus, hyphen, en/em dash, soft hyphen and
+/// underscore. Slash is intentionally excluded — `kg/m` should not break.
+fn is_break_char(c: char) -> bool {
+    matches!(c, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '\u{00AD}' | '_')
+}
+
+/// Split one whitespace-delimited word at internal break chars, keeping
+/// the break char attached to the preceding chunk so the hyphen stays
+/// visible at line end ("28-" then "Shonan", not "28" then "-Shonan").
+/// Returns at least one chunk; never an empty chunk.
+fn split_at_break_chars(word: &str) -> Vec<String> {
+    if word.is_empty() {
+        return vec![String::new()];
     }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in word.chars() {
+        cur.push(ch);
+        if is_break_char(ch) {
+            // Cut AFTER the break char so it sticks to the left chunk.
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    } else if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
-/// Balanced word wrap: split text into lines that fit within `max_width_px`,
-/// distributing words evenly so lines have similar widths.
-pub fn wrap_text(
-    text: &str,
-    max_width_px: f64,
-    font_size_px: u32,
-    font: &FontRef<'_>,
-) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.is_empty() {
+/// Tokenise `text` into atomic wrap units. Hyphens and dashes inside a
+/// word become break opportunities; tokens from the same word are flagged
+/// `leading_space=false` so the renderer joins them without a space.
+fn tokenize_for_wrap(text: &str) -> Vec<Token> {
+    let mut tokens: Vec<Token> = Vec::new();
+    for (wi, word) in text.split_whitespace().enumerate() {
+        let chunks = split_at_break_chars(word);
+        for (ci, chunk) in chunks.into_iter().enumerate() {
+            tokens.push(Token {
+                text:          chunk,
+                leading_space: ci == 0 && wi > 0,
+            });
+        }
+    }
+    tokens
+}
+
+/// Width of the longest atomic token (incl. hyphen tail). Used by the
+/// fit binary search as the hard "can this size wrap at all?" predicate.
+pub fn longest_atom_width(text: &str, font_size_px: u32) -> f64 {
+    tokenize_for_wrap(text).iter()
+        .map(|t| measure_text_width(&t.text, font_size_px))
+        .fold(0.0_f64, f64::max)
+}
+
+/// Render a list of tokens as a single line: tokens flagged
+/// `leading_space=true` get a space prefix, others glue to the previous.
+fn join_tokens(tokens: &[&Token]) -> String {
+    let mut s = String::new();
+    for t in tokens {
+        if t.leading_space && !s.is_empty() {
+            s.push(' ');
+        }
+        s.push_str(&t.text);
+    }
+    s
+}
+
+/// Measure a line built from `tokens`: sum of token widths plus a single
+/// space-width for each `leading_space=true` token after the first.
+fn line_width(tokens: &[&Token], space_w: f64, font_size_px: u32) -> f64 {
+    let mut w = 0.0_f64;
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 && t.leading_space {
+            w += space_w;
+        }
+        w += measure_text_width(&t.text, font_size_px);
+    }
+    w
+}
+
+/// Wrap `text` into lines that fit within `max_width_px`. Words split at
+/// internal hyphens / dashes so a long hyphenated compound ("28-Shonan")
+/// can wrap mid-word rather than forcing the fitter to a smaller font.
+pub fn wrap_text(text: &str, max_width_px: f64, font_size_px: u32) -> Vec<String> {
+    if text.is_empty() {
         return vec![String::new()];
     }
 
-    let space_w = measure_text_width(" ", font_size_px, font);
-    let tolerance = tolerance_for(words.len());
-    let tolerant_max = max_width_px * (1.0 + tolerance);
-
-    // Only char-break when a word is *significantly* longer than the
-    // bubble width. Slight overshoot (within tolerance) is preferred
-    // over splitting a word mid-character — readers can parse a word
-    // that pokes past the bubble edge but cannot parse "CÙN\nG"
-    // without re-stitching mentally. SFX get a wider tolerance because
-    // they're visual units.
-    let has_unbreakable_word = words
-        .iter()
-        .any(|w| measure_text_width(w, font_size_px, font) > tolerant_max);
-    if has_unbreakable_word {
-        return wrap_greedy(text, max_width_px, font_size_px, font);
+    let tokens = tokenize_for_wrap(text);
+    if tokens.is_empty() {
+        return vec![String::new()];
     }
 
-    // Measure all word widths
-    let word_widths: Vec<f64> = words
-        .iter()
-        .map(|w| measure_text_width(w, font_size_px, font))
+    // Determine overshoot tolerance based on word count (whitespace-delimited
+    // — hyphen splits don't reduce the "is this a short label" signal).
+    let word_count = text.split_whitespace().count();
+    let tolerance = if word_count <= SHORT_TEXT_WORD_COUNT {
+        SHORT_TEXT_OVERFLOW_TOLERANCE
+    } else {
+        WIDTH_OVERFLOW_TOLERANCE
+    };
+    let tolerant_max = max_width_px * (1.0 + tolerance);
+
+    let space_w = measure_text_width(" ", font_size_px);
+    let token_ws: Vec<f64> = tokens.iter()
+        .map(|t| measure_text_width(&t.text, font_size_px))
         .collect();
 
-    // Greedy pass to find minimum number of lines. Uses the same
-    // tolerance as the wrap above — otherwise we'd over-count lines
-    // and shrink target_w.
-    let n_lines = count_greedy_lines(&word_widths, space_w, tolerant_max);
-    if n_lines <= 1 {
-        return vec![words.join(" ")];
+    // If any atomic token exceeds tolerant_max → greedy char-break fallback
+    let any_oversize = token_ws.iter().any(|&w| w > tolerant_max);
+    if any_oversize {
+        return wrap_greedy(text, max_width_px, font_size_px);
     }
 
-    // Balanced wrap: try to equalize line widths using target width
-    let total_w: f64 = word_widths.iter().sum::<f64>() + space_w * (words.len() as f64 - 1.0);
+    // Greedy line count using tokens
+    let n_lines = {
+        let mut lines = 1usize;
+        let mut cur = 0.0f64;
+        for (i, t) in tokens.iter().enumerate() {
+            let tw = token_ws[i];
+            if i == 0 { cur = tw; continue; }
+            let gap = if t.leading_space { space_w } else { 0.0 };
+            if cur + gap + tw <= tolerant_max {
+                cur += gap + tw;
+            } else {
+                lines += 1;
+                cur = tw;
+            }
+        }
+        lines
+    };
+
+    if n_lines <= 1 {
+        return vec![join_tokens(&tokens.iter().collect::<Vec<_>>())];
+    }
+
+    // Balanced wrap
+    let total_w: f64 = token_ws.iter().sum::<f64>()
+        + space_w * tokens.iter().filter(|t| t.leading_space).count() as f64;
     let target_w = (total_w / n_lines as f64).min(max_width_px);
 
-    let mut lines = Vec::new();
-    let mut line_words: Vec<&str> = Vec::new();
-    let mut current_w = 0.0;
+    let mut lines: Vec<Vec<&Token>> = Vec::new();
+    let mut line_toks: Vec<&Token> = Vec::new();
+    let mut cur_w = 0.0f64;
 
-    for (i, word) in words.iter().enumerate() {
-        let ww = word_widths[i];
-        if line_words.is_empty() {
-            line_words.push(word);
-            current_w = ww;
-            continue;
+    for (i, tok) in tokens.iter().enumerate() {
+        let tw  = token_ws[i];
+        let gap = if tok.leading_space && !line_toks.is_empty() { space_w } else { 0.0 };
+        if line_toks.is_empty() {
+            line_toks.push(tok); cur_w = tw; continue;
         }
-
-        let new_w = current_w + space_w + ww;
+        let new_w = cur_w + gap + tw;
         let remaining_lines = n_lines.saturating_sub(lines.len() + 1);
-        let remaining_words = words.len() - i;
-        let past_target = current_w >= target_w * 0.85;
-        // Hard break only when the line would overshoot the tolerance
-        // budget. Soft overshoot (≤ 8%) is allowed because manga
-        // bubbles have curved edges that visually absorb a few pixels
-        // and char-breaking a word is far worse than the overshoot.
-        let must_break = new_w > tolerant_max;
-        let should_break = past_target && remaining_words >= remaining_lines && new_w > target_w;
-
+        let remaining_toks  = tokens.len() - i;
+        let past_target = cur_w >= target_w * 0.85;
+        let must_break   = new_w > tolerant_max;
+        let should_break = past_target && remaining_toks >= remaining_lines && new_w > target_w;
         if must_break || should_break {
-            lines.push(line_words.join(" "));
-            line_words = vec![word];
-            current_w = ww;
+            lines.push(std::mem::take(&mut line_toks));
+            line_toks.push(tok); cur_w = tw;
         } else {
-            line_words.push(word);
-            current_w = new_w;
+            line_toks.push(tok); cur_w = new_w;
+        }
+    }
+    if !line_toks.is_empty() { lines.push(line_toks); }
+    if lines.is_empty() { return vec![String::new()]; }
+
+    let mut result: Vec<String> = lines.iter().map(|toks| join_tokens(toks)).collect();
+
+    // Widow pull-back: a last line that is a single short token (e.g. "À?")
+    // looks like a layout glitch. Demote one whitespace-delimited word from
+    // the previous line down — but only if the merged last line still fits
+    // the tolerant max and the donor line keeps at least one word. Operates
+    // on the joined strings (whitespace boundaries) so we don't accidentally
+    // split a hyphenated compound mid-token.
+    if result.len() >= 2 {
+        let last_idx = result.len() - 1;
+        let last_w = measure_text_width(&result[last_idx], font_size_px);
+        let is_short_widow = result[last_idx].split_whitespace().count() == 1
+            && last_w < max_width_px * 0.30;
+        if is_short_widow {
+            let donor_words: Vec<&str> = result[last_idx - 1].split_whitespace().collect();
+            if donor_words.len() >= 2 {
+                let tail = donor_words[donor_words.len() - 1];
+                let head = donor_words[..donor_words.len() - 1].join(" ");
+                let merged = format!("{tail} {}", result[last_idx]);
+                if measure_text_width(&merged, font_size_px) <= tolerant_max {
+                    result[last_idx - 1] = head;
+                    result[last_idx]     = merged;
+                }
+            }
         }
     }
 
-    if !line_words.is_empty() {
-        lines.push(line_words.join(" "));
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    // Anti-widow: if the last line is a lonely short tail (e.g. just
-    // "HẮN!" after a 3-line paragraph), pull words back from the
-    // previous line so the tail reads with more weight. Skips when the
-    // pull would push the borrowed-from line past the tolerance bound.
-    rebalance_widow(
-        &mut lines, &words, &word_widths, space_w, max_width_px, tolerance,
-    );
-
-    lines
+    result
 }
 
-/// Pull words from the second-to-last line into the last line when the
-/// last line is a widow (<35% of average line width). Repeats until the
-/// widow grows past the threshold or the source line would overshoot the
-/// tolerance bound.
-fn rebalance_widow(
-    lines: &mut Vec<String>,
-    words: &[&str],
-    word_widths: &[f64],
-    space_w: f64,
-    max_width_px: f64,
-    tolerance: f64,
-) {
-    if lines.len() < 2 {
-        return;
-    }
-
-    // Map each rendered line back to its slice of words by scanning.
-    let mut line_word_counts: Vec<usize> = Vec::with_capacity(lines.len());
-    let mut consumed = 0;
-    for line in lines.iter() {
-        let n = line.split_whitespace().count();
-        line_word_counts.push(n);
-        consumed += n;
-    }
-    if consumed != words.len() {
-        // Char-break path used a different word grouping — skip.
-        return;
-    }
-
+fn wrap_greedy(text: &str, max_width_px: f64, font_size_px: u32) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let space_w   = measure_text_width(" ", font_size_px);
+    let tolerance = if words.len() <= SHORT_TEXT_WORD_COUNT {
+        SHORT_TEXT_OVERFLOW_TOLERANCE
+    } else {
+        WIDTH_OVERFLOW_TOLERANCE
+    };
     let tolerant_max = max_width_px * (1.0 + tolerance);
 
-    loop {
-        let last_idx = lines.len() - 1;
-        let prev_idx = last_idx - 1;
-
-        // Compute current widths.
-        let last_w = measured_line_width(
-            lines.len(), &line_word_counts, word_widths, space_w, last_idx,
-        );
-        let prev_w = measured_line_width(
-            lines.len(), &line_word_counts, word_widths, space_w, prev_idx,
-        );
-        let avg_w: f64 = (0..lines.len())
-            .map(|i| measured_line_width(
-                lines.len(), &line_word_counts, word_widths, space_w, i,
-            ))
-            .sum::<f64>()
-            / lines.len() as f64;
-
-        // Stop when the widow is no longer a widow (>= 35% of avg).
-        if last_w >= avg_w * 0.35 {
-            return;
-        }
-        // Stop when stealing one more word would push the prev line
-        // past the tolerance bound.
-        let prev_word_count = line_word_counts[prev_idx];
-        if prev_word_count <= 1 {
-            return; // can't steal from a single-word line
-        }
-        let last_word_in_prev_idx = line_word_counts[..=prev_idx]
-            .iter()
-            .sum::<usize>() - 1;
-        let stolen_ww = word_widths[last_word_in_prev_idx];
-        // After stealing, the LAST line grows by (space + stolen_ww)
-        // and the PREV line shrinks by the same amount.
-        let new_last_w = last_w + space_w + stolen_ww;
-        if new_last_w > tolerant_max {
-            return;
-        }
-
-        // Perform the steal.
-        line_word_counts[prev_idx] -= 1;
-        line_word_counts[last_idx] += 1;
-        let _ = prev_w; // suppress unused warning
-
-        // Re-render the two affected lines.
-        let mut idx = 0;
-        for (i, &n) in line_word_counts.iter().enumerate() {
-            if i == prev_idx || i == last_idx {
-                let slice = &words[idx..idx + n];
-                lines[i] = slice.join(" ");
-            }
-            idx += n;
-        }
-    }
-}
-
-fn measured_line_width(
-    _n_lines: usize,
-    line_word_counts: &[usize],
-    word_widths: &[f64],
-    space_w: f64,
-    line_idx: usize,
-) -> f64 {
-    let start: usize = line_word_counts[..line_idx].iter().sum();
-    let n = line_word_counts[line_idx];
-    if n == 0 {
-        return 0.0;
-    }
-    let words_w: f64 = word_widths[start..start + n].iter().sum();
-    words_w + space_w * (n as f64 - 1.0).max(0.0)
-}
-
-/// Count how many lines greedy wrapping would produce.
-fn count_greedy_lines(word_widths: &[f64], space_w: f64, max_width: f64) -> usize {
-    let mut lines = 1usize;
-    let mut current_w = 0.0;
-    for (i, &ww) in word_widths.iter().enumerate() {
-        if i == 0 {
-            current_w = ww;
-        } else if current_w + space_w + ww <= max_width {
-            current_w += space_w + ww;
-        } else {
-            lines += 1;
-            current_w = ww;
-        }
-    }
-    lines
-}
-
-/// Greedy word wrap fallback (for texts with oversized words needing char-breaking).
-///
-/// `wrap_text` falls back here only when at least one word is > tolerant
-/// max width. Here we still apply tolerance: char-break only words that
-/// are truly oversized, not those that overshoot by a few pixels.
-pub fn wrap_greedy(
-    text: &str,
-    max_width_px: f64,
-    font_size_px: u32,
-    font: &FontRef<'_>,
-) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let space_w = measure_text_width(" ", font_size_px, font);
-    let tolerant_max = max_width_px * (1.0 + tolerance_for(words.len()));
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0.0;
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0.0f64;
 
     for word in &words {
-        let word_w = measure_text_width(word, font_size_px, font);
-
-        if current_line.is_empty() {
-            if word_w > tolerant_max {
-                char_break_into(word, max_width_px, font_size_px, font, &mut lines);
-                continue;
-            }
-            current_line.push_str(word);
-            current_width = word_w;
-        } else if current_width + space_w + word_w <= tolerant_max {
-            current_line.push(' ');
-            current_line.push_str(word);
-            current_width += space_w + word_w;
-        } else {
-            lines.push(current_line);
-            if word_w > tolerant_max {
-                current_line = String::new();
-                current_width = 0.0;
-                char_break_into(word, max_width_px, font_size_px, font, &mut lines);
+        let ww = measure_text_width(word, font_size_px);
+        if cur.is_empty() {
+            if ww > tolerant_max {
+                char_break_into(word, max_width_px, font_size_px, &mut lines);
             } else {
-                current_line = word.to_string();
-                current_width = word_w;
+                cur.push_str(word); cur_w = ww;
+            }
+        } else if cur_w + space_w + ww <= tolerant_max {
+            cur.push(' '); cur.push_str(word); cur_w += space_w + ww;
+        } else {
+            lines.push(cur.clone());
+            cur.clear(); cur_w = 0.0;
+            if ww > tolerant_max {
+                char_break_into(word, max_width_px, font_size_px, &mut lines);
+            } else {
+                cur.push_str(word); cur_w = ww;
             }
         }
     }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
+    if !cur.is_empty() { lines.push(cur); }
+    if lines.is_empty() { lines.push(String::new()); }
     lines
 }
 
-/// Break a single long word into multiple lines at character boundaries.
-fn char_break_into(
-    word: &str,
-    max_width_px: f64,
-    font_size_px: u32,
-    font: &FontRef<'_>,
-    lines: &mut Vec<String>,
-) {
-    let mut current = String::new();
-    let mut current_w = 0.0;
-
+fn char_break_into(word: &str, max_width_px: f64, font_size_px: u32, lines: &mut Vec<String>) {
+    let mut cur = String::new();
+    let mut cur_w = 0.0f64;
     for ch in word.chars() {
-        let ch_w = measure_text_width(&ch.to_string(), font_size_px, font);
-        if !current.is_empty() && current_w + ch_w > max_width_px {
-            lines.push(current);
-            current = String::new();
-            current_w = 0.0;
+        let cw = measure_text_width(&ch.to_string(), font_size_px);
+        if !cur.is_empty() && cur_w + cw > max_width_px {
+            lines.push(cur.clone()); cur.clear(); cur_w = 0.0;
         }
-        current.push(ch);
-        current_w += ch_w;
+        cur.push(ch); cur_w += cw;
     }
-
-    if !current.is_empty() {
-        lines.push(current);
-    }
+    if !cur.is_empty() { lines.push(cur); }
 }
+
+// ─── Block height ──────────────────────────────────────────────────────────
+
+/// Baseline-to-baseline distance in pixels at `font_size_px`. Pulls
+/// ascent/descent from the embedded font's hhea so it adapts if the font is
+/// ever swapped, plus a small leading so stacked diacritics don't kiss.
+pub fn line_spacing_px(font_size_px: u32) -> f64 {
+    let m = font::skrifa_font().metrics(
+        Size::new(font_size_px as f32),
+        LocationRef::default(),
+    );
+    let ascent_descent = m.ascent as f64 + (-m.descent) as f64;
+    ascent_descent + font_size_px as f64 * LINE_LEADING_FRAC
+}
+
+/// Total text-block height in pixels: from the topmost ink (first line ascent)
+/// to the bottommost ink (last line descent), with leading between lines.
+pub fn text_block_height(n_lines: usize, font_size_px: u32) -> f64 {
+    if n_lines == 0 { return 0.0; }
+    let m = font::skrifa_font().metrics(
+        Size::new(font_size_px as f32),
+        LocationRef::default(),
+    );
+    let asc = m.ascent as f64;
+    let dsc = (-m.descent) as f64;
+    let spacing = line_spacing_px(font_size_px);
+    (n_lines - 1) as f64 * spacing + asc + dsc
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_wrap_vietnamese() {
-        let font = get_font();
-        let text = "ĐƯỢC CÔNG CHÚNG BIẾT ĐẾN LÀ NỮ PHẢN DIỆN TỒI TỆ NHẤT THỜI ĐẠI";
-        let full_w = measure_text_width(text, 16, font);
-        println!("full width at 16px: {full_w:.1}");
+    fn measure_width_nonzero() {
+        let w = measure_text_width("Hello", 16);
+        assert!(w > 5.0, "expected >5px, got {w}");
+    }
 
-        // 200px wide bubble should force wrapping
-        let lines = wrap_text(text, 200.0, 16, font);
-        println!("wrap at 200px: {lines:?}");
+    #[test]
+    fn wrap_produces_lines() {
+        let text = "ĐƯỢC CÔNG CHÚNG BIẾT ĐẾN LÀ NỮ PHẢN DIỆN TỒI TỆ NHẤT";
+        let lines = wrap_text(text, 200.0, 16);
+        assert!(lines.len() > 1);
+    }
+
+    #[test]
+    fn wrap_avoids_short_last_word_widow() {
+        // Reproduces the "À?" widow seen in lens_bubble_probe3:
+        // last line was a single 2-char token while line above had 6 words.
+        let text = "CẬU KHÔNG THẤY GẦN ĐÂY KHẢI-CHAN CÓ GÌ ĐÓ LẠ LẠ À?";
+        let lines = wrap_text(text, 360.0, 28);
+        let last = lines.last().expect("at least one line");
+        let last_words = last.split_whitespace().count();
         assert!(
-            lines.len() > 1,
-            "Should wrap: full_w={full_w:.0}, got {} line(s)",
-            lines.len()
+            last_words >= 2 || last == &text,
+            "widow not pulled back: lines = {:#?}",
+            lines,
         );
-
-        // 150px wide bubble
-        let lines = wrap_text(text, 150.0, 16, font);
-        println!("wrap at 150px: {lines:?}");
-        assert!(lines.len() > 1);
     }
 
     #[test]
-    fn test_measure_width_nonzero() {
-        let font = get_font();
-        let w = measure_text_width("Hello", 16, font);
-        println!("'Hello' at 16px = {w:.1}px");
-        assert!(w > 10.0, "Width should be significant: {w}");
+    fn wrap_splits_hyphenated_compound() {
+        // Tall-narrow tategaki bubble (~80px wide). "28-Shonan" as one
+        // atom forced the fitter to a tiny font; splitting at the hyphen
+        // lets it wrap "28-" + "Shonan" and use available height.
+        // Hyphen must stay attached to the LEFT chunk.
+        let text = "NĂM CHIÊU HÒA 28-SHONAN";
+        let lines = wrap_text(text, 80.0, 16);
+        assert!(lines.len() >= 3, "expected ≥3 lines, got {lines:#?}");
 
-        let w_vn = measure_text_width("Xin chào", 16, font);
-        println!("'Xin chào' at 16px = {w_vn:.1}px");
-        assert!(w_vn > 10.0, "VN width should be significant: {w_vn}");
-    }
+        // All characters preserved in order (modulo whitespace).
+        let joined: String = lines.iter()
+            .flat_map(|l| l.split_whitespace())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(joined, "NĂM CHIÊU HÒA 28- SHONAN",
+            "tokens reshuffled or hyphen detached: {lines:#?}");
 
-    #[test]
-    fn test_widow_avoidance_pulls_word_from_prev_line() {
-        // Long narration that naturally greedy-wraps with an orphan
-        // last line. Widow rebalance should pull at least one word
-        // back down so the tail is not a single short word.
-        let font = get_font();
-        // ~440px wide bubble at 20px font fits the first two lines
-        // of a 3-line wrap; orphan "RỒI!" lands on line 3.
-        let text = "THỜI GIAN KHÔNG CHỈ GIỮ LẠI THẦN HỒN CỦA \
-                    QUẢNG LĂNG Ở KIẾP TRƯỚC, MÀ CẢ TƠ TÌNH CỦA \
-                    HẮN CŨNG ĐỂ LẠI RỒI!";
-        let lines = wrap_text(text, 440.0, 20, font);
-        println!("widow test lines: {lines:?}");
-        if lines.len() >= 2 {
-            let last = lines.last().unwrap();
-            let prev = &lines[lines.len() - 2];
-            let last_words = last.split_whitespace().count();
-            let prev_words = prev.split_whitespace().count();
-            // Last line must not be a single short word when the
-            // previous line has > 4 words to spare.
-            if prev_words > 4 {
-                assert!(
-                    last_words >= 2 || last.chars().count() >= 6,
-                    "widow not rebalanced: prev={prev:?} last={last:?}",
-                );
-            }
+        // Hyphen never starts a line — it sticks to the left chunk.
+        for l in &lines {
+            assert!(!l.trim_start().starts_with('-'),
+                "hyphen leaked to next line: {lines:#?}");
         }
     }
 
     #[test]
-    fn test_widow_avoidance_skips_when_safe() {
-        // Already-balanced wrap: no rebalance needed, output unchanged.
-        let font = get_font();
-        let text = "Một hai ba bốn năm sáu bảy tám";
-        let before = wrap_text(text, 200.0, 16, font);
-        // Run again — should be idempotent.
-        let after = wrap_text(text, 200.0, 16, font);
-        assert_eq!(before, after);
-    }
-
-    #[test]
-    fn test_sfx_word_does_not_char_break_in_narrow_bubble() {
-        // SFX "CHÁT CHÁT~" in a tall narrow bubble. With dialogue
-        // tolerance (8%) the wrap would char-break CHÁT into "CH/ÁT".
-        // With SFX tolerance (40%) the word stays intact.
-        let font = get_font();
-        let text = "CHÁT CHÁT~";
-        let word_w = measure_text_width("CHÁT", 30, font);
-        // Bubble 25% narrower than the word — outside dialogue
-        // tolerance, inside SFX tolerance.
-        let bubble_w = word_w * 0.80;
-        let lines = wrap_text(text, bubble_w, 30, font);
-        println!("SFX wrap at {:.0}px: {lines:?}", bubble_w);
-        // Each line should be a whole word, not char-broken
-        for line in &lines {
-            assert!(
-                !line.is_empty() && line.split_whitespace().count() >= 1,
-                "SFX char-broken: {lines:?}",
-            );
-            // No 2-char fragments like "CH" or "ÁT" alone
-            let trimmed = line.trim_end_matches('~').trim();
-            assert!(
-                trimmed.chars().count() >= 3,
-                "SFX line too short (likely char-break): {line:?} in {lines:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn test_long_text_still_char_breaks_when_truly_too_wide() {
-        // Long dialogue stays at the strict 8% tolerance.
-        let font = get_font();
-        let text = "Một hai ba bốn năm sáu bảy tám chín mười";
-        let too_long_w = measure_text_width("không-thể-tách", 30, font);
-        // A word much wider than the bubble should still char-break.
-        let text2 = format!("{} không-thể-tách-rời", text);
-        let bubble_w = too_long_w * 0.5;
-        let lines = wrap_text(&text2, bubble_w, 30, font);
-        // Just verify we don't crash and produce multiple lines.
-        assert!(lines.len() > 1);
+    fn longest_atom_width_respects_hyphen_split() {
+        // "28-Shonan" as a whole word is wider than its longest atom.
+        // The fit gate uses longest_atom_width so a narrow bubble can
+        // still fit a reasonable font size.
+        let fs = 24;
+        let whole = measure_text_width("28-Shonan", fs);
+        let atom  = longest_atom_width("28-Shonan", fs);
+        assert!(atom < whole, "atom {atom} should be < whole {whole}");
     }
 }

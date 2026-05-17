@@ -31,16 +31,25 @@ class MaskStore:
     """In-memory masks for one chapter, grouped by page."""
 
     def __init__(self) -> None:
-        self._pages: dict[int, dict[int, BubbleMasks]] = {}
+        self._pages:        dict[int, dict[int, BubbleMasks]] = {}
+        self._bubble_masks: dict[int, np.ndarray] = {}  # page_index → UNet bubble mask
 
     def put(self, page_index: int, bubble_idx: int, masks: BubbleMasks) -> None:
         self._pages.setdefault(page_index, {})[bubble_idx] = masks
+
+    def put_bubble_mask(self, page_index: int, mask: np.ndarray) -> None:
+        """Store the CTD UNet bubble segmentation mask for a page."""
+        self._bubble_masks[page_index] = mask
 
     def get(self, page_index: int, bubble_idx: int) -> BubbleMasks | None:
         return self._pages.get(page_index, {}).get(bubble_idx)
 
     def page_masks(self, page_index: int) -> dict[int, BubbleMasks]:
         return self._pages.get(page_index, {})
+
+    def page_bubble_mask(self, page_index: int) -> np.ndarray | None:
+        """Return the CTD UNet bubble mask for the page, or None."""
+        return self._bubble_masks.get(page_index)
 
     def __len__(self) -> int:
         return sum(len(b) for b in self._pages.values())
