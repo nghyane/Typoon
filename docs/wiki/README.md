@@ -7,6 +7,7 @@ Read this before coding in a new thread.
 - [Architecture](architecture.md) — package layout, dependency rules, pipeline
 - [Material architecture (planned)](material-architecture.md) — Phase B re-architect target; not yet implemented
 - [Lens-native grouping](lens-native-grouping.md) — the `lens` preset detector + grouper; two-phase OCR, container vs mask geometry, rotation handling
+- [Render container fit](render-container-fit.md) — production playbook for polygon/mask/hint atomicity, hint sanity (centre-containment), calibrated pad, what NOT to retry
 - [Render archive storage & CDN](render-archive-storage.md) — multi-backend archive serving, bunle CDN, HF dataset
 - [Cloudflare edge pipeline (feasibility)](cloudflare-edge-pipeline.md) — empirical findings on running the full pipeline on Workers + R2; reproducible probes under `spike/`
 - [Browse mode](browse-mode.md) — source manifests, shelves, internal vs external, design rules
