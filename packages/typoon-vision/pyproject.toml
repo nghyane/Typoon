@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 cuda      = ["onnxruntime-gpu>=1.17"]
 mangaocr  = ["transformers>=4.45", "fugashi", "unidic-lite"]
+apple     = ["coremltools>=7.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["typoon"]
