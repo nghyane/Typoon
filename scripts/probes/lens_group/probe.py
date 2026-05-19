@@ -11,7 +11,7 @@ import numpy as np
 from typoon.models import ModelHub
 from typoon.vision._backends.comic_detr import load_session
 from typoon.vision.contracts import BubbleGroup, DetectionResult
-from typoon.vision.detectors.lens_blocks import LensBlocksDetector
+from typoon.vision.detectors.lens.detector import LensBlocksDetector
 from typoon.vision.groupers.lens_native import LensNativeGrouper
 
 
