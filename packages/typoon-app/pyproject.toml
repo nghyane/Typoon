@@ -1,0 +1,31 @@
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "typoon-app"
+version         = "0.1.0"
+description     = "Typoon app — FastAPI service, CLI, background workers"
+requires-python = ">=3.11"
+dependencies = [
+  "typoon-core",
+  "typoon-vision",
+  "typoon-llm",
+  "typoon-stages",
+  "typoon-translate",
+  "typoon-storage",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "typer>=0.12",
+  "rich>=13",
+  "aiofiles>=23",
+  "bcrypt>=4",
+  "pyjwt>=2.9",
+  "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+typoon = "typoon.cli.commands:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["typoon"]

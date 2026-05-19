@@ -1,0 +1,19 @@
+[build-system]
+requires      = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "typoon-storage"
+version         = "0.1.0"
+description     = "Typoon storage — Postgres state store + state-bound adapters"
+requires-python = ">=3.11"
+dependencies = [
+  "typoon-core",
+  "typoon-llm",
+  "typoon-stages",
+  "typoon-translate",
+  "asyncpg>=0.29",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["typoon"]

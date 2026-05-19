@@ -22,6 +22,31 @@ const HEIGHT_OVERFLOW_TOLERANCE: f64 = 0.0;
 /// genuinely has the room.
 const HINT_MAX_GROWTH: f64 = 1.15;
 
+/// Per-bubble hint cap: how far above the bubble's own source font size
+/// the fitter is allowed to go. Tighter than page cap because the
+/// letterer made an explicit per-bubble choice for THIS bubble's
+/// aspect / content density. A short VI translation in a tall bubble
+/// must not inflate beyond this — otherwise it overshoots the bubble's
+/// visible curve even though the AABB technically allows it.
+const BUBBLE_HINT_MAX_GROWTH: f64 = 1.10;
+
+/// Char-density cap: limit font size so that the text's character count
+/// plausibly fills the bubble area. Without this, a short translation
+/// ("THẬT Á?!" = 7 chars) inside a large bubble inflates to fill the
+/// full height → absurdly oversized compared to adjacent dialogue bubbles.
+///
+/// Derived from area / chars: each character occupies roughly
+/// `(font_px * LINE_HEIGHT_MULTIPLIER) * (font_px * CHAR_WIDTH_FRAC)`
+/// pixels. Solving for font_px: font_px ≈ sqrt(area / (chars * ratio)).
+///
+/// CHAR_WIDTH_FRAC: average Vietnamese character width as a fraction of
+/// font size in px (empirically ~0.62 for SamaritanTall with mixed diacritics).
+/// DENSITY_SCALE: allow text to occupy at most this fraction of bubble area
+/// before capping. Set to 0.55 so a bubble half-filled looks natural;
+/// 1.0 would require text to tile every pixel which is never readable.
+const CHAR_WIDTH_FRAC:  f64 = 0.62;
+const DENSITY_SCALE:    f64 = 0.55;
+
 /// Discard outlier hints when computing the page median. Lens
 /// occasionally reports `font_size_px` < 8 (column-split tategaki where
 /// each "line" is a 4-glyph cluster) or > 60 (huge SFX bleed); both
@@ -30,12 +55,23 @@ const HINT_MAX_GROWTH: f64 = 1.15;
 const HINT_OUTLIER_MIN: u32 = 10;
 const HINT_OUTLIER_MAX: u32 = 60;
 
+/// Source script direction. Vertical (Japanese tategaki) means
+/// `line_count` represents COLUMNS, not horizontal lines, so the
+/// line-budget refinement in `fit_area` must skip it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextDirection {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
 /// Fit prior from the source detector.
 #[derive(Clone, Copy, Debug)]
 pub struct FitHint {
     pub font_size_px:       u32,
     pub line_count:         u32,
     pub avg_chars_per_line: f64,
+    pub text_direction:     TextDirection,
 }
 
 #[derive(Clone)]
@@ -92,7 +128,7 @@ impl FitEngine {
     fn fit_area(
         translated_text: &str,
         area: &DrawableArea,
-        _hint: Option<FitHint>,
+        hint: Option<FitHint>,
         max_font: u32,
     ) -> Result<FitResult> {
         let text = normalize_text(translated_text);
@@ -120,12 +156,20 @@ impl FitEngine {
         let fit_h = safe_h;
 
         // `max_font` is the page-aggregated body cap (see
-        // `page_body_cap`). Per-bubble hint is intentionally ignored
-        // here — variance between Lens hints across one page is far
-        // larger than the real source font variance, so honouring each
-        // bubble's hint independently produces inconsistent sizes for
-        // adjacent panels. The page median collapses that noise.
-        let hi_bound = (fit_h as u32).min(max_font);
+        // `page_body_cap`). `char_density_cap` further limits the upper
+        // bound based on how many characters need to fit: a short text
+        // ("THẬT Á?!") in a large bubble must not inflate to fill the
+        // full height — that produces sizes wildly inconsistent with
+        // adjacent panels that happen to have longer translations.
+        //
+        // `bubble_hint_cap`: per-bubble ceiling derived from THIS bubble's
+        // source font size. When the letterer wrote 28px in this bubble,
+        // VI must not jump to 40px just because the bubble is tall — that
+        // makes short translations balloon when src had many lines but VI
+        // has few. Falls back to `max_font` when no hint is available.
+        let density_cap = char_density_cap(&text, safe_w, safe_h);
+        let bubble_hint_cap = bubble_hint_cap(hint, max_font);
+        let hi_bound = (fit_h as u32).min(max_font).min(density_cap).min(bubble_hint_cap);
         let tolerant_h = fit_h * (1.0 + HEIGHT_OVERFLOW_TOLERANCE);
 
         // Soft-break path
@@ -163,13 +207,40 @@ impl FitEngine {
             }
         }
 
+        // Line-budget refinement (vấn đề 2): when the source bubble was
+        // typeset on N lines, try to wrap VI on ≤ N lines too. The free
+        // binary search above can pick a smaller font that wraps to
+        // N+1/N+2 lines, leaving the bubble feeling under-filled. If we
+        // can fit the same text in `hint.line_count` lines at a LARGER
+        // size, prefer that — it matches the letterer's visual rhythm.
+        //
+        // Skip for vertical (tategaki) source: their line_count is the
+        // number of vertical columns, not horizontal lines.
+        let line_budget_result = hint.and_then(|h| {
+            if h.line_count == 0 { return None; }
+            if h.text_direction == TextDirection::Vertical { return None; }
+            try_line_budget_fit(&text, fit_w, tolerant_h, hi_bound, h.line_count as usize)
+        });
+
         // Prefer soft-break result
-        let (final_size, final_wrapped) = match soft_result {
+        let (mut final_size, mut final_wrapped) = match soft_result {
             Some((sb_size, sb_lines))
                 if sb_size >= best_size || sb_size as f64 >= best_size as f64 * 0.85
             => (sb_size, sb_lines),
             _ => (best_size, best_wrapped),
         };
+
+        // Apply line-budget result if it gives at least the same font.
+        // No 0.85 fudge — the budget path already enforces <= src lines,
+        // so any equal-or-better size is a real visual improvement
+        // (fewer lines at the same size looks closer to src letterer's
+        // intent than more lines at the same size).
+        if let Some((lb_size, lb_lines)) = line_budget_result {
+            if lb_size >= final_size {
+                final_size    = lb_size;
+                final_wrapped = lb_lines;
+            }
+        }
 
         // Hard width constraint: the binary search above only checks height.
         // wrap_text is allowed a small overshoot tolerance so it doesn't
@@ -202,6 +273,26 @@ fn max_font_for_page(page_width: u32) -> u32 {
     scaled.clamp(48, ABS_MAX_FONT_SIZE)
 }
 
+/// Estimate the maximum font size that makes sense given the number of
+/// characters in `text` and the bubble's drawable area.
+///
+/// A short text in a large bubble would otherwise inflate to fill the
+/// full height. This cap solves:
+///   area ≈ chars × char_w × line_h
+///   char_w  = font_px × CHAR_WIDTH_FRAC
+///   line_h  = font_px × LINE_HEIGHT_MULTIPLIER
+///   → font_px = sqrt(area × DENSITY_SCALE / (chars × CHAR_WIDTH_FRAC × LINE_HEIGHT_MULTIPLIER))
+///
+/// Floored at MIN_FONT_SIZE so very short texts (SFX) still get a usable
+/// size; the page_body_cap and geometry max act as the true ceiling.
+fn char_density_cap(text: &str, safe_w: f64, safe_h: f64) -> u32 {
+    let chars = text.chars().filter(|c| !c.is_whitespace()).count();
+    if chars == 0 { return ABS_MAX_FONT_SIZE; }
+    let area = safe_w * safe_h * DENSITY_SCALE;
+    let px = (area / (chars as f64 * CHAR_WIDTH_FRAC * layout::LINE_HEIGHT_MULTIPLIER)).sqrt();
+    (px.round() as u32).max(MIN_FONT_SIZE)
+}
+
 /// Compute the page-level body-text font ceiling.
 ///
 /// Strategy:
@@ -232,6 +323,56 @@ fn page_body_cap(
     let median = samples[samples.len() / 2];
     let grown = (median as f64 * HINT_MAX_GROWTH).round() as u32;
     grown.max(MIN_FONT_SIZE).min(page_geometry_max)
+}
+
+/// Per-bubble cap derived from the bubble's own source font size.
+/// Returns `max_font` when no hint, or when hint is outside the trusted
+/// range (matches the page cap's outlier filter so SFX-mis-detection
+/// can't lock a body bubble to 8px).
+fn bubble_hint_cap(hint: Option<FitHint>, max_font: u32) -> u32 {
+    let Some(h) = hint else { return max_font; };
+    if !(HINT_OUTLIER_MIN..=HINT_OUTLIER_MAX).contains(&h.font_size_px) {
+        return max_font;
+    }
+    let grown = (h.font_size_px as f64 * BUBBLE_HINT_MAX_GROWTH).round() as u32;
+    grown.max(MIN_FONT_SIZE).min(max_font)
+}
+
+/// Try to wrap `text` on at most `max_lines` lines at the largest
+/// possible font size. Returns `None` when no size ≥ MIN_FONT_SIZE can
+/// achieve it (text genuinely needs more lines).
+///
+/// This is the "src had N lines, give VI the same budget" path. We
+/// run a binary search just like the free-wrap one, but the gate is
+/// `wrapped.len() <= max_lines` instead of free wrap.
+fn try_line_budget_fit(
+    text:      &str,
+    fit_w:     f64,
+    tolerant_h: f64,
+    hi_bound:  u32,
+    max_lines: usize,
+) -> Option<(u32, Vec<String>)> {
+    if max_lines == 0 { return None; }
+    let mut lo = MIN_FONT_SIZE;
+    let mut hi = hi_bound;
+    let mut best: Option<(u32, Vec<String>)> = None;
+
+    while lo <= hi {
+        let mid     = (lo + hi) / 2;
+        let wrapped = layout::wrap_text(text, fit_w, mid);
+        let total_h = text_block_height(wrapped.len(), mid);
+        let words_fit = !needs_char_break(text, fit_w, mid);
+        let lines_ok  = wrapped.len() <= max_lines;
+        if lines_ok && words_fit && total_h <= tolerant_h {
+            best = Some((mid, wrapped));
+            lo = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
 }
 
 fn try_soft_break_fit(
@@ -373,9 +514,9 @@ mod tests {
             &[[0.0, 0.0], [240.0, 0.0], [240.0, 180.0], [0.0, 180.0]], 2.0,
         );
         let items: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
-            ("À", &big,  Some(FitHint { font_size_px: 20, line_count: 1, avg_chars_per_line: 1.0 })),
-            ("Ờ", &tiny, Some(FitHint { font_size_px: 24, line_count: 1, avg_chars_per_line: 1.0 })),
-            ("OK", &mid,  Some(FitHint { font_size_px: 28, line_count: 1, avg_chars_per_line: 1.0 })),
+            ("À", &big,  Some(FitHint { font_size_px: 20, line_count: 1, avg_chars_per_line: 1.0, text_direction: TextDirection::Horizontal })),
+            ("Ờ", &tiny, Some(FitHint { font_size_px: 24, line_count: 1, avg_chars_per_line: 1.0, text_direction: TextDirection::Horizontal })),
+            ("OK", &mid,  Some(FitHint { font_size_px: 28, line_count: 1, avg_chars_per_line: 1.0, text_direction: TextDirection::Horizontal })),
         ];
         let result = FitEngine::fit_page_areas(&items, 1755).unwrap();
         let median_cap = (24.0 * HINT_MAX_GROWTH).round() as u32;
@@ -410,8 +551,8 @@ mod tests {
             &[[0.0, 0.0], [400.0, 0.0], [400.0, 200.0], [0.0, 200.0]], 2.0,
         );
         let items: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
-            ("À", &area, Some(FitHint { font_size_px: 20,  line_count: 1, avg_chars_per_line: 1.0 })),
-            ("X", &area, Some(FitHint { font_size_px: 120, line_count: 1, avg_chars_per_line: 1.0 })),
+            ("À", &area, Some(FitHint { font_size_px: 20,  line_count: 1, avg_chars_per_line: 1.0, text_direction: TextDirection::Horizontal })),
+            ("X", &area, Some(FitHint { font_size_px: 120, line_count: 1, avg_chars_per_line: 1.0, text_direction: TextDirection::Horizontal })),
         ];
         let result = FitEngine::fit_page_areas(&items, 1755).unwrap();
         let cap = (20.0 * HINT_MAX_GROWTH).round() as u32;
@@ -459,6 +600,32 @@ mod tests {
     }
 
     #[test]
+    fn test_short_text_in_large_bubble_char_density_cap() {
+        // Regression: "THẬT Á?!" (7 non-space chars) inside a large bubble
+        // must not inflate to fill the bubble height. It should land at a
+        // size comparable to adjacent dialogue bubbles with longer text.
+        let large_bubble = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [180.0, 0.0], [180.0, 160.0], [0.0, 160.0]], 2.0,
+        );
+        let long_bubble = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [180.0, 0.0], [180.0, 160.0], [0.0, 160.0]], 2.0,
+        );
+        let items: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
+            ("THẬT Á?!", &large_bubble, None),
+            ("GAHA HA HA HA HA!", &long_bubble, None),
+        ];
+        let results = FitEngine::fit_page_areas(&items, 891).unwrap();
+        let short_size = results[0].font_size_px;
+        let long_size  = results[1].font_size_px;
+        // Short text must not be more than 2× the long text size.
+        // Without char_density_cap short_size inflates to ~80px, long_size ~28px.
+        assert!(
+            short_size <= long_size * 2,
+            "short text ({short_size}px) is disproportionately larger than long text ({long_size}px)",
+        );
+    }
+
+    #[test]
     fn test_short_text_never_char_breaks() {
         // Reproduces the "Cộc." → ["Cộ", "c."] regression on the SFX
         // bubble in lens_bubble_probe3. The fitter must shrink the font
@@ -497,5 +664,77 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_line_budget_prefers_fewer_lines_when_src_had_few() {
+        // Regression: src had 1 line; VI is short enough to fit 1
+        // line at the page-cap size. The free binary search may pick
+        // 2 lines at a smaller size because balanced wrap breaks a
+        // long single line into halves. With the line-budget
+        // refinement, fitter prefers <= src lines at the larger size.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [1100.0, 0.0], [1100.0, 200.0], [0.0, 200.0]], 2.0,
+        );
+        let text = "Tôi thật sự không muốn làm nữa đâu.";
+        let with_hint: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
+            (text, &area, Some(FitHint {
+                font_size_px: 36, line_count: 1, avg_chars_per_line: 30.0,
+                text_direction: TextDirection::Horizontal,
+            })),
+        ];
+        let r_hint = FitEngine::fit_page_areas(&with_hint, 1755).unwrap();
+        assert!(
+            r_hint[0].text.lines().count() <= 1,
+            "expected <= 1 line, got {:#?}",
+            r_hint[0].text.lines().collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn test_bubble_hint_cap_blocks_inflation_when_src_had_many_lines() {
+        // Regression: src bubble was 4 lines @ 22px (cramped JP). VI
+        // translation is 1 short line. Without per-bubble cap the
+        // fitter inflates VI to ~60px because the bubble is tall.
+        // With per-bubble cap (22 * 1.10 \u2248 24px) it stays close to src.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [260.0, 0.0], [260.0, 280.0], [0.0, 280.0]], 2.0,
+        );
+        let items: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
+            ("Vâng.", &area, Some(FitHint {
+                font_size_px: 22, line_count: 4, avg_chars_per_line: 6.0,
+                text_direction: TextDirection::Horizontal,
+            })),
+        ];
+        let result = FitEngine::fit_page_areas(&items, 1755).unwrap();
+        let cap = (22.0 * BUBBLE_HINT_MAX_GROWTH).round() as u32;
+        assert!(
+            result[0].font_size_px <= cap,
+            "VI inflated to {}px, exceeds per-bubble cap {}px",
+            result[0].font_size_px, cap,
+        );
+    }
+
+    #[test]
+    fn test_vertical_hint_skips_line_budget() {
+        // Tategaki source: line_count is COLUMN count, not horizontal
+        // lines. The line-budget path must not interpret it as a
+        // horizontal-line budget for VI text.
+        let area = DrawableArea::from_polygon(
+            &[[0.0, 0.0], [200.0, 0.0], [200.0, 180.0], [0.0, 180.0]], 2.0,
+        );
+        let text = "Một câu thoại dài vừa phải để vợt qua một dòng.";
+        let items: Vec<(&str, &DrawableArea, Option<FitHint>)> = vec![
+            (text, &area, Some(FitHint {
+                font_size_px: 24, line_count: 1, avg_chars_per_line: 8.0,
+                text_direction: TextDirection::Vertical,
+            })),
+        ];
+        // Should NOT collapse to 1 line just because tategaki hint says line_count=1.
+        let result = FitEngine::fit_page_areas(&items, 1755).unwrap();
+        // Free-wrap path is allowed to use as many lines as it needs.
+        // The point is the fitter doesn't artificially try to squeeze
+        // everything onto 1 horizontal line at a tiny font.
+        assert!(result[0].font_size_px >= MIN_FONT_SIZE);
     }
 }

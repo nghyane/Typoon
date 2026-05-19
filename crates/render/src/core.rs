@@ -119,6 +119,11 @@ pub fn render_page_rgba(
                 font_size_px:       h.font_size_px,
                 line_count:         h.line_count,
                 avg_chars_per_line: h.avg_chars_per_line,
+                text_direction:     if h.text_direction == "vertical" {
+                    fit::TextDirection::Vertical
+                } else {
+                    fit::TextDirection::Horizontal
+                },
             });
             (b.translated_text.as_str(), &b.area, fit_hint)
         })
@@ -193,6 +198,7 @@ pub fn char_budget(
             font_size_px:       src_font_size_px,
             line_count:         src_line_count,
             avg_chars_per_line: 20.0,
+            text_direction:     crate::fit::TextDirection::Horizontal,
         })
     } else {
         None

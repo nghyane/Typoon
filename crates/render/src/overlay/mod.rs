@@ -383,10 +383,25 @@ fn solid_paint(rgba: [u8; 4]) -> Paint<'static> {
     p
 }
 
-/// Halo (stroke) width in px. Empirically `0.07 × font_size_px`, floored at
-/// 2px so small fonts still get a visible outline.
+/// Halo (stroke) width in px.
+///
+/// IMPORTANT: tiny-skia draws strokes **center-aligned** on the path
+/// (half outside the glyph outline, half inside). Pass 2 fills the
+/// glyph body opaquely on top, so the **visible** halo on screen is
+/// roughly `stroke.width / 2` (the outer half only).
+///
+/// Visible-halo target: `~0.10 × font_size_px`, which matches the
+/// outline weight manga letterers use on Vietnamese-localised SFX
+/// (about 10-12% of cap height). Doubling for the center-aligned
+/// stroke gives `0.20 × font_size_px`.
+///
+/// Floored at 3px so even small dialogue (12-14px body) keeps a
+/// readable outline against busy art backgrounds. Earlier value was
+/// `0.07 × font` with a 2px floor — after the fill-pass overwrite
+/// that's ~1px visible at 28-32px text, which looked like no halo
+/// at all.
 fn stroke_width_px(font_size_px: u32) -> f64 {
-    (font_size_px as f64 * 0.07).round().max(2.0)
+    (font_size_px as f64 * 0.20).round().max(3.0)
 }
 
 /// Pixel ascent at `font_size_px` from the embedded font's hhea table.
