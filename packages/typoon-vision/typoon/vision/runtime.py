@@ -135,6 +135,6 @@ def _build_eraser(kind: EraserId, models_dir: Path) -> Eraser:
                 uniform_inpainter=FullPageInpainter(TeLeABackend()),
                 complex_inpainter=TiledInpainter(
                     AOTGANBackend(models_dir),
-                    tile_size=384,
+                    context_px=64,
                 ),
             )

@@ -11,10 +11,11 @@ from typoon.vision.contracts import TextMask
 from typoon.vision.erasers.inpaint import (
     FullPageInpainter,
     TiledInpainter,
+    _adaptive_tile,
     _center_tile,
+    _snap_up,
 )
 from typoon.vision.erasers.eraser import TextEraser
-from typoon.vision.erasers.inpaint import FullPageInpainter, TiledInpainter
 from typoon.vision.erasers.backends import InpaintBackend
 
 
@@ -47,6 +48,53 @@ class _RecordingBackend:
     def inpaint(self, image_rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
         self.calls.append((image_rgb.copy(), mask.copy()))
         return image_rgb.copy()
+
+
+# ─── _snap_up ─────────────────────────────────────────────────────────────
+
+
+def test_snap_up_already_aligned():
+    assert _snap_up(16, 8) == 16
+
+
+def test_snap_up_rounds_up():
+    assert _snap_up(17, 8) == 24
+    assert _snap_up(1, 8) == 8
+
+
+# ─── _adaptive_tile ───────────────────────────────────────────────────────
+
+
+def test_adaptive_tile_snapped_to_8():
+    x1, y1, x2, y2 = _adaptive_tile(100, 100, 50, 50, 500, 500, context_px=64, snap=8)
+    assert (x2 - x1) % 8 == 0
+    assert (y2 - y1) % 8 == 0
+
+
+def test_adaptive_tile_covers_blob():
+    x1, y1, x2, y2 = _adaptive_tile(100, 100, 80, 60, 500, 500, context_px=64, snap=8)
+    assert x1 <= 100 and y1 <= 100
+    assert x2 >= 180 and y2 >= 160
+
+
+def test_adaptive_tile_has_context():
+    # blob 80×60 + context=64 each side → tile at least 208×188
+    x1, y1, x2, y2 = _adaptive_tile(100, 100, 80, 60, 1000, 1000, context_px=64, snap=8)
+    assert x2 - x1 >= 208
+    assert y2 - y1 >= 188
+
+
+def test_adaptive_tile_clamped_to_page():
+    x1, y1, x2, y2 = _adaptive_tile(0, 0, 30, 30, 200, 200, context_px=64, snap=8)
+    assert x1 >= 0 and y1 >= 0
+    assert x2 <= 200 and y2 <= 200
+
+
+def test_adaptive_tile_large_blob_25pct_padding():
+    # blob 400×300 — 25% pad = max(64, 100, 75)=100 each side
+    x1, y1, x2, y2 = _adaptive_tile(50, 50, 400, 300, 2000, 2000, context_px=64, snap=8)
+    assert x2 - x1 >= 600  # 400 + 100*2
+    assert y2 - y1 >= 496  # 300 + 100*2 = 500 → snapped up, but at least 496
 
 
 # ─── _center_tile ─────────────────────────────────────────────────────────
@@ -147,7 +195,7 @@ def _mask_at(H, W, *rects) -> np.ndarray:
 def test_tiled_empty_mask_no_call():
     rec = _RecordingBackend()
     canvas = _make_canvas(200, 200)
-    TiledInpainter(rec, tile_size=64).inpaint_page(canvas, np.zeros((200,200), np.uint8))
+    TiledInpainter(rec, context_px=32).inpaint_page(canvas, np.zeros((200,200), np.uint8))
     assert len(rec.calls) == 0
 
 
@@ -155,14 +203,14 @@ def test_tiled_single_blob_one_call():
     rec = _RecordingBackend()
     canvas = _make_canvas(200, 200)
     mask = _mask_at(200, 200, (80, 110, 80, 110))
-    TiledInpainter(rec, tile_size=64).inpaint_page(canvas, mask)
+    TiledInpainter(rec, context_px=32).inpaint_page(canvas, mask)
     assert len(rec.calls) == 1
 
 
 def test_tiled_single_blob_fill_colour_applied():
     canvas = _make_canvas(200, 200)
     mask = _mask_at(200, 200, (80, 100, 80, 100))
-    TiledInpainter(_FillBackend((7, 8, 9)), tile_size=64).inpaint_page(canvas, mask)
+    TiledInpainter(_FillBackend((7, 8, 9)), context_px=32).inpaint_page(canvas, mask)
     assert (canvas[80:100, 80:100, :3] == [7, 8, 9]).all()
     # outside mask unchanged
     assert (canvas[0:80, :, :3] == 128).all()
@@ -173,7 +221,7 @@ def test_tiled_two_far_blobs_two_calls():
     canvas = _make_canvas(500, 500)
     # two blobs far enough apart to not share a 64-tile
     mask = _mask_at(500, 500, (10, 30, 10, 30), (460, 490, 460, 490))
-    TiledInpainter(rec, tile_size=64).inpaint_page(canvas, mask)
+    TiledInpainter(rec, context_px=32).inpaint_page(canvas, mask)
     assert len(rec.calls) == 2
 
 
@@ -182,25 +230,27 @@ def test_tiled_two_adjacent_blobs_one_call():
     canvas = _make_canvas(200, 200)
     # two blobs very close — will share a 128-tile (covered dedup)
     mask = _mask_at(200, 200, (90, 100, 90, 100), (95, 105, 95, 105))
-    TiledInpainter(rec, tile_size=128).inpaint_page(canvas, mask)
+    TiledInpainter(rec, context_px=40).inpaint_page(canvas, mask)
     assert len(rec.calls) == 1
 
 
-def test_tiled_tile_size_respected():
+def test_tiled_tile_snapped_to_8():
     rec = _RecordingBackend()
     canvas = _make_canvas(400, 400)
-    mask = _mask_at(400, 400, (180, 220, 180, 220))
-    TiledInpainter(rec, tile_size=96).inpaint_page(canvas, mask)
+    mask = _mask_at(400, 400, (180, 220, 180, 220))  # blob 40×40
+    TiledInpainter(rec, context_px=32, snap=8).inpaint_page(canvas, mask)
     assert len(rec.calls) == 1
     tile_h, tile_w = rec.calls[0][0].shape[:2]
-    assert tile_h == 96 and tile_w == 96
+    # blob 40×40 + 32 pad each side = 104 → snapped to 104 (already aligned)
+    assert tile_h % 8 == 0
+    assert tile_w % 8 == 0
 
 
 def test_tiled_unmasked_pixels_unchanged():
     canvas = _make_canvas(200, 200)
     mask = _mask_at(200, 200, (90, 110, 90, 110))
     orig = canvas.copy()
-    TiledInpainter(_IdentityBackend(), tile_size=64).inpaint_page(canvas, mask)
+    TiledInpainter(_IdentityBackend(), context_px=32).inpaint_page(canvas, mask)
     # pixels outside mask rect unmodified
     np.testing.assert_array_equal(canvas[0:90, :], orig[0:90, :])
     np.testing.assert_array_equal(canvas[110:, :], orig[110:, :])
@@ -225,7 +275,7 @@ def test_text_eraser_no_masks_returns_canvas():
     complex_rec = _RecordingBackend()
     eraser = TextEraser(
         uniform_inpainter=FullPageInpainter(uniform_rec),
-        complex_inpainter=TiledInpainter(complex_rec, tile_size=64),
+        complex_inpainter=TiledInpainter(complex_rec, context_px=32),
     )
     result = _run(eraser.erase(canvas, ()))
     assert result is canvas
@@ -240,7 +290,7 @@ def test_text_eraser_uniform_mask_routes_to_uniform():
     complex_rec = _RecordingBackend()
     eraser = TextEraser(
         uniform_inpainter=FullPageInpainter(uniform_rec),
-        complex_inpainter=TiledInpainter(complex_rec, tile_size=64),
+        complex_inpainter=TiledInpainter(complex_rec, context_px=32),
         spread_threshold=30,
     )
     mask = (_text_mask(50, 50, 40, 40),)
@@ -258,7 +308,7 @@ def test_text_eraser_complex_mask_routes_to_complex():
     complex_rec = _RecordingBackend()
     eraser = TextEraser(
         uniform_inpainter=FullPageInpainter(uniform_rec),
-        complex_inpainter=TiledInpainter(complex_rec, tile_size=64),
+        complex_inpainter=TiledInpainter(complex_rec, context_px=32),
         spread_threshold=30,
     )
     # mask: 255 only in a 20×20 centre of a 40×40 crop — outer ring is bg
@@ -285,7 +335,7 @@ def test_text_eraser_complex_fallback_on_error():
     uniform_rec = _RecordingBackend()
     eraser = TextEraser(
         uniform_inpainter=FullPageInpainter(uniform_rec),
-        complex_inpainter=TiledInpainter(_ErrorBackend(), tile_size=64),
+        complex_inpainter=TiledInpainter(_ErrorBackend(), context_px=32),
         spread_threshold=30,
     )
     mask = (_text_mask(50, 50, 40, 40),)
