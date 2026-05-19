@@ -1,8 +1,7 @@
-"""Routing helpers for HybridEraser.
+"""Routing helpers for TextEraser.
 
-classify_masks  — split masks into (uniform, complex) lists
-build_page_mask — stamp masks onto a full-page binary mask
-inpaint_region  — crop → inpaint → paste only masked pixels back
+partition_by_background  — split masks into (uniform, complex) lists
+build_page_mask          — stamp masks onto a full-page binary mask
 """
 
 from __future__ import annotations
@@ -11,20 +10,12 @@ import cv2
 import numpy as np
 
 from ..contracts import TextMask
-from .backends import InpaintBackend
 
 
-__all__ = ["classify_masks", "build_page_mask", "inpaint_region"]
+__all__ = ["partition_by_background", "build_page_mask"]
 
 
-# Alias for probe scripts / backward compat
-def _is_uniform_background(canvas, cluster, spread_threshold=30):
-    """Single-cluster wrapper for classify_masks."""
-    u, _ = classify_masks(canvas, list(cluster), spread_threshold)
-    return len(u) == len(list(cluster))
-
-
-def classify_masks(
+def partition_by_background(
     canvas: np.ndarray,
     masks: list[TextMask],
     spread_threshold: int,
@@ -45,11 +36,7 @@ def classify_masks(
     return uniform, complex_
 
 
-def _is_uniform(
-    canvas: np.ndarray,
-    mask: TextMask,
-    threshold: int,
-) -> bool:
+def _is_uniform(canvas: np.ndarray, mask: TextMask, threshold: int) -> bool:
     ch, cw = canvas.shape[:2]
     mx, my = mask.x, mask.y
     mh, mw = mask.image.shape[:2]
@@ -90,21 +77,3 @@ def build_page_mask(
         sx, sy = tx1 - mx, ty1 - my
         pm[ty1:ty2, tx1:tx2] |= m.image[sy:sy + (ty2 - ty1), sx:sx + (tx2 - tx1)]
     return pm
-
-
-def inpaint_region(
-    canvas: np.ndarray,
-    page_mask: np.ndarray,
-    backend: InpaintBackend,
-) -> None:
-    """Call backend on full-page mask, paste only masked pixels back.
-
-    canvas is RGBA; backend works on RGB. Alpha channel preserved.
-    Only pixels where page_mask==255 are overwritten.
-    """
-    rgb    = canvas[:, :, :3].copy()
-    result = backend.inpaint(rgb, page_mask)
-    where  = page_mask == 255
-    canvas[:, :, :3][where] = result[where]
-    if canvas.shape[2] == 4:
-        canvas[:, :, 3][where] = 255

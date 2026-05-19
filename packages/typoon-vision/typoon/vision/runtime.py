@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .contracts import TextDetector, TextEraser, TextGrouper, TextRecognizer
+from .contracts import TextDetector, TextEraser, TextGrouper, TextRecognizer, Eraser
 from .masks.ctd_seg_runner import CtdSegRunner
 from .pipeline import DetectorId, EraserId, GrouperId, RecognizerId, VisionPipelineSpec
 
@@ -126,12 +126,15 @@ def _build_ctd_seg(models_dir: Path, source_lang: str | None) -> CtdSegRunner | 
     return None
 
 
-def _build_eraser(kind: EraserId, models_dir: Path) -> TextEraser:
+def _build_eraser(kind: EraserId, models_dir: Path) -> Eraser:
     match kind:
-        case "hybrid":
+        case "text":
+            from .erasers import TextEraser, FullPageInpainter, TiledInpainter
             from .erasers.backends import AOTGANBackend, TeLeABackend
-            from .erasers.hybrid import HybridEraser
-            return HybridEraser(
-                uniform_backend=TeLeABackend(),
-                complex_backend=AOTGANBackend(models_dir),
+            return TextEraser(
+                uniform_inpainter=FullPageInpainter(TeLeABackend()),
+                complex_inpainter=TiledInpainter(
+                    AOTGANBackend(models_dir),
+                    tile_size=384,
+                ),
             )

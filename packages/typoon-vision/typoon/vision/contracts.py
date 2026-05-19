@@ -24,7 +24,8 @@ __all__ = [
     "TextDetector",
     "TextGrouper",
     "TextRecognizer",
-    "TextEraser",
+    "Eraser",
+    "TextEraser",  # backward-compat alias
 ]
 
 
@@ -180,7 +181,7 @@ class TextRecognizer(Protocol):
 
 
 @runtime_checkable
-class TextEraser(Protocol):
+class Eraser(Protocol):
     """Erase text from page canvas in-place. Returns the same canvas."""
     name: str
 
@@ -189,3 +190,7 @@ class TextEraser(Protocol):
         canvas: np.ndarray,
         masks: tuple[TextMask, ...],
     ) -> np.ndarray: ...
+
+
+# Backward-compat alias — stages/runtime import this name.
+TextEraser = Eraser

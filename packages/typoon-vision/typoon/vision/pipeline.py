@@ -29,7 +29,7 @@ DetectorId   = Literal["lens_blocks", "ctd_blocks"]
 GrouperId    = Literal["lens_native", "ctd_native"]  # ppocr_yolo_union_find removed
 RecognizerId = Literal["none", "manga_ocr", "apple_vision",
                        "windows_ocr", "tesseract"]
-EraserId     = Literal["hybrid"]
+EraserId     = Literal["text"]
 
 
 # Detectors that ship recognised text inside TextBlock (recognizer=none valid)
@@ -53,7 +53,7 @@ class VisionPipelineSpec:
     detector:   DetectorId   = "lens_blocks"
     grouper:    GrouperId    = "lens_native"
     recognizer: RecognizerId = "none"
-    eraser:     EraserId     = "hybrid"
+    eraser:     EraserId     = "text"
 
     page_concurrency:   int = 4
     detect_concurrency: int = 8

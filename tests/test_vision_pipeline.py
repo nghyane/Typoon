@@ -12,7 +12,7 @@ def test_default_spec_is_lens_pipeline():
     assert spec.detector == "lens_blocks"
     assert spec.grouper == "lens_native"
     assert spec.recognizer == "none"
-    assert spec.eraser == "hybrid"
+    assert spec.eraser == "text"
 
 
 def test_presets_all_valid():

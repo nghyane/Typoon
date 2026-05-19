@@ -21,6 +21,7 @@ class TeLeABackend:
     """cv2 TELEA inpainting — no model, pure algorithm."""
 
     name = "telea"
+    tile_size: int | None = None  # cv2 handles full page in ~90ms; no tiling
 
     def __init__(self, radius: int = 10) -> None:
         self._radius = radius

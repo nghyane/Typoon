@@ -26,9 +26,20 @@ class InpaintBackend(Protocol):
     Returns:
       uint8 (H, W, 3) RGB — inpainted result, same size as input.
       Pixels outside the mask should be preserved unchanged.
+
+    Routing hint:
+      tile_size — preferred native input side, in page pixels.
+        `None`     → backend handles arbitrary page-sized input itself
+                     (e.g. cv2.inpaint, remote services). The router
+                     calls `inpaint(full_page, full_page_mask)` once.
+        `int`      → router crops per-blob tiles of this exact size
+                     before calling. Lets local ONNX models keep
+                     pixel-perfect native resolution instead of being
+                     resized by the page-level path.
     """
 
     name: str
+    tile_size: int | None
 
     def inpaint(
         self,

@@ -1,55 +1,58 @@
-"""Eraser backends — remove text from a page canvas.
+"""Eraser public API.
 
-Public surface:
-  HybridEraser  — TeLeA for uniform backgrounds, AOT-GAN for complex.
-                  This is the only eraser wired into the prod pipeline.
+Production entry point:
+  TextEraser  — route per-mask to uniform or complex PageInpainter.
 
-  Backends (InpaintBackend protocol):
-    TeLeABackend          — cv2.INPAINT_TELEA, no model, ~90ms/page
-    AOTGANBackend         — local AOT-GAN ONNX/CoreML inpainter
-    RemoteInpaintBackend  — base class for HTTP-backed services
-    CfSd15InpaintBackend  — Cloudflare Workers AI SD1.5 inpaint
-    Flux2KleinInpaintBackend — FLUX2 Klein inpaint
+Page-level inpaint drivers:
+  FullPageInpainter  — single backend call on the full page.
+  TiledInpainter     — per-blob native-resolution crops.
+  PageInpainter      — Protocol for both.
 
-  Routing helpers (driving HybridEraser):
-    classify_masks   — luminance-spread split into uniform / complex
-    build_page_mask  — OR per-mask TextMasks into a single page-level mask
-    inpaint_region   — call a backend with the page mask, paste back
+Backends (InpaintBackend Protocol):
+  TeLeABackend              — cv2 TELEA, no model, ~90ms/page
+  AOTGANBackend             — AOT-GAN ONNX/CoreML, tile ≤ 384 px
+  RemoteInpaintBackend      — base for HTTP-backed services
+  CfSd15InpaintBackend      — Cloudflare Workers AI SD1.5
+  Flux2KleinInpaintBackend  — FLUX2 Klein
+
+Routing helpers:
+  partition_by_background  — split masks by luminance spread
+  build_page_mask          — OR per-mask images into a page binary mask
 """
 
 from __future__ import annotations
 
 import logging
 
-from .hybrid import HybridEraser
-from .routing import (
-    classify_masks,
-    build_page_mask,
-    inpaint_region,
-    _is_uniform_background,
-)
+from .eraser import TextEraser
+from .inpaint import FullPageInpainter, PageInpainter, TiledInpainter
+from .routing import build_page_mask, partition_by_background
 from .backends import (
-    InpaintBackend,
-    TeLeABackend,
     AOTGANBackend,
-    RemoteInpaintBackend,
     CfSd15InpaintBackend,
     Flux2KleinInpaintBackend,
+    InpaintBackend,
+    RemoteInpaintBackend,
+    TeLeABackend,
 )
 
-
 __all__ = [
-    "HybridEraser",
+    # Eraser
+    "TextEraser",
+    # Page inpaint drivers
+    "PageInpainter",
+    "FullPageInpainter",
+    "TiledInpainter",
+    # Backends
     "InpaintBackend",
     "TeLeABackend",
     "AOTGANBackend",
     "RemoteInpaintBackend",
     "CfSd15InpaintBackend",
     "Flux2KleinInpaintBackend",
-    "classify_masks",
+    # Routing helpers
+    "partition_by_background",
     "build_page_mask",
-    "inpaint_region",
-    "_is_uniform_background",
 ]
 
 logger = logging.getLogger(__name__)
