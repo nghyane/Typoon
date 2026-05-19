@@ -61,7 +61,6 @@ def _resolve_spec(config) -> VisionPipelineSpec:
         preset = "lens"           # PRESETS key
         # Optional per-stage overrides on top of the preset:
         # recognizer = "apple_vision"
-        # eraser  = "aot_gan"
         # page_concurrency = 8
 
     If `config.vision` is absent, defaults to the `lens` preset.

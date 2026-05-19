@@ -135,9 +135,3 @@ def _build_eraser(kind: EraserId, models_dir: Path) -> TextEraser:
                 uniform_backend=TeLeABackend(),
                 complex_backend=AOTGANBackend(models_dir),
             )
-        case "aot_gan":
-            from .erasers import AOTGANEraser
-            return AOTGANEraser(models_dir=models_dir)
-        case "median_only":
-            from .erasers import MedianEraser
-            return MedianEraser()

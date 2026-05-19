@@ -29,7 +29,7 @@ DetectorId   = Literal["lens_blocks", "ctd_blocks"]
 GrouperId    = Literal["lens_native", "ctd_native"]  # ppocr_yolo_union_find removed
 RecognizerId = Literal["none", "manga_ocr", "apple_vision",
                        "windows_ocr", "tesseract"]
-EraserId     = Literal["hybrid", "aot_gan", "median_only"]
+EraserId     = Literal["hybrid"]
 
 
 # Detectors that ship recognised text inside TextBlock (recognizer=none valid)
