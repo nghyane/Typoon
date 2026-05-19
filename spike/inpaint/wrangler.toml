@@ -18,9 +18,9 @@ new_sqlite_classes = ["InpaintContainer"]
 
 [[containers]]
 class_name    = "InpaintContainer"
-image         = "./Dockerfile"
+image         = "../../crates/inpaint/Dockerfile"
 max_instances = 30
-instance_type = "standard-2"
+instance_type = "basic"
 
 [[queues.consumers]]
 queue             = "typoon-inpaint-queue"
