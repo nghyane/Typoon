@@ -1,0 +1,6 @@
+vendor/bunle/python/target
+vendor/bunle/target
+**/__pycache__
+**/*.pyc
+node_modules
+.wrangler

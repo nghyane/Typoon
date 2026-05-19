@@ -1,0 +1,43 @@
+name = "typoon-inpaint"
+account_id = "818e551312970df676abe1a0e61819c7"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[placement]
+mode = "smart"
+
+[durable_objects]
+bindings = [
+  { name = "INPAINT_CONTAINER", class_name = "InpaintContainer" },
+  { name = "FAN_IN", class_name = "FanInCounterDO", script_name = "typoon-pipeline" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InpaintContainer"]
+
+[[containers]]
+class_name    = "InpaintContainer"
+image         = "./Dockerfile"
+max_instances = 30
+instance_type = "standard-2"
+
+[[queues.consumers]]
+queue             = "typoon-inpaint-queue"
+max_batch_size    = 1
+max_batch_timeout = 5
+max_retries       = 3
+dead_letter_queue = "typoon-inpaint-dlq"
+max_concurrency   = 250
+
+[[r2_buckets]]
+binding     = "R2"
+bucket_name = "typoon-work"
+
+[[services]]
+binding    = "PIPELINE_WORKER"
+service    = "typoon-pipeline"
+entrypoint = "PipelineNotifier"
+
+[vars]
+MAX_INSTANCES = "30"
