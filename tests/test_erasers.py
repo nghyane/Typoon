@@ -11,6 +11,7 @@ from typoon.vision.contracts import TextMask
 from typoon.vision.erasers.inpaint import (
     FullPageInpainter,
     TiledInpainter,
+    AreaGatedInpainter,
     _adaptive_tile,
     _center_tile,
     _snap_up,
@@ -341,3 +342,70 @@ def test_text_eraser_complex_fallback_on_error():
     mask = (_text_mask(50, 50, 40, 40),)
     _run(eraser.erase(canvas, mask))  # must not raise
     assert len(uniform_rec.calls) == 1  # fallback ran
+
+
+# ─── AreaGatedInpainter ───────────────────────────────────────────────────
+
+
+def test_area_gated_small_blob_goes_to_small():
+    small_rec = _RecordingBackend()
+    large_rec = _RecordingBackend()
+    canvas = _make_canvas(200, 200)
+    # blob area = 20*20 = 400 < 1000 → small
+    mask = _mask_at(200, 200, (90, 110, 90, 110))
+    ag = AreaGatedInpainter(
+        small_inpainter=FullPageInpainter(small_rec),
+        large_inpainter=TiledInpainter(large_rec, context_px=32),
+        area_threshold=1000,
+    )
+    ag.inpaint_page(canvas, mask)
+    assert len(small_rec.calls) == 1
+    assert len(large_rec.calls) == 0
+
+
+def test_area_gated_large_blob_goes_to_large():
+    small_rec = _RecordingBackend()
+    large_rec = _RecordingBackend()
+    canvas = _make_canvas(300, 300)
+    # blob area = 50*30 = 1500 >= 1000 → large
+    mask = _mask_at(300, 300, (100, 130, 100, 150))
+    ag = AreaGatedInpainter(
+        small_inpainter=FullPageInpainter(small_rec),
+        large_inpainter=TiledInpainter(large_rec, context_px=32),
+        area_threshold=1000,
+    )
+    ag.inpaint_page(canvas, mask)
+    # small path: small_mask is empty → no call
+    assert len(small_rec.calls) == 0
+    # large path: TiledInpainter calls large_rec.inpaint once for the blob
+    assert len(large_rec.calls) == 1
+
+
+def test_area_gated_mixed_blobs_split_correctly():
+    small_rec = _RecordingBackend()
+    large_rec = _RecordingBackend()
+    canvas = _make_canvas(400, 400)
+    # small: 10*10=100, large: 50*40=2000
+    mask = _mask_at(400, 400, (10, 20, 10, 20), (200, 240, 200, 250))
+    ag = AreaGatedInpainter(
+        small_inpainter=FullPageInpainter(small_rec),
+        large_inpainter=TiledInpainter(large_rec, context_px=32),
+        area_threshold=1000,
+    )
+    ag.inpaint_page(canvas, mask)
+    assert len(small_rec.calls) == 1  # small blob → full-page TeLeA
+    assert len(large_rec.calls) == 1  # large blob → tiled AOT
+
+
+def test_area_gated_empty_mask_no_call():
+    small_rec = _RecordingBackend()
+    large_rec = _RecordingBackend()
+    canvas = _make_canvas(200, 200)
+    ag = AreaGatedInpainter(
+        small_inpainter=FullPageInpainter(small_rec),
+        large_inpainter=TiledInpainter(large_rec, context_px=32),
+        area_threshold=1000,
+    )
+    ag.inpaint_page(canvas, np.zeros((200, 200), dtype=np.uint8))
+    assert len(small_rec.calls) == 0
+    assert len(large_rec.calls) == 0

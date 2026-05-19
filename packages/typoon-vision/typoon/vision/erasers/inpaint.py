@@ -27,7 +27,7 @@ import numpy as np
 from .backends import InpaintBackend
 
 
-__all__ = ["PageInpainter", "FullPageInpainter", "TiledInpainter"]
+__all__ = ["PageInpainter", "FullPageInpainter", "TiledInpainter", "AreaGatedInpainter"]
 
 
 @runtime_checkable
@@ -179,3 +179,51 @@ def _center_tile(
     x2 = min(W, x1 + T);       y2 = min(H, y1 + T)
     x1 = max(0, x2 - T);       y1 = max(0, y2 - T)
     return x1, y1, x2, y2
+
+
+class AreaGatedInpainter:
+    """Route each blob to cheap or ML inpainter based on mask area.
+
+    Blobs with mask_area < area_threshold px² go to `small_inpainter`
+    (e.g. TeLeA — fast, zero model cost). Larger blobs go to
+    `large_inpainter` (e.g. TiledInpainter + AOT-GAN).
+
+    Rationale: SFX text and small floating kanji rarely exceed 1000 px²
+    of masked area. Quality difference between TeLeA and ML is invisible
+    at that scale. Dialogue bubbles are typically 3000-15000 px² where ML
+    quality is worth the cost.
+
+    Runs per-blob by iterating connected components, same as TiledInpainter.
+    """
+
+    _MIN_BLOB_AREA = 5
+
+    def __init__(
+        self,
+        *,
+        small_inpainter: PageInpainter,
+        large_inpainter: PageInpainter,
+        area_threshold: int = 1000,
+    ) -> None:
+        self._small     = small_inpainter
+        self._large     = large_inpainter
+        self._threshold = area_threshold
+
+    def inpaint_page(self, canvas: np.ndarray, page_mask: np.ndarray) -> None:
+        n, _, stats, _ = cv2.connectedComponentsWithStats(page_mask, connectivity=8)
+        blobs = [stats[i] for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] > self._MIN_BLOB_AREA]
+
+        small_mask = np.zeros_like(page_mask)
+        large_mask = np.zeros_like(page_mask)
+
+        for s in blobs:
+            bx = s[cv2.CC_STAT_LEFT]; by = s[cv2.CC_STAT_TOP]
+            bw = s[cv2.CC_STAT_WIDTH]; bh = s[cv2.CC_STAT_HEIGHT]
+            area = s[cv2.CC_STAT_AREA]
+            target = small_mask if area < self._threshold else large_mask
+            target[by:by+bh, bx:bx+bw] |= page_mask[by:by+bh, bx:bx+bw]
+
+        if (small_mask > 0).any():
+            self._small.inpaint_page(canvas, small_mask)
+        if (large_mask > 0).any():
+            self._large.inpaint_page(canvas, large_mask)

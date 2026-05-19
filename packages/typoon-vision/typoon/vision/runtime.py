@@ -130,11 +130,16 @@ def _build_eraser(kind: EraserId, models_dir: Path) -> Eraser:
     match kind:
         case "text":
             from .erasers import TextEraser, FullPageInpainter, TiledInpainter
+            from .erasers.inpaint import AreaGatedInpainter
             from .erasers.backends import AOTGANBackend, TeLeABackend
             return TextEraser(
                 uniform_inpainter=FullPageInpainter(TeLeABackend()),
-                complex_inpainter=TiledInpainter(
-                    AOTGANBackend(models_dir),
-                    context_px=64,
+                complex_inpainter=AreaGatedInpainter(
+                    small_inpainter=FullPageInpainter(TeLeABackend()),
+                    large_inpainter=TiledInpainter(
+                        AOTGANBackend(models_dir),
+                        context_px=64,
+                    ),
+                    area_threshold=1000,
                 ),
             )
