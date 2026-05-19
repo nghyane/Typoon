@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name    = "typoon-inpaint"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "AOT-GAN inpaint service for Typoon — Rust/Candle, Linux CPU container"
+
+[[bin]]
+name = "serve"
+path = "bin/serve.rs"
+
+[dependencies]
+# Candle ML (CPU-only — no CUDA/Metal features)
+candle-core = { version = "=0.9.2", default-features = false }
+candle-nn   = { version = "=0.9.2", default-features = false }
+
+# Image codec
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
+# Model loading
+safetensors = "0.3"
+memmap2     = "0.9"
+
+# HTTP server
+axum          = { version = "0.8", features = ["http1", "tokio"] }
+tokio         = { version = "1",   features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http    = { version = "0.6", features = ["trace"] }
+bytes         = "1"
+
+# Config / serialisation
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+anyhow        = "1"
+tracing       = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip   = true
+lto     = "thin"
+opt-level = 3
+codegen-units = 1
