@@ -3,15 +3,15 @@
 Production entry point:
   TextEraser  — route per-mask to uniform or complex PageInpainter.
 
-Page-level inpaint driver:
+Page-level inpaint drivers:
   FullPageInpainter  — single backend call on the full page.
+  TiledInpainter     — per-blob crop, backend call, paste back.
   PageInpainter      — Protocol.
 
 Backends (InpaintBackend Protocol):
-  TeLeABackend              — cv2 TELEA, no model, ~90ms/page
-  RemoteInpaintBackend      — base for HTTP-backed services
-  CfSd15InpaintBackend      — Cloudflare Workers AI SD1.5
-  Flux2KleinInpaintBackend  — FLUX2 Klein
+  TeLeABackend          — cv2 TELEA, no model, ~90ms/page
+  RemoteInpaintBackend  — base for HTTP-backed services
+  TyphoonInpaintBackend — Rust/Candle inpaint container (spike/inpaint)
 
 Routing helpers:
   partition_by_background  — split masks by luminance spread
@@ -23,29 +23,24 @@ from __future__ import annotations
 import logging
 
 from .eraser import TextEraser
-from .inpaint import FullPageInpainter, PageInpainter
+from .inpaint import FullPageInpainter, PageInpainter, TiledInpainter
 from .routing import build_page_mask, partition_by_background
 from .backends import (
     InpaintBackend,
     RemoteInpaintBackend,
-    CfSd15InpaintBackend,
-    Flux2KleinInpaintBackend,
+    TyphoonInpaintBackend,
     TeLeABackend,
 )
 
 __all__ = [
-    # Eraser
     "TextEraser",
-    # Page inpaint drivers
     "PageInpainter",
     "FullPageInpainter",
-    # Backends
+    "TiledInpainter",
     "InpaintBackend",
     "TeLeABackend",
     "RemoteInpaintBackend",
-    "CfSd15InpaintBackend",
-    "Flux2KleinInpaintBackend",
-    # Routing helpers
+    "TyphoonInpaintBackend",
     "partition_by_background",
     "build_page_mask",
 ]

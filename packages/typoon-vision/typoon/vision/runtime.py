@@ -129,17 +129,24 @@ def _build_ctd_seg(models_dir: Path, source_lang: str | None) -> CtdSegRunner | 
 def _build_eraser(kind: EraserId, models_dir: Path) -> Eraser:
     match kind:
         case "text":
-            from .erasers import TextEraser, FullPageInpainter, TiledInpainter
-            from .erasers.inpaint import AreaGatedInpainter
-            from .erasers.backends import AOTGANBackend, TeLeABackend
+            import os
+            from .erasers import (
+                TextEraser, FullPageInpainter, TiledInpainter,
+                TeLeABackend, TyphoonInpaintBackend,
+            )
+
+            inpaint_url = os.environ.get("TYPOON_INPAINT_URL")
+            if inpaint_url:
+                complex_inpainter = TiledInpainter(
+                    TyphoonInpaintBackend(inpaint_url),
+                    context_px=16,
+                    snap=8,
+                )
+            else:
+                # Local dev / no container deployed: TeLeA fallback.
+                complex_inpainter = FullPageInpainter(TeLeABackend())
+
             return TextEraser(
                 uniform_inpainter=FullPageInpainter(TeLeABackend()),
-                complex_inpainter=AreaGatedInpainter(
-                    small_inpainter=FullPageInpainter(TeLeABackend()),
-                    large_inpainter=TiledInpainter(
-                        AOTGANBackend(models_dir),
-                        context_px=64,
-                    ),
-                    area_threshold=1000,
-                ),
+                complex_inpainter=complex_inpainter,
             )
