@@ -1,20 +1,31 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "typoon"
-version = "0.1.0"
+name           = "typoon-workspace"
+version        = "0.1.0"
+description    = "Typoon — manga/manhwa translation pipeline (workspace root)"
 requires-python = ">=3.11"
 
-[tool.setuptools.packages.find]
-include = ["typoon*"]
+[tool.uv.workspace]
+members = ["packages/typoon-*"]
 
-[project.optional-dependencies]
-onnx = ["onnxruntime>=1.17"]
-cuda = ["onnxruntime-gpu>=1.17"]
-ja   = ["transformers>=4.45", "fugashi", "unidic-lite"]
-gemini_web = ["gemini-webapi>=1.13", "browser-cookie3>=0.20"]
+[tool.uv.sources]
+typoon-core      = { workspace = true }
+typoon-vision    = { workspace = true }
+typoon-llm       = { workspace = true }
+typoon-stages    = { workspace = true }
+typoon-translate = { workspace = true }
+typoon-storage   = { workspace = true }
+typoon-app       = { workspace = true }
+bunle            = { path = "/Users/nghiahoang/Dev/bunle/bunle/python" }
 
-[project.scripts]
-typoon = "typoon.cli:app"
+[dependency-groups]
+dev = [
+  "typoon-core",
+  "typoon-vision",
+  "typoon-llm",
+  "typoon-stages",
+  "typoon-translate",
+  "typoon-storage",
+  "typoon-app",
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
