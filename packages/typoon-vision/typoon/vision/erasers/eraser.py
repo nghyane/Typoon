@@ -23,7 +23,7 @@ import logging
 import numpy as np
 
 from ..contracts import TextMask
-from .inpaint import FullPageInpainter, PageInpainter, TiledInpainter
+from .inpaint import FullPageInpainter, PageInpainter
 from .routing import build_page_mask, partition_by_background
 
 __all__ = ["TextEraser"]

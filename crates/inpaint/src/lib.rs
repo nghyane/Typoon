@@ -352,13 +352,25 @@ impl Inpainter {
         let mask_pad = reflect_pad_mask(mask, w, h, pw, ph);
 
         // Normalise image to [-1, 1] zeroed at masked pixels
-        let mask_f32: Vec<f32> = mask_pad.iter().map(|&v| if v >= 127 { 1.0f32 } else { 0.0 }).collect();
-        let img_f32: Vec<f32>  = img_pad.iter().zip(mask_f32.iter().flat_map(|&m| [m, m, m]))
-            .map(|(&p, m)| (p as f32 / 127.5 - 1.0) * (1.0 - m))
+        // img_pad is HWC (interleaved RGB). Model needs CHW.
+        let mask_f32: Vec<f32> = mask_pad.iter()
+            .map(|&v| if v >= 127 { 1.0f32 } else { 0.0 })
             .collect();
 
+        // Build CHW float tensor: separate R, G, B planes
+        let mut img_chw = vec![0.0f32; 3 * ph * pw];
+        for y in 0..ph {
+            for x in 0..pw {
+                let m = mask_f32[y * pw + x];
+                for c in 0..3 {
+                    let src = img_pad[(y * pw + x) * 3 + c];
+                    img_chw[c * ph * pw + y * pw + x] = (src as f32 / 127.5 - 1.0) * (1.0 - m);
+                }
+            }
+        }
+
         // Build NCHW tensors
-        let img_t  = Tensor::from_vec(img_f32, (1, 3, ph, pw), &self.device)?
+        let img_t  = Tensor::from_vec(img_chw, (1, 3, ph, pw), &self.device)?
             .to_dtype(self.dtype)?;
         let mask_t = Tensor::from_vec(mask_f32, (1, 1, ph, pw), &self.device)?
             .to_dtype(self.dtype)?;
@@ -376,15 +388,16 @@ impl Inpainter {
         drop(out_f32);
 
         // Compose: use model output where mask>=127, original elsewhere
-        // out_f32 is (3, h, w) after narrow — CHW layout
+        // raw is CHW: raw[c * h * w + y * w + x]
         let mut result = image_rgb.to_vec();
         for y in 0..h {
             for x in 0..w {
                 if mask[y * w + x] < 127 { continue; }
                 let base = (y * w + x) * 3;
-                result[base    ] = ((raw[(0 * h + y) * w + x] + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
-                result[base + 1] = ((raw[(1 * h + y) * w + x] + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
-                result[base + 2] = ((raw[(2 * h + y) * w + x] + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
+                for c in 0..3 {
+                    result[base + c] = ((raw[c * h * w + y * w + x] + 1.0) * 127.5)
+                        .clamp(0.0, 255.0) as u8;
+                }
             }
         }
         Ok(result)
@@ -427,3 +440,6 @@ fn reflect_idx(i: usize, len: usize) -> usize {
     let excess = i - len;
     if excess < len { len - 1 - excess } else { 0 }
 }
+
+#[cfg(feature = "python")]
+mod py;

@@ -1,8 +1,8 @@
 """Inpaint backend contracts.
 
-An InpaintBackend takes a cropped image region and a binary mask,
-returns the inpainted region. All coordinate math happens in the
-caller (HybridEraser); backends only see pixels.
+An InpaintBackend takes a full-page or cropped image region and a binary
+mask, returns the inpainted result. All coordinate math and page-level
+orchestration happens in the caller; backends only see pixels.
 """
 
 from __future__ import annotations
@@ -20,26 +20,15 @@ class InpaintBackend(Protocol):
     """Inpaint a masked region of an image.
 
     Inputs:
-      image_rgb  — uint8 (H, W, 3) RGB crop
+      image_rgb  — uint8 (H, W, 3) RGB
       mask       — uint8 (H, W)  255=inpaint, 0=keep
 
     Returns:
       uint8 (H, W, 3) RGB — inpainted result, same size as input.
       Pixels outside the mask should be preserved unchanged.
-
-    Routing hint:
-      tile_size — preferred native input side, in page pixels.
-        `None`     → backend handles arbitrary page-sized input itself
-                     (e.g. cv2.inpaint, remote services). The router
-                     calls `inpaint(full_page, full_page_mask)` once.
-        `int`      → router crops per-blob tiles of this exact size
-                     before calling. Lets local ONNX models keep
-                     pixel-perfect native resolution instead of being
-                     resized by the page-level path.
     """
 
     name: str
-    tile_size: int | None
 
     def inpaint(
         self,

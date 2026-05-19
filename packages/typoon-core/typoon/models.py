@@ -29,8 +29,6 @@ MANIFEST = [
     "ppocr-det.onnx",
     "ppocr-det.onnx.data",
     "ppocr-det.mlpackage/",
-    "aot-inpaint.onnx",
-    "aot-inpaint.mlpackage/",
     "bubble-scope-yolov8m.pt",
     "bubble-scope-yolov8m.mlpackage/",
 ]

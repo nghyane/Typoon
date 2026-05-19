@@ -4,7 +4,6 @@ Fast Marching Method: propagates colour from the mask boundary inward.
 Zero model weight, ~90ms for a full manga page on CPU.
 
 Best for: uniform backgrounds (white speech bubbles, caption boxes).
-Not suitable for: screentone, halftone, complex art texture.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ class TeLeABackend:
     """cv2 TELEA inpainting — no model, pure algorithm."""
 
     name = "telea"
-    tile_size: int | None = None  # cv2 handles full page in ~90ms; no tiling
 
     def __init__(self, radius: int = 10) -> None:
         self._radius = radius
