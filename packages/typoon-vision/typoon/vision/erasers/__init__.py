@@ -10,6 +10,7 @@ Page-level inpaint drivers:
 
 Backends (InpaintBackend Protocol):
   TeLeABackend          — cv2 TELEA, no model, ~90ms/page
+  LocalAOTBackend       — in-process AOT-GAN via PyO3 (local dev)
   RemoteInpaintBackend  — base for HTTP-backed services
   TyphoonInpaintBackend — Rust/Candle inpaint container (spike/inpaint)
 
@@ -27,6 +28,7 @@ from .inpaint import FullPageInpainter, PageInpainter, TiledInpainter
 from .routing import build_page_mask, partition_by_background
 from .backends import (
     InpaintBackend,
+    LocalAOTBackend,
     RemoteInpaintBackend,
     TyphoonInpaintBackend,
     TeLeABackend,
@@ -39,6 +41,7 @@ __all__ = [
     "TiledInpainter",
     "InpaintBackend",
     "TeLeABackend",
+    "LocalAOTBackend",
     "RemoteInpaintBackend",
     "TyphoonInpaintBackend",
     "partition_by_background",

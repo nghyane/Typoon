@@ -132,18 +132,26 @@ def _build_eraser(kind: EraserId, models_dir: Path) -> Eraser:
             import os
             from .erasers import (
                 TextEraser, FullPageInpainter, TiledInpainter,
-                TeLeABackend, TyphoonInpaintBackend,
+                TeLeABackend, TyphoonInpaintBackend, LocalAOTBackend,
             )
 
             inpaint_url = os.environ.get("TYPOON_INPAINT_URL")
+            aot_weights = models_dir / "aot-inpaint.safetensors"
+
             if inpaint_url:
+                # Production: HTTP container (Rust/Candle, Cloudflare).
                 complex_inpainter = TiledInpainter(
                     TyphoonInpaintBackend(inpaint_url),
-                    context_px=16,
-                    snap=8,
+                    context_px=16, snap=8,
+                )
+            elif aot_weights.exists():
+                # Local dev: in-process Rust/Candle via PyO3.
+                complex_inpainter = TiledInpainter(
+                    LocalAOTBackend(aot_weights),
+                    context_px=16, snap=8,
                 )
             else:
-                # Local dev / no container deployed: TeLeA fallback.
+                # No AOT available: TeLeA fallback for complex bg too.
                 complex_inpainter = FullPageInpainter(TeLeABackend())
 
             return TextEraser(
