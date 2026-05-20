@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"],
+    "strict": false,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": false,
+    "skipLibCheck": true,
+    "paths": {
+      "@typoon/shared": ["../shared/src/index.ts"],
+      "@typoon/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,27 @@
+name = "typoon-scan"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[placement]
+mode = "smart"
+
+[durable_objects]
+bindings = [
+  { name = "SCAN_CONTAINER", class_name = "ScanContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ScanContainer"]
+
+[[containers]]
+class_name    = "ScanContainer"
+image         = "registry.cloudflare.com/818e551312970df676abe1a0e61819c7/typoon-scan-scancontainer:probe1779160094"
+max_instances = 30
+instance_type = "standard-4"
+
+[vars]
+MAX_INSTANCES  = "30"
+LENS_ENDPOINT  = "https://927251094806098001.discordsays.com/lens/v1/crupload"
+R2_BUCKET_NAME = "typoon-work"
+R2_ACCOUNT_ID  = "818e551312970df676abe1a0e61819c7"

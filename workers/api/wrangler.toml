@@ -1,0 +1,49 @@
+name               = "typoon-api"
+main               = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding     = "DB"
+database_name = "typoon-db"
+database_id = "8a2c9be8-87d9-4931-a8a0-706a1c8ec82c"
+
+[[r2_buckets]]
+binding     = "R2"
+bucket_name = "typoon-work"
+
+[durable_objects]
+bindings = [
+  { name = "STATUS_DO", class_name = "TranslationStatusDO" }
+]
+
+[[migrations]]
+tag               = "v1"
+new_sqlite_classes = ["TranslationStatusDO"]
+
+# Service binding: pipeline calls back into api to finalize
+# (declared as WorkerEntrypoint in src/rpc/pipeline-callback.ts)
+# No service binding needed here — pipeline binds TO us.
+
+# Pipeline worker (api calls pipeline to create workflow instances)
+[[services]]
+binding    = "PIPELINE"
+service    = "typoon-pipeline"
+entrypoint = "PipelineEntrypoint"
+
+[vars]
+DISCORD_API = "https://discord.com/api"
+
+# Secrets (set via `wrangler secret put`):
+#   JWT_SECRET          — HS256 secret for JWT issuance + verification
+#   DISCORD_CLIENT_ID
+#   DISCORD_CLIENT_SECRET
+#   DISCORD_GUILD_ID    — optional, for role-based admin check
+#   ADMIN_ROLE_ID       — optional, Discord role ID for admin access
+
+[[queues.producers]]
+queue   = "typoon-material-links-refresh"
+binding = "LINKS_REFRESH_QUEUE"
+
+[triggers]
+crons = ["*/5 * * * *"]   # refresh material_links table every 5 minutes

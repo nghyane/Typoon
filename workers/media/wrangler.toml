@@ -1,0 +1,26 @@
+name = "typoon-media"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[placement]
+mode = "smart"
+
+[durable_objects]
+bindings = [
+  { name = "MEDIA_CONTAINER", class_name = "MediaContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MediaContainer"]
+
+[[containers]]
+class_name    = "MediaContainer"
+image         = "./Dockerfile"
+max_instances = 15
+instance_type = "standard-2"
+
+[vars]
+MAX_INSTANCES  = "15"
+R2_BUCKET_NAME = "typoon-work"
+R2_ACCOUNT_ID  = "818e551312970df676abe1a0e61819c7"

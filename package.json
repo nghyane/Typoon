@@ -5,6 +5,11 @@
   "workspaces": [
     "web",
     "ext",
-    "packages/*"
-  ]
+    "packages/*",
+    "workers/*"
+  ],
+  "devDependencies": {
+    "@jsquash/jpeg": "^1.5.0",
+    "@jsquash/png": "^3.1.0"
+  }
 }

@@ -1,0 +1,26 @@
+name = "typoon-typeset-pack"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[placement]
+mode = "smart"
+
+[durable_objects]
+bindings = [
+  { name = "TYPESET_PACK_CONTAINER", class_name = "TypesetPackContainer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TypesetPackContainer"]
+
+[[containers]]
+class_name    = "TypesetPackContainer"
+image         = "./Dockerfile"
+max_instances = 20
+instance_type = "standard-2"  # 1 vCPU, 6 GiB — Rust render + PIL decode parallel-bound
+
+[vars]
+MAX_INSTANCES  = "20"
+R2_BUCKET_NAME = "typoon-work"
+R2_ACCOUNT_ID  = "818e551312970df676abe1a0e61819c7"

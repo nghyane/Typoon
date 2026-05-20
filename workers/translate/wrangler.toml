@@ -1,0 +1,18 @@
+name = "typoon-translate"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+limits = { cpu_ms = 30000 }
+
+[[r2_buckets]]
+binding     = "R2"
+bucket_name = "typoon-work"
+
+[vars]
+PACKY_ENDPOINT = "https://www.packyapi.com/v1/responses"
+PACKY_MODEL    = "gpt-5.4-mini"
+
+[[rules]]
+type     = "Text"
+globs    = ["**/*.md", "**/*.txt"]
+fallthrough = false
