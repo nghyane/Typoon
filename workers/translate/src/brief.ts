@@ -32,7 +32,7 @@ export interface LoadedBrief {
 
 const EMPTY_BRIEF: LoadedBrief = {
   index: {
-    chapter_id: 0, version: 1, chunk_count: 0,
+    job_id: 0, version: 1, chunk_count: 0,
     has_prose: false, has_chars: false, has_address: false,
     has_gloss: false, has_notes: false, has_noise: false,
     noise_count: 0, noise_pages: [], timing_ms: {},
@@ -57,11 +57,11 @@ const EMPTY_BRIEF: LoadedBrief = {
  * partial context than no translation at all.
  */
 export async function loadBrief(
-  r2: R2Bucket, chapter_id: number,
+  r2: R2Bucket, job_id: number,
 ): Promise<LoadedBrief> {
   let index: BriefIndex;
   try {
-    index = await getJson<BriefIndex>(r2, r2keys.brief(String(chapter_id)));
+    index = await getJson<BriefIndex>(r2, r2keys.brief(String(job_id)));
   } catch {
     return EMPTY_BRIEF;     // no brief written → ChapterBrief() equivalent
   }
@@ -76,33 +76,33 @@ export async function loadBrief(
   const noise_pages = new Set(index.noise_pages);
 
   if (index.has_prose) {
-    tasks.push(getBytes(r2, r2keys.briefProse(String(chapter_id)))
+    tasks.push(getBytes(r2, r2keys.briefProse(String(job_id)))
       .then(b => { prose = new TextDecoder().decode(b); })
       .catch(() => { /* leave empty */ }));
   }
   if (index.has_gloss) {
-    tasks.push(getJson<Record<string, string>>(r2, r2keys.briefGloss(String(chapter_id)))
+    tasks.push(getJson<Record<string, string>>(r2, r2keys.briefGloss(String(job_id)))
       .then(o => { glossary = new Map(Object.entries(o)); })
       .catch(() => {}));
   }
   if (index.has_chars) {
-    tasks.push(getJson<BriefCharacter[]>(r2, r2keys.briefChars(String(chapter_id)))
+    tasks.push(getJson<BriefCharacter[]>(r2, r2keys.briefChars(String(job_id)))
       .then(o => { characters = o; })
       .catch(() => {}));
   }
   if (index.has_address) {
-    tasks.push(getJson<BriefAddressPair[]>(r2, r2keys.briefAddress(String(chapter_id)))
+    tasks.push(getJson<BriefAddressPair[]>(r2, r2keys.briefAddress(String(job_id)))
       .then(o => { address = o; })
       .catch(() => {}));
   }
   if (index.has_notes) {
-    tasks.push(getJson<Record<string, string>>(r2, r2keys.briefNotes(String(chapter_id)))
+    tasks.push(getJson<Record<string, string>>(r2, r2keys.briefNotes(String(job_id)))
       .then(o => { key_notes = o; })
       .catch(() => {}));
   }
   if (index.has_noise) {
     tasks.push(getJson<{ noise_keys: string[]; noise_pages: number[] }>(
-      r2, r2keys.briefNoise(String(chapter_id)),
+      r2, r2keys.briefNoise(String(job_id)),
     )
       .then(o => {
         for (const k of o.noise_keys) noise_keys.add(k);

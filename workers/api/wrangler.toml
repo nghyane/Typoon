@@ -4,46 +4,55 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
-binding     = "DB"
+binding       = "DB"
 database_name = "typoon-db"
-database_id = "8a2c9be8-87d9-4931-a8a0-706a1c8ec82c"
+database_id   = "8a2c9be8-87d9-4931-a8a0-706a1c8ec82c"
 
 [[r2_buckets]]
 binding     = "R2"
 bucket_name = "typoon-work"
 
+[[kv_namespaces]]
+binding = "WORK_CONTEXTS"
+id      = "64380ac30c8b4d0586f1d233c6b26891"
+
 [durable_objects]
 bindings = [
-  { name = "STATUS_DO", class_name = "TranslationStatusDO" }
+  { name = "USER_EVENTS_DO", class_name = "UserEventsDO" }
 ]
 
 [[migrations]]
-tag               = "v1"
+tag                = "v1"
 new_sqlite_classes = ["TranslationStatusDO"]
 
-# Service binding: pipeline calls back into api to finalize
-# (declared as WorkerEntrypoint in src/rpc/pipeline-callback.ts)
-# No service binding needed here — pipeline binds TO us.
+[[migrations]]
+tag                = "v2"
+renamed_classes    = [{ from = "TranslationStatusDO", to = "JobStatusDO" }]
 
-# Pipeline worker (api calls pipeline to create workflow instances)
+# v3: replace per-job JobStatusDO with per-user UserEventsDO. The old class
+# never accumulated useful storage (only ephemeral terminal events), so a
+# straight rename is the cleanest path — same migration mechanism as v2.
+[[migrations]]
+tag                = "v3"
+renamed_classes    = [{ from = "JobStatusDO", to = "UserEventsDO" }]
+
+# Service binding — api calls pipeline to create workflow instances
+# Uses pipeline's default fetch handler (handleHttp in http.ts).
 [[services]]
-binding    = "PIPELINE"
-service    = "typoon-pipeline"
-entrypoint = "PipelineEntrypoint"
+binding = "PIPELINE"
+service = "typoon-pipeline"
 
 [vars]
 DISCORD_API = "https://discord.com/api"
 
 # Secrets (set via `wrangler secret put`):
-#   JWT_SECRET          — HS256 secret for JWT issuance + verification
+#   JWT_SECRET              HS256 secret for JWT issuance + verification
 #   DISCORD_CLIENT_ID
 #   DISCORD_CLIENT_SECRET
-#   DISCORD_GUILD_ID    — optional, for role-based admin check
-#   ADMIN_ROLE_ID       — optional, Discord role ID for admin access
-
-[[queues.producers]]
-queue   = "typoon-material-links-refresh"
-binding = "LINKS_REFRESH_QUEUE"
-
-[triggers]
-crons = ["*/5 * * * *"]   # refresh material_links table every 5 minutes
+#   DISCORD_GUILD_ID        optional, for tier role lookup
+#   ADMIN_ROLE_ID           optional, Discord role ID for admin access
+#   DISCORD_ROLE_TIER_MAP   JSON: {"<role_id>": "<tier_id>"}
+#   R2_ACCESS_KEY_ID        S3-compatible access key
+#   R2_SECRET_ACCESS_KEY    S3-compatible secret
+#   R2_ACCOUNT_ID           818e551312970df676abe1a0e61819c7
+#   R2_BUCKET_NAME          typoon-work

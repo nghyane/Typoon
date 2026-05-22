@@ -1,27 +1,17 @@
 import { useEffect, useState } from 'react'
 import { cn } from '@shared/lib/cn'
-import { api } from '@shared/api/api'
 import { proxify } from '@features/browse/proxy'
 
-// Resolve a cover URL into something the browser can actually load:
-//
-//   • Absolute upstream URL (e.g. `https://uploads.mangadex.org/...`)
-//     → rewritten through the CDN proxy. Upstream hosts hotlink-block
-//     or lack CORS, and the server stores raw upstream URLs on
-//     materials/library entries (no local cover storage yet), so the
-//     proxy is the only path that consistently renders.
-//
-//   • Relative API path (e.g. `/files/<slug>/cover.jpg`) → resolved
-//     against `api.base` for cross-origin deployments. Same-origin
-//     dev/prod hits the Vite proxy and the relative URL stays
-//     untouched.
-//
-// `version` busts the browser cache when the upstream cover gets
-// replaced under the same URL (e.g. after re-enrich).
+const API_BASE = window.location.hostname.endsWith('.discordsays.com')
+  ? ''
+  : (import.meta.env.VITE_PUBLIC_BASE_URL ?? '')
+
+// Resolve a cover URL — absolute upstream → CDN proxy,
+// relative `/files/...` → API base.
 export function coverUrl(src: string | null, version?: string | null): string | null {
   if (!src) return null
   const isAbs = /^https?:\/\//i.test(src)
-  const base  = isAbs ? proxify(src) : `${api.base}${src}`
+  const base  = isAbs ? proxify(src) : `${API_BASE}${src}`
   if (!version) return base
   return base.includes('?')
     ? `${base}&v=${encodeURIComponent(version)}`

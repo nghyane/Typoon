@@ -21,7 +21,7 @@ RUN touch src/lib.rs bin/serve.rs \
  && cargo build --release --bin serve --no-default-features --features serve
 
 # ---------------------------------------------------------------------------
-# Runtime: distroless static — no shell, no package manager
+# Runtime: distroless static + CA roots (rustls needs them for R2 HTTPS).
 # ---------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12
 

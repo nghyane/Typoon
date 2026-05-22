@@ -2,18 +2,15 @@ name = "typoon-pipeline"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
-[durable_objects]
-bindings = [
-  { name = "FAN_IN", class_name = "FanInCounterDO" }
-]
-
+# v1 created FanInCounterDO. v2 deletes it — coordination is now native
+# workflow `step.do` + `Promise.all` (see workers/pipeline/src/pipeline.ts).
 [[migrations]]
 tag                = "v1"
 new_sqlite_classes = ["FanInCounterDO"]
 
-[[queues.producers]]
-queue   = "typoon-inpaint-queue"
-binding = "INPAINT_QUEUE"
+[[migrations]]
+tag             = "v2"
+deleted_classes = ["FanInCounterDO"]
 
 [[services]]
 binding    = "SCAN"
@@ -34,6 +31,11 @@ entrypoint = "BriefService"
 binding    = "TRANSLATE"
 service    = "typoon-translate"
 entrypoint = "TranslateService"
+
+[[services]]
+binding    = "INPAINT"
+service    = "typoon-inpaint"
+entrypoint = "InpaintService"
 
 [[services]]
 binding    = "TYPESET_PACK"

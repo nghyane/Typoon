@@ -73,6 +73,11 @@ export const keys = {
   briefAddress: (chap: string)            => `brief/${chap}/address.json`,
   briefNotes:   (chap: string)            => `brief/${chap}/key_notes.json`,
   briefNoise:   (chap: string)            => `brief/${chap}/noise.json`,
+  // Work-context I/O for the client → pipeline → client round-trip.
+  // Input (optional): client gzip(JSON.stringify(WorkContext)) at job create.
+  // Output: brief stage writes the merged WorkContext for client to fetch.
+  ctxIn:        (chap: string)            => `ctx/${chap}/input.json.gz`,
+  ctxOut:       (chap: string)            => `ctx/${chap}/output.json.gz`,
 };
 
 function pad(n: number): string { return String(n).padStart(4, "0"); }

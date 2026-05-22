@@ -12,8 +12,8 @@ export function requireWasm(name: string): WebAssembly.Module {
   const w = (globalThis as any)[name] as WebAssembly.Module | undefined;
   if (!w) {
     throw new Error(
-      `[codec] missing global ${name}. Build script forgot to ship the .wasm `
-      + `or to emit the import preamble. See spike/shared/build/codec-bundle.mjs.`,
+      `[codec] missing global ${name}. Each worker that uses this codec must `
+      + `import the .wasm asset and assign it to globalThis (see workers/inpaint/src/index.ts).`,
     );
   }
   return w;

@@ -2,21 +2,19 @@
 //
 // User pastes a manga URL in the AddMangaModal; we figure out which
 // installed source owns the hostname and turn the URL into the
-// `(source, upstream_ref)` pair the backend's /api/material/import
-// expects.
+// `(source, upstream_ref)` pair the work resolver expects.
 //
-// We deliberately avoid clever guesses: when no installed source
-// matches the hostname, the modal falls back to the search tab. The
-// `upstream_ref` is the URL itself — the manifest runtime takes that
-// as the input to `fetchMangaDetail`, so anything else would just
-// add a re-derivation step.
+// When no installed source matches the hostname, the modal falls
+// back to "tạo trống". The `upstream_ref` is the URL itself — the
+// manifest runtime takes that as the input to `fetchMangaDetail`,
+// so anything else would just add a re-derivation step.
 
 import type { InstalledSource } from '@features/browse/manifest/types'
 
 export interface PasteMatch {
-  source:        InstalledSource
-  /** What we feed `/api/material/import` as upstream_ref. */
-  upstreamRef:   string
+  source:      InstalledSource
+  /** What we feed `fetchMangaDetail` + `useEnsureWorkFromSource` as upstream_ref. */
+  upstreamRef: string
 }
 
 const URL_RE = /^https?:\/\//i
@@ -43,11 +41,11 @@ export function matchSource(
   // `host` so the registry guarantees one is present per source.
   const wanted = parsed.host.toLowerCase()
   const direct = sources.find(
-    (s) => s.enabled && s.manifest.host.toLowerCase() === wanted,
+    s => s.enabled && s.manifest.host.toLowerCase() === wanted,
   )
   const suffix = direct ?? sources.find(
-    (s) => s.enabled
-       && wanted.endsWith('.' + s.manifest.host.toLowerCase()),
+    s => s.enabled
+      && wanted.endsWith('.' + s.manifest.host.toLowerCase()),
   )
   if (!suffix) return null
 

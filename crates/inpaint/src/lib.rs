@@ -443,3 +443,9 @@ fn reflect_idx(i: usize, len: usize) -> usize {
 
 #[cfg(feature = "python")]
 mod py;
+
+#[cfg(feature = "serve")]
+pub mod page;
+
+#[cfg(feature = "serve")]
+pub mod s3;

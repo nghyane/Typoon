@@ -1,26 +1,25 @@
-// LinkSearchModal — manual cross-source link search, in a modal.
+// LinkSearchModal — manual cross-source attach for a Work.
 //
-// Owns the multi-pick mutation lifecycle: each picked candidate
-// imports + force-links, marks the row as "đã liên kết", invalidates
-// the Work queries. The modal stays open so the user can chain
-// multiple links in one session — closing it (or a merge that
-// dissolves the current Work id) is the only exit. cross_refs
-// conflicts surface as toast errors per row; cross-language sibling
-// merges navigate to the canonical Work and let the modal unmount
-// naturally.
+// Multi-pick lifecycle: each picked candidate fetches detail, attaches
+// to the Work, marks the row as "đã liên kết", and stays in the modal
+// so the user can chain multiple attachments in one session. Closing
+// the modal is the only exit.
+//
+// Failures surface as toast errors per row. Duplicate (source,
+// upstream_ref) pairs are no-ops in the store, so re-pick is safe.
 
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useMutation } from '@tanstack/react-query'
 
-import { api, type ApiMaterial } from '@shared/api/api'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
-import { qk } from '@shared/api/keys'
 import { toast } from '@shared/ui/Toaster'
+import { fetchMangaDetail } from '@features/browse/manifest/runtime'
 import { hitKey } from '@features/library/addManga/hitKey'
 import type { SearchHit } from '@features/library/addManga/fanoutSearch'
-import { importMaterialFromHit } from '@features/material/import'
+import {
+  useAttachSource, type WorkSource,
+} from '@features/works/queries'
 
 import { LinkSearchPane } from './LinkSearchPane'
 
@@ -28,21 +27,18 @@ import { LinkSearchPane } from './LinkSearchPane'
 interface Props {
   open:    boolean
   onClose: () => void
-  /** Work to link into. */
-  workId:    number
+  workId:    string
   workTitle: string
-  /** Materials on this Work — feeds the self-link filter, anchors
-   *  the vote pair. */
-  ownMaterials: ApiMaterial[]
+  /** Sources already on this Work — feeds the self-link filter so the
+   *  user never sees a row for a source they've already attached. */
+  ownSources: WorkSource[]
 }
 
 
 export function LinkSearchModal({
-  open, onClose, workId, workTitle, ownMaterials,
+  open, onClose, workId, workTitle, ownSources,
 }: Props) {
-  const qc  = useQueryClient()
-  const nav = useNavigate()
-
+  const attach = useAttachSource()
   const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [pickedKeys, setPickedKeys] = useState<Set<string>>(() => new Set())
 
@@ -55,58 +51,34 @@ export function LinkSearchModal({
 
   const link = useMutation({
     mutationFn: async (hit: SearchHit) => {
-      // Funnel through the shared importer so manual cross-source
-      // linking writes the SAME ImportBody shape as "thêm vào thư
-      // viện" — including `languages` from the manifest fallback.
-      // Bypass-by-hand caused a real bug where Otruyen materials
-      // landed with `languages={}` and the title resolver fell
-      // through to a Romaji sibling.
-      const m = await importMaterialFromHit(hit)
-      const own = ownMaterials[0]
-      if (!own) throw new Error('Work has no own material to vote with.')
-      const res = await api.forceWorkLink(workId, {
-        target_material_id: m.id,
-        own_material_id:    own.id,
-      })
-      return { res, hit, importedTitle: m.title }
-    },
-    onSuccess: ({ res, hit, importedTitle }) => {
-      qc.invalidateQueries({ queryKey: qk.work.byId(workId) })
-      qc.invalidateQueries({ queryKey: qk.work.linkSuggest(workId) })
-      qc.invalidateQueries({ queryKey: qk.work.members(workId) })
-      qc.invalidateQueries({ queryKey: qk.library.all() })
-
-      // Cross-Work merge → the current Work dissolved into a sibling.
-      // Navigate there; the modal unmounts with the route.
-      if (res.merged && res.canonical_work_id != null
-          && res.canonical_work_id !== workId) {
-        toast.success(`Đã gộp với "${importedTitle}"`)
-        nav({
-          to:     '/w/$workId',
-          params: { workId: String(res.canonical_work_id) },
-        })
-        return
+      // Resolve canonical detail before attaching; falls back to the
+      // hit snapshot on fetch error so a flaky source doesn't block
+      // the link.
+      const detail = await fetchMangaDetail(hit.source.manifest, hit.manga.url)
+        .catch(() => null)
+      const manifest = hit.source.manifest
+      const source: WorkSource = {
+        source:       manifest.id,
+        upstream_ref: hit.manga.url,
+        title:        detail?.title  ?? hit.manga.title,
+        cover_url:    detail?.cover  ?? hit.manga.cover ?? null,
+        languages:    detail?.availableLanguages
+                  ?? manifest.languages
+                  ?? [],
+        added_at:     new Date().toISOString(),
       }
-
+      await attach.mutateAsync({ work_id: workId, source })
+      return { hit, title: source.title }
+    },
+    onSuccess: ({ hit, title }) => {
       setPickedKeys((prev) => {
         const next = new Set(prev)
         next.add(hitKey(hit))
         return next
       })
-
-      if (res.merged) {
-        toast.success(`Đã liên kết "${importedTitle}"`)
-        return
-      }
-      if (res.blocked_reason === 'cross_refs_conflict') {
-        toast.error(
-          `Không thể gộp "${importedTitle}" — hai nguồn khai báo định danh khác nhau.`,
-        )
-        return
-      }
-      toast.success(`Đã ghi nhận liên kết "${importedTitle}"`)
+      toast.success(`Đã liên kết "${title}"`)
     },
-    onError: (e: Error) => toast.error(`Liên kết thất bại: ${e.message}`),
+    onError:   (e: Error) => toast.error(`Liên kết thất bại: ${e.message}`),
     onSettled: () => setPendingKey(null),
   })
 
@@ -120,7 +92,7 @@ export function LinkSearchModal({
     <Modal
       open={open}
       onClose={handleClose}
-      title="Liên kết manga"
+      title="Liên kết nguồn"
       size="md"
       footerLeft={
         <span className="text-text-subtle truncate">
@@ -136,7 +108,8 @@ export function LinkSearchModal({
     >
       <div className="px-5 py-4">
         <LinkSearchPane
-          ownMaterials={ownMaterials}
+          ownSources={ownSources}
+          initialQuery={workTitle}
           onPick={handlePick}
           pickedKeys={pickedKeys}
           busy={link.isPending}

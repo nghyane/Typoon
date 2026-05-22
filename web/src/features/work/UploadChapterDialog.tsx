@@ -1,74 +1,78 @@
 // UploadChapterDialog — "Tải lên chương" on a Work hub.
 //
-// Three-zone modal (drop zone → file list → chapter form). Pattern
-// adapted from the legacy project-detail UploadChapterDialog; key
-// differences:
+// Three-zone modal (drop zone → file list → chapter form). The
+// design follows the global upload pattern (see
+// `shared/ui/UploadProgressFooter`): action footer flips to a
+// progress strip while the job uploads.
 //
-//   • Target is a Work id, not a project. Server lazily resolves /
-//     creates the viewer's `origin='upload'` material on
-//     `/api/work/{id}/upload-init`; SDK uses the returned material_id
-//     for the rest of the multipart handshake.
+// v3.5 wiring:
+//   • Target is a Work nanoid (no server material). The upload
+//     becomes a translate job tied to `(work_id, chapter_ref)` via
+//     `useSubmitJob` — same path the home-page drop zone uses.
 //
-//   • `existing` is the set of `number_norm` already present on the
-//     Work's chapter spine (across every source material). Drives the
-//     "Đã có chương N" warning so users don't accidentally double-
-//     upload over a source's chapter.
+//   • `existing` is the set of `numberNorm` already on the Work's
+//     chapter spine (across every source AND prior uploads). Drives
+//     the "Đã có chương N" warning + next-number suggestion.
 //
-// Upload phases (`UploadProgressFooter`):
-//   packing → uploading → finalizing
-// Engine enqueues prepare on finalize so the chapter row exists
-// before this dialog closes; the SPA's WorkChapterList shows it
-// with a "đang xử lý" badge until the worker drains.
+// The job appears on the chapter list under "Tải lên" immediately
+// after start; its state badge updates live via the
+// `useLiveQuery`-backed job mirror.
 
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  useEffect, useMemo, useRef, useState, type DragEvent,
+} from 'react'
+import { useMutation } from '@tanstack/react-query'
 import {
   AlertTriangle, Archive, Image as ImageIcon, Upload, X,
 } from 'lucide-react'
 import {
-  packPagesToZip, uploadChapterZipToWork,
+  packPagesToZip,
+  ProgressTracker,
   type UploadProgress,
 } from '@typoon/upload-sdk'
 
-import { api } from '@shared/api/api'
-import { qk } from '@shared/api/keys'
-import { cn } from '@shared/lib/cn'
 import { Modal } from '@shared/ui/Modal'
 import { Button } from '@shared/ui/Button'
-import { input, label } from '@shared/ui/primitives'
+import { input as inputCls, label as labelCls } from '@shared/ui/primitives'
 import { UploadProgressFooter } from '@shared/ui/UploadProgressFooter'
 import { toast } from '@shared/ui/Toaster'
+import { cn } from '@shared/lib/cn'
+import { useSubmitJob } from '@features/jobs/useSubmitJob'
 
 
 interface Props {
   open:    boolean
   onClose: () => void
-  workId:    number
-  workTitle: string
-  /** Chapter `number_norm` values already on this Work, across every
-   *  source material. Used to suggest the next number + warn when
-   *  the user picks a duplicate. */
-  existing:  Set<string>
+  workId:      string
+  workTitle:   string
+  /** Default source language (work.source_lang). Job inherits this. */
+  sourceLang:  string
+  /** Chapter `numberNorm` values already on this Work, across every
+   *  source AND prior uploads. */
+  existing:    Set<string>
 }
 
 
-// Same accept set the engine knows how to unpack. PDF intentionally
-// dropped (pdf.js bundle too big; CLI ingest still handles PDF).
+// Same accept set the pipeline knows how to unpack. PDF intentionally
+// dropped (pdf.js bundle too big).
 const ACCEPT = '.cbz,.zip,.png,.jpg,.jpeg,.webp,application/zip,image/*'
 const IMAGE_EXT   = /\.(png|jpe?g|webp|bmp|tiff?)$/i
 const ARCHIVE_EXT = /\.(zip|cbz)$/i
 
 
 export function UploadChapterDialog({
-  open, onClose, workId, workTitle, existing,
+  open, onClose, workId, workTitle, sourceLang, existing,
 }: Props) {
-  const qc = useQueryClient()
+  const { submit, progress } = useSubmitJob()
 
   const [files,    setFiles]    = useState<File[]>([])
-  const [number,   setNumber]   = useState<string>('')
+  const [number,   setNumber]   = useState('')
   const [title,    setTitle]    = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const [progress, setProgress] = useState<UploadProgress | null>(null)
+  /** Local phase tracker — `useSubmitJob` only exposes `{loaded,
+   *  total}`, so we narrate the lifecycle here for
+   *  `<UploadProgressFooter />`. */
+  const [phase, setPhase] = useState<UploadProgress['phase']>('packing')
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Reset state on every fresh open. Suggesting the next chapter
@@ -78,41 +82,37 @@ export function UploadChapterDialog({
       setNumber(suggestNextNumber(existing))
       setTitle('')
       setFiles([])
-      setProgress(null)
+      setPhase('packing')
     }
   }, [open, existing])
 
   const upload = useMutation({
     mutationFn: async () => {
-      setProgress({
-        phase: 'packing', bytesSent: 0, bytesTotal: 0,
-        partsSent: 0, partsTotal: 0,
-      })
+      const ref = number.trim() || suggestNextNumber(existing)
+      setPhase('packing')
       const zip = await buildZip(files)
-      return uploadChapterZipToWork(api, workId, zip, {
-        // `numberNorm` is what dedups the chapter against existing
-        // source chapters via work_chapters.number_norm. Source-side
-        // chapters use the manifest runtime's declarative norm; here
-        // we trust the user's literal input (trimmed). Engine
-        // generates a sequential fallback if blank.
-        numberNorm:  number.trim() || undefined,
-        label:       title.trim() || undefined,
-        sourceLang:  'vi',
-        onProgress:  setProgress,
+      setPhase('uploading')
+      const out = await submit({
+        work_id:     workId,
+        chapter_ref: ref,
+        source_lang: sourceLang,
+        kind:        'translate',
+        zip,
       })
+      setPhase('finalizing')
+      // Title denormalization is a future hook — the `jobs` mirror
+      // doesn't have a label column today; the chapter row falls back
+      // to "Ch.{ref}" until the reader writes one through
+      // `history.chapter_label`. Keep the input alive so a future
+      // denorm hook has somewhere to read from.
+      void title.trim()
+      return { ref, job_id: out.job_id }
     },
-    onSuccess: (ch) => {
-      // Refetch every surface the new chapter affects.
-      void qc.invalidateQueries({ queryKey: qk.work.byId(workId) })
-      void qc.invalidateQueries({ queryKey: qk.work.members(workId) })
-      void qc.invalidateQueries({ queryKey: qk.library.all() })
-      void qc.invalidateQueries({ queryKey: qk.workers() })
-      void qc.invalidateQueries({ queryKey: qk.quota() })
-      toast.success(`Đã tải Ch.${ch.number} (${ch.page_count} trang)`)
+    onSuccess: ({ ref }) => {
+      toast.success(`Đã gửi Ch.${ref} đi dịch`)
       onClose()
     },
     onError: (e: Error) => toast.error(e.message),
-    onSettled: () => setProgress(null),
   })
 
   const isArchive   = files.length === 1 && ARCHIVE_EXT.test(files[0]!.name)
@@ -121,7 +121,8 @@ export function UploadChapterDialog({
     [files],
   )
   const isPending   = upload.isPending
-  const hasConflict = number.trim() !== '' && existing.has(number.trim())
+  const trimmedRef  = number.trim()
+  const hasConflict = trimmedRef !== '' && existing.has(trimmedRef)
   const valid       = files.length > 0 && !isPending
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
@@ -135,20 +136,36 @@ export function UploadChapterDialog({
   const addFiles = (incoming: File[]) => {
     // One archive → replace whole list. Many images → accumulate so
     // user can drag in additional batches without losing the picks.
-    const archive = incoming.find((f) => ARCHIVE_EXT.test(f.name))
+    const archive = incoming.find(f => ARCHIVE_EXT.test(f.name))
     if (archive) {
       setFiles([archive])
       return
     }
-    setFiles((prev) => [
+    setFiles(prev => [
       ...prev,
-      ...incoming.filter((f) => IMAGE_EXT.test(f.name)),
+      ...incoming.filter(f => IMAGE_EXT.test(f.name)),
     ])
   }
 
-  const footerCustom = isPending && progress
-    ? <UploadProgressFooter progress={progress} />
+  // ProgressTracker shape that `<UploadProgressFooter />` consumes.
+  // We synthesize parts from the byte counters — the job-submit hook
+  // doesn't expose per-part deltas, but `UploadProgress.partsSent`
+  // isn't read by the footer, so 0/1 is fine.
+  const uploadProgress: UploadProgress = {
+    phase,
+    bytesSent:  progress.loaded,
+    bytesTotal: progress.total,
+    partsSent:  phase === 'finalizing' ? 1 : 0,
+    partsTotal: 1,
+  }
+
+  const footerCustom = isPending
+    ? <UploadProgressFooter progress={uploadProgress} />
     : undefined
+
+  // `ProgressTracker` is imported for parity with the SDK contract
+  // (future: switch to per-part deltas); silence the unused warning.
+  void ProgressTracker
 
   return (
     <Modal
@@ -161,7 +178,7 @@ export function UploadChapterDialog({
           files={files}
           isArchive={isArchive}
           totalSize={totalSize}
-          number={number}
+          number={trimmedRef}
         />
       ) : undefined}
       footer={!isPending ? (
@@ -213,37 +230,37 @@ export function UploadChapterDialog({
 
         <div className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-3">
           <div>
-            <label className={label}>Số chương</label>
+            <label className={labelCls}>Số chương</label>
             <input
               type="text"
               value={number}
               onChange={(e) => setNumber(e.target.value)}
               placeholder="—"
-              className={cn(input, hasConflict && 'border-warning')}
+              className={cn(inputCls, hasConflict && 'border-warning-text')}
               disabled={isPending}
             />
           </div>
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className={cn(label, 'mb-0')}>Tiêu đề</label>
-              <span className="text-[11px] text-text-subtle">Tuỳ chọn</span>
+              <label className={cn(labelCls, 'mb-0')}>Tiêu đề</label>
+              <span className="text-xs text-text-subtle">Tuỳ chọn</span>
             </div>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="VD: Mở đầu"
-              className={input}
+              className={inputCls}
               disabled={isPending}
             />
           </div>
 
           {hasConflict && (
             <div className="col-span-2 flex items-start gap-2 px-3 py-2 rounded-sm bg-warning-bg text-warning-text">
-              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
               <p className="text-xs leading-relaxed">
-                Đã có chương <span className="font-semibold tabular">{number.trim()}</span> trên
-                truyện này. Bản tải lên sẽ thành một bản song song dưới nguồn “Tải lên”.
+                Đã có chương <span className="font-semibold tabular-nums">{trimmedRef} </span>
+                trên truyện này. Bản tải lên sẽ thành một bản song song dưới “Tải lên”.
               </p>
             </div>
           )}
@@ -276,12 +293,13 @@ function DropZone({
       onDrop={onDrop}
       onClick={onClick}
       className={cn(
-        'rounded-md border-2 border-dashed flex items-center gap-3 px-4 cursor-pointer transition-all',
+        'rounded-md border-2 border-dashed flex items-center gap-3 px-4',
+        'transition-[background-color,border-color,transform] duration-150 cursor-pointer',
         hasFiles ? 'h-12' : 'h-20',
         dragOver
           ? 'border-accent bg-accent-bg scale-[1.005]'
           : 'border-border-soft bg-surface-2/40 hover:border-text-subtle',
-        isPending && 'opacity-60 cursor-not-allowed pointer-events-none',
+        isPending && 'opacity-60 pointer-events-none',
       )}
     >
       <Upload size={hasFiles ? 14 : 18} className="text-text-subtle shrink-0" />
@@ -310,18 +328,17 @@ function FooterContext({
   totalSize: number
   number:    string
 }) {
-  const trimmed = number.trim()
   return (
-    <span className="flex items-center gap-1.5 truncate">
-      <span className="text-text font-medium tabular">
+    <span className="flex items-center gap-2 truncate">
+      <span className="text-text font-medium tabular-nums">
         {isArchive ? '1 tệp' : `${files.length} ảnh`}
       </span>
       <span className="text-text-subtle/60">·</span>
-      <span className="tabular">{fmtSize(totalSize)}</span>
-      {trimmed && (
+      <span className="tabular-nums">{fmtSize(totalSize)}</span>
+      {number && (
         <>
           <span className="text-text-subtle/60">·</span>
-          <span className="tabular">Ch.{trimmed}</span>
+          <span className="tabular-nums">Ch.{number}</span>
         </>
       )}
     </span>
@@ -343,14 +360,14 @@ function FileList({
     return (
       <div className="flex items-center gap-3 px-3 py-2 rounded-sm bg-surface-2">
         <div className="size-9 rounded-sm bg-surface flex items-center justify-center shrink-0">
-          <Archive size={15} className="text-text-muted" />
+          <Archive size={14} className="text-text-muted" />
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm text-text truncate">{f.name}</p>
-          <p className="text-xs text-text-subtle tabular">{fmtSize(f.size)}</p>
+          <p className="text-xs text-text-subtle tabular-nums">{fmtSize(f.size)}</p>
         </div>
-        <Button variant="ghost" size="sm" icon onClick={onClear} disabled={disabled} title="Xoá">
-          <X size={13} />
+        <Button variant="ghost" size="sm" icon onClick={onClear} disabled={disabled}>
+          <X size={14} />
         </Button>
       </div>
     )
@@ -359,19 +376,14 @@ function FileList({
     <div>
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-text-muted">
-          <span className="text-text font-medium tabular">{files.length}</span> ảnh
+          <span className="text-text font-medium tabular-nums">{files.length}</span> ảnh
           <span className="text-text-subtle"> · sắp xếp theo tên tệp</span>
         </span>
-        <button
-          type="button"
-          onClick={onClear}
-          disabled={disabled}
-          className="text-xs text-text-subtle hover:text-text cursor-pointer disabled:opacity-50"
-        >
+        <Button variant="ghost" size="sm" onClick={onClear} disabled={disabled}>
           Xoá tất cả
-        </button>
+        </Button>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1.5 max-h-44 overflow-auto overscroll-contain pr-0.5">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-2 max-h-44 overflow-auto overscroll-contain pr-0.5">
         {files.map((f, i) => (
           <Thumb
             key={`${f.name}-${i}-${f.lastModified}`}
@@ -421,7 +433,7 @@ function Thumb({
         </div>
       )}
       <div className="absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-black/70 to-transparent flex items-end px-1.5 pb-1">
-        <span className="text-[10px] text-white/90 truncate font-medium">
+        <span className="text-xs text-white/90 truncate font-medium">
           {file.name.replace(/\.[^.]+$/, '')}
         </span>
       </div>
@@ -429,11 +441,15 @@ function Thumb({
         <button
           type="button"
           onClick={onRemove}
-          className="absolute top-1 right-1 size-5 rounded-full bg-error text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity shadow"
-          title="Xoá ảnh này"
+          className={cn(
+            'absolute top-1 right-1 size-5 rounded-full',
+            'bg-error-text text-white shadow',
+            'flex items-center justify-center',
+            'opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer',
+          )}
           aria-label={`Xoá ${file.name}`}
         >
-          <X size={11} />
+          <X size={12} />
         </button>
       )}
     </div>

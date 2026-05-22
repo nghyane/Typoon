@@ -6,8 +6,8 @@ export interface PreparedPageMeta {
   height: number;
 }
 
-export interface PreparedChapterMeta {
-  chapter_id:  number;
+export interface PreparedJobMeta {
+  job_id:      number;
   strategy:    "one_to_one" | "stitch";
   is_color:    boolean;
   color_ratio: number;
@@ -90,7 +90,7 @@ export interface TranslationOp {
 }
 
 export interface TranslateResult {
-  chapter_id:   number;
+  job_id:       number;
   translations: TranslationOp[];
   missing:      string[];
   windows:      { num: number; keys: string[]; char_count: number; latency_ms: number; usage?: any }[];
@@ -123,9 +123,9 @@ export interface BriefAddressPair {
 
 /** Index file pointing at the other artefacts; the only key consumers
  *  need to remember. Drives Cache API entries (key = `briefIndexKey`,
- *  value = ETag-like hash of the chunk count + chapter_id). */
+ *  value = ETag-like hash of the chunk count + job_id). */
 export interface BriefIndex {
-  chapter_id:  number;
+  job_id:      number;
   version:     1;
   chunk_count: number;            // how many vision calls ran
   has_prose:   boolean;

@@ -1,5 +1,14 @@
+// SearchPane — single smart input + fanout results.
+//
+// Three vertical zones: input → scope tabs → body (URL card / source
+// roster / scoped results + blank-create fallback). Fanout runs across
+// every searchable source; scope filter is applied client-side so the
+// user can switch sources without re-issuing the request.
+
 import { useMemo, useState } from 'react'
-import { Search, Link as LinkIcon, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import {
+  Search, Link as LinkIcon, AlertTriangle, CheckCircle2,
+} from 'lucide-react'
 
 import { input as inputCls } from '@shared/ui/primitives'
 import { cn } from '@shared/lib/cn'
@@ -17,10 +26,6 @@ import { BlankCreateRow } from './BlankCreateRow'
 import { ScopeFilterRow } from './ScopeFilterRow'
 import type { ImportToLibrary } from './useImportToLibrary'
 
-// Three vertical zones: input → scope tabs → body (URL card / source
-// roster / scoped results + blank-create fallback). Fanout runs across
-// every searchable source; scope filter is applied client-side so the
-// user can switch sources without re-issuing the request.
 
 export function SearchPane({
   query, setQuery, sources, importer,
@@ -31,7 +36,7 @@ export function SearchPane({
   importer: ImportToLibrary
 }) {
   const searchable = useMemo(
-    () => sources.filter((s) => hasSearch(s.manifest)),
+    () => sources.filter(s => hasSearch(s.manifest)),
     [sources],
   )
   const urlMatch = useMemo(
@@ -49,21 +54,19 @@ export function SearchPane({
   const scopedHits = useMemo(
     () => scopeId === null
       ? hits
-      : hits.filter((h) => h.source.manifest.id === scopeId),
+      : hits.filter(h => h.source.manifest.id === scopeId),
     [hits, scopeId],
   )
   const visibleSources = useMemo(
     () => scopeId === null
       ? searchable
-      : searchable.filter((s) => s.manifest.id === scopeId),
+      : searchable.filter(s => s.manifest.id === scopeId),
     [searchable, scopeId],
   )
 
-  // Pick handler: resolve canonical detail (description / author /
-  // languages) before importing. Falls back to the search snapshot
-  // on fetch failure so a flaky upstream doesn't block the save.
-  // The wire payload is built inside `importHit` — this callsite
-  // does not touch `ImportBody` shape.
+  // Pick handler: resolve canonical detail (description / languages)
+  // before importing. Falls back to the search snapshot on fetch
+  // failure so a flaky upstream doesn't block the save.
   const handlePick = async (hit: SearchHit) => {
     if (importer.isPending || pendingKey) return
     const key = hitKey(hit)
@@ -139,7 +142,7 @@ function InputRow({
         autoFocus
         type="text"
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={e => setQuery(e.target.value)}
         disabled={disabled}
         placeholder="Tìm tên truyện hoặc dán đường dẫn manga"
         className={cn(
@@ -159,14 +162,14 @@ function UrlBadge({ urlMatch }: { urlMatch: ReturnType<typeof matchSource> }) {
     'h-6 px-2 rounded-xs text-xs font-medium pointer-events-none'
   if (urlMatch) {
     return (
-      <span className={cn(base, 'bg-success/15 text-success-text')}>
+      <span className={cn(base, 'bg-success-bg text-success-text')}>
         <CheckCircle2 size={12} />
         {urlMatch.source.manifest.name}
       </span>
     )
   }
   return (
-    <span className={cn(base, 'bg-warning/15 text-warning-text')}>
+    <span className={cn(base, 'bg-warning-bg text-warning-text')}>
       <AlertTriangle size={12} />
       Chưa hỗ trợ
     </span>
@@ -179,7 +182,7 @@ function UrlBadge({ urlMatch }: { urlMatch: ReturnType<typeof matchSource> }) {
 // individual sources for fanout search without leaving the modal.
 function SourceListHint() {
   const sources    = useAllSources()
-  const setEnabled = useSources((s) => s.setEnabled)
+  const setEnabled = useSources(s => s.setEnabled)
 
   if (sources.length === 0) {
     return (
@@ -197,7 +200,7 @@ function SourceListHint() {
         Bấm để bật/tắt nguồn cho fanout search
       </p>
       <ul className="flex flex-wrap gap-2">
-        {sources.map((s) => {
+        {sources.map(s => {
           const searchable = hasSearch(s.manifest)
           const on = s.enabled && searchable
           return (
@@ -215,7 +218,7 @@ function SourceListHint() {
                   !searchable
                     ? 'bg-surface-2 text-text-subtle cursor-not-allowed border border-border-soft opacity-50'
                     : on
-                    ? 'bg-accent/15 text-text border border-accent/30 hover:bg-accent/20 cursor-pointer'
+                    ? 'bg-accent-bg text-text border border-accent-text/30 hover:brightness-110 cursor-pointer'
                     : 'bg-surface-2 text-text-muted border border-border-soft hover:bg-hover hover:text-text cursor-pointer',
                 )}
               >

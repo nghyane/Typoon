@@ -19,17 +19,19 @@ const TOKEN_TTL = 60 * 60 * 24 * 7; // 7 days
 // ── JWT issue (used by auth route) ──────────────────────────────────
 
 export async function issueJwt(
-  userId: number,
-  roles: string[],
-  secret: string,
+  userId:  number,
+  roles:   string[],
+  tier_id: string,
+  secret:  string,
 ): Promise<string> {
   const now     = Math.floor(Date.now() / 1000);
   const payload: JwtPayload = {
-    sub:   String(userId),
-    iss:   ISSUER,
-    iat:   now,
-    exp:   now + TOKEN_TTL,
+    sub:     String(userId),
+    iss:     ISSUER,
+    iat:     now,
+    exp:     now + TOKEN_TTL,
     roles,
+    tier_id,
   };
 
   const key = await importKey(secret, ["sign"]);
@@ -89,6 +91,7 @@ export function requireUser(): MiddlewareHandler<{ Bindings: Env; Variables: Con
     if (payload) {
       ctx.set("userId",   Number(payload.sub));
       ctx.set("jwtRoles", payload.roles);
+      ctx.set("tierId",   payload.tier_id ?? "free");
       return next();
     }
 
@@ -111,8 +114,15 @@ export function requireUser(): MiddlewareHandler<{ Bindings: Env; Variables: Con
         .bind(row.id).run(),
     );
 
+    // API tokens carry their owner's current tier from D1 (no JWT re-issue).
+    const userRow = await ctx.env.DB
+      .prepare(`SELECT tier_id FROM users WHERE id = ?`)
+      .bind(row.user_id)
+      .first<{ tier_id: string }>();
+
     ctx.set("userId",   row.user_id);
     ctx.set("jwtRoles", JSON.parse(row.scopes) as string[]);
+    ctx.set("tierId",   userRow?.tier_id ?? "free");
     return next();
   };
 }

@@ -35,28 +35,27 @@ async function startWorkflow(req: Request, env: PipelineEnv): Promise<Response> 
   try { body = await req.json(); }
   catch (e) { return Response.json({ error: String(e) }, { status: 400 }); }
 
-  const chapter_id = Number(body.chapter_id);
-  const draft_id   = Number(body.draft_id);
-  const { source_lang, target_lang, zip_key, strategy } = body;
+  const job_id = Number(body.job_id);
+  const kind   = body.kind === "analyze" ? "analyze" : "translate";
+  const { source_lang, target_lang, zip_key, strategy, context_in_key } = body;
 
-  if (isNaN(chapter_id) || isNaN(draft_id) || !source_lang || !target_lang) {
-    return Response.json({ error: "chapter_id (number), draft_id (number), source_lang, target_lang required" }, { status: 400 });
+  if (isNaN(job_id) || !source_lang || !target_lang) {
+    return Response.json({ error: "job_id (number), source_lang, target_lang required" }, { status: 400 });
   }
   if (!zip_key) {
     return Response.json({ error: "zip_key required" }, { status: 400 });
   }
 
   const params: PipelineParams = {
-    chapter_id,
-    draft_id,
+    job_id,
+    kind,
     source_lang,
     target_lang,
     zip_key,
     strategy,
+    context_in_key,
   };
 
-  // We can use draft_id or chapter_id as part of the instance ID to avoid duplicate runs,
-  // or let Workflow generate a random unique instance ID. Let's let Workflow generate one.
   const instance = await env.PIPELINE.create({ params });
   return Response.json({ id: instance.id, status: await instance.status() });
 }

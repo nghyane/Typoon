@@ -1,3 +1,23 @@
+# ---------------------------------------------------------------------------
+# Build stage: bunle Python wheel from source (parallel sibling project).
+# Keeping the Rust toolchain out of the final image — only the wheel ships.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS bunle-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN pip install --no-cache-dir maturin
+
+COPY vendor/bunle /src/bunle
+WORKDIR /src/bunle/python
+RUN maturin build --release -o /wheels
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
 FROM python:3.12-slim
 WORKDIR /app
 
@@ -21,6 +41,10 @@ RUN ARCH=$(uname -m) && \
 # To update: maturin build --release --features python (linux/amd64) → copy .whl here.
 COPY container/typoon_render-*.whl .
 RUN pip install --no-cache-dir typoon_render-*.whl
+
+# bunle wheel — built in the bunle-build stage above.
+COPY --from=bunle-build /wheels/bunle-*.whl /tmp/
+RUN pip install --no-cache-dir /tmp/bunle-*.whl && rm -rf /tmp/bunle-*.whl
 
 COPY container/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

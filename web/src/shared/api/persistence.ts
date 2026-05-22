@@ -39,15 +39,13 @@ import type { PersistedClient, Persister } from '@tanstack/react-query-persist-c
  *  `query.queryKey[0]` so adding a new top-level domain requires an
  *  explicit opt-in here. */
 const PERSIST_DOMAINS = new Set<string>([
-  'manifest',
-  'translation',
-  'work',
+  'manifest',   // source-adapter responses (manga catalog, immutable per request)
 ])
 
 
 /** Bump when the persisted-cache shape changes incompatibly. The
  *  persister wipes old blobs that don't match. */
-export const CACHE_BUSTER = 'v2'
+export const CACHE_BUSTER = 'v3.5'
 
 /** Drop persisted entries older than this on hydrate. Manifest data
  *  goes stale fast enough that a day-old snapshot is rarely useful. */

@@ -1,1 +1,0 @@
-{"name":"typoon-pipeline","version":"1.0.0","type":"module","scripts":{"deploy":"wrangler deploy"},"devDependencies":{"wrangler":"^4.92.0"},"dependencies":{"esbuild":"^0.28.0"}}

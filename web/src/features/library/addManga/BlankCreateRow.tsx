@@ -1,13 +1,16 @@
-import { Wand2, Loader2 } from 'lucide-react'
+// BlankCreateRow — fallback CTA at the bottom of the result list.
+//
+// One click creates an empty Work seeded with the query as title and
+// pins it to the library. Cover + sources can be added on the Work
+// hub. Accent palette when results are empty (primary path); neutral
+// otherwise (nudge).
+
+import { Wand2 } from 'lucide-react'
 
 import { cn } from '@shared/lib/cn'
+import { Spinner } from '@shared/ui/primitives'
 
 import type { ImportToLibrary } from './useImportToLibrary'
-
-// Fallback CTA when no source matches the query: one click creates
-// an upload-origin material seeded with the query as title. Cover +
-// chapters happen on the Work hub. Accent palette when results are
-// empty (primary path); neutral when results exist (nudge).
 
 export function BlankCreateRow({
   query, hits, importer,
@@ -23,11 +26,11 @@ export function BlankCreateRow({
       onClick={() => importer.importBlank(seed)}
       disabled={importer.isPending}
       className={cn(
-        'w-full flex items-center gap-2.5 px-3 py-2.5 rounded-md',
+        'w-full flex items-center gap-3 px-3 py-2.5 rounded-md',
         'text-left transition-colors cursor-pointer',
         'disabled:cursor-wait disabled:opacity-60',
         hits === 0
-          ? 'bg-accent/10 border border-accent/20 hover:bg-accent/15'
+          ? 'bg-accent-bg hover:brightness-110'
           : 'bg-surface-2 hover:bg-hover',
       )}
     >
@@ -36,7 +39,7 @@ export function BlankCreateRow({
         hits === 0 ? 'bg-accent text-accent-fg' : 'bg-surface text-text-muted',
       )}>
         {importer.isPending
-          ? <Loader2 size={14} className="animate-spin" />
+          ? <Spinner size={14} />
           : <Wand2 size={14} />
         }
       </span>
@@ -47,7 +50,7 @@ export function BlankCreateRow({
             : (seed ? `Không thấy "${seed}"? Tạo trống`     : 'Tạo manga trống')
           }
         </p>
-        <p className="text-xs text-text-subtle mt-0.5">
+        <p className="text-xs text-text-subtle mt-1">
           Vào trang truyện để tải chương từ file zip/cbz hoặc ảnh.
         </p>
       </div>

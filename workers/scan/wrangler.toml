@@ -16,7 +16,7 @@ new_sqlite_classes = ["ScanContainer"]
 
 [[containers]]
 class_name    = "ScanContainer"
-image         = "registry.cloudflare.com/818e551312970df676abe1a0e61819c7/typoon-scan-scancontainer:probe1779160094"
+image         = "registry.cloudflare.com/818e551312970df676abe1a0e61819c7/typoon-scan-scancontainer:probe1779439701"
 max_instances = 30
 instance_type = "standard-4"
 

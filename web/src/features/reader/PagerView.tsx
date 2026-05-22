@@ -1,90 +1,107 @@
-// PagerView — single-page reader for LTR/RTL directions. One page
-// visible at a time; user advances with tap zones, keyboard, swipe,
-// or the bottom-bar slider.
+// PagerView — single page at a time. Keyboard nav lives here; tap nav
+// lives in `<TapZones>` which the shell mounts as an overlay.
 //
-// Image-fit aware (`width` / `height` / `free`):
-//   - width:  page fits viewport width, scroll vertically inside.
-//             Best for tall manga pages on portrait.
-//   - height: page fits viewport height, scroll horizontally inside
-//             a single page when too wide (spread pages, wide art).
-//   - free:   intrinsic image size, both axes scrollable. Power-user
-//             fallback for zoom.
+// Fit logic (matches legacy reader):
+//   width  — page cap = pageWidth, scroll vertically when taller than viewport
+//   height — page = viewport height (minus pill chrome), horizontal scroll if wider
+//   free   — intrinsic size, both axes scrollable
 //
-// RTL is purely a navigation semantic (tap-zone wiring) — the image
-// itself is not mirrored. Same applies to keyboard: parent owns the
-// directional callbacks.
+// Keyboard:
+//   ← / PageUp           prev page (rtl: next)
+//   → / PageDown / Space next page (rtl: prev)
+//   Home / End            first / last
 
-import { PageImage } from './PageImage'
-import { LazyPageImage } from './LazyPageImage'
-import { useReaderSettings } from './store'
-import { cn } from '@shared/lib/cn'
-import type { ReaderPage } from './types'
-import type { InstalledSource } from '@features/browse/manifest/types'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { PageRenderer } from './PageRenderer'
+import { useReader } from './ReaderContext'
+import { useReaderSettings } from './settings'
+import type { ReaderSource } from './sources'
 
 
 interface Props {
-  pages:    ReaderPage[]
-  urls?:    ReadonlyMap<number, string>
-  /** Raw source for lazy token resolution. Set when pages carry tokens. */
-  rawSource?: InstalledSource
-  page:     number
-  /** Triggered when the user attempts to advance past the last page.
-   *  Caller surfaces the end-of-chapter card. */
-  onPastEnd?: () => void
+  source:       ReaderSource
+  sourceKey:    string
+  pageIndex:    number
+  onChangePage: (next: number) => void
+  /** Read direction — 'rtl' for manga, 'ltr' for manhua/comics. */
+  direction?:   'ltr' | 'rtl'
 }
 
+export function PagerView({
+  source, sourceKey, pageIndex, onChangePage, direction = 'rtl',
+}: Props) {
+  const { pageWidth } = useReaderSettings()
+  const { setProgress } = useReader()
+  const max = source.pageCount - 1
+  const scrollRef = useRef<HTMLDivElement>(null)
 
-export function PagerView({ pages, urls, rawSource, page, onPastEnd }: Props) {
-  const { pageWidth, imageFit } = useReaderSettings()
+  // Pager progress = current page / pageCount.
+  useEffect(() => {
+    if (source.pageCount > 0) {
+      setProgress((pageIndex + 1) / source.pageCount)
+    }
+  }, [pageIndex, source.pageCount, setProgress])
 
-  const total = pages.length
-  if (total === 0) return null
-  const safe = Math.min(Math.max(0, page), total - 1)
-  const p    = pages[safe]!
+  // Reset outer scroll on source change so the new chapter starts at
+  // the top, not inheriting the previous chapter's vertical offset.
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [sourceKey])
 
-  // Container sizing per fit mode. `width` constrains the page-image
-  // wrapper to `pageWidth`; `height` constrains to viewport height;
-  // `free` removes both constraints. Wrapping in a flex centre so
-  // the page is always visually anchored regardless of fit.
-  const wrapperStyle: React.CSSProperties =
-    imageFit === 'width'
-      ? { maxWidth: pageWidth, margin: '0 auto' }
-    : imageFit === 'height'
-      ? {
-          // Subtract the floating-pill safe gap. The pill is
-          // ~3.5rem tall + safe-area; using `100dvh` plus a fixed
-          // 64px subtraction keeps the page centred in the visible
-          // area without overlap on mobile DA.
-          maxHeight: 'calc(100dvh - 64px)',
-          width: 'auto',
-          margin: '0 auto',
-        }
-    : { margin: '0 auto' }   // free
+  // Also reset whenever the page index goes back to 0 (chapter reset
+  // signal from the shell). Without this, tap-prev on page 0 within
+  // the same chapter wouldn't take the reader back to the page top.
+  useEffect(() => {
+    if (pageIndex === 0 && scrollRef.current) {
+      scrollRef.current.scrollTop = 0
+    }
+  }, [pageIndex])
+
+  const clamp = useCallback((n: number) => Math.max(0, Math.min(max, n)), [max])
+
+  const prev = useCallback(() => onChangePage(clamp(pageIndex - 1)), [pageIndex, clamp, onChangePage])
+  const next = useCallback(() => onChangePage(clamp(pageIndex + 1)), [pageIndex, clamp, onChangePage])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement)    return
+      if (e.target instanceof HTMLTextAreaElement) return
+      switch (e.key) {
+        case 'ArrowLeft':
+        case 'PageUp':
+          e.preventDefault()
+          direction === 'rtl' ? next() : prev()
+          return
+        case 'ArrowRight':
+        case 'PageDown':
+        case ' ':
+          e.preventDefault()
+          direction === 'rtl' ? prev() : next()
+          return
+        case 'Home': e.preventDefault(); onChangePage(0);   return
+        case 'End':  e.preventDefault(); onChangePage(max); return
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [direction, prev, next, onChangePage, max])
+
+  // All pager styles use width-fit with a max cap. The image scrolls
+  // vertically inside the wrapper when taller than the viewport.
+  const wrapperStyle: React.CSSProperties = {
+    maxWidth: pageWidth,
+    margin:   '0 auto',
+  }
 
   return (
-    <div
-      className={cn(
-        'flex justify-center',
-        // Vertical scroll inside the wrapper when image is taller
-        // than the viewport. Horizontal scroll handled by the inner
-        // page wrapper when `height` fit produces a wide spread.
-        imageFit === 'height' ? 'overflow-x-auto' : '',
-      )}
-      onClick={(e) => {
-        // Detect past-end intent on the last page: a tap that comes
-        // in via parent gestures already routes through tap zones,
-        // so this handler is purely the fallback for keyboard-only
-        // navigation that arrived here without going through zones.
-        if (safe >= total - 1 && e.detail === 0) {
-          onPastEnd?.()
-        }
-      }}
-    >
+    <div ref={scrollRef} className="w-full h-full overflow-y-auto bg-bg">
       <div style={wrapperStyle}>
-        {p.token && rawSource
-          ? <LazyPageImage page={p} source={rawSource} inWindow />
-          : <PageImage page={p} src={urls?.get(p.index) ?? p.url} inWindow />
-        }
+        <PageRenderer
+          source={source}
+          sourceKey={sourceKey}
+          index={pageIndex}
+          className="w-full h-auto"
+        />
       </div>
     </div>
   )

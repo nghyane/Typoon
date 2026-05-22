@@ -3,7 +3,7 @@
  *
  *   POST /translate
  *     body (JSON): {
- *       chapter_id:   number,
+ *       job_id:   number,
  *       source_lang:  string,
  *       target_lang:  string,
  *       brief?:       string,                       // optional context block
@@ -115,7 +115,7 @@ export class TranslateService extends WorkerEntrypoint<Env> {
    * context block and the model relies on bubble proximity only.
    */
   async translateChapter(args: {
-    chapter_id:   number;
+    job_id:   number;
     scan_keys:    string[];          // one key per page, in page order
     source_lang:  string;
     target_lang:  string;
@@ -137,7 +137,7 @@ export class TranslateService extends WorkerEntrypoint<Env> {
     //    still translates, just without context hints.
     const useBrief = args.use_brief !== false;
     const [brief, scanResults] = await Promise.all([
-      useBrief ? loadBrief(this.env.R2, args.chapter_id) : Promise.resolve(null),
+      useBrief ? loadBrief(this.env.R2, args.job_id) : Promise.resolve(null),
       Promise.all(args.scan_keys.map(k => getBytes(this.env.R2, k).then(b => decodeMsgpack<ScanPageResult>(b)))),
     ]);
 
@@ -153,7 +153,7 @@ export class TranslateService extends WorkerEntrypoint<Env> {
       const groups = sp.groups.slice().sort((a, b) => a.idx - b.idx);
       for (const g of groups) {
         const key = assignKey(
-          { chapter_id: args.chapter_id, page_index: sp.page_index, idx: g.idx },
+          { job_id: args.job_id, page_index: sp.page_index, idx: g.idx },
           usedKeys,
         );
         const w = g.bbox[2] - g.bbox[0];
@@ -175,9 +175,9 @@ export class TranslateService extends WorkerEntrypoint<Env> {
 
     if (orderedKeys.length === 0) {
       const empty: TranslateResult = {
-        chapter_id: args.chapter_id, translations: [], missing: [], windows: [],
+        job_id: args.job_id, translations: [], missing: [], windows: [],
       };
-      const ok = r2keys.translate(String(args.chapter_id));
+      const ok = r2keys.translate(String(args.job_id));
       await putJson(this.env.R2, ok, empty);
       return { output_key: ok, translations: 0, missing: 0 };
     }
@@ -294,13 +294,13 @@ export class TranslateService extends WorkerEntrypoint<Env> {
     }
 
     const result: TranslateResult = {
-      chapter_id:   args.chapter_id,
+      job_id:   args.job_id,
       translations,
       missing:      stillMissing,
       windows:      windowMetas,
       errors:       windowErrors.length ? windowErrors : undefined,
     };
-    const ok = r2keys.translate(String(args.chapter_id));
+    const ok = r2keys.translate(String(args.job_id));
     await putJson(this.env.R2, ok, result);
 
     return {

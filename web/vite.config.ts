@@ -19,7 +19,7 @@ const root = fileURLToPath(new URL('.', import.meta.url))
 // cross-origin from any localhost dev URL.
 export default defineConfig(({ mode }) => {
   const env    = loadEnv(mode, process.cwd(), '')
-  const target = env.VITE_PUBLIC_BASE_URL || 'http://localhost:8000'
+  const target = env.VITE_PUBLIC_BASE_URL || 'http://localhost:8787'
 
   return {
     plugins: [
@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api':   { target, changeOrigin: true },
+        '/cdn':   { target, changeOrigin: true },
         '/files': { target, changeOrigin: true },
       },
     },

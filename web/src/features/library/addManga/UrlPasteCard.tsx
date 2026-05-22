@@ -1,15 +1,24 @@
+// UrlPasteCard — auto-resolves a pasted URL to its source detail
+// then imports without a confirm step.
+//
+// Three states:
+//   • no match              → "Tạo trống thay" fallback
+//   • match + loading       → spinner card while fetchMangaDetail runs
+//   • match + fetch error   → error card, user clears the input
+//
+// On detail-fetch success we forge a SearchHit and call importHit
+// directly; the modal closes via the importer's onSuccess.
+
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Loader2, Wand2 } from 'lucide-react'
+import { AlertTriangle, Wand2 } from 'lucide-react'
 
 import { fetchMangaDetail } from '@features/browse/manifest/runtime'
+import { Button } from '@shared/ui/Button'
+import { Spinner } from '@shared/ui/primitives'
 
 import type { matchSource } from './parseUrl'
 import type { ImportToLibrary } from './useImportToLibrary'
 
-// Three states for a URL paste: match+loading, match+error, no-match.
-// On detail-fetch success we forge a SearchHit and call importHit
-// directly; the modal closes via the importer's onSuccess. No
-// confirm step.
 
 export function UrlPasteCard({
   url, match, importer,
@@ -30,23 +39,23 @@ function UnsupportedUrlCard({
   importer: ImportToLibrary
 }) {
   return (
-    <div className="rounded-md bg-warning/10 border border-warning/20 px-4 py-3">
-      <div className="flex items-start gap-2.5">
+    <div className="rounded-md bg-warning-bg border border-warning-text/20 px-4 py-3">
+      <div className="flex items-start gap-3">
         <AlertTriangle size={14} className="text-warning-text shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
           <p className="text-sm text-text">Không có nguồn quản lý site này</p>
-          <p className="text-xs text-text-subtle mt-0.5 break-all line-clamp-2">
+          <p className="text-xs text-text-subtle mt-1 break-all line-clamp-2">
             {url}
           </p>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => importer.importBlank('')}
             disabled={importer.isPending}
-            className="mt-2.5 inline-flex items-center gap-2 h-7 px-2.5 rounded-sm bg-surface-2 text-xs text-text hover:bg-hover cursor-pointer transition-colors disabled:cursor-wait disabled:opacity-60"
+            className="mt-3"
           >
-            <Wand2 size={12} />
-            Tạo trống thay
-          </button>
+            <Wand2 size={14} /> Tạo trống thay
+          </Button>
         </div>
       </div>
     </div>
@@ -72,9 +81,9 @@ function MatchedUrlCard({
         if (ctrl.signal.aborted) return
         // Forge a SearchHit from the URL match so the same importer
         // path covers both flows. The "manga snapshot" carries only
-        // url + title + cover (the MangaSummary contract). All
-        // language / status / author resolution happens inside
-        // `importHit` from the resolved `detail` we pass alongside.
+        // url + title + cover (the MangaSummary contract). Detail
+        // resolution happens inside `importHit` from the resolved
+        // `detail` we pass alongside.
         importer.importHit({
           hit: {
             source,
@@ -84,9 +93,6 @@ function MatchedUrlCard({
               title: d.title,
               cover: d.cover,
             },
-            // Score doesn't apply to URL-paste flow (we already
-            // resolved the canonical row); use 1.0 so any consumer
-            // that reads it sees a "100% match" rather than 0.
             score: 1,
           },
           detail: d,
@@ -101,27 +107,27 @@ function MatchedUrlCard({
 
   if (err) {
     return (
-      <div className="rounded-md bg-error/10 border border-error/20 px-4 py-3">
-        <div className="flex items-start gap-2.5">
+      <div className="rounded-md bg-error-bg border border-error-text/20 px-4 py-3">
+        <div className="flex items-start gap-3">
           <AlertTriangle size={14} className="text-error-text shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <p className="text-sm text-text">Không tải được từ {manifest.name}</p>
-            <p className="text-xs text-error-text mt-0.5 line-clamp-2">{err}</p>
+            <p className="text-xs text-error-text mt-1 line-clamp-2">{err}</p>
           </div>
         </div>
       </div>
     )
   }
   return (
-    <div className="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-2.5">
-      <Loader2 size={14} className="text-info-text animate-spin shrink-0" />
+    <div className="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-3">
+      <Spinner size={14} className="text-info-text shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm text-text">
           {importer.isPending
             ? 'Đang thêm vào thư viện…'
             : `Đang tải từ ${manifest.name}…`}
         </p>
-        <p className="text-xs text-text-subtle truncate mt-0.5">{upstreamRef}</p>
+        <p className="text-xs text-text-subtle truncate mt-1">{upstreamRef}</p>
       </div>
     </div>
   )

@@ -10,7 +10,7 @@
 
 import { Container, getRandom } from "@cloudflare/containers";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { PreparedChapterMeta } from "@typoon/shared";
+import type { PreparedJobMeta } from "@typoon/shared";
 
 interface Env {
   MEDIA_CONTAINER:      DurableObjectNamespace<MediaContainer>;
@@ -40,16 +40,16 @@ export class MediaService extends WorkerEntrypoint<Env> {
   }
 
   async prepareChapter(args: {
-    chapter_id: number;
+    job_id: number;
     zip_key:    string;
     strategy?:  "auto" | "one_to_one" | "stitch";
-  }): Promise<PreparedChapterMeta> {
+  }): Promise<PreparedJobMeta> {
     const stub = await this.stub();
 
     // Container reads ZIP directly from R2 via FUSE mount.
     // zip_key is passed so container knows the R2 path.
     const url = new URL("http://container/prepare");
-    url.searchParams.set("chapter_id", String(args.chapter_id));
+    url.searchParams.set("job_id", String(args.job_id));
     url.searchParams.set("strategy",   args.strategy ?? "auto");
     url.searchParams.set("zip_key",    args.zip_key);
 
@@ -59,11 +59,11 @@ export class MediaService extends WorkerEntrypoint<Env> {
       body:    "{}",
     });
     if (!resp.ok) throw new Error(`media /prepare ${resp.status}: ${await resp.text()}`);
-    return resp.json() as Promise<PreparedChapterMeta>;
+    return resp.json() as Promise<PreparedJobMeta>;
   }
 
   async buildStoryboard(args: {
-    chapter_id: number;
+    job_id: number;
     pages:      { index: number; width: number; height: number }[];
   }): Promise<{ storyboard_keys: string[] }> {
     const stub = await this.stub();
@@ -77,7 +77,7 @@ export class MediaService extends WorkerEntrypoint<Env> {
   }
 
   async packChapter(args: {
-    chapter_id:  number;
+    job_id:  number;
     page_keys:   string[];
     output_key?: string;
   }): Promise<{ output_key: string; size_bytes: number; pages: number }> {
@@ -87,7 +87,7 @@ export class MediaService extends WorkerEntrypoint<Env> {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chapter_id:   args.chapter_id,
+        job_id:   args.job_id,
         typeset_keys: args.page_keys,
       }),
     });
@@ -122,6 +122,23 @@ export default {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body,
+      });
+      const text = await resp.text();
+      return new Response(text, { status: resp.status, headers: { "Content-Type": "application/json" } });
+    }
+
+    // Debug: POST /debug-prepare?job_id=&zip_key=&strategy= → return full
+    // container stdout + body so we can see Python tracebacks without
+    // chasing wrangler tail.
+    if (url.pathname === "/debug-prepare" && req.method === "POST") {
+      const max  = parseInt(env.MAX_INSTANCES ?? "2", 10);
+      const stub = await getRandom(env.MEDIA_CONTAINER, max);
+      const inner = new URL("http://container/prepare");
+      for (const [k, v] of url.searchParams) inner.searchParams.set(k, v);
+      const resp = await stub.containerFetch(inner.toString(), {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    "{}",
       });
       const text = await resp.text();
       return new Response(text, { status: resp.status, headers: { "Content-Type": "application/json" } });

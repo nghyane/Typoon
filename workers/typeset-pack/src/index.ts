@@ -31,7 +31,7 @@ export class TypesetPackContainer extends Container<Env> {
 }
 
 export interface TypesetPackArgs {
-  chapter_id:    number;
+  job_id:    number;
   pages:         { page_index: number; inpaint_key: string; scan_key: string; page_width: number }[];
   translate_key: string;
 }

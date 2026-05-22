@@ -5,7 +5,6 @@ import {
   ChevronLeft, ChevronRight, Home, Library, Compass, Settings, Shield,
   type LucideIcon,
 } from 'lucide-react'
-import { SidebarQuota } from './SidebarQuota'
 import { useSession } from '@features/auth/session'
 import { BRAND } from '../shared/brand'
 import { useState } from 'react'
@@ -177,7 +176,6 @@ export function Sidebar() {
 
       {/* footer: quota + secondary nav */}
       <div className="px-2 pb-2 pt-2 flex flex-col gap-0.5">
-        <SidebarQuota collapsed={collapsed} />
         {navFoot.map(renderLink)}
       </div>
     </aside>

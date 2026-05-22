@@ -1,139 +1,137 @@
-// StripView — vertical strip (TTB direction). Webtoon / continuous
-// reading. Each page is a slot that reserves its aspect ratio so
-// the layout never jumps; only slots within the viewport ± buffer
-// mount their <img> via IntersectionObserver.
+// StripView — vertical scroll, all pages stacked.
 //
-// Settings-aware: respects `pageWidth`, `pageGap`, `stripMargin` so
-// the user can tune density without prop drilling through every
-// page. The wrapper width is the slider's source of truth — page
-// images use `width: 100%` to follow it.
+// Uses `@tanstack/react-virtual` so a 200-page chapter doesn't mount
+// 200 <img> nodes at once. Each item reserves layout space via the BNL
+// index's known dimensions (or a fallback aspect ratio for raw streams).
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 
-import { PageImage } from './PageImage'
-import { LazyPageImage } from './LazyPageImage'
-import { useReaderSettings } from './store'
-import type { ReaderPage } from './types'
-import type { InstalledSource } from '@features/browse/manifest/types'
+import { PageRenderer } from './PageRenderer'
+import { useReaderSettings } from './settings'
+import type { ReaderSource } from './sources'
 
+import { useReader } from './ReaderContext'
+
+const DEFAULT_ASPECT = 1.5    // h:w fallback for unknown dimensions
 
 interface Props {
-  pages: ReaderPage[]
-  urls?: ReadonlyMap<number, string>
-  /** Raw source for lazy token resolution. Set when pages carry tokens. */
-  rawSource?: InstalledSource
-  /** Notified when the topmost intersecting page changes. Drives
-   *  the page slider and resume-position writer. */
-  onVisiblePageChange?: (index: number) => void
-  /** Rendered after the last page slot. Reader uses this slot to
-   *  inject the end-of-chapter CTA card. */
-  endSlot?: React.ReactNode
+  source:           ReaderSource
+  sourceKey:        string
+  /** Current page (best-effort — strip mode tracks via scroll). */
+  pageIndex:        number
+  onChangePage:     (next: number) => void
 }
 
+export function StripView({ source, sourceKey, pageIndex, onChangePage }: Props) {
+  const { toggleChrome, setProgress } = useReader()
+  const { pageWidth } = useReaderSettings()
+  const pageGap = 8
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
-const BUFFER = 3   // slots above + below the viewport that pre-mount <img>
+  const virtualizer = useVirtualizer({
+    count:           source.pageCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize:    (index) => {
+      const page = source.pages[index]
+      const cap  = scrollRef.current
+        ? Math.min(scrollRef.current.clientWidth, pageWidth)
+        : pageWidth
+      if (!page?.width || !page?.height) return cap * DEFAULT_ASPECT + pageGap
+      return cap * (page.height / page.width) + pageGap
+    },
+    overscan:        2,
+  })
 
-
-export function StripView({
-  pages, urls, rawSource, onVisiblePageChange, endSlot,
-}: Props) {
-  const { pageWidth, pageGap, stripMargin } = useReaderSettings()
-
-  const refs = useRef<Array<HTMLDivElement | null>>([])
-
-  // Stable key that changes whenever the page list is replaced.
-  // Keying on indices (not just length) catches chapter switches that
-  // happen to have the same number of pages — otherwise the IO effect
-  // wouldn't re-attach and stale `visible` indices would survive into
-  // the new chapter.
-  const pagesKey = pages.map((p) => p.index).join(',')
-
-  const [visible, setVisible] = useState<Set<number>>(() => new Set([0, 1, 2]))
-
-  // Reset to the first few slots synchronously before the browser
-  // paints whenever the chapter changes, so the strip always starts
-  // at the top and never shows stale page indices from a previous chapter.
+  // Hard reset scroll position on every source change BEFORE paint.
+  // The route remounts ReaderBody when chapter switches, but the
+  // scroll container's `scrollTop` may inherit the previous chapter's
+  // value because browsers restore scroll on identical layout. The
+  // virtualizer's `scrollToIndex` runs AFTER paint, so a layout
+  // effect that hard-zeros scrollTop wins the race.
   useLayoutEffect(() => {
-    setVisible(new Set([0, 1, 2]))
-  // pagesKey is the only trigger — exhaustive-deps would want pages
-  // which is referentially new every render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pagesKey])
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [sourceKey])
 
+  // Sync intent → scroll (e.g. coming back from another route via
+  // pageIndex > 0). Runs after the layout reset above.
   useEffect(() => {
-    const io = new IntersectionObserver(
-      (entries) => {
-        setVisible((prev) => {
-          const next = new Set(prev)
-          let dirty = false
-          for (const e of entries) {
-            const i = Number((e.target as HTMLElement).dataset.idx)
-            if (e.isIntersecting) {
-              if (!next.has(i)) { next.add(i); dirty = true }
-            } else {
-              if (next.has(i))  { next.delete(i); dirty = true }
-            }
-          }
-          return dirty ? next : prev
-        })
-      },
-      // 150% gives ~1–1.5 screen of pre-load buffer without firing
-      // all slots at once on chapters whose pages have no aspect ratio
-      // (raw pages without width/height start at height 0, so 200%
-      // would make every slot intersect immediately and mount all images).
-      { rootMargin: '150% 0px' },
-    )
-    for (const el of refs.current) if (el) io.observe(el)
-    return () => io.disconnect()
-  // Re-attach whenever the page list identity changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pagesKey])
-
-  // Expand visible with neighbours so a slot just past the IO root
-  // margin still mounts when its neighbour scrolls in.
-  const window = useMemo(() => {
-    const w = new Set<number>()
-    for (const i of visible) {
-      for (let k = i - BUFFER; k <= i + BUFFER; k++) {
-        if (k >= 0 && k < pages.length) w.add(k)
-      }
+    if (pageIndex > 0 && pageIndex < source.pageCount) {
+      virtualizer.scrollToIndex(pageIndex, { align: 'start', behavior: 'auto' })
     }
-    return w
-  }, [visible, pages.length])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source])  // re-run on source change only
 
-  const topVisible = useMemo(() => {
-    let min = Infinity
-    for (const i of visible) if (i < min) min = i
-    return Number.isFinite(min) ? min : 0
-  }, [visible])
-
+  // Sync scroll → pageIndex
   useEffect(() => {
-    onVisiblePageChange?.(topVisible)
-  }, [topVisible, onVisiblePageChange])
+    const el = scrollRef.current
+    if (!el) return
+    let raf = 0
+    const onScroll = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        const items = virtualizer.getVirtualItems()
+        const top   = el.scrollTop
+        const max   = el.scrollHeight - el.clientHeight
+        const pct   = max > 0 ? Math.min(1, top / max) : 0
+        setProgress(pct)
+        // Page whose midpoint is closest to viewport center.
+        const center = top + el.clientHeight / 2
+        let best = 0, bestDist = Infinity
+        for (const v of items) {
+          const mid = v.start + v.size / 2
+          const dist = Math.abs(mid - center)
+          if (dist < bestDist) { bestDist = dist; best = v.index }
+        }
+        if (best !== pageIndex) onChangePage(best)
+      })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => { el.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf) }
+  }, [virtualizer, pageIndex, onChangePage, setProgress])
 
   return (
     <div
-      className="mx-auto"
-      style={{
-        maxWidth: pageWidth,
-        paddingTop: stripMargin,
-        paddingBottom: stripMargin,
+      ref={scrollRef}
+      className="w-full h-full overflow-y-auto overflow-x-hidden bg-bg"
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect()
+        const xPct = (e.clientX - rect.left) / rect.width
+        if (xPct > 0.33 && xPct < 0.66) toggleChrome()
       }}
     >
-      {pages.map((p, i) => (
-        <div
-          key={p.index}
-          ref={(el) => { refs.current[i] = el }}
-          data-idx={i}
-          style={i < pages.length - 1 ? { marginBottom: pageGap } : undefined}
-        >
-          {p.token && rawSource
-            ? <LazyPageImage page={p} source={rawSource} inWindow={window.has(i)} />
-            : <PageImage page={p} src={urls?.get(p.index) ?? p.url} inWindow={window.has(i)} />
-          }
-        </div>
-      ))}
-      {endSlot}
+      <div
+        style={{
+          height:   `${virtualizer.getTotalSize()}px`,
+          position: 'relative',
+          width:    '100%',
+          maxWidth: `${pageWidth}px`,
+          margin:   '0 auto',
+        }}
+      >
+        {virtualizer.getVirtualItems().map(item => (
+          <div
+            key={item.key}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            style={{
+              position:     'absolute',
+              top:          0,
+              left:         0,
+              width:        '100%',
+              paddingBottom: `${pageGap}px`,
+              transform:    `translateY(${item.start}px)`,
+            }}
+          >
+            <PageRenderer
+              source={source}
+              sourceKey={sourceKey}
+              index={item.index}
+              className="w-full"
+            />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

@@ -7,9 +7,6 @@
  *
  * Patterns live in noise_terms.txt (same file the Python pipeline uses).
  * Bundled as raw text via esbuild loader.
- *
- * `stripNoiseTokens(text)` removes inline noise tokens (domains, logo
- * emoji, scanlation tags) from otherwise-valid dialogue.
  */
 
 // @ts-ignore — esbuild text loader
@@ -17,11 +14,8 @@ import NOISE_TERMS_TXT from "./noise_terms.txt";
 
 // Pure punctuation/digit rubble (no letters in any script).
 // \W in JS is ASCII-only — needs explicit Unicode-aware exclusion of letters.
-const OCR_NOISE_RE      = /^[^\p{L}]+$/u;
-const INLINE_DOMAIN_RE  = /\b[a-z0-9][a-z0-9.\-]{1,30}\.(?:co|com|net|org|io|to|me|xyz|info|live|app|tw|hk|cn)(?:\/\S*)?\b/gi;
-const LOGO_EMOJI_RE     = /(?<![^\s！？。，、])[\u{1F300}-\u{1F9FF}](?![^\s！？。，、])/gu;
-const CREDIT_TAG_RE     = /[\[《«【「\(]\s*[a-z0-9][a-z0-9\s.\-]{1,30}\s*[\]》»】」\)]/gi;
-const CURRENCY_CHARS    = new Set(":/%$¥₩€£".split(""));
+const OCR_NOISE_RE   = /^[^\p{L}]+$/u;
+const CURRENCY_CHARS = new Set(":/%$¥₩€£".split(""));
 
 let cachedPatterns: RegExp[] | null = null;
 function noisePatterns(): RegExp[] {
@@ -60,12 +54,4 @@ export function isAutoSkip(text: string): boolean {
   }
   for (const pat of noisePatterns()) if (fullmatch(pat, s)) return true;
   return false;
-}
-
-export function stripNoiseTokens(text: string): string {
-  let s = text.replace(INLINE_DOMAIN_RE, "");
-  s = s.replace(LOGO_EMOJI_RE, "");
-  s = s.replace(CREDIT_TAG_RE, "");
-  s = s.replace(/[ \t]{2,}/g, " ");
-  return s.trim();
 }

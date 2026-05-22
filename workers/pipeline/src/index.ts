@@ -1,14 +1,13 @@
 /** typoon-pipeline — entry point.
  *
- *   default fetch()           → HTTP control surface (start/status)
- *   class ChapterPipeline     → WorkflowEntrypoint (binding "PIPELINE")
- *   class FanInCounterDO      → DurableObject (binding "FAN_IN")
- *   class PipelineNotifier    → WorkerEntrypoint exposed to scan/inpaint
- *                                queue consumers via service binding.
+ *   default fetch()        → HTTP control surface (start/status)
+ *   class ChapterPipeline  → WorkflowEntrypoint (binding "PIPELINE")
+ *
+ * No DOs, no queue producer, no custom RPC entrypoints beyond the workflow
+ * itself. Coordination across pages is `Promise.all` over `step.do` inside
+ * `ChapterPipeline.run` — see pipeline.ts.
  */
 
-export { FanInCounterDO } from "./fan-in";
-export { PipelineNotifier } from "./notifier";
 export { ChapterPipeline, type PipelineEnv } from "./pipeline";
 
 import { handleHttp } from "./http";

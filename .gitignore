@@ -51,16 +51,16 @@ ext/*.zip
 # Workspace packages
 packages/*/node_modules/
 
-# Spike Cloudflare Workers — track source, ignore deps + build artifacts + binaries
-spike/node_modules/
-spike/*/node_modules/
-spike/.wrangler/
-spike/*/.wrangler/
-spike/*/dist/
-spike/*/container/__pycache__/
-# Model + wasm artifacts are downloaded/built per spike (see each README)
-spike/*/container/*.onnx
-spike/*/container/*.bin
-spike/*/container/*.safetensors
-spike/*/src/*.wasm
-spike/*/src/*.wasm.gz
+# Workers — local dev artifacts (each worker has its own node_modules + .wrangler)
+workers/*/node_modules/
+workers/*/.wrangler/
+workers/*/dist/
+workers/*/container/__pycache__/
+workers/*/container/.wrangler/
+workers/api/.dev.vars
+workers/api/r2-cors.json
+workers/api/schema-drop.sql
+workers/api/worker-configuration.d.ts
+# Build outputs that aren't checked in
+workers/*/src/*.wasm
+workers/*/src/*.wasm.gz

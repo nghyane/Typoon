@@ -2,9 +2,9 @@
  * Opaque translation key generation — port of typoon/stages/keys.py.
  *
  * Key is the single identity for LLM communication. Stable across runs
- * (same chapter_id + page + idx → same key) but unguessable.
+ * (same job_id + page + idx → same key) but unguessable.
  *
- *   payload = JSON({chapter_id, page, idx, salt}, sort_keys=true)
+ *   payload = JSON({job_id, page, idx, salt}, sort_keys=true)
  *   raw     = utf8(payload)
  *   n       = blake2s(raw, 5 bytes).int_be
  *   key     = base32-of-(ABCDEFGHJKLMNPQRSTUVWXYZ23456789) — 7 chars
@@ -20,7 +20,7 @@
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export interface BubbleKeyArgs {
-  chapter_id: number | string;
+  job_id:     number | string;
   page_index: number;
   idx:        number;
 }
@@ -39,8 +39,8 @@ export function assignKey(args: BubbleKeyArgs, used: Set<string>): string {
 
 function makeKey(args: BubbleKeyArgs, salt: number): string {
   // Match Python: json.dumps(payload, sort_keys=True, ensure_ascii=False)
-  // ⇒ keys alphabetically: chapter_id, idx, page, salt
-  const payload = `{"chapter_id": ${jsonNum(args.chapter_id)}, "idx": ${args.idx}, "page": ${args.page_index}, "salt": ${salt}}`;
+  // ⇒ keys alphabetically: idx, job_id, page, salt
+  const payload = `{"idx": ${args.idx}, "job_id": ${jsonNum(args.job_id)}, "page": ${args.page_index}, "salt": ${salt}}`;
   const raw = new TextEncoder().encode(payload);
   const digest = blake2s(raw, 5);  // 5 bytes
   let n = 0n;
@@ -57,7 +57,7 @@ function makeKey(args: BubbleKeyArgs, salt: number): string {
 
 function jsonNum(v: number | string): string {
   if (typeof v === "number") return String(v);
-  // Python json.dumps wraps strings in quotes; chapter_id is an int in the
+  // Python json.dumps wraps strings in quotes; job_id is an int in the
   // Python pipeline, but tolerate string IDs here for the worker spike.
   return JSON.stringify(v);
 }

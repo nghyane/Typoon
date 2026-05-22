@@ -2,7 +2,7 @@
 
 POST /typeset-pack
   Body: JSON {
-    chapter_id: str,
+    job_id: str,
     pages: [{ page_index, inpaint_key, scan_key, page_width }],
     translate_key: str,
   }
@@ -14,7 +14,7 @@ No Node.js, no subprocess. Direct Python → Rust → numpy → Pillow → BNL.
 
 from __future__ import annotations
 
-import io, json, os, struct, time, asyncio, logging
+import io, json, os, time, asyncio, logging
 from pathlib import Path
 
 import numpy as np
@@ -25,14 +25,15 @@ import msgpack
 
 # PyO3 render binding — built from crates/render with feature=python
 import typoon_render
+# Bunle archive packer — sibling project at /Users/nghiahoang/Dev/bunle.
+# Wheel is built in the Dockerfile's `bunle-build` stage from vendor/bunle/.
+import bunle
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("typeset-pack")
 
 R2_MOUNT  = Path(os.environ.get("R2_MOUNT", "/mnt/r2"))
 JPEG_Q    = 92
-BNL_MAGIC = b"MCZ\x01"
-FORMAT_JPEG = 1
 
 app = FastAPI()
 
@@ -54,17 +55,14 @@ def r2_write(key: str, data: bytes) -> None:
 
 
 # ── BNL builder ───────────────────────────────────────────────────────────────
+# Single source of truth for the wire format is the bunle crate. We pass
+# already-encoded JPEG bytes; bunle handles header + index + RIFF/WebP cover.
 
 def build_bnl(pages: list[tuple[bytes, int, int]]) -> bytes:
-    n, offset, entries = len(pages), 0, []
-    for jpeg, w, h in pages:
-        entries.append((offset, len(jpeg), w, h)); offset += len(jpeg)
-    buf = bytearray(BNL_MAGIC + struct.pack("<BBH", 1, 0, n))
-    for off, sz, w, h in entries:
-        buf += struct.pack("<IIHHB3x", off, sz, w, h, FORMAT_JPEG)
-    for jpeg, _, _ in pages:
-        buf += jpeg
-    return bytes(buf)
+    return bunle.pack_bytes(
+        [(jpeg, int(w), int(h), "jpeg") for jpeg, w, h in pages],
+        cover=True,
+    )
 
 
 # ── Per-page render ───────────────────────────────────────────────────────────
@@ -112,14 +110,14 @@ def _render_page(
 @app.post("/typeset-pack")
 async def typeset_pack(req: Request):
     body          = await req.json()
-    chapter_id    = body.get("chapter_id")
+    job_id    = body.get("job_id")
     pages         = body.get("pages", [])
     translate_key = body.get("translate_key")
-    if not chapter_id:    raise HTTPException(400, "chapter_id required")
+    if not job_id:    raise HTTPException(400, "job_id required")
     if not pages:         raise HTTPException(400, "pages required")
     if not translate_key: raise HTTPException(400, "translate_key required")
 
-    log.info("typeset-pack chapter=%s pages=%d", chapter_id, len(pages))
+    log.info("typeset-pack chapter=%s pages=%d", job_id, len(pages))
     t0 = time.perf_counter()
 
     translate = json.loads(r2_read(translate_key))
@@ -139,12 +137,12 @@ async def typeset_pack(req: Request):
     ])
 
     bnl     = build_bnl(list(results))
-    bnl_key = f"render/{chapter_id}.bnl"
+    bnl_key = f"render/{job_id}.bnl"
     await asyncio.to_thread(r2_write, bnl_key, bnl)
 
     total_ms = round((time.perf_counter() - t0) * 1000)
     log.info("done chapter=%s %d pages %dms %dKB",
-             chapter_id, len(pages), total_ms, len(bnl) // 1024)
+             job_id, len(pages), total_ms, len(bnl) // 1024)
 
     return JSONResponse({
         "archive_key": bnl_key,

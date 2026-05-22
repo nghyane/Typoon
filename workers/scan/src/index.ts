@@ -31,8 +31,7 @@ export class ScanContainer extends Container<Env> {
 }
 
 export interface ScanChapterArgs {
-  chapter_id:   number;
-  workflow_id:  string;
+  job_id:       number;
   pages:        { page_index: number; prepared_key: string; is_color: boolean }[];
   lang_hint?:   string;
   total_pages?: number;
@@ -51,7 +50,7 @@ export class ScanService extends WorkerEntrypoint<Env> {
     const stub = await getRandom(this.env.SCAN_CONTAINER, max);
 
     const url = new URL("http://container/scan");
-    url.searchParams.set("chapter_id", String(args.chapter_id));
+    url.searchParams.set("job_id", String(args.job_id));
 
     const resp = await stub.containerFetch(url.toString(), {
       method:  "POST",
@@ -86,7 +85,7 @@ export default {
     if (url.pathname === "/debug-scan" && req.method === "POST") {
       const stub = await getRandom(env.SCAN_CONTAINER, parseInt(env.MAX_INSTANCES ?? "3", 10));
       const u = new URL("http://container/scan");
-      u.searchParams.set("chapter_id", url.searchParams.get("chapter_id") ?? "debug");
+      u.searchParams.set("job_id", url.searchParams.get("job_id") ?? "debug");
       return stub.containerFetch(u.toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },

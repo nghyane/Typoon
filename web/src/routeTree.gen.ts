@@ -12,11 +12,12 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as ExploreRouteImport } from './routes/explore'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WWorkIdRouteImport } from './routes/w.$workId'
+import { Route as JobsIdRouteImport } from './routes/jobs.$id'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
-import { Route as AdminOpsRouteImport } from './routes/admin.ops'
 import { Route as RWorkIdNumberNormRouteImport } from './routes/r.$workId.$numberNorm'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -34,6 +35,11 @@ const LibraryRoute = LibraryRouteImport.update({
   path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JobsRoute = JobsRouteImport.update({
+  id: '/jobs',
+  path: '/jobs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ExploreRoute = ExploreRouteImport.update({
   id: '/explore',
   path: '/explore',
@@ -49,14 +55,14 @@ const WWorkIdRoute = WWorkIdRouteImport.update({
   path: '/w/$workId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const JobsIdRoute = JobsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => JobsRoute,
+} as any)
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
   id: '/auth/callback',
   path: '/auth/callback',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AdminOpsRoute = AdminOpsRouteImport.update({
-  id: '/admin/ops',
-  path: '/admin/ops',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RWorkIdNumberNormRoute = RWorkIdNumberNormRouteImport.update({
@@ -68,22 +74,24 @@ const RWorkIdNumberNormRoute = RWorkIdNumberNormRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/explore': typeof ExploreRoute
+  '/jobs': typeof JobsRouteWithChildren
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
-  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/jobs/$id': typeof JobsIdRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/explore': typeof ExploreRoute
+  '/jobs': typeof JobsRouteWithChildren
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
-  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/jobs/$id': typeof JobsIdRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
@@ -91,11 +99,12 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/explore': typeof ExploreRoute
+  '/jobs': typeof JobsRouteWithChildren
   '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
-  '/admin/ops': typeof AdminOpsRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/jobs/$id': typeof JobsIdRoute
   '/w/$workId': typeof WWorkIdRoute
   '/r/$workId/$numberNorm': typeof RWorkIdNumberNormRoute
 }
@@ -104,33 +113,36 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/explore'
+    | '/jobs'
     | '/library'
     | '/login'
     | '/settings'
-    | '/admin/ops'
     | '/auth/callback'
+    | '/jobs/$id'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/explore'
+    | '/jobs'
     | '/library'
     | '/login'
     | '/settings'
-    | '/admin/ops'
     | '/auth/callback'
+    | '/jobs/$id'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
   id:
     | '__root__'
     | '/'
     | '/explore'
+    | '/jobs'
     | '/library'
     | '/login'
     | '/settings'
-    | '/admin/ops'
     | '/auth/callback'
+    | '/jobs/$id'
     | '/w/$workId'
     | '/r/$workId/$numberNorm'
   fileRoutesById: FileRoutesById
@@ -138,10 +150,10 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ExploreRoute: typeof ExploreRoute
+  JobsRoute: typeof JobsRouteWithChildren
   LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
-  AdminOpsRoute: typeof AdminOpsRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   WWorkIdRoute: typeof WWorkIdRoute
   RWorkIdNumberNormRoute: typeof RWorkIdNumberNormRoute
@@ -170,6 +182,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/jobs': {
+      id: '/jobs'
+      path: '/jobs'
+      fullPath: '/jobs'
+      preLoaderRoute: typeof JobsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/explore': {
       id: '/explore'
       path: '/explore'
@@ -191,18 +210,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WWorkIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/jobs/$id': {
+      id: '/jobs/$id'
+      path: '/$id'
+      fullPath: '/jobs/$id'
+      preLoaderRoute: typeof JobsIdRouteImport
+      parentRoute: typeof JobsRoute
+    }
     '/auth/callback': {
       id: '/auth/callback'
       path: '/auth/callback'
       fullPath: '/auth/callback'
       preLoaderRoute: typeof AuthCallbackRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/admin/ops': {
-      id: '/admin/ops'
-      path: '/admin/ops'
-      fullPath: '/admin/ops'
-      preLoaderRoute: typeof AdminOpsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/r/$workId/$numberNorm': {
@@ -215,13 +234,23 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface JobsRouteChildren {
+  JobsIdRoute: typeof JobsIdRoute
+}
+
+const JobsRouteChildren: JobsRouteChildren = {
+  JobsIdRoute: JobsIdRoute,
+}
+
+const JobsRouteWithChildren = JobsRoute._addFileChildren(JobsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ExploreRoute: ExploreRoute,
+  JobsRoute: JobsRouteWithChildren,
   LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
-  AdminOpsRoute: AdminOpsRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   WWorkIdRoute: WWorkIdRoute,
   RWorkIdNumberNormRoute: RWorkIdNumberNormRoute,

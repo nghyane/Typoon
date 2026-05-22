@@ -6,7 +6,6 @@ import {
 import { Link, useNavigate } from '@tanstack/react-router'
 
 import { useHeaderStore } from '../store/header'
-import { WorkersIndicator } from './WorkersIndicator'
 import { cn } from '@shared/lib/cn'
 import {
   useSession, useSignOut, useUpdatePreferredLang,
@@ -20,7 +19,7 @@ interface Props { user: SessionUser }
 
 
 export function Header({ user }: Props) {
-  const { crumbs, title, slot } = useHeaderStore()
+  const { crumbs, title, slot, actions } = useHeaderStore()
   const back = crumbs[0]
   const [, setSearchOpen] = useState(false)
 
@@ -46,7 +45,7 @@ export function Header({ user }: Props) {
       {/* center slot — route-injected (e.g. search input on /explore) */}
       {slot && <div className="flex-1 min-w-0">{slot}</div>}
 
-      {/* global search — desktop only, hidden when slot is active */}
+      {/* Desktop global search; hidden when the center slot is active. */}
       {!slot && (
         <button
           onClick={() => setSearchOpen(true)}
@@ -61,7 +60,8 @@ export function Header({ user }: Props) {
         </button>
       )}
 
-      <WorkersIndicator />
+      {/* right slot — route-injected page actions (e.g. upload on /w/) */}
+      {actions && <div className="flex items-center gap-1 shrink-0">{actions}</div>}
 
       <UserMenu user={user} />
     </header>

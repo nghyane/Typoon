@@ -113,7 +113,7 @@ function LoginPage() {
 
   // Auth-config fetch failed — without a client id we can't start
   // any flow. Show the error verbatim; user retries by reloading.
-  if (cfgQ.error || !config) {
+  if (cfgQ.error || !config?.discord_client_id) {
     const msg = cfgQ.error?.message ?? 'Không tải được cấu hình đăng nhập.'
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg p-4">

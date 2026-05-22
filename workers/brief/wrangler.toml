@@ -2,8 +2,6 @@ name = "typoon-brief"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
-limits = { cpu_ms = 30000 }
-
 [[r2_buckets]]
 binding     = "R2"
 bucket_name = "typoon-work"

@@ -16,7 +16,7 @@ new_sqlite_classes = ["TypesetPackContainer"]
 
 [[containers]]
 class_name    = "TypesetPackContainer"
-image         = "./Dockerfile"
+image         = "registry.cloudflare.com/818e551312970df676abe1a0e61819c7/typoon-typeset-pack-typesetpackcontainer:probe1779451603"
 max_instances = 20
 instance_type = "standard-2"  # 1 vCPU, 6 GiB — Rust render + PIL decode parallel-bound
 

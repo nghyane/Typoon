@@ -5,7 +5,6 @@
 
 import type { SearchHit } from './fanoutSearch'
 
-
 export function hitKey(hit: SearchHit): string {
   return `${hit.source.manifest.id}::${hit.manga.id}`
 }

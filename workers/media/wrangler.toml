@@ -16,7 +16,7 @@ new_sqlite_classes = ["MediaContainer"]
 
 [[containers]]
 class_name    = "MediaContainer"
-image         = "./Dockerfile"
+image         = "registry.cloudflare.com/818e551312970df676abe1a0e61819c7/typoon-media-mediacontainer:probe1779464609"
 max_instances = 15
 instance_type = "standard-2"
 

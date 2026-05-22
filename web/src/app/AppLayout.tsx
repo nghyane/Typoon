@@ -7,6 +7,7 @@ import { AdminTopBar } from './AdminTopBar'
 import { Toaster } from '@shared/ui/Toaster'
 import { ConfirmHost } from '@shared/ui/Confirm'
 import { useSession } from '@features/auth/session'
+import { useUserEventsStream } from '@features/jobs/queries'
 import { cn } from '@shared/lib/cn'
 
 // =============================================================================
@@ -34,6 +35,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
   const nav     = useNavigate()
   const session = useSession()
+
+  // Open a single WebSocket per authenticated session that multiplexes
+  // job progress for every concurrent translation. Without this, IDB +
+  // TanStack only see job state when something explicitly polls — the
+  // work-page chapter list (which uses Dexie live-query off IDB) would
+  // be stuck on "đang dịch" until the user navigates to the job detail.
+  useUserEventsStream(session.status === 'authenticated')
 
   // Auth guard — applies only to routes that require a session.
   // We branch on the discriminated status (not on `user`/`loading`

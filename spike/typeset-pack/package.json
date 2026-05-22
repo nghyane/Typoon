@@ -1,8 +1,0 @@
-{
-  "name": "typoon-typeset-pack",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": { "deploy": "wrangler deploy" },
-  "dependencies": { "@cloudflare/containers": "^0.0.20" },
-  "devDependencies": { "wrangler": "^4.92.0" }
-}

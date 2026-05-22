@@ -1,10 +1,11 @@
-// LinkSearchPane — search + link UI inside `LinkSearchModal`.
+// LinkSearchPane — search + attach UI inside `LinkSearchModal`.
 //
 // Mirrors `SearchPane`'s shell (debounced fanout, scope filter,
 // grouped results via shared `ResultsList`) but the pick handler
-// runs a force-link mutation instead of a library import. The modal
-// stays open so the user can link multiple sources in one session;
-// rows the viewer has picked show a check + go disabled.
+// runs `useAttachSource` on the host Work instead of importing into
+// the library. The modal stays open so the user can attach multiple
+// sources in one session; rows the viewer has picked show a check
+// + go disabled.
 
 import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
@@ -20,58 +21,57 @@ import {
 import { ResultsList } from '@features/library/addManga/ResultsList'
 import { hitKey } from '@features/library/addManga/hitKey'
 import { ScopeFilterRow } from '@features/library/addManga/ScopeFilterRow'
-import type { ApiMaterial } from '@shared/api/api'
+import type { WorkSource } from '@features/works/queries'
 
 
 interface Props {
-  /** Materials already on this Work — drops self-link candidates
-   *  before they reach the result list. */
-  ownMaterials: ApiMaterial[]
+  /** Sources already attached to this Work — drops self-link
+   *  candidates before they reach the result list. */
+  ownSources: WorkSource[]
+  /** Initial search query. Parent seeds with the work title so the
+   *  pane lands on relevant siblings out of the box. */
+  initialQuery?: string
   /** Fires for each candidate the viewer picks. Parent runs the
-   *  import + force-link round-trip. */
+   *  attach round-trip. */
   onPick: (hit: SearchHit) => void
-  /** Keys of candidates this session already picked. Used to badge
-   *  done rows. */
+  /** Keys of candidates this session already picked. */
   pickedKeys: Set<string>
-  /** Parent mutation in flight — disables every clickable row. */
-  busy: boolean
-  /** Key of the row currently mid-mutation (spinner). */
+  busy:       boolean
   pendingKey: string | null
 }
 
 
 export function LinkSearchPane({
-  ownMaterials, onPick, pickedKeys, busy, pendingKey,
+  ownSources, initialQuery = '', onPick, pickedKeys, busy, pendingKey,
 }: Props) {
-  const [q, setQ]  = useState('')
+  const [q, setQ]  = useState(initialQuery)
   const debouncedQ = useDebouncedValue(q, 250)
 
   const allSources = useAllSources()
   const searchable = useMemo(
-    () => allSources.filter((s) => s.enabled && hasSearch(s.manifest)),
+    () => allSources.filter(s => s.enabled && hasSearch(s.manifest)),
     [allSources],
   )
 
   const [scopeId, setScopeId] = useState<string | null>(null)
   const { hits, loading, failures } = useFanoutSearch(debouncedQ, searchable)
 
-  const ownSet = useMemo(() => ownUpstreamSet(ownMaterials), [ownMaterials])
-  const visibleHits = useMemo(() => {
-    const inOwnWork = (h: SearchHit) =>
-      ownSet.has(`${h.source.manifest.id}::${h.manga.url}`)
-    return hits.filter((h) => !inOwnWork(h))
-  }, [hits, ownSet])
+  const ownSet = useMemo(() => ownUpstreamSet(ownSources), [ownSources])
+  const visibleHits = useMemo(
+    () => hits.filter(h => !ownSet.has(`${h.source.manifest.id}::${h.manga.url}`)),
+    [hits, ownSet],
+  )
 
   const scopedHits = useMemo(
     () => scopeId === null
       ? visibleHits
-      : visibleHits.filter((h) => h.source.manifest.id === scopeId),
+      : visibleHits.filter(h => h.source.manifest.id === scopeId),
     [visibleHits, scopeId],
   )
   const visibleSources = useMemo(
     () => scopeId === null
       ? searchable
-      : searchable.filter((s) => s.manifest.id === scopeId),
+      : searchable.filter(s => s.manifest.id === scopeId),
     [searchable, scopeId],
   )
 
@@ -121,11 +121,11 @@ export function LinkSearchPane({
 }
 
 
-/** Canonical "{source}::{upstream_ref}" key for an own material. */
-function ownUpstreamSet(materials: ApiMaterial[]): Set<string> {
+/** Canonical "{source}::{upstream_ref}" key for an own source. */
+function ownUpstreamSet(sources: WorkSource[]): Set<string> {
   const out = new Set<string>()
-  for (const m of materials) {
-    if (m.source && m.upstream_ref) out.add(`${m.source}::${m.upstream_ref}`)
+  for (const s of sources) {
+    out.add(`${s.source}::${s.upstream_ref}`)
   }
   return out
 }
