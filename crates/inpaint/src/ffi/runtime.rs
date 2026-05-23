@@ -7,8 +7,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::Inpainter;
-use crate::pipeline;
 use super::errors::to_pyerr;
+use crate::domain::{BlockClass, InpaintPlan, MaskOrigin, PageKind, ShapeKind};
+use crate::pipeline;
+
+fn origin_str(o: MaskOrigin) -> &'static str {
+    match o {
+        MaskOrigin::LensObb         => "lens_obb",
+        MaskOrigin::LensAabb        => "lens_aabb",
+        MaskOrigin::CtdUnet         => "ctd_unet",
+        MaskOrigin::PolygonFallback => "polygon_fallback",
+    }
+}
+fn class_str(c: BlockClass) -> &'static str {
+    match c {
+        BlockClass::Sfx       => "sfx",
+        BlockClass::Dialogue  => "dialogue",
+        BlockClass::Narration => "narration",
+    }
+}
+fn shape_str(s: ShapeKind) -> &'static str {
+    match s { ShapeKind::Dialogue => "dialogue", ShapeKind::Burst => "burst" }
+}
+fn page_kind_str(p: PageKind) -> &'static str {
+    match p { PageKind::Bw => "bw", PageKind::Color => "color", PageKind::Webtoon => "webtoon" }
+}
 
 /// Stateful Python class. Holds the warm Candle session so Python CLI
 /// can process N pages without reloading the model.
@@ -80,14 +103,14 @@ fn decode_plan(py: Python<'_>, plan_bytes: &[u8]) -> PyResult<PyObject> {
     let d = pyo3::types::PyDict::new_bound(py);
     d.set_item("page_index", plan.page_index)?;
     d.set_item("page_size",  vec![plan.page_size[0], plan.page_size[1]])?;
-    d.set_item("page_kind",  format!("{:?}", plan.page_kind).to_lowercase())?;
+    d.set_item("page_kind",  page_kind_str(plan.page_kind))?;
     let groups: Vec<_> = plan.groups.iter().map(|g| {
         let gd = pyo3::types::PyDict::new_bound(py);
         let _ = gd.set_item("idx",        g.idx);
         let _ = gd.set_item("bbox",       vec![g.bbox.x1, g.bbox.y1, g.bbox.x2, g.bbox.y2]);
-        let _ = gd.set_item("origin",     format!("{:?}", g.origin).to_lowercase().replace("lens", "lens_"));
-        let _ = gd.set_item("class",      format!("{:?}", g.class).to_lowercase());
-        let _ = gd.set_item("shape_kind", format!("{:?}", g.shape_kind).to_lowercase());
+        let _ = gd.set_item("origin",     origin_str(g.origin));
+        let _ = gd.set_item("class",      class_str(g.class));
+        let _ = gd.set_item("shape_kind", shape_str(g.shape_kind));
         let _ = gd.set_item("n_polygons", g.polygons.len());
         let _ = gd.set_item("n_rasters",  g.rasters.len());
         gd

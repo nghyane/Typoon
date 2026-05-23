@@ -65,9 +65,9 @@ async def _run(
             plan_bytes = await build_plan_for_image(path, lang=lang,
                                                      sink=page_sink.subdir("scan"))
             jpeg = path.read_bytes()
-            png: bytes = await rt.inpaint_page_async(
-                jpeg, plan_bytes,
-                debug_dir=str(page_sink.path),
+            png: bytes = await asyncio.to_thread(
+                rt.inpaint_page,
+                jpeg, plan_bytes, str(page_sink.path),
             )
             (out_dir / f"{i:04d}.png").write_bytes(bytes(png))
             log.info("page %04d done", i)

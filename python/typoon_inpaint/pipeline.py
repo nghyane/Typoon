@@ -40,8 +40,9 @@ class InpaintPipeline:
             page_sink = self._sink.subdir(f"page_{page_index:04d}")
             debug_dir = str(page_sink.path) if not isinstance(page_sink, NullSink) else None
 
-            png: bytes = await self._rt.inpaint_page_async(
-                bytes(jpeg), bytes(scan), debug_dir=debug_dir,
+            png: bytes = await asyncio.to_thread(
+                self._rt.inpaint_page,
+                bytes(jpeg), bytes(scan), debug_dir,
             )
             await self._fs.put(out_key, bytes(png), "image/png")
             log.info("page %04d done → %s", page_index, out_key)

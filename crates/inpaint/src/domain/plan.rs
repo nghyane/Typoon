@@ -49,9 +49,11 @@ impl GroupMask {
         use MaskOrigin::*;
         match self.origin {
             LensObb | LensAabb => {
-                if self.polygons.is_empty() {
+                // Lens groups ship rasters (tight OBB/AABB pixels from
+                // _erase_masks_from_words) OR polygons. Either is valid.
+                if self.polygons.is_empty() && self.rasters.is_empty() {
                     anyhow::bail!(
-                        "group {}: origin={:?} requires non-empty polygons",
+                        "group {}: origin={:?} requires polygons or rasters",
                         self.idx, self.origin
                     );
                 }
@@ -67,8 +69,7 @@ impl GroupMask {
             PolygonFallback => {
                 if !self.polygons.is_empty() || !self.rasters.is_empty() {
                     anyhow::bail!(
-                        "group {}: polygon_fallback must not ship pixel data \
-                         (inpaint will regen via Canny)",
+                        "group {}: polygon_fallback must not ship pixel data",
                         self.idx
                     );
                 }

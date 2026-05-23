@@ -67,8 +67,8 @@ class GroupMask:
     rasters:    tuple[EraseRaster, ...]               = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        if self.origin in ("lens_obb", "lens_aabb") and not self.polygons:
-            raise ValueError(f"group {self.idx}: {self.origin} requires polygons")
+        if self.origin in ("lens_obb", "lens_aabb") and not self.polygons and not self.rasters:
+            raise ValueError(f"group {self.idx}: {self.origin} requires polygons or rasters")
         if self.origin == "ctd_unet" and not self.rasters:
             raise ValueError(f"group {self.idx}: ctd_unet requires rasters")
         if self.origin == "polygon_fallback" and (self.polygons or self.rasters):

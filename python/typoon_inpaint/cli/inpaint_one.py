@@ -74,9 +74,9 @@ async def _run(
     rt   = InpaintRuntime(str(model_path))
     jpeg = image.read_bytes()
     log.info("inpainting …")
-    png: bytes = await rt.inpaint_page_async(
-        jpeg, scan_bytes,
-        debug_dir=str(sink.path),
+    png: bytes = await asyncio.to_thread(
+        rt.inpaint_page,
+        jpeg, scan_bytes, str(sink.path),
     )
 
     out_path = out or image.with_suffix(".inpaint.png")

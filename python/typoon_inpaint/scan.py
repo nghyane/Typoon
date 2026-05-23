@@ -121,31 +121,46 @@ def _to_group_mask(idx: int, g) -> GroupMask:
     polygons: tuple = ()
     rasters:  tuple = ()
 
-    if origin in ("lens_obb", "lens_aabb"):
-        erase_polys = []
-        for em in (g.erase_masks or ()):
-            # Convert raster back to bounding polygon (AABB of raster)
-            ex, ey, ew, eh = int(em.x), int(em.y), int(em.image.shape[1]), int(em.image.shape[0])
-            erase_polys.append([
-                [float(ex), float(ey)], [float(ex+ew), float(ey)],
-                [float(ex+ew), float(ey+eh)], [float(ex), float(ey+eh)],
-            ])
-        polygons = tuple(erase_polys) if erase_polys else (poly,)
+    if origin == "polygon_fallback":
+        # No pixel data — Rust will regen via Canny
+        pass
 
     elif origin == "ctd_unet":
+        # CTD UNet mask — ship raster directly
         from typoon_inpaint.domain import EraseRaster
-        rasts = []
-        for em in (g.erase_masks or ()):
-            import numpy as _np
-            d = em.image.astype(_np.uint8).tobytes()
-            rasts.append(EraseRaster(
+        import numpy as _np
+        rasters = tuple(
+            EraseRaster(
                 x=int(em.x), y=int(em.y),
                 w=int(em.image.shape[1]), h=int(em.image.shape[0]),
-                data=d,
-            ))
-        rasters = tuple(rasts)
+                data=em.image.astype(_np.uint8).tobytes(),
+            )
+            for em in (g.erase_masks or ())
+        )
 
-    # polygon_fallback: no pixel data shipped
+    else:
+        # lens_obb / lens_aabb — ship erase_masks as rasters.
+        # _erase_masks_from_words already filled the tight OBB/AABB
+        # via cv2.fillPoly; we preserve that exact pixel data rather
+        # than reconstructing a AABB polygon (which loses OBB shape).
+        from typoon_inpaint.domain import EraseRaster
+        import numpy as _np
+        erase_rasters = [
+            EraseRaster(
+                x=int(em.x), y=int(em.y),
+                w=int(em.image.shape[1]), h=int(em.image.shape[0]),
+                data=em.image.astype(_np.uint8).tobytes(),
+            )
+            for em in (g.erase_masks or ())
+        ]
+        if erase_rasters:
+            # Route as ctd_unet so Rust uses paste_rasters (not polygon fill)
+            # The origin tag is for routing only; mask quality is from raster.
+            rasters = tuple(erase_rasters)
+            origin  = "ctd_unet"
+        else:
+            # No erase masks at all despite being lens origin — treat as fallback
+            origin = "polygon_fallback"
 
     return GroupMask(
         idx=idx, bbox=bbox,
