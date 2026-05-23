@@ -64,3 +64,4 @@ workers/api/worker-configuration.d.ts
 # Build outputs that aren't checked in
 workers/*/src/*.wasm
 workers/*/src/*.wasm.gz
+*.so

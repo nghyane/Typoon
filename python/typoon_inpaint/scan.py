@@ -14,8 +14,8 @@ import msgpack
 import numpy as np
 from PIL import Image
 
-from typoon_inpaint_py.artifact_sink import ArtifactSink, NullSink
-from typoon_inpaint_py.domain import (
+from typoon_inpaint.artifact_sink import ArtifactSink, NullSink
+from typoon_inpaint.domain import (
     BlockClass, GroupMask, InpaintPlan, MaskOrigin, PageKind, PROFILES,
 )
 
@@ -133,7 +133,7 @@ def _to_group_mask(idx: int, g) -> GroupMask:
         polygons = tuple(erase_polys) if erase_polys else (poly,)
 
     elif origin == "ctd_unet":
-        from typoon_inpaint_py.domain import EraseRaster
+        from typoon_inpaint.domain import EraseRaster
         rasts = []
         for em in (g.erase_masks or ()):
             import numpy as _np

@@ -9,8 +9,8 @@ import asyncio
 import logging
 from pathlib import Path
 
-from typoon_inpaint_py.artifact_sink import ArtifactSink, NullSink
-from typoon_inpaint_py.storage import Storage
+from typoon_inpaint.artifact_sink import ArtifactSink, NullSink
+from typoon_inpaint.storage import Storage
 
 log = logging.getLogger(__name__)
 

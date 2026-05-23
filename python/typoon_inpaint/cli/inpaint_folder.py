@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from typoon_inpaint_py.artifact_sink import FileArtifactSink  # type: ignore[attr-defined]
+from typoon_inpaint.artifact_sink import FileArtifactSink  # type: ignore[attr-defined]
 
 log = logging.getLogger("typoon.inpaint-folder")
 
@@ -45,7 +45,7 @@ async def _run(
     lang:        str,
 ) -> None:
     from typoon_inpaint import InpaintRuntime  # type: ignore[import]
-    from typoon_inpaint_py.scan import build_plan_for_image
+    from typoon_inpaint.scan import build_plan_for_image
 
     exts   = {".jpg", ".jpeg", ".png", ".webp"}
     images = sorted(p for p in folder.iterdir() if p.suffix.lower() in exts)

@@ -35,3 +35,7 @@ class NullSink(ArtifactSink):
 
     def write(self, name: str, data: bytes | str) -> None:
         pass
+
+# Alias
+FileArtifactSink = ArtifactSink
+

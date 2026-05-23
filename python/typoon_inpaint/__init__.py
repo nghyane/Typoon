@@ -1,7 +1,7 @@
-"""typoon_inpaint_py — pure-Python wrappers around the Rust PyO3 extension.
+"""typoon_inpaint — Rust-backed inpaint pipeline + Python utilities.
 
-Import the compiled extension:
-    from typoon_inpaint import InpaintRuntime, decode_plan, rasterise_plan_mask
+The compiled PyO3 extension is at typoon_inpaint.typoon_inpaint.
+Pure-Python submodules: domain, scan, pipeline, storage, artifact_sink, cli.
 """
 from __future__ import annotations
 

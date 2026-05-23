@@ -7,8 +7,8 @@ from pathlib import Path
 
 import click
 
-from typoon_inpaint_py.artifact_sink import FileArtifactSink  # type: ignore[attr-defined]
-from typoon_inpaint_py.storage import LocalFsStorage
+from typoon_inpaint.artifact_sink import FileArtifactSink  # type: ignore[attr-defined]
+from typoon_inpaint.storage import LocalFsStorage
 
 
 log = logging.getLogger("typoon.inpaint-one")
@@ -61,7 +61,7 @@ async def _run(
     )
 
     if scan_path is None:
-        from typoon_inpaint_py.scan import build_plan_for_image
+        from typoon_inpaint.scan import build_plan_for_image
         log.info("scanning %s …", image.name)
         scan_bytes = await build_plan_for_image(image, lang=lang, sink=sink.subdir("scan"))
     else:
