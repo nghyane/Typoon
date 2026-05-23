@@ -1,0 +1,93 @@
+"""CLI: inpaint a single image."""
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
+import click
+
+from typoon_inpaint_py.artifact_sink import FileArtifactSink  # type: ignore[attr-defined]
+from typoon_inpaint_py.storage import LocalFsStorage
+
+
+log = logging.getLogger("typoon.inpaint-one")
+
+
+@click.command("inpaint-one")
+@click.argument("image", type=click.Path(exists=True, path_type=Path))
+@click.option("--plan", type=click.Path(exists=True, path_type=Path),
+              help="Pre-computed InpaintPlan msgpack. Skip scan when provided.")
+@click.option("--model", "model_path",
+              type=click.Path(path_type=Path),
+              envvar="TYPOON_MODEL",
+              default=None,
+              help="Path to model.safetensors. Omit to use stub (mask only).")
+@click.option("--run-id", default="local-001", show_default=True)
+@click.option("--out",    type=click.Path(path_type=Path), default=None)
+@click.option("--lang",   default="ja", show_default=True)
+@click.option("--debug-dir", "debug_dir",
+              type=click.Path(path_type=Path), default=None,
+              help="Override artifact output directory.")
+def main(
+    image:      Path,
+    plan:       Path | None,
+    model_path: Path | None,
+    run_id:     str,
+    out:        Path | None,
+    lang:       str,
+    debug_dir:  Path | None,
+) -> None:
+    """Inpaint a single image locally."""
+    logging.basicConfig(level=logging.INFO,
+                        format="%(levelname).1s %(name)s: %(message)s")
+    asyncio.run(_run(image, plan, model_path, run_id, out, lang, debug_dir))
+
+
+async def _run(
+    image:      Path,
+    plan_path:  Path | None,
+    model_path: Path | None,
+    run_id:     str,
+    out:        Path | None,
+    lang:       str,
+    debug_dir:  Path | None,
+) -> None:
+    from typoon_inpaint import InpaintRuntime  # type: ignore[import]
+
+    sink = FileArtifactSink(
+        debug_dir or (Path("debug-runs") / run_id / "05_inpaint")
+    )
+
+    # --- scan ---
+    if plan_path is None:
+        from typoon_inpaint_py.scan import build_plan_for_image
+        log.info("scanning %s …", image.name)
+        plan_bytes = await build_plan_for_image(image, lang=lang, sink=sink.subdir("scan"))
+    else:
+        plan_bytes = plan_path.read_bytes()
+        log.info("using pre-computed plan: %s", plan_path)
+
+    # --- inpaint ---
+    if model_path is not None:
+        rt = InpaintRuntime(str(model_path))
+    else:
+        log.warning("--model not provided; model path required for real inference. "
+                    "Pass --model <path> or set TYPOON_MODEL.")
+        raise click.ClickException("--model / TYPOON_MODEL required")
+
+    jpeg = image.read_bytes()
+    log.info("inpainting …")
+    png: bytes = await rt.inpaint_page_async(
+        jpeg, plan_bytes,
+        debug_dir=str(sink.path),
+    )
+
+    out_path = out or image.with_suffix(".inpaint.png")
+    out_path.write_bytes(bytes(png))
+    log.info("OK → %s", out_path)
+    log.info("artifacts: %s", sink.path)
+
+
+if __name__ == "__main__":
+    main()
