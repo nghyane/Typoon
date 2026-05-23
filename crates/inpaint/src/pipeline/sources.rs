@@ -77,8 +77,16 @@ fn build_group_patch_with_kind(
     page_kind: crate::domain::PageKind,
 ) -> Result<Vec<u8>> {
     let raw: Vec<u8> = match g.origin {
-        MaskOrigin::LensObb | MaskOrigin::LensAabb =>
-            rasterise::polygons_to_patch(&g.polygons, &g.bbox),
+        // Lens groups now ship pixel_seg rasters (tight ink masks from
+        // Otsu+morph-close). Fall back to polygon fill only when rasters
+        // are absent (old plans / edge cases).
+        MaskOrigin::LensObb | MaskOrigin::LensAabb => {
+            if !g.rasters.is_empty() {
+                rasterise::rasters_to_patch(&g.rasters, &g.bbox)?
+            } else {
+                rasterise::polygons_to_patch(&g.polygons, &g.bbox)
+            }
+        }
         MaskOrigin::CtdUnet =>
             rasterise::rasters_to_patch(&g.rasters, &g.bbox)?,
         MaskOrigin::PolygonFallback => {
