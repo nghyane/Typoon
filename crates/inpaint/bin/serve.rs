@@ -212,17 +212,19 @@ async fn inpaint_chapter_handler(
 async fn run_one_page(st: &AppState, job_id: u64, page_index: u32) -> Result<String> {
     let p4 = format!("{page_index:04}");
     let prepared_key = format!("prepared/{job_id}/{p4}.jpg");
-    let plan_key     = format!("scan/{job_id}/{p4}.msgpack");
+    // Scan msgpack now embeds the InpaintPlan in `inpaint_plan` field.
+    // pipeline::run_page calls InpaintPlan::from_msgpack which unwraps it.
+    let scan_key     = format!("scan/{job_id}/{p4}.msgpack");
     let output_key   = format!("inpaint/{job_id}/{p4}.png");
 
-    let (jpeg, plan_bytes) = tokio::try_join!(
+    let (jpeg, scan_bytes) = tokio::try_join!(
         st.r2.get(&prepared_key),
-        st.r2.get(&plan_key),
+        st.r2.get(&scan_key),
     ).context("R2 fetch")?;
 
     let inpainter = st.inpainter.clone();
     let png = tokio::task::spawn_blocking(move || {
-        pipeline::run_page(&inpainter, jpeg, plan_bytes, None)
+        pipeline::run_page(&inpainter, jpeg, scan_bytes, None)
     }).await
         .context("inpaint join")??;
 

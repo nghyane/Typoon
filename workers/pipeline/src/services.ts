@@ -20,7 +20,6 @@ export interface ScanService {
     total_pages?: number;
   }): Promise<{
     scan_keys:       string[];
-    mask_keys:       string[];
     storyboard_keys: string[];
     timings_ms:      Record<string, number>;
   }>;

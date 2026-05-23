@@ -89,12 +89,29 @@ pub struct InpaintPlan {
 
 impl InpaintPlan {
     /// Decode from msgpack bytes and validate all group invariants.
+    ///
+    /// Handles two wire formats:
+    ///   1. Direct InpaintPlan msgpack (has `page_index`, `page_size`, `page_kind`, `groups`)
+    ///   2. Scan msgpack (has `inpaint_plan` field containing embedded InpaintPlan bytes)
     pub fn from_msgpack(bytes: &[u8]) -> anyhow::Result<Self> {
-        let plan: Self = rmp_serde::from_slice(bytes)
-            .map_err(|e| anyhow::anyhow!("InpaintPlan msgpack decode: {e}"))?;
-        for g in &plan.groups {
-            g.validate()?;
+        // Try to detect scan msgpack by checking for `inpaint_plan` key.
+        // rmp_serde will fail on the outer map if it's not an InpaintPlan,
+        // so we use a two-pass approach: try direct first, then scan-embedded.
+        if let Ok(plan) = rmp_serde::from_slice::<Self>(bytes) {
+            for g in &plan.groups { g.validate()?; }
+            return Ok(plan);
         }
+        // Try scan msgpack: deserialize as generic map, extract inpaint_plan bytes.
+        #[derive(serde::Deserialize)]
+        struct ScanWrapper {
+            #[serde(with = "serde_bytes")]
+            inpaint_plan: Vec<u8>,
+        }
+        let wrapper: ScanWrapper = rmp_serde::from_slice(bytes)
+            .map_err(|e| anyhow::anyhow!("InpaintPlan decode (direct + scan-embedded): {e}"))?;
+        let plan: Self = rmp_serde::from_slice(&wrapper.inpaint_plan)
+            .map_err(|e| anyhow::anyhow!("InpaintPlan embedded decode: {e}"))?;
+        for g in &plan.groups { g.validate()?; }
         Ok(plan)
     }
 

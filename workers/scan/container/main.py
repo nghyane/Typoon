@@ -2,12 +2,16 @@
 
 Uses typoon vision pipeline directly (same code as Mac):
   detect (comic_detr ONNX) + Lens OCR → spatial_join → BubbleGroup
-  → write scan/{job}/{i:04d}.msgpack + mask/{job}/{i:04d}.bin
+  → derive InpaintPlan (mask_origin, class, erase_polygons, page_kind)
+  → write scan/{job}/{i:04d}.msgpack  (scan data + embedded InpaintPlan)
   → build storyboard/{job}/{n:02d}.jpg
+
+The old mask/{job}/{i:04d}.bin (raw 0/255 raster) is no longer written.
+Inpaint container rasterises polygons from the msgpack plan directly.
 
 POST /scan?job_id=N
   Body: JSON { pages: [{page_index, prepared_key, is_color}], lang_hint?, total_pages? }
-  Returns: { scan_keys, mask_keys, storyboard_keys, timings_ms }
+  Returns: { scan_keys, storyboard_keys, timings_ms }
 
 Key derivation must match `workers/shared/src/keys.ts` exactly:
   payload = JSON({idx, job_id (int), page, salt}, sort_keys=true)
@@ -22,7 +26,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import struct
 import time
 import asyncio
 import logging
@@ -379,53 +382,76 @@ def warm():
         )
 
 
-# ── Mask builder ──────────────────────────────────────────────────────────────
+# ── Group classification helpers ─────────────────────────────────────────────
 
-_MASK_MAGIC = b"MSK1"
+def _derive_mask_origin(g) -> str:
+    """Map BubbleGroup provenance → MaskOrigin string for inpaint routing."""
+    if g.source == "ctd" and (g.erase_masks or ()):
+        return "ctd_unet"
+    if g.used_fallback or not (g.erase_masks or ()):
+        return "polygon_fallback"
+    if abs(g.rotation_deg) > 1.0:
+        return "lens_obb"
+    for em in (g.erase_masks or ()):
+        h, w = em.image.shape[:2]
+        bbox_h = g.bbox[3] - g.bbox[1]
+        bbox_w = g.bbox[2] - g.bbox[0]
+        if h != bbox_h or w != bbox_w:
+            return "lens_obb"
+    return "lens_aabb"
 
-def _build_mask(groups, W: int, H: int) -> bytes:
-    """Build raw mask from BubbleGroup erase_masks.
 
-    erase_masks are the spatial_join output: per-line/per-word
-    binary rasters that tightly cover actual text glyphs with
-    shape-aware padding already baked in. We just OR them into the
-    page mask.
+def _classify_block(g) -> str:
+    """sfx | dialogue | narration from BubbleGroup geometry + text."""
+    try:
+        from typoon.vision.groupers._classify import classify_block
+        class _B:
+            rotation_deg = g.rotation_deg
+            bbox         = g.bbox
+            text         = g.text
+        return classify_block(_B(), g.text or "")
+    except Exception:
+        return "dialogue"
 
-    Fallback to polygon AABB only when a group has no erase_masks
-    (decoration-only / no-line groups). A final 5x5 dilate smooths
-    anti-aliased glyph edges that Lens word bboxes miss.
 
-    DETR bubble_regions are not used here: they cover whole speech
-    balloons (including blank interior), so painting them as masks
-    bleeds into the balloon background.
+def _erase_polygons_from_group(g) -> list:
+    """Convert erase_masks rasters → AABB polygon list for msgpack."""
+    polys = []
+    for em in (g.erase_masks or ()):
+        ex, ey = int(em.x), int(em.y)
+        ew, eh = int(em.image.shape[1]), int(em.image.shape[0])
+        polys.append([
+            [float(ex),      float(ey)],
+            [float(ex + ew), float(ey)],
+            [float(ex + ew), float(ey + eh)],
+            [float(ex),      float(ey + eh)],
+        ])
+    return polys
+
+
+# ── InpaintPlan builder ──────────────────────────────────────────────────────
+
+def _build_inpaint_plan(groups, W: int, H: int, image: np.ndarray) -> bytes:
+    """Derive InpaintPlan msgpack from BubbleGroups.
+
+    Encodes mask_origin, class, erase_polygons and page_kind.
+    No raster mask is produced here — morphological close + hole-fill
+    happen in the inpaint container (Rust) after polygon rasterisation.
+
+    Returns: raw msgpack bytes for the embedded 'inpaint_plan' field.
     """
-    import cv2
-    page_mask = np.zeros((H, W), dtype=np.uint8)
-
-    for g in groups:
-        used_erase = False
-        for em in getattr(g, "erase_masks", ()) or ():
-            ex, ey = int(em.x), int(em.y)
-            tile = em.image
-            th, tw = tile.shape[:2]
-            x0 = max(0, ex); y0 = max(0, ey)
-            x1 = min(W, ex + tw); y1 = min(H, ey + th)
-            if x1 <= x0 or y1 <= y0:
-                continue
-            sx0 = x0 - ex; sy0 = y0 - ey
-            sx1 = sx0 + (x1 - x0); sy1 = sy0 + (y1 - y0)
-            region = page_mask[y0:y1, x0:x1]
-            np.maximum(region, tile[sy0:sy1, sx0:sx1], out=region)
-            used_erase = True
-        if not used_erase:
-            poly = np.array(g.polygon, dtype=np.int32).reshape(-1, 1, 2)
-            cv2.fillPoly(page_mask, [poly], 255)
-
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    page_mask = cv2.dilate(page_mask, kernel, iterations=1)
-
-    header = _MASK_MAGIC + struct.pack("<HH", W, H)
-    return header + page_mask.tobytes()
+    from typoon_inpaint_py.scan import (
+        _to_group_mask, _detect_page_kind, _encode_plan, InpaintPlan,
+    )
+    page_kind = _detect_page_kind(image)
+    plan_groups = tuple(_to_group_mask(i, g) for i, g in enumerate(groups))
+    plan = InpaintPlan(
+        page_index=0,   # overridden per-page below
+        page_size=(W, H),
+        page_kind=page_kind,
+        groups=plan_groups,
+    )
+    return _encode_plan(plan)
 
 
 # ── Key assignment ────────────────────────────────────────────────────────────
@@ -519,7 +545,10 @@ async def _scan_page(
                     "line_count":         getattr(g.typesetting, "line_count", 0),
                     "avg_chars_per_line": getattr(g.typesetting, "avg_chars_per_line", 0.0),
                 } if g.typesetting else None,
-                "erase_polygons":[],
+                # Routing tags for inpaint container
+                "mask_origin":   _derive_mask_origin(g),
+                "class":         _classify_block(g),
+                "erase_polygons": _erase_polygons_from_group(g),
             }
             for i, g in enumerate(groups)
         ],
@@ -529,13 +558,16 @@ async def _scan_page(
         "timing_ms":      {"total": round((time.perf_counter() - tp0) * 1000)},
     }
 
-    scan_key = f"scan/{job_id}/{page_index:04d}.msgpack"
-    mask_key = f"mask/{job_id}/{page_index:04d}.bin"
-    mask_bin = await asyncio.to_thread(_build_mask, groups, W, H)
+    # Build InpaintPlan and embed as 'inpaint_plan' bytes inside msgpack.
+    # The inpaint container reads this to rasterise masks — no .bin needed.
+    plan_bytes = await asyncio.to_thread(
+        _build_inpaint_plan, groups, W, H, image
+    )
+    scan_data["inpaint_plan"] = plan_bytes
 
-    await asyncio.gather(
-        asyncio.to_thread(r2_write, scan_key, msgpack.packb(scan_data, use_bin_type=True)),
-        asyncio.to_thread(r2_write, mask_key, mask_bin),
+    scan_key = f"scan/{job_id}/{page_index:04d}.msgpack"
+    await asyncio.to_thread(
+        r2_write, scan_key, msgpack.packb(scan_data, use_bin_type=True)
     )
 
     log.info("page %02d: %d groups %.0fms", page_index, len(groups),
@@ -543,7 +575,6 @@ async def _scan_page(
     return {
         "page_index":  page_index,
         "scan_key":    scan_key,
-        "mask_key":    mask_key,
         "bubble_keys": bubble_keys,
         "image":       image,   # kept in memory for storyboard
         "groups":      groups,
@@ -634,7 +665,6 @@ async def _scan_impl(req: Request):
 
     return JSONResponse({
         "scan_keys":       [r["scan_key"]  for r in results],
-        "mask_keys":       [r["mask_key"]  for r in results],
         "storyboard_keys": storyboard_keys,
         "timings_ms":      {"scan": round(t_scan*1000), "storyboard": round(t_sb*1000), "total": total_ms},
     })

@@ -40,28 +40,27 @@ impl PyInpaintRuntime {
     ///
     /// Args:
     ///     jpeg_bytes: raw JPEG of the prepared page
-    ///     plan_bytes: msgpack-encoded InpaintPlan (from scan stage)
-    ///     debug_dir:  optional directory path; when given, intermediate
-    ///                 PNG dumps are written there (00_input, 01_page_mask,
-    ///                 tile_NN_rgb/mask/out, 99_final)
+    ///     scan_bytes: msgpack bytes — either a bare InpaintPlan or the full
+    ///                 scan msgpack with embedded `inpaint_plan` field
+    ///     debug_dir:  optional directory; intermediate PNGs written there
     ///
     /// Returns:
     ///     PNG bytes of the inpainted page
-    #[pyo3(signature = (jpeg_bytes, plan_bytes, debug_dir = None))]
+    #[pyo3(signature = (jpeg_bytes, scan_bytes, debug_dir = None))]
     fn inpaint_page<'py>(
         &self,
         py:        Python<'py>,
         jpeg_bytes: &[u8],
-        plan_bytes: &[u8],
+        scan_bytes: &[u8],
         debug_dir:  Option<&str>,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let jpeg  = jpeg_bytes.to_vec();
-        let plan  = plan_bytes.to_vec();
+        let scan  = scan_bytes.to_vec();
         let dbg   = debug_dir.map(PathBuf::from);
         let inp   = self.inpainter.clone();
 
         let png = py.allow_threads(move || {
-            pipeline::run_page(&inp, jpeg, plan, dbg.as_deref())
+            pipeline::run_page(&inp, jpeg, scan, dbg.as_deref())
         }).map_err(to_pyerr)?;
 
         Ok(PyBytes::new_bound(py, &png))

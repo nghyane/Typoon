@@ -240,7 +240,6 @@ export class ChapterPipeline extends WorkflowEntrypoint<PipelineEnv, PipelinePar
         is_color: prepared.is_color,
         strategy: prepared.strategy,
         scan_keys: scan.scan_keys,
-        mask_keys: scan.mask_keys,
         inpaint_keys,
         storyboard_keys: scan.storyboard_keys,
         brief_index_key: brief.index_key,

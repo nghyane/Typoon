@@ -16,8 +16,9 @@ log = logging.getLogger("typoon.inpaint-one")
 
 @click.command("inpaint-one")
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
-@click.option("--plan", type=click.Path(exists=True, path_type=Path),
-              help="Pre-computed InpaintPlan msgpack. Skip scan when provided.")
+@click.option("--plan", "scan_path",
+              type=click.Path(exists=True, path_type=Path),
+              help="Pre-computed scan msgpack (with embedded InpaintPlan). Skip scan when provided.")
 @click.option("--model", "model_path",
               type=click.Path(path_type=Path),
               envvar="TYPOON_MODEL",
@@ -31,7 +32,7 @@ log = logging.getLogger("typoon.inpaint-one")
               help="Override artifact output directory.")
 def main(
     image:      Path,
-    plan:       Path | None,
+    scan_path:  Path | None,
     model_path: Path | None,
     run_id:     str,
     out:        Path | None,
@@ -41,12 +42,12 @@ def main(
     """Inpaint a single image locally."""
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname).1s %(name)s: %(message)s")
-    asyncio.run(_run(image, plan, model_path, run_id, out, lang, debug_dir))
+    asyncio.run(_run(image, scan_path, model_path, run_id, out, lang, debug_dir))
 
 
 async def _run(
     image:      Path,
-    plan_path:  Path | None,
+    scan_path:  Path | None,
     model_path: Path | None,
     run_id:     str,
     out:        Path | None,
@@ -59,27 +60,22 @@ async def _run(
         debug_dir or (Path("debug-runs") / run_id / "05_inpaint")
     )
 
-    # --- scan ---
-    if plan_path is None:
+    if scan_path is None:
         from typoon_inpaint_py.scan import build_plan_for_image
         log.info("scanning %s …", image.name)
-        plan_bytes = await build_plan_for_image(image, lang=lang, sink=sink.subdir("scan"))
+        scan_bytes = await build_plan_for_image(image, lang=lang, sink=sink.subdir("scan"))
     else:
-        plan_bytes = plan_path.read_bytes()
-        log.info("using pre-computed plan: %s", plan_path)
+        scan_bytes = scan_path.read_bytes()
+        log.info("using pre-computed scan: %s", scan_path)
 
-    # --- inpaint ---
-    if model_path is not None:
-        rt = InpaintRuntime(str(model_path))
-    else:
-        log.warning("--model not provided; model path required for real inference. "
-                    "Pass --model <path> or set TYPOON_MODEL.")
+    if model_path is None:
         raise click.ClickException("--model / TYPOON_MODEL required")
 
+    rt   = InpaintRuntime(str(model_path))
     jpeg = image.read_bytes()
     log.info("inpainting …")
     png: bytes = await rt.inpaint_page_async(
-        jpeg, plan_bytes,
+        jpeg, scan_bytes,
         debug_dir=str(sink.path),
     )
 
