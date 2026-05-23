@@ -2124,6 +2124,7 @@ dependencies = [
  "bytes",
  "candle-core",
  "candle-nn",
+ "flate2",
  "hmac",
  "image",
  "memmap2",

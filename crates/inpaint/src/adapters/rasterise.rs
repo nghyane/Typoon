@@ -25,7 +25,7 @@ pub fn polygons_to_patch(
     patch
 }
 
-/// Paste CTD rasters into a patch aligned to `bbox`.
+/// Paste CTD rasters (zlib-compressed) into a patch aligned to `bbox`.
 /// Rasters may overlap — OR them.
 pub fn rasters_to_patch(
     rasters: &[EraseRaster],
@@ -36,12 +36,7 @@ pub fn rasters_to_patch(
     let mut patch = vec![0u8; pw * ph];
 
     for r in rasters {
-        let expected = r.w as usize * r.h as usize;
-        if r.data.len() != expected {
-            return Err(anyhow!(
-                "raster data len {} != {}×{}={}", r.data.len(), r.w, r.h, expected
-            ));
-        }
+        let pixels = r.decompress()?;
         let dx = r.x - bbox.x1;
         let dy = r.y - bbox.y1;
         for ry in 0..r.h as i32 {
@@ -49,7 +44,7 @@ pub fn rasters_to_patch(
                 let px = dx + rx;
                 let py = dy + ry;
                 if px < 0 || py < 0 || px >= pw as i32 || py >= ph as i32 { continue; }
-                let src = r.data[(ry * r.w as i32 + rx) as usize];
+                let src = pixels[(ry * r.w as i32 + rx) as usize];
                 if src >= 127 {
                     patch[py as usize * pw + px as usize] = 1;
                 }

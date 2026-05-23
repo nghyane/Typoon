@@ -9,16 +9,35 @@ use serde::Deserialize;
 use super::{BBox, BlockClass, MaskOrigin, PageKind, ShapeKind};
 
 /// Tight raster emitted only when `mask_origin == ctd_unet`.
-/// Embedded as raw bytes (1 byte / pixel, 0 or 255) in page coords.
+/// `data` is **zlib-compressed** raw 1-channel u8 (w*h bytes uncompressed,
+/// 0 = background, 255 = ink). Always decompress before use.
 #[derive(Debug, Deserialize)]
 pub struct EraseRaster {
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
-    /// Raw 1-channel u8 pixels, `w * h` bytes, 0 = background, 255 = ink.
+    /// zlib-compressed w*h u8 pixels.
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
+}
+
+impl EraseRaster {
+    /// Decompress `data` → raw `w*h` u8 pixels.
+    pub fn decompress(&self) -> anyhow::Result<Vec<u8>> {
+        use std::io::Read;
+        let mut dec = flate2::read::ZlibDecoder::new(self.data.as_slice());
+        let mut out = Vec::with_capacity((self.w * self.h) as usize);
+        dec.read_to_end(&mut out)
+            .map_err(|e| anyhow::anyhow!("raster decompress: {e}"))?;
+        if out.len() != (self.w * self.h) as usize {
+            anyhow::bail!(
+                "raster decompress: expected {}×{}={} bytes, got {}",
+                self.w, self.h, self.w * self.h, out.len()
+            );
+        }
+        Ok(out)
+    }
 }
 
 /// Per-group mask descriptor shipped in the InpaintPlan.

@@ -139,23 +139,22 @@ def _to_group_mask(idx: int, g) -> GroupMask:
         )
 
     else:
-        # lens_obb / lens_aabb — ship erase_masks as rasters.
+        # lens_obb / lens_aabb — ship erase_masks as compressed rasters.
         # _erase_masks_from_words already filled the tight OBB/AABB
-        # via cv2.fillPoly; we preserve that exact pixel data rather
-        # than reconstructing a AABB polygon (which loses OBB shape).
+        # via cv2.fillPoly; we preserve pixel data (not AABB rectangle).
+        # zlib compress: binary rasters are ~99% compressible.
+        import zlib
         from typoon_inpaint.domain import EraseRaster
         import numpy as _np
         erase_rasters = [
             EraseRaster(
                 x=int(em.x), y=int(em.y),
                 w=int(em.image.shape[1]), h=int(em.image.shape[0]),
-                data=em.image.astype(_np.uint8).tobytes(),
+                data=zlib.compress(em.image.astype(_np.uint8).tobytes(), level=1),
             )
             for em in (g.erase_masks or ())
         ]
         if erase_rasters:
-            # Route as ctd_unet so Rust uses paste_rasters (not polygon fill)
-            # The origin tag is for routing only; mask quality is from raster.
             rasters = tuple(erase_rasters)
             origin  = "ctd_unet"
         else:
