@@ -154,10 +154,7 @@ def _to_group_mask(
         #   burst/SFX → OBB per-line stripes (tight, per-line filled)
         #   dialogue  → PixelSeg (Otsu per word bbox + morph close)
         members = _find_members(blocks, bbox)
-        if g.shape_kind == "burst":
-            rasters = _obb_per_line_rasters(g, members)
-        else:
-            rasters = _pixel_seg_rasters(g, members, img, bbox)
+        rasters = _build_erase_raster(g, members, img, bbox)
 
         if not rasters:
             # No members / pixel seg produced nothing → fallback
@@ -174,101 +171,53 @@ def _to_group_mask(
 
 # ── PixelSegStrategy (ported from packages/typoon-vision) ─────────────────
 
-_CLIP_PAD = 4   # px margin around word_union for dilation room
-
-
-def _pixel_seg_rasters(
+def _build_erase_raster(
     group,
     members: tuple,
-    img:    np.ndarray,
-    bbox:   tuple[int, int, int, int],
+    img:     np.ndarray,
+    bbox:    tuple[int, int, int, int],
 ) -> tuple[EraseRaster, ...]:
-    """Otsu per-word-bbox seed + 3-step morph close + largest CC.
+    """Erase mask cho inpaint container.
 
-    Directly ported from PixelSegStrategy._pixel_seg in
-    packages/typoon-vision/typoon/vision/masks/pixel_seg.py.
+    Strategy:
+      burst/SFX  → OBB per-line (tight, không flood art/screentone)
+      dialogue/narration → word_union AABB + pad (solid rect)
+
+    Insight: mask không cần per-glyph tight.
+    Completeness > tightness.
+    flat_fill router detect white bg → solid color fill.
+    AOT chỉ fire khi bg phức tạp (screentone, art).
     """
-    from typoon.vision.groupers._spatial_join import _median_glyph_size
+    if group.shape_kind == "burst":
+        return _obb_per_line_rasters(group, members)
 
-    word_boxes = [w.bbox for m in members for w in m.words] \
-                 or [m.bbox for m in members] \
-                 or [bbox]
+    # Dialogue / narration: word_union bbox + padding
+    word_boxes = (
+        [w.bbox for m in members for w in m.words]
+        or [m.bbox for m in members]
+        or [bbox]
+    )
+    H, W  = img.shape[:2]
+    glyph = _glyph_size(members)
+    pad   = max(4, glyph // 4)
 
-    wu_x1 = min(b[0] for b in word_boxes)
-    wu_y1 = min(b[1] for b in word_boxes)
-    wu_x2 = max(b[2] for b in word_boxes)
-    wu_y2 = max(b[3] for b in word_boxes)
-
-    glyph  = _median_glyph_size(list(members)) if members else 10
-    bridge = max(glyph, 8)
-
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    pH, pW = gray.shape
-
-    # Seed: Otsu threshold per word bbox
-    seed = np.zeros((pH, pW), dtype=np.uint8)
-    for wb in word_boxes:
-        wx1, wy1 = max(0, wb[0]), max(0, wb[1])
-        wx2, wy2 = min(pW, wb[2]), min(pH, wb[3])
-        patch = gray[wy1:wy2, wx1:wx2]
-        if patch.size < 9:
-            continue
-        _, bp = cv2.threshold(
-            patch, 0, 255,
-            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
-        )
-        seed[wy1:wy2, wx1:wx2] = bp
-
-    # Crop to word_union + CLIP_PAD
-    rx1 = max(0, wu_x1 - _CLIP_PAD)
-    ry1 = max(0, wu_y1 - _CLIP_PAD)
-    rx2 = min(pW, wu_x2 + _CLIP_PAD)
-    ry2 = min(pH, wu_y2 + _CLIP_PAD)
-    blob = seed[ry1:ry2, rx1:rx2].copy()
-    if not blob.any():
+    x1 = max(0, min(b[0] for b in word_boxes) - pad)
+    y1 = max(0, min(b[1] for b in word_boxes) - pad)
+    x2 = min(W, max(b[2] for b in word_boxes) + pad)
+    y2 = min(H, max(b[3] for b in word_boxes) + pad)
+    if x2 <= x1 or y2 <= y1:
         return ()
 
-    roi_h, roi_w = blob.shape[:2]
-    cap = max(2, min(roi_w // 3, roi_h // 3))
+    data = np.full((y2 - y1, x2 - x1), 255, dtype=np.uint8)
+    return (_make_raster(x1, y1, data),)
 
-    def _r(base: int) -> int:
-        return min(base, cap)
 
-    # 3-step morphological close: progressively bridges inter-glyph gaps
-    for r in (
-        _r(max(2, glyph // 4)),
-        _r(max(4, int(glyph * 0.8))),
-        _r(max(6, int(bridge * 0.7))),
-    ):
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (r * 2 + 1, r * 2 + 1))
-        blob = cv2.morphologyEx(blob, cv2.MORPH_CLOSE, k)
-
-    # Hard-clip to word_union + CLIP_PAD
-    cm = np.zeros_like(blob)
-    cy1_ = wu_y1 - ry1
-    cy2_ = wu_y2 - ry1 + _CLIP_PAD * 2
-    cx1_ = wu_x1 - rx1
-    cx2_ = wu_x2 - rx1 + _CLIP_PAD * 2
-    cm[max(0, cy1_):min(blob.shape[0], cy2_),
-       max(0, cx1_):min(blob.shape[1], cx2_)] = 255
-    blob = cv2.bitwise_and(blob, cm)
-
-    # Keep largest connected component
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(blob, connectivity=8)
-    if n > 1:
-        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        blob = (labels == largest).astype(np.uint8) * 255
-
-    if not blob.any():
-        return ()
-
-    # Dilate + Gaussian blur → smooth edges (soft boundary like UNet)
-    k_dil = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    blob  = cv2.dilate(blob, k_dil, iterations=1)
-    blob  = cv2.GaussianBlur(blob, (7, 7), sigmaX=2.0)
-    _, blob = cv2.threshold(blob, 80, 255, cv2.THRESH_BINARY)
-
-    return (_make_raster(rx1, ry1, blob),)
+def _glyph_size(members: tuple) -> int:
+    try:
+        from typoon.vision.groupers._spatial_join import _median_glyph_size
+        return _median_glyph_size(list(members)) if members else 10
+    except Exception:
+        return 10
 
 
 # ── ObbPerLineStrategy (ported from packages/typoon-vision) ───────────────
