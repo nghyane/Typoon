@@ -16,45 +16,6 @@ use super::DebugSink;
 
 /// Build raw 0/1 raster for one group via the correct strategy, then
 /// apply morphological close + hole-fill.
-fn build_group_patch(
-    g:     &GroupMask,
-    rgb:   &[u8],
-    img_w: usize,
-    img_h: usize,
-) -> Result<Vec<u8>> {
-    // 1. Source-dispatch (exhaustive)
-    let raw: Vec<u8> = match g.origin {
-        MaskOrigin::LensObb | MaskOrigin::LensAabb => {
-            rasterise::polygons_to_patch(&g.polygons, &g.bbox)
-        }
-        MaskOrigin::CtdUnet => {
-            rasterise::rasters_to_patch(&g.rasters, &g.bbox)?
-        }
-        MaskOrigin::PolygonFallback => {
-            // Full Canny stroke regen — mask lives in page coords (full img),
-            // cropped to bbox region inside canny::detect_strokes.
-            let page_mask = canny::detect_strokes(
-                rgb, img_w, img_h, g.bbox,
-                // plan.page_kind passed to sources via outer fn
-                crate::domain::PageKind::Bw, // default; overridden below
-            )?;
-            // Extract patch from page_mask
-            let pw = g.bbox.width()  as usize;
-            let ph = g.bbox.height() as usize;
-            let x0 = g.bbox.x1 as usize;
-            let y0 = g.bbox.y1 as usize;
-            (0..ph).flat_map(|y| (0..pw).map(move |x| (x, y)))
-                .map(|(x, y)| page_mask[(y0 + y) * img_w + (x0 + x)])
-                .collect()
-        }
-    };
-
-    // 2. Morphological close + hole-fill per class profile
-    let profile = profile_for(g.class);
-    let r = profile.close_radius(g.bbox.short_edge());
-    close::close_and_fill(raw, g.bbox.width() as usize, g.bbox.height() as usize, r as usize)
-}
-
 // ── Page mask accumulation ────────────────────────────────────────────────
 
 /// Build full-page 0/255 mask from all groups. Respects the "outsider
@@ -121,7 +82,9 @@ fn build_group_patch_with_kind(
         MaskOrigin::CtdUnet =>
             rasterise::rasters_to_patch(&g.rasters, &g.bbox)?,
         MaskOrigin::PolygonFallback => {
-            let page_mask = canny::detect_strokes(rgb, img_w, img_h, g.bbox, page_kind)?;
+            let page_mask = crate::adapters::stroke_detect::detect_strokes(
+                rgb, img_w, img_h, g.bbox, page_kind,
+            )?;
             let pw = g.bbox.width()  as usize;
             let ph = g.bbox.height() as usize;
             let x0 = g.bbox.x1 as usize;

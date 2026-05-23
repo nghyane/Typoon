@@ -6,3 +6,4 @@ pub mod canny;
 pub mod flat_fill;
 pub mod png_codec;
 pub mod rasterise;
+pub mod stroke_detect;

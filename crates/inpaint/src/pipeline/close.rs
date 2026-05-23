@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Morphological close (dilate → erode) + enclosed-hole fill on a binary patch.
 
-use crate::adapters::canny::fill_enclosed_holes;
+use crate::adapters::stroke_detect::fill_enclosed_holes;
 
 /// Dilate then erode a 0/1 patch with a rectangular kernel of radius `r`,
 /// then fill enclosed holes.  Returns 0/1 values (NOT 0/255).
