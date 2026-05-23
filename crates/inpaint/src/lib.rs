@@ -126,7 +126,7 @@ fn reflect_pad2d(xs: &Tensor, pad: usize) -> candle_core::Result<Tensor> {
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn relu_nf(xs: Tensor) -> candle_core::Result<Tensor> {
-    (xs.relu()? * RELU_NF_SCALE)
+    xs.relu()? * RELU_NF_SCALE
 }
 
 fn layer_norm(xs: &Tensor) -> candle_core::Result<Tensor> {

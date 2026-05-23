@@ -21,6 +21,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use image::{ImageBuffer, ImageEncoder, Rgb};
 use image::codecs::png::PngEncoder;
+use image::imageops::FilterType;
 use serde::Deserialize;
 
 use crate::Inpainter;
@@ -37,16 +38,18 @@ use crate::s3::S3;
 /// rest of large bubbles — black-output bug (see Python TiledInpainter,
 /// `packages/typoon-vision/typoon/vision/erasers/inpaint.py`).
 const SNAP_MOD: usize         = 8;
-const PAD_AROUND_BUBBLE: i32  = 16;
-/// Pad as a fraction of the bubble's shorter edge. AOT-GAN regresses to
-/// near-black when the mask covers >55% of the inference tile; adding
-/// pad proportional to bubble size keeps mask density inside that
-/// envelope even for full-bbox-text logos. Empirically 0.30 holds a
-/// fully-masked square bubble at ~40% tile density (Python reference:
-/// packages/typoon-vision/typoon/vision/erasers/inpaint.py uses
-/// context_px=16 + a bucket-relative resize; we get the same effect by
-/// growing the crop instead, since the Rust backend has no fixed bucket).
-const PAD_FRAC: f32           = 0.30;
+const MIN_CONTEXT_PX: i32     = 32;
+const CONTEXT_FRAC: f32       = 0.50;
+/// AOT-GAN needs real unmasked context inside the same inference canvas.
+/// Once mask density climbs past ~50–60%, it tends to synthesize muddy or
+/// near-black output. Grow crop context until normal tiles land below this.
+const TARGET_MASK_DENSITY: f32 = 0.42;
+const DEFAULT_AOT_CANVAS: usize = 512;
+const REGION_MERGE_DISTANCE: i32 = 96;
+const MAX_REGIONS_PER_PAGE: usize = 3;
+const FLAT_STD_THRESHOLD: f32 = 10.0;
+const FLAT_MIN_SAMPLES: usize = 32;
+const DEFAULT_AOT_REGION_CONCURRENCY: usize = 2;
 const CLOSE_RADIUS_MIN: i32   = 2;
 
 fn close_radius_frac(class_name: Option<&str>) -> f64 {
@@ -243,134 +246,85 @@ fn run_page_sync(
     let scan: ScanPageSlim = rmp_serde::from_slice(&scan_bytes)
         .context("scan msgpack decode failed")?;
 
-    let closed  = close_mask_per_block(&orig_mask, w, h, &scan.groups);
+    let img_raw = img.as_raw();
+    let closed  = close_mask_per_block(&orig_mask, w, h, &scan.groups, img_raw);
     dbg.dump_mask("01-closed-mask", &closed, w, h);
-    let bubbles = find_bubbles(&closed, w, h);
+    let regions = build_inpaint_regions(&closed, w, h, &scan.groups);
 
     let mut composite: Vec<u8> = img.into_raw();
     dbg.dump_rgb("02-input-rgb", &composite, w, h);
-    let mut tiles_shape = Vec::with_capacity(bubbles.len());
+    let mut tiles_shape = Vec::with_capacity(regions.len());
 
-    if bubbles.is_empty() {
+    if regions.is_empty() {
         let png = encode_png(&composite, w, h)?;
         return Ok((png, 0, tiles_shape));
     }
 
-    for (bi, bb) in bubbles.iter().enumerate() {
+    let mut jobs = Vec::new();
+    for (bi, bb) in regions.iter().enumerate() {
+        if let Some(fill) = flat_fill_color(&composite, &closed, w, h, bb) {
+            fill_region(&mut composite, &closed, w, bb, fill);
+            tiles_shape.push("flat-fill".to_string());
+            tracing::info!(region = bi, "flat inpaint fill");
+            continue;
+        }
+
         let (tile_rgb, tile_mask, tile_w, tile_h, pad_box) =
-            build_tile(&composite, &orig_mask, w, h, bb);
+            build_tile(&composite, &closed, w, h, bb);
         tiles_shape.push(format!("{tile_w}x{tile_h}"));
+        let mask_on = tile_mask.iter().filter(|&&v| v >= 127).count();
+        let mask_density = mask_on as f32 / (tile_w * tile_h) as f32;
+        tracing::info!(
+            bubble = bi,
+            tile = %format!("{tile_w}x{tile_h}"),
+            crop = %format!("{}x{}", pad_box.x1 - pad_box.x0 + 1, pad_box.y1 - pad_box.y0 + 1),
+            mask_density,
+            "inpaint tile start",
+        );
 
         dbg.dump_rgb(&format!("tile-{bi:02}-rgb"),   &tile_rgb, tile_w, tile_h);
         dbg.dump_mask(&format!("tile-{bi:02}-mask"), &tile_mask, tile_w, tile_h);
+        jobs.push(AotJob { idx: bi, tile_rgb, tile_mask, tile_w, tile_h, pad_box });
+    }
 
-        // Mask density check. With adaptive PAD_FRAC, normal bubbles land
-        // well below this threshold. The boundary-median fallback is kept
-        // for pathological cases (mask near 100% even after pad expand —
-        // can happen when the bubble bbox already covers the entire page
-        // edge, leaving no room to grow). For flat-colour logos this
-        // fallback is visually correct; for everything else it at least
-        // avoids the model's near-black collapse.
-        let on = tile_mask.iter().filter(|&&v| v >= 127).count();
-        let on_frac = on as f32 / (tile_w * tile_h) as f32;
-        const DENSE_THRESHOLD: f32 = 0.70;
+    let conc = aot_region_concurrency();
+    for chunk in jobs.chunks(conc) {
+        let outputs = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(chunk.len());
+            for job in chunk {
+                handles.push(scope.spawn(move || -> Result<AotOutput> {
+                    let started = Instant::now();
+                    let out_rgb = inpainter
+                        .inpaint(&job.tile_rgb, &job.tile_mask, job.tile_w as u32, job.tile_h as u32)
+                        .with_context(|| format!("inpaint tile {}x{} failed", job.tile_w, job.tile_h))?;
+                    Ok(AotOutput {
+                        idx: job.idx,
+                        tile_w: job.tile_w,
+                        tile_h: job.tile_h,
+                        pad_box: job.pad_box,
+                        out_rgb,
+                        inference_ms: started.elapsed().as_millis() as u64,
+                    })
+                }));
+            }
+            let mut outputs = Vec::with_capacity(handles.len());
+            for handle in handles {
+                outputs.push(handle.join().expect("AOT thread panicked")?);
+            }
+            Ok::<Vec<AotOutput>, anyhow::Error>(outputs)
+        })?;
 
-        let out_rgb = if on_frac >= DENSE_THRESHOLD {
-            boundary_median_fill(&tile_rgb, &tile_mask, tile_w, tile_h)
-        } else {
-            inpainter
-                .inpaint(&tile_rgb, &tile_mask, tile_w as u32, tile_h as u32)
-                .with_context(|| format!("inpaint tile {tile_w}x{tile_h} failed"))?
-        };
-        dbg.dump_rgb(&format!("tile-{bi:02}-out"), &out_rgb, tile_w, tile_h);
-
-        compose_tile(&mut composite, w, &orig_mask, &pad_box, tile_w, tile_h, &out_rgb);
+        for out in outputs {
+            tracing::info!(bubble = out.idx, inference_ms = out.inference_ms, "inpaint tile done");
+            dbg.dump_rgb(&format!("tile-{:02}-out", out.idx), &out.out_rgb, out.tile_w, out.tile_h);
+            compose_tile(&mut composite, w, &closed, &out.pad_box, out.tile_w, out.tile_h, &out.out_rgb);
+        }
     }
 
     dbg.dump_rgb("99-final-rgb", &composite, w, h);
 
     let png = encode_png(&composite, w, h)?;
-    Ok((png, bubbles.len(), tiles_shape))
-}
-
-// ── Boundary-median fill (fallback for dense masks) ───────────────────────
-//
-// When the mask covers >55% of a tile, AOT-GAN can't reconstruct a
-// plausible fill — it lacks unmasked context to anchor on. For text-as-
-// logo bubbles where the surrounding background is flat-coloured, taking
-// the median of the boundary band is both faster and visually correct.
-//
-// Algorithm:
-//   1. Find pixels just outside the masked region (mask < 127, but with
-//      ≥1 masked 4-neighbour). Cap to a band of `BAND_PX` pixels wide.
-//   2. Take the median R, G, B independently across that band.
-//   3. Fill every masked pixel with that median; leave unmasked pixels.
-
-fn boundary_median_fill(rgb: &[u8], mask: &[u8], w: usize, h: usize) -> Vec<u8> {
-    const BAND_PX: usize = 8;
-
-    // Collect boundary samples — pixels NOT in the mask but adjacent to it.
-    let mut rs: Vec<u8> = Vec::with_capacity(w + h);
-    let mut gs: Vec<u8> = Vec::with_capacity(w + h);
-    let mut bs: Vec<u8> = Vec::with_capacity(w + h);
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            if mask[i] >= 127 { continue; }
-            // 4-neighbour check
-            let adjacent_to_mask =
-                (x > 0     && mask[i - 1]     >= 127) ||
-                (x + 1 < w && mask[i + 1]     >= 127) ||
-                (y > 0     && mask[i - w]     >= 127) ||
-                (y + 1 < h && mask[i + w]     >= 127);
-            if !adjacent_to_mask { continue; }
-            // Walk outward up to BAND_PX in each direction, capture pixels
-            // we know are not masked.
-            for dy in 0..=BAND_PX as i32 {
-                for &sign in &[-1i32, 1] {
-                    let ny = y as i32 + dy * sign;
-                    if ny < 0 || ny >= h as i32 { continue; }
-                    let j = (ny as usize) * w + x;
-                    if mask[j] < 127 {
-                        let p = j * 3;
-                        rs.push(rgb[p]); gs.push(rgb[p + 1]); bs.push(rgb[p + 2]);
-                    }
-                }
-            }
-        }
-    }
-
-    // Median; on empty boundary (whole-tile mask), fall back to global mean
-    // of any unmasked pixels, or pure white.
-    fn median(mut v: Vec<u8>) -> u8 {
-        if v.is_empty() { return 255; }
-        v.sort_unstable();
-        v[v.len() / 2]
-    }
-    let (mr, mg, mb) = if !rs.is_empty() {
-        (median(rs), median(gs), median(bs))
-    } else {
-        // No 4-adjacent boundary: scan every unmasked pixel.
-        let (mut r, mut g, mut b) = (Vec::new(), Vec::new(), Vec::new());
-        for i in 0..w * h {
-            if mask[i] < 127 {
-                let p = i * 3;
-                r.push(rgb[p]); g.push(rgb[p + 1]); b.push(rgb[p + 2]);
-            }
-        }
-        if r.is_empty() { (255, 255, 255) } else { (median(r), median(g), median(b)) }
-    };
-
-    let mut out = rgb.to_vec();
-    for i in 0..w * h {
-        if mask[i] >= 127 {
-            let p = i * 3;
-            out[p]     = mr;
-            out[p + 1] = mg;
-            out[p + 2] = mb;
-        }
-    }
-    out
+    Ok((png, regions.len(), tiles_shape))
 }
 
 // ── Local debug dumps ─────────────────────────────────────────────────────
@@ -382,6 +336,33 @@ fn boundary_median_fill(rgb: &[u8], mask: &[u8], w: usize, h: usize) -> Vec<u8> 
 
 struct DebugDump {
     dir: Option<std::path::PathBuf>,
+}
+
+struct AotJob {
+    idx:       usize,
+    tile_rgb:  Vec<u8>,
+    tile_mask: Vec<u8>,
+    tile_w:    usize,
+    tile_h:    usize,
+    pad_box:   BBox,
+}
+
+struct AotOutput {
+    idx:          usize,
+    tile_w:       usize,
+    tile_h:       usize,
+    pad_box:      BBox,
+    out_rgb:      Vec<u8>,
+    inference_ms: u64,
+}
+
+fn aot_region_concurrency() -> usize {
+    std::env::var("AOT_REGION_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_AOT_REGION_CONCURRENCY)
+        .min(MAX_REGIONS_PER_PAGE)
 }
 
 impl DebugDump {
@@ -439,21 +420,27 @@ fn run_page_sync_traced(
         .context("scan msgpack decode failed")?;
 
     let t1 = Instant::now();
-    let closed = close_mask_per_block(&orig_mask, w, h, &scan.groups);
+    let img_raw = img.as_raw();
+    let closed = close_mask_per_block(&orig_mask, w, h, &scan.groups, img_raw);
     t.mask_close_ms = t1.elapsed().as_millis() as u64;
 
     let t2 = Instant::now();
-    let bubbles = find_bubbles(&closed, w, h);
+    let regions = build_inpaint_regions(&closed, w, h, &scan.groups);
     t.flood_fill_ms  = t2.elapsed().as_millis() as u64;
-    t.bubbles_count  = bubbles.len();
+    t.bubbles_count  = regions.len();
 
     let mut composite: Vec<u8> = img.into_raw();
 
-    if !bubbles.is_empty() {
+    if !regions.is_empty() {
         let t3 = Instant::now();
-        let tiles: Vec<_> = bubbles.iter()
-            .map(|bb| build_tile(&composite, &orig_mask, w, h, bb))
-            .collect();
+        let mut tiles = Vec::new();
+        for bb in &regions {
+            if let Some(fill) = flat_fill_color(&composite, &closed, w, h, bb) {
+                fill_region(&mut composite, &closed, w, bb, fill);
+            } else {
+                tiles.push(build_tile(&composite, &closed, w, h, bb));
+            }
+        }
         t.tiles_build_ms = t3.elapsed().as_millis() as u64;
         t.tiles_count    = tiles.len();
 
@@ -469,7 +456,7 @@ fn run_page_sync_traced(
 
         let t5 = Instant::now();
         for (tile_w, tile_h, pad_box, out_rgb) in &composed_outputs {
-            compose_tile(&mut composite, w, &orig_mask, pad_box, *tile_w, *tile_h, out_rgb);
+            compose_tile(&mut composite, w, &closed, pad_box, *tile_w, *tile_h, out_rgb);
         }
         t.compose_ms = t5.elapsed().as_millis() as u64;
     }
@@ -612,7 +599,11 @@ fn close_radius_for(group: &ScanGroupSlim) -> i32 {
     ((short * frac).round() as i32).max(CLOSE_RADIUS_MIN)
 }
 
-fn close_mask_per_block(mask: &[u8], w: usize, h: usize, groups: &[ScanGroupSlim]) -> Vec<u8> {
+fn close_mask_per_block(
+    mask: &[u8], w: usize, h: usize,
+    groups: &[ScanGroupSlim],
+    img: &[u8],
+) -> Vec<u8> {
     // bin[i] ∈ {0,1}
     let mut bin = vec![0u8; w * h];
     for i in 0..w * h {
@@ -631,6 +622,20 @@ fn close_mask_per_block(mask: &[u8], w: usize, h: usize, groups: &[ScanGroupSlim
         let pw = px1 - px0;
         let ph = py1 - py0;
 
+        // Check if the original mask in this bbox is suspiciously dense
+        // (polygon-fill fallback from scan stage). If so, regenerate a
+        // tighter mask from the image content via stroke detection.
+        let bbox_area = (bx2 - bx1).max(0) as usize * (by2 - by1).max(0) as usize;
+        let mut bbox_mask_on = 0usize;
+        for y in by1.max(0) as usize..by2.min(h as i32) as usize {
+            for x in bx1.max(0) as usize..bx2.min(w as i32) as usize {
+                if bin[y * w + x] != 0 { bbox_mask_on += 1; }
+            }
+        }
+        let bbox_density = if bbox_area > 0 {
+            bbox_mask_on as f32 / bbox_area as f32
+        } else { 0.0 };
+
         // Block-local patch
         let mut patch = vec![0u8; pw * ph];
         for y in 0..ph {
@@ -638,8 +643,21 @@ fn close_mask_per_block(mask: &[u8], w: usize, h: usize, groups: &[ScanGroupSlim
                 patch[y * pw + x] = bin[(py0 + y) * w + (px0 + x)];
             }
         }
+
+        // When the mask is nearly a full rectangle (polygon fill),
+        // detect actual strokes from the image instead.
+        if bbox_density > 0.85 {
+            let strokes = detect_strokes_in_bbox(img, w, h, &[bx1, by1, bx2, by2], r);
+            for y in 0..ph {
+                for x in 0..pw {
+                    patch[y * pw + x] = strokes[(py0 + y) * w + (px0 + x)];
+                }
+            }
+        }
+
         let dilated = dilate_rect(&patch, pw, ph, r);
-        let closed  = erode_rect(&dilated, pw, ph, r);
+        let mut closed = erode_rect(&dilated, pw, ph, r);
+        fill_enclosed_holes(&mut closed, pw, ph);
 
         // Outsider guard: any other group's centre inside this closed bbox?
         let bridges = groups.iter().any(|o| {
@@ -665,6 +683,78 @@ fn close_mask_per_block(mask: &[u8], w: usize, h: usize, groups: &[ScanGroupSlim
     out
 }
 
+/// Stroke detection from image content. Used when the original mask is
+/// suspiciously dense (>85% in the group bbox), indicating a polygon
+/// full-fill fallback from the scan stage. Detects ink/dark/saturated
+/// pixels within the bbox region.
+fn detect_strokes_in_bbox(
+    img: &[u8], img_w: usize, img_h: usize,
+    bbox: &[i32; 4],
+    pad: i32,
+) -> Vec<u8> {
+    let [bx1, by1, bx2, by2] = *bbox;
+    let mut out = vec![0u8; img_w * img_h];
+    let x0 = (bx1 - pad).max(0) as usize;
+    let y0 = (by1 - pad).max(0) as usize;
+    let x1 = (bx2 + pad).min(img_w as i32 - 1) as usize;
+    let y1 = (by2 + pad).min(img_h as i32 - 1) as usize;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let i = (y * img_w + x) * 3;
+            let r = img[i] as i16;
+            let g = img[i + 1] as i16;
+            let b = img[i + 2] as i16;
+            let mx = r.max(g).max(b);
+            let mn = r.min(g).min(b);
+            let sat = mx - mn;
+            let lum = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as i16;
+            let is_ink = ((r - b) > 20 && sat > 30 && lum < 160)
+                       || (lum < 80);
+            if is_ink {
+                out[y * img_w + x] = 1;
+            }
+        }
+    }
+    out
+}
+
+fn fill_enclosed_holes(mask: &mut [u8], w: usize, h: usize) {
+    if w == 0 || h == 0 { return; }
+
+    let mut outside = vec![0u8; w * h];
+    let mut stack = Vec::new();
+    for x in 0..w {
+        push_outside(mask, &mut outside, &mut stack, x);
+        push_outside(mask, &mut outside, &mut stack, (h - 1) * w + x);
+    }
+    for y in 0..h {
+        push_outside(mask, &mut outside, &mut stack, y * w);
+        push_outside(mask, &mut outside, &mut stack, y * w + (w - 1));
+    }
+
+    while let Some(i) = stack.pop() {
+        let x = i % w;
+        let y = i / w;
+        if x > 0     { push_outside(mask, &mut outside, &mut stack, i - 1); }
+        if x + 1 < w { push_outside(mask, &mut outside, &mut stack, i + 1); }
+        if y > 0     { push_outside(mask, &mut outside, &mut stack, i - w); }
+        if y + 1 < h { push_outside(mask, &mut outside, &mut stack, i + w); }
+    }
+
+    for i in 0..w * h {
+        if mask[i] == 0 && outside[i] == 0 {
+            mask[i] = 1;
+        }
+    }
+}
+
+fn push_outside(mask: &[u8], outside: &mut [u8], stack: &mut Vec<usize>, i: usize) {
+    if mask[i] == 0 && outside[i] == 0 {
+        outside[i] = 1;
+        stack.push(i);
+    }
+}
+
 // ── Flood-fill (port of workers/inpaint/src/bubbles.ts) ───────────────────
 
 #[derive(Debug, Clone, Copy)]
@@ -687,8 +777,10 @@ fn find_bubbles(mask: &[u8], w: usize, h: usize) -> Vec<BBox> {
             while let Some(cur) = stack.pop() {
                 let cx = (cur % w) as i32;
                 let cy = (cur / w) as i32;
-                if cx < x0 { x0 = cx; } if cx > x1 { x1 = cx; }
-                if cy < y0 { y0 = cy; } if cy > y1 { y1 = cy; }
+                if cx < x0 { x0 = cx; }
+                if cx > x1 { x1 = cx; }
+                if cy < y0 { y0 = cy; }
+                if cy > y1 { y1 = cy; }
                 if cx > 0 {
                     let n = cur - 1;
                     if visited[n] == 0 && mask[n] >= 127 { visited[n] = 1; stack.push(n); }
@@ -712,6 +804,86 @@ fn find_bubbles(mask: &[u8], w: usize, h: usize) -> Vec<BBox> {
     out
 }
 
+fn build_inpaint_regions(mask: &[u8], w: usize, h: usize, groups: &[ScanGroupSlim]) -> Vec<BBox> {
+    let mut regions = Vec::new();
+    for g in groups {
+        if let Some(bb) = mask_bbox_in_group(mask, w, h, g) {
+            regions.push(bb);
+        }
+    }
+    if regions.is_empty() {
+        regions = find_bubbles(mask, w, h);
+    }
+    merge_regions(regions)
+}
+
+fn mask_bbox_in_group(mask: &[u8], w: usize, h: usize, group: &ScanGroupSlim) -> Option<BBox> {
+    let r = close_radius_for(group).max(REGION_MERGE_DISTANCE / 4);
+    let [x1, y1, x2, y2] = group.bbox;
+    let px0 = (x1 - r).max(0) as usize;
+    let py0 = (y1 - r).max(0) as usize;
+    let px1 = ((x2 + r) as usize).min(w.saturating_sub(1));
+    let py1 = ((y2 + r) as usize).min(h.saturating_sub(1));
+    let mut out: Option<BBox> = None;
+    for y in py0..=py1 {
+        for x in px0..=px1 {
+            if mask[y * w + x] < 127 { continue; }
+            out = Some(match out {
+                Some(bb) => BBox {
+                    x0: bb.x0.min(x as i32),
+                    y0: bb.y0.min(y as i32),
+                    x1: bb.x1.max(x as i32),
+                    y1: bb.y1.max(y as i32),
+                },
+                None => BBox { x0: x as i32, y0: y as i32, x1: x as i32, y1: y as i32 },
+            });
+        }
+    }
+    out
+}
+
+fn merge_regions(mut regions: Vec<BBox>) -> Vec<BBox> {
+    regions.sort_by_key(|b| (b.y0, b.x0));
+    let mut changed = true;
+    while changed {
+        changed = false;
+        'outer: for i in 0..regions.len() {
+            for j in i + 1..regions.len() {
+                if bbox_distance(&regions[i], &regions[j]) <= REGION_MERGE_DISTANCE {
+                    let merged = union_bbox(&regions[i], &regions[j]);
+                    regions[i] = merged;
+                    regions.remove(j);
+                    changed = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    while regions.len() > MAX_REGIONS_PER_PAGE {
+        let mut best = (0usize, 1usize, i32::MAX);
+        for i in 0..regions.len() {
+            for j in i + 1..regions.len() {
+                let d = bbox_distance(&regions[i], &regions[j]);
+                if d < best.2 { best = (i, j, d); }
+            }
+        }
+        let merged = union_bbox(&regions[best.0], &regions[best.1]);
+        regions[best.0] = merged;
+        regions.remove(best.1);
+    }
+    regions
+}
+
+fn union_bbox(a: &BBox, b: &BBox) -> BBox {
+    BBox { x0: a.x0.min(b.x0), y0: a.y0.min(b.y0), x1: a.x1.max(b.x1), y1: a.y1.max(b.y1) }
+}
+
+fn bbox_distance(a: &BBox, b: &BBox) -> i32 {
+    let dx = if a.x1 < b.x0 { b.x0 - a.x1 } else if b.x1 < a.x0 { a.x0 - b.x1 } else { 0 };
+    let dy = if a.y1 < b.y0 { b.y0 - a.y1 } else if b.y1 < a.y0 { a.y0 - b.y1 } else { 0 };
+    dx.max(dy)
+}
+
 fn snap_up(v: i32, m: usize) -> usize {
     let m = m as i32;
     (((v + m - 1) / m) * m).max(0) as usize
@@ -719,17 +891,12 @@ fn snap_up(v: i32, m: usize) -> usize {
 
 /// Build a tile crop from the page + mask.
 ///
-/// Pad is **adaptive**: a fraction of the bbox short edge, floor at
-/// `PAD_AROUND_BUBBLE`. The mask itself is just cropped (no expansion),
-/// so a large bubble whose mask covers ~100% of its bbox gets a tile
-/// large enough that unmasked context outside the bbox brings density
-/// down to where AOT-GAN can reconstruct.
-///
-/// Empirical: AOT-GAN collapses to ~black around mask density ≥ 55%.
-/// PAD_FRAC=0.3 keeps a fully-masked square bubble at ~40% tile density.
-///
-/// Tile size is snapped up to SNAP_MOD so the Candle backend's
-/// `pad_mod = 8` internal pad is a no-op.
+/// AOT-GAN is local-context sensitive: a crop that is mostly mask gives the
+/// generator little real texture to condition on and commonly collapses to
+/// muddy/black output. Grow the crop until the mask occupies a safe fraction
+/// of the inference canvas, expanding further on the available sides when a
+/// component sits near a page edge. The mask is never expanded here; only the
+/// surrounding context is.
 fn build_tile(
     composite: &[u8],
     mask:      &[u8],
@@ -740,43 +907,172 @@ fn build_tile(
     let bw = bb.x1 - bb.x0 + 1;
     let bh = bb.y1 - bb.y0 + 1;
     let short = bw.min(bh) as f32;
-    let pad   = (short * PAD_FRAC).round() as i32;
-    let pad   = pad.max(PAD_AROUND_BUBBLE);
+    let mut context = ((short * CONTEXT_FRAC).round() as i32).max(MIN_CONTEXT_PX);
+    let mut crop = crop_with_context(bb, context, src_w, src_h);
 
-    let x0 = (bb.x0 - pad).max(0);
-    let y0 = (bb.y0 - pad).max(0);
-    let x1 = (bb.x1 + pad).min(src_w as i32 - 1);
-    let y1 = (bb.y1 + pad).min(src_h as i32 - 1);
-    let w0 = (x1 - x0 + 1) as usize;
-    let h0 = (y1 - y0 + 1) as usize;
-    let tile_w = snap_up(w0 as i32, SNAP_MOD).max(SNAP_MOD);
-    let tile_h = snap_up(h0 as i32, SNAP_MOD).max(SNAP_MOD);
+    for _ in 0..16 {
+        let w0 = crop_width(&crop) as usize;
+        let h0 = crop_height(&crop) as usize;
+        let tile_w = snap_up(w0 as i32, SNAP_MOD).max(SNAP_MOD);
+        let tile_h = snap_up(h0 as i32, SNAP_MOD).max(SNAP_MOD);
+        let mask_area = count_mask_in_box(mask, src_w, &crop);
+        let density = mask_area as f32 / (tile_w * tile_h) as f32;
+        let full_page = crop.x0 == 0
+            && crop.y0 == 0
+            && crop.x1 == src_w as i32 - 1
+            && crop.y1 == src_h as i32 - 1;
+        if density <= TARGET_MASK_DENSITY || full_page {
+            break;
+        }
+        context = context + (context / 2).max(16);
+        crop = crop_with_context(bb, context, src_w, src_h);
+    }
 
-    let mut rgb  = vec![0u8; tile_w * tile_h * 3];
-    let mut msk  = vec![0u8; tile_w * tile_h];
+    let x0 = crop.x0;
+    let y0 = crop.y0;
+    let x1 = crop.x1;
+    let y1 = crop.y1;
+    let w0 = crop_width(&crop) as usize;
+    let h0 = crop_height(&crop) as usize;
+    let canvas = aot_canvas_size();
+    let tile_w = canvas;
+    let tile_h = canvas;
 
-    for ty in 0..tile_h {
-        let sy_i = if ty < h0 { ty as i32 } else { 2 * (h0 as i32 - 1) - ty as i32 };
-        let sy = sy_i.clamp(0, h0 as i32 - 1) as usize;
-        let src_y = y0 as usize + sy;
-        for tx in 0..tile_w {
-            let sx_i = if tx < w0 { tx as i32 } else { 2 * (w0 as i32 - 1) - tx as i32 };
-            let sx = sx_i.clamp(0, w0 as i32 - 1) as usize;
-            let src_x = x0 as usize + sx;
+    let mut crop_rgb = vec![0u8; w0 * h0 * 3];
+    let mut crop_mask = vec![0u8; w0 * h0];
+
+    for ty in 0..h0 {
+        let src_y = y0 as usize + ty;
+        for tx in 0..w0 {
+            let src_x = x0 as usize + tx;
             let src_rgb_i = (src_y * src_w + src_x) * 3;
             let src_msk_i =  src_y * src_w + src_x;
-            let di = ty * tile_w + tx;
-            rgb[di * 3    ] = composite[src_rgb_i    ];
-            rgb[di * 3 + 1] = composite[src_rgb_i + 1];
-            rgb[di * 3 + 2] = composite[src_rgb_i + 2];
-            msk[di]         = mask[src_msk_i];
+            let di = ty * w0 + tx;
+            crop_rgb[di * 3    ] = composite[src_rgb_i    ];
+            crop_rgb[di * 3 + 1] = composite[src_rgb_i + 1];
+            crop_rgb[di * 3 + 2] = composite[src_rgb_i + 2];
+            crop_mask[di]        = mask[src_msk_i];
         }
     }
+    let rgb = resize_rgb(&crop_rgb, w0, h0, tile_w, tile_h, FilterType::Triangle);
+    let msk = resize_mask_nearest(&crop_mask, w0, h0, tile_w, tile_h);
     (rgb, msk, tile_w, tile_h, BBox { x0, y0, x1, y1 })
 }
 
-/// Paste tile_rgb back into composite, only at pixels where the ORIGINAL
-/// mask is set. Composite is RGB stride 3.
+fn aot_canvas_size() -> usize {
+    std::env::var("AOT_CANVAS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v >= SNAP_MOD)
+        .map(|v| snap_up(v as i32, SNAP_MOD))
+        .unwrap_or(DEFAULT_AOT_CANVAS)
+}
+
+fn resize_rgb(src: &[u8], w: usize, h: usize, out_w: usize, out_h: usize, filter: FilterType) -> Vec<u8> {
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_raw(w as u32, h as u32, src.to_vec())
+        .expect("RGB crop shape");
+    image::imageops::resize(&img, out_w as u32, out_h as u32, filter).into_raw()
+}
+
+fn resize_mask_nearest(src: &[u8], w: usize, h: usize, out_w: usize, out_h: usize) -> Vec<u8> {
+    let img: ImageBuffer<image::Luma<u8>, Vec<u8>> = ImageBuffer::from_raw(w as u32, h as u32, src.to_vec())
+        .expect("mask crop shape");
+    image::imageops::resize(&img, out_w as u32, out_h as u32, FilterType::Nearest)
+        .into_raw()
+        .into_iter()
+        .map(|v| if v >= 127 { 255 } else { 0 })
+        .collect()
+}
+
+fn crop_with_context(bb: &BBox, context: i32, src_w: usize, src_h: usize) -> BBox {
+    BBox {
+        x0: (bb.x0 - context).max(0),
+        y0: (bb.y0 - context).max(0),
+        x1: (bb.x1 + context).min(src_w as i32 - 1),
+        y1: (bb.y1 + context).min(src_h as i32 - 1),
+    }
+}
+
+fn crop_width(bb: &BBox) -> i32 { bb.x1 - bb.x0 + 1 }
+fn crop_height(bb: &BBox) -> i32 { bb.y1 - bb.y0 + 1 }
+
+fn count_mask_in_box(mask: &[u8], src_w: usize, bb: &BBox) -> usize {
+    let mut n = 0usize;
+    for y in bb.y0..=bb.y1 {
+        let row = y as usize * src_w;
+        for x in bb.x0..=bb.x1 {
+            if mask[row + x as usize] >= 127 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+fn flat_fill_color(rgb: &[u8], mask: &[u8], w: usize, h: usize, bb: &BBox) -> Option<[u8; 3]> {
+    let mut samples = Vec::new();
+    let x0 = bb.x0.max(0) as usize;
+    let y0 = bb.y0.max(0) as usize;
+    let x1 = bb.x1.min(w as i32 - 1) as usize;
+    let y1 = bb.y1.min(h as i32 - 1) as usize;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let i = y * w + x;
+            if mask[i] >= 127 { continue; }
+            let adjacent =
+                (x > 0     && mask[i - 1] >= 127) ||
+                (x + 1 < w && mask[i + 1] >= 127) ||
+                (y > 0     && mask[i - w] >= 127) ||
+                (y + 1 < h && mask[i + w] >= 127);
+            if !adjacent { continue; }
+            let p = i * 3;
+            samples.push([rgb[p], rgb[p + 1], rgb[p + 2]]);
+        }
+    }
+    if samples.len() < FLAT_MIN_SAMPLES { return None; }
+    let n = samples.len() as f32;
+    let mut mean = [0f32; 3];
+    for s in &samples {
+        mean[0] += s[0] as f32; mean[1] += s[1] as f32; mean[2] += s[2] as f32;
+    }
+    mean[0] /= n; mean[1] /= n; mean[2] /= n;
+    let mut var = 0f32;
+    for s in &samples {
+        for c in 0..3 {
+            let d = s[c] as f32 - mean[c];
+            var += d * d;
+        }
+    }
+    let std = (var / (n * 3.0)).sqrt();
+    if std > FLAT_STD_THRESHOLD { return None; }
+    Some([mean[0].round() as u8, mean[1].round() as u8, mean[2].round() as u8])
+}
+
+fn fill_region(composite: &mut [u8], mask: &[u8], w: usize, bb: &BBox, color: [u8; 3]) {
+    let h = mask.len() / w;
+    let x0 = bb.x0.max(0) as usize;
+    let y0 = bb.y0.max(0) as usize;
+    let x1 = bb.x1.min(w as i32 - 1) as usize;
+    let y1 = bb.y1.min(h as i32 - 1) as usize;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let mi = y * w + x;
+            if mask[mi] < 127 { continue; }
+            let alpha = feather_alpha(mask, w, x, y, 3);
+            let p = mi * 3;
+            for c in 0..3 {
+                let old = composite[p + c] as f32;
+                let new = color[c] as f32;
+                composite[p + c] = (old * (1.0 - alpha) + new * alpha)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+/// Paste tile_rgb back into composite, only at pixels where the inpaint mask
+/// is set. Composite is RGB stride 3.
 fn compose_tile(
     composite: &mut [u8],
     src_w:     usize,
@@ -788,19 +1084,43 @@ fn compose_tile(
 ) {
     let w0 = (pad_box.x1 - pad_box.x0 + 1) as usize;
     let h0 = (pad_box.y1 - pad_box.y0 + 1) as usize;
-    for ty in 0..h0.min(tile_h) {
+    let crop_out = resize_rgb(tile_rgb, tile_w, tile_h, w0, h0, FilterType::Triangle);
+    for ty in 0..h0 {
         let dst_y = pad_box.y0 as usize + ty;
-        for tx in 0..w0.min(tile_w) {
+        for tx in 0..w0 {
             let dst_x = pad_box.x0 as usize + tx;
             let mi    = dst_y * src_w + dst_x;
             if orig_mask[mi] < 127 { continue; }
+            let alpha = feather_alpha(orig_mask, src_w, dst_x, dst_y, 3);
             let di = (dst_y * src_w + dst_x) * 3;
-            let ti = (ty * tile_w + tx) * 3;
-            composite[di    ] = tile_rgb[ti    ];
-            composite[di + 1] = tile_rgb[ti + 1];
-            composite[di + 2] = tile_rgb[ti + 2];
+            let ti = (ty * w0 + tx) * 3;
+            for c in 0..3 {
+                let old = composite[di + c] as f32;
+                let new = crop_out[ti + c] as f32;
+                composite[di + c] = (old * (1.0 - alpha) + new * alpha)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
         }
     }
+}
+
+fn feather_alpha(mask: &[u8], w: usize, x: usize, y: usize, radius: i32) -> f32 {
+    let h = mask.len() / w;
+    let mut min_dist = radius + 1;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let d = dx.abs() + dy.abs();
+            if d == 0 || d > radius { continue; }
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+            let outside = nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32;
+            if outside || mask[ny as usize * w + nx as usize] < 127 {
+                min_dist = min_dist.min(d);
+            }
+        }
+    }
+    if min_dist > radius { 1.0 } else { min_dist as f32 / (radius + 1) as f32 }
 }
 
 // ── PNG encode ────────────────────────────────────────────────────────────
@@ -813,4 +1133,43 @@ fn encode_png(rgb: &[u8], w: usize, h: usize) -> Result<Vec<u8>> {
         .write_image(buf.as_raw(), w as u32, h as u32, image::ExtendedColorType::Rgb8)
         .context("PNG encode failed")?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fill_enclosed_holes;
+
+    #[test]
+    fn fills_inside_closed_stroke() {
+        let mut mask = vec![0u8; 25];
+        for x in 1..4 {
+            mask[5 + x] = 1;
+            mask[15 + x] = 1;
+        }
+        for y in 1..4 {
+            mask[y * 5 + 1] = 1;
+            mask[y * 5 + 3] = 1;
+        }
+
+        fill_enclosed_holes(&mut mask, 5, 5);
+
+        assert_eq!(mask[12], 1);
+        assert_eq!(mask[0], 0);
+    }
+
+    #[test]
+    fn leaves_open_stroke_interior_unfilled() {
+        let mut mask = vec![0u8; 25];
+        for x in 1..4 {
+            mask[5 + x] = 1;
+            mask[15 + x] = 1;
+        }
+        for y in 1..4 {
+            mask[y * 5 + 1] = 1;
+        }
+
+        fill_enclosed_holes(&mut mask, 5, 5);
+
+        assert_eq!(mask[12], 0);
+    }
 }
