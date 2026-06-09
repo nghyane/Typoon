@@ -1,137 +1,86 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Wire types for the InpaintPlan msgpack produced by the scan container.
 //!
-//! Schema version: v1  (filename `scan/{job}/{i:04d}.msgpack`)
-//! Python source:  `python/typoon_inpaint_py/domain.py`
+//! Schema version: v2  (filename `scan/{job}/{i:04d}.msgpack`)
+//! Python source:  `python/typoon_inpaint/domain.py`
+//!
+//! v1 → v2 break:
+//!   - `origin: MaskOrigin` + `polygons` + `rasters` flat fields
+//!     replaced by `mask: MaskKind` tagged union.
+//!   - PadProfile table removed from Rust entirely; vision owns policy.
 
 use serde::Deserialize;
 
-use super::{BBox, BlockClass, MaskOrigin, PageKind, ShapeKind};
+use super::Group;
 
-/// Tight raster emitted only when `mask_origin == ctd_unet`.
-/// `data` is **zlib-compressed** raw 1-channel u8 (w*h bytes uncompressed,
-/// 0 = background, 255 = ink). Always decompress before use.
-#[derive(Debug, Deserialize)]
-pub struct EraseRaster {
-    pub x: i32,
-    pub y: i32,
-    pub w: u32,
-    pub h: u32,
-    /// zlib-compressed w*h u8 pixels.
-    #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>,
+/// Plain enums shared with vision. No policy attached — those live
+/// in vision Python (`PROFILES` in `domain.py`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockClass {
+    Sfx,
+    Dialogue,
+    Narration,
 }
 
-impl EraseRaster {
-    /// Decompress `data` → raw `w*h` u8 pixels.
-    pub fn decompress(&self) -> anyhow::Result<Vec<u8>> {
-        use std::io::Read;
-        let mut dec = flate2::read::ZlibDecoder::new(self.data.as_slice());
-        let mut out = Vec::with_capacity((self.w * self.h) as usize);
-        dec.read_to_end(&mut out)
-            .map_err(|e| anyhow::anyhow!("raster decompress: {e}"))?;
-        if out.len() != (self.w * self.h) as usize {
-            anyhow::bail!(
-                "raster decompress: expected {}×{}={} bytes, got {}",
-                self.w, self.h, self.w * self.h, out.len()
-            );
-        }
-        Ok(out)
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageKind {
+    Bw,
+    Color,
+    Webtoon,
 }
 
-/// Per-group mask descriptor shipped in the InpaintPlan.
-///
-/// Invariants (checked by `GroupMask::validate`):
-///   - `origin == lens_obb | lens_aabb` → `polygons` non-empty
-///   - `origin == ctd_unet`             → `rasters` non-empty
-///   - `origin == polygon_fallback`     → `polygons` and `rasters` empty
-#[derive(Debug, Deserialize)]
-pub struct GroupMask {
-    pub idx:        i32,
-    pub bbox:       BBox,
-    pub origin:     MaskOrigin,
-    pub class:      BlockClass,
-    pub shape_kind: ShapeKind,
-    /// Erase polygon stripes in page coords. Each inner vec is one polygon
-    /// `[[x, y], ...]` with ≥ 3 vertices.
-    #[serde(default)]
-    pub polygons:   Vec<Vec<[f32; 2]>>,
-    /// CTD UNet rasters — populated only when `origin == ctd_unet`.
-    #[serde(default)]
-    pub rasters:    Vec<EraseRaster>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    Dialogue,
+    Burst,
 }
 
-impl GroupMask {
-    /// Validate invariants after deserialization.
-    pub fn validate(&self) -> anyhow::Result<()> {
-        use MaskOrigin::*;
-        match self.origin {
-            LensObb | LensAabb => {
-                // Lens groups ship rasters (tight OBB/AABB pixels from
-                // _erase_masks_from_words) OR polygons. Either is valid.
-                if self.polygons.is_empty() && self.rasters.is_empty() {
-                    anyhow::bail!(
-                        "group {}: origin={:?} requires polygons or rasters",
-                        self.idx, self.origin
-                    );
-                }
-            }
-            CtdUnet => {
-                if self.rasters.is_empty() {
-                    anyhow::bail!(
-                        "group {}: ctd_unet requires non-empty rasters",
-                        self.idx
-                    );
-                }
-            }
-            PolygonFallback => {
-                if !self.polygons.is_empty() || !self.rasters.is_empty() {
-                    anyhow::bail!(
-                        "group {}: polygon_fallback must not ship pixel data",
-                        self.idx
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-}
+/// Wire-version of the plan we accept. Bump on every breaking change to
+/// the contract; reject everything else loudly.
+pub const PLAN_VERSION: u32 = 2;
 
 /// Top-level plan decoded from `scan/{job}/{page:04d}.msgpack`.
 #[derive(Debug, Deserialize)]
 pub struct InpaintPlan {
+    pub version:    u32,
     pub page_index: u32,
-    pub page_size:  [u32; 2],    // [W, H]
+    pub page_size:  [u32; 2],
     pub page_kind:  PageKind,
-    pub groups:     Vec<GroupMask>,
+    pub groups:     Vec<Group>,
 }
 
 impl InpaintPlan {
-    /// Decode from msgpack bytes and validate all group invariants.
+    /// Decode from msgpack bytes.
     ///
-    /// Handles two wire formats:
-    ///   1. Direct InpaintPlan msgpack (has `page_index`, `page_size`, `page_kind`, `groups`)
-    ///   2. Scan msgpack (has `inpaint_plan` field containing embedded InpaintPlan bytes)
+    /// Accepts two wire forms:
+    ///   1. Bare InpaintPlan msgpack.
+    ///   2. Scan msgpack with embedded `inpaint_plan` bytes.
     pub fn from_msgpack(bytes: &[u8]) -> anyhow::Result<Self> {
-        // Try to detect scan msgpack by checking for `inpaint_plan` key.
-        // rmp_serde will fail on the outer map if it's not an InpaintPlan,
-        // so we use a two-pass approach: try direct first, then scan-embedded.
-        if let Ok(plan) = rmp_serde::from_slice::<Self>(bytes) {
-            for g in &plan.groups { g.validate()?; }
-            return Ok(plan);
+        let plan: Self = match rmp_serde::from_slice::<Self>(bytes) {
+            Ok(p) => p,
+            Err(_) => {
+                #[derive(serde::Deserialize)]
+                struct Wrapper {
+                    #[serde(with = "serde_bytes")]
+                    inpaint_plan: Vec<u8>,
+                }
+                let w: Wrapper = rmp_serde::from_slice(bytes).map_err(|e| {
+                    anyhow::anyhow!("InpaintPlan decode (direct + scan-embedded): {e}")
+                })?;
+                rmp_serde::from_slice(&w.inpaint_plan)
+                    .map_err(|e| anyhow::anyhow!("InpaintPlan embedded decode: {e}"))?
+            }
+        };
+        if plan.version != PLAN_VERSION {
+            anyhow::bail!(
+                "InpaintPlan version mismatch: got {}, expected {} \
+                 (regenerate scan msgpack)",
+                plan.version, PLAN_VERSION
+            );
         }
-        // Try scan msgpack: deserialize as generic map, extract inpaint_plan bytes.
-        #[derive(serde::Deserialize)]
-        struct ScanWrapper {
-            #[serde(with = "serde_bytes")]
-            inpaint_plan: Vec<u8>,
-        }
-        let wrapper: ScanWrapper = rmp_serde::from_slice(bytes)
-            .map_err(|e| anyhow::anyhow!("InpaintPlan decode (direct + scan-embedded): {e}"))?;
-        let plan: Self = rmp_serde::from_slice(&wrapper.inpaint_plan)
-            .map_err(|e| anyhow::anyhow!("InpaintPlan embedded decode: {e}"))?;
-        for g in &plan.groups { g.validate()?; }
         Ok(plan)
     }
 

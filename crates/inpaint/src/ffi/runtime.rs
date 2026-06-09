@@ -8,17 +8,9 @@ use std::sync::Arc;
 
 use crate::Inpainter;
 use super::errors::to_pyerr;
-use crate::domain::{BlockClass, InpaintPlan, MaskOrigin, PageKind, ShapeKind};
+use crate::domain::{BlockClass, PageKind, ShapeKind};
 use crate::pipeline;
 
-fn origin_str(o: MaskOrigin) -> &'static str {
-    match o {
-        MaskOrigin::LensObb         => "lens_obb",
-        MaskOrigin::LensAabb        => "lens_aabb",
-        MaskOrigin::CtdUnet         => "ctd_unet",
-        MaskOrigin::PolygonFallback => "polygon_fallback",
-    }
-}
 fn class_str(c: BlockClass) -> &'static str {
     match c {
         BlockClass::Sfx       => "sfx",
@@ -108,11 +100,9 @@ fn decode_plan(py: Python<'_>, plan_bytes: &[u8]) -> PyResult<PyObject> {
         let gd = pyo3::types::PyDict::new_bound(py);
         let _ = gd.set_item("idx",        g.idx);
         let _ = gd.set_item("bbox",       vec![g.bbox.x1, g.bbox.y1, g.bbox.x2, g.bbox.y2]);
-        let _ = gd.set_item("origin",     origin_str(g.origin));
+        let _ = gd.set_item("kind",       g.mask.tag());
         let _ = gd.set_item("class",      class_str(g.class));
         let _ = gd.set_item("shape_kind", shape_str(g.shape_kind));
-        let _ = gd.set_item("n_polygons", g.polygons.len());
-        let _ = gd.set_item("n_rasters",  g.rasters.len());
         gd
     }).collect();
     d.set_item("groups", groups)?;

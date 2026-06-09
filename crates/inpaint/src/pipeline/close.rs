@@ -19,6 +19,14 @@ pub fn close_and_fill(
     Ok(patch)
 }
 
+/// Outward-only dilate by radius `r` (rectangular kernel). Use when the
+/// input raster already encodes the desired shape and we only want to
+/// add a small breathing margin around it.
+pub fn dilate(patch: Vec<u8>, pw: usize, ph: usize, r: usize) -> Vec<u8> {
+    if r == 0 { return patch; }
+    dilate_rect(patch, pw, ph, r)
+}
+
 fn dilate_rect(src: Vec<u8>, w: usize, h: usize, r: usize) -> Vec<u8> {
     let mut h1 = vec![0u8; w * h];
     for y in 0..h {

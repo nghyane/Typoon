@@ -5,8 +5,8 @@ import {
   LensTextRecognizer,
   MangaTextRegionDetector,
   ModelRepository,
-  TranslationSession,
-  type TranslatedPage,
+  TranslationEngine,
+  type RenderedPage,
   ensureMangaFontLoaded,
 } from '../../src/index'
 import ortWebgpuWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
@@ -59,7 +59,7 @@ const debugTextBoxes = document.querySelector<HTMLInputElement>('#debugTextBoxes
 const debugBounds = document.querySelector<HTMLInputElement>('#debugBounds')!
 const debugLabels = document.querySelector<HTMLInputElement>('#debugLabels')!
 
-const translatedPages = new Map<number, TranslatedPage>()
+const renderedPages = new Map<number, RenderedPage>()
 
 const models = new ModelRepository({
   manifest: {
@@ -74,7 +74,7 @@ const models = new ModelRepository({
   },
 })
 
-const session = new TranslationSession({
+const engine = new TranslationEngine({
   sourceLang: 'en',
   targetLang: 'vi',
   recognizer: new LensTextRecognizer(),
@@ -85,36 +85,49 @@ const session = new TranslationSession({
     wasmNumThreads: 1,
   }),
   translator: new GoogleTranslateWeb(),
+  scheduler: {
+    concurrency: { pages: 4, recognize: 4, detect: 1, translate: 4 },
+    retry: { recognize: { attempts: 2 }, translate: { attempts: 2 } },
+  },
 })
 
-session.subscribeStatus(snapshot => {
-  status.textContent = JSON.stringify({ status: snapshot.capabilities }, null, 2)
-})
-
-const work = session.openWork({ id: 'dev-sample', sourceLang: 'en', targetLang: 'vi' })
-const segment = work.openSegment({
-  id: 'chapter-20',
-  kind: 'chapter',
-  pages,
-  continuity: 'continuous',
-})
+status.textContent = 'status idle'
 
 run.addEventListener('click', async () => {
   run.disabled = true
   clearOverlays()
-  translatedPages.clear()
+  clearPendingOverlays()
+  clearFailedOverlays()
+  renderedPages.clear()
   log.textContent = 'running chapter…'
   try {
     await ensureMangaFontLoaded()
-    await session.ensureReady()
     const startedAt = performance.now()
-    for (let index = 0; index < segment.pageCount; index++) {
-      logProgress(index, startedAt)
-      const page = await segment.page(index).translate()
-      translatedPages.set(index, page)
-      overlays.attach(index, page, overlayOptions())
-      logProgress(index + 1, startedAt)
+    markPendingPages()
+    const segmentRun = engine.translateSegment({
+      workId: 'dev-sample',
+      segmentId: 'chapter-20',
+      source: pages,
+      sourceLang: 'en',
+      targetLang: 'vi',
+      stopOnError: false,
+    })
+    for await (const event of segmentRun.events()) {
+      status.textContent = `event ${event.type}`
+      if (event.type === 'page-display-ready') {
+        renderedPages.set(event.pageIndex, event.page)
+        setPagePending(event.pageIndex, false)
+        overlays.attach(event.pageIndex, event.page, overlayOptions())
+        logProgress(renderedPages.size, startedAt)
+      } else if (event.type === 'page-layout-failed') {
+        logProgress(renderedPages.size, startedAt)
+      } else if (event.type === 'page-failed') {
+        setPagePending(event.pageIndex, false)
+        setPageFailed(event.pageIndex, event.error)
+        logProgress(renderedPages.size, startedAt)
+      }
     }
+    await segmentRun.done()
   } catch (error) {
     log.textContent = error instanceof Error ? error.stack ?? error.message : String(error)
   } finally {
@@ -123,13 +136,13 @@ run.addEventListener('click', async () => {
 })
 
 for (const input of [erase, debugDrawable, debugTextBoxes, debugBounds, debugLabels]) {
-  input.addEventListener('change', renderTranslatedPages)
+  input.addEventListener('change', renderRenderedPages)
 }
 
-function renderTranslatedPages(): void {
+function renderRenderedPages(): void {
   clearOverlays()
-  for (const [index, page] of translatedPages) overlays.attach(index, page, overlayOptions())
-  logProgress(translatedPages.size, null)
+  for (const [index, page] of renderedPages) overlays.attach(index, page, overlayOptions())
+  logProgress(renderedPages.size, null)
 }
 
 function overlayOptions() {
@@ -148,23 +161,64 @@ function clearOverlays(): void {
   reader.querySelectorAll('[data-typoon-overlay="true"]').forEach(overlay => overlay.remove())
 }
 
+function markPendingPages(): void {
+  for (let index = 0; index < pages.pageCount; index++) {
+    if (!renderedPages.has(index)) setPagePending(index, true)
+  }
+}
+
+function setPagePending(index: number, pending: boolean): void {
+  const host = pageHost(index)
+  host.querySelector('[data-dev-pending-overlay="true"]')?.remove()
+  if (!pending) return
+  const overlay = document.createElement('div')
+  overlay.dataset.devPendingOverlay = 'true'
+  overlay.innerHTML = '<span class="pending-spinner" aria-hidden="true"></span><span>Translating…</span>'
+  host.appendChild(overlay)
+}
+
+function clearPendingOverlays(): void {
+  reader.querySelectorAll('[data-dev-pending-overlay="true"]').forEach(overlay => overlay.remove())
+}
+
+function setPageFailed(index: number, error: unknown): void {
+  const host = pageHost(index)
+  host.querySelector('[data-dev-failed-overlay="true"]')?.remove()
+  const overlay = document.createElement('div')
+  overlay.dataset.devFailedOverlay = 'true'
+  const message = error instanceof Error ? error.message : String(error)
+  overlay.textContent = `Failed: ${message}`
+  host.appendChild(overlay)
+}
+
+function clearFailedOverlays(): void {
+  reader.querySelectorAll('[data-dev-failed-overlay="true"]').forEach(overlay => overlay.remove())
+}
+
+function pageHost(index: number): HTMLElement {
+  const host = reader.querySelector<HTMLElement>(`[data-page-index="${index}"]`)
+  if (!host) throw new RangeError(`page host not found: ${index}`)
+  return host
+}
+
 function logProgress(done: number, startedAt: number | null): void {
   const elapsedMs = startedAt === null ? null : Math.round(performance.now() - startedAt)
   log.textContent = JSON.stringify({
     progress: {
       done,
-      total: segment.pageCount,
+      total: pages.pageCount,
       elapsedMs,
     },
     metrics: collectTextMetrics(),
-    pages: [...translatedPages].map(([pageIndex, page]) => ({
+    pages: [...renderedPages].map(([pageIndex, page]) => ({
       pageIndex,
+      phase: page.phase,
       placementCount: page.placements.length,
       translationCount: page.translations.length,
       placements: page.placements.map(placement => ({
         id: placement.id,
         role: placement.role,
-        text: placement.sourceText,
+        text: sourceTextForPlacement(page, placement.sourceUnitIds),
         bbox: placement.bbox,
         rotationDeg: placement.rotationDeg,
         textBoxes: placement.textBoxes,
@@ -173,6 +227,11 @@ function logProgress(done: number, startedAt: number | null): void {
       translations: page.translations,
     })),
   }, null, 2)
+}
+
+function sourceTextForPlacement(page: RenderedPage, sourceUnitIds: readonly string[]): string {
+  const byId = new Map(page.textUnits.map(unit => [unit.id, unit.sourceText]))
+  return sourceUnitIds.map(id => byId.get(id)).filter(Boolean).join('\n')
 }
 
 function collectTextMetrics(): unknown[] {

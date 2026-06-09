@@ -1,4 +1,5 @@
 import type { BBox, Polygon } from './geometry'
+import type { TextRole } from './planning'
 
 export type TextDirection = 'horizontal' | 'vertical'
 
@@ -24,6 +25,14 @@ export interface TextBlock {
   readonly confidence: number
   readonly lines: readonly TextLine[]
   readonly words: readonly TextWord[]
+}
+
+export interface TextUnit {
+  readonly id: string
+  readonly pageIndex: number
+  readonly blockIds: readonly string[]
+  readonly sourceText: string
+  readonly roleHint?: TextRole
 }
 
 export interface RecognizedTextPage {

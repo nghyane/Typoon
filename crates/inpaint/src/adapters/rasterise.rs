@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Polygon → binary raster and CTD raster paste.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 use crate::domain::{BBox, EraseRaster};
 

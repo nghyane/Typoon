@@ -384,23 +384,6 @@ def warm():
 
 # ── Group classification helpers ─────────────────────────────────────────────
 
-def _derive_mask_origin(g) -> str:
-    """Map BubbleGroup provenance → MaskOrigin string for inpaint routing."""
-    if g.source == "ctd" and (g.erase_masks or ()):
-        return "ctd_unet"
-    if g.used_fallback or not (g.erase_masks or ()):
-        return "polygon_fallback"
-    if abs(g.rotation_deg) > 1.0:
-        return "lens_obb"
-    for em in (g.erase_masks or ()):
-        h, w = em.image.shape[:2]
-        bbox_h = g.bbox[3] - g.bbox[1]
-        bbox_w = g.bbox[2] - g.bbox[0]
-        if h != bbox_h or w != bbox_w:
-            return "lens_obb"
-    return "lens_aabb"
-
-
 def _classify_block(g) -> str:
     """sfx | dialogue | narration from BubbleGroup geometry + text."""
     try:
@@ -414,37 +397,23 @@ def _classify_block(g) -> str:
         return "dialogue"
 
 
-def _erase_polygons_from_group(g) -> list:
-    """Convert erase_masks rasters → AABB polygon list for msgpack."""
-    polys = []
-    for em in (g.erase_masks or ()):
-        ex, ey = int(em.x), int(em.y)
-        ew, eh = int(em.image.shape[1]), int(em.image.shape[0])
-        polys.append([
-            [float(ex),      float(ey)],
-            [float(ex + ew), float(ey)],
-            [float(ex + ew), float(ey + eh)],
-            [float(ex),      float(ey + eh)],
-        ])
-    return polys
-
-
 # ── InpaintPlan builder ──────────────────────────────────────────────────────
 
-def _build_inpaint_plan(groups, W: int, H: int, image: np.ndarray) -> bytes:
-    """Derive InpaintPlan msgpack from BubbleGroups.
+def _build_inpaint_plan(
+    groups, blocks, W: int, H: int, image: np.ndarray, text_mask,
+) -> bytes:
+    """Derive InpaintPlan msgpack (v2 schema) from BubbleGroups.
 
-    Encodes mask_origin, class, erase_polygons and page_kind.
-    No raster mask is produced here — morphological close + hole-fill
-    happen in the inpaint container (Rust) after polygon rasterisation.
-
-    Returns: raw msgpack bytes for the embedded 'inpaint_plan' field.
-    """
-    from typoon_inpaint_py.scan import (
-        _to_group_mask, _detect_page_kind, _encode_plan, InpaintPlan,
+    Each group is tagged with a `MaskKind` chosen by `_build_group` based on
+    the strategy table (see python/typoon_inpaint/scan.py)."""
+    from typoon_inpaint.scan import (
+        _build_group, _detect_page_kind, _encode_plan, InpaintPlan,
     )
-    page_kind = _detect_page_kind(image)
-    plan_groups = tuple(_to_group_mask(i, g) for i, g in enumerate(groups))
+    page_kind   = _detect_page_kind(image)
+    plan_groups = tuple(
+        _build_group(i, g, blocks, image, text_mask)
+        for i, g in enumerate(groups)
+    )
     plan = InpaintPlan(
         page_index=0,   # overridden per-page below
         page_size=(W, H),
@@ -545,10 +514,9 @@ async def _scan_page(
                     "line_count":         getattr(g.typesetting, "line_count", 0),
                     "avg_chars_per_line": getattr(g.typesetting, "avg_chars_per_line", 0.0),
                 } if g.typesetting else None,
-                # Routing tags for inpaint container
-                "mask_origin":   _derive_mask_origin(g),
+                # Routing tag for inpaint container (full MaskKind +
+                # raster bytes live inside the embedded `inpaint_plan`).
                 "class":         _classify_block(g),
-                "erase_polygons": _erase_polygons_from_group(g),
             }
             for i, g in enumerate(groups)
         ],
@@ -558,10 +526,12 @@ async def _scan_page(
         "timing_ms":      {"total": round((time.perf_counter() - tp0) * 1000)},
     }
 
-    # Build InpaintPlan and embed as 'inpaint_plan' bytes inside msgpack.
-    # The inpaint container reads this to rasterise masks — no .bin needed.
+    # Build InpaintPlan (v2 schema: MaskKind per group) and embed as
+    # 'inpaint_plan' bytes inside the scan msgpack. The inpaint container
+    # reads this to dispatch per-group erase strategy.
+    blocks = list(detection.blocks)
     plan_bytes = await asyncio.to_thread(
-        _build_inpaint_plan, groups, W, H, image
+        _build_inpaint_plan, groups, blocks, W, H, image, None,
     )
     scan_data["inpaint_plan"] = plan_bytes
 

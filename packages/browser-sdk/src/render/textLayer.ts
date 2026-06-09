@@ -59,7 +59,7 @@ function createTextBox(
   box.style.overflow = 'hidden'
   box.style.color = style.fill
   box.style.textShadow = 'none'
-  box.title = `${placement.sourceText}\n→\n${unit.targetText}\nfont=${fit.fontSizePx}px maxDom=${fit.maxDomFitPx}px cap=${fit.capReason} rot=${rotationDeg.toFixed(1)}°`
+  box.title = `${unit.sourceText}\n→\n${unit.targetText}\nfont=${fit.fontSizePx}px maxDom=${fit.maxDomFitPx}px cap=${fit.capReason} rot=${rotationDeg.toFixed(1)}°`
 
   const text = document.createElement('span')
   text.dataset.typoonTextContent = 'true'

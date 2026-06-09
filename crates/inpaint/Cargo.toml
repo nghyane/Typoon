@@ -24,9 +24,11 @@ path = "tests/domain.rs"
 [features]
 default  = ["python"]
 python   = ["dep:pyo3", "dep:numpy", "dep:ndarray"]
+jemalloc = ["dep:tikv-jemallocator"]
 serve    = [
   "dep:axum", "dep:tokio", "dep:tower-http", "dep:bytes",
   "dep:reqwest", "dep:url", "dep:hmac", "dep:sha2",
+  "jemalloc",
 ]
 
 [dependencies]
@@ -58,6 +60,9 @@ flate2        = "1.0"
 pyo3   = { version = "0.23", features = ["extension-module"], optional = true }
 numpy  = { version = "0.23", optional = true }
 ndarray = { version = "0.16", optional = true }
+
+# jemalloc — aggressive dirty page decay for container workloads
+tikv-jemallocator = { version = "0.6", features = ["background_threads"], optional = true }
 
 # Shared
 serde         = { version = "1", features = ["derive"] }

@@ -1,8 +1,7 @@
 import type { BBox, Point, Polygon } from '../domain/geometry'
-import type { FontHint, PagePlan, TextPlacement, TextRole } from '../domain/planning'
+import type { FontHint, TextPlacement, TextRole } from '../domain/planning'
 import type { TextRegion } from '../domain/regions'
-import type { RecognizedTextPage, TextBlock } from '../domain/text'
-import type { TranslationKind, TranslationUnit } from '../domain/translation'
+import type { RecognizedTextPage, TextBlock, TextUnit } from '../domain/text'
 
 interface Anchor {
   readonly kind: TextRegion['kind']
@@ -11,57 +10,39 @@ interface Anchor {
   readonly innerBBox: BBox | null
 }
 
-export function planPage(args: {
-  readonly text: RecognizedTextPage
-  readonly regions?: readonly TextRegion[]
-  readonly pageIndex?: number
-}): PagePlan {
-  const start = performance.now()
-  const pageIndex = args.pageIndex ?? args.text.pageIndex
-  const placements = blocksToTextPlacements(args.text.blocks, pageIndex, args.text.pageSize, args.regions ?? [])
-  return {
-    pageIndex,
-    pageSize: args.text.pageSize,
-    placements,
-    units: placementsToTranslationUnits(placements),
-    timingMs: { planner: Math.round(performance.now() - start) },
-  }
+export function textPlacementsFromRecognition(recognized: RecognizedTextPage, units: readonly TextUnit[]): TextPlacement[] {
+  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, [])
 }
 
-export function placementsToTranslationUnits(placements: readonly TextPlacement[]): TranslationUnit[] {
-  return placements.map(placement => ({
-    id: placement.id,
-    placementId: placement.id,
-    pageIndex: placement.pageIndex,
-    sourceText: placement.sourceText,
-    kind: translationKindForPlacement(placement),
-    role: placement.role,
-  }))
-}
-
-function translationKindForPlacement(placement: TextPlacement): TranslationKind {
-  if (!placement.sourceText.trim()) return 'skip'
-  return placement.role === 'sfx' ? 'sfx' : 'dialogue'
+export function layoutPlacementsFromRegions(
+  recognized: RecognizedTextPage,
+  units: readonly TextUnit[],
+  regions: readonly TextRegion[],
+): TextPlacement[] {
+  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, regions)
 }
 
 function blocksToTextPlacements(
   blocks: readonly TextBlock[],
+  units: readonly TextUnit[],
   pageIndex: number,
   pageSize: readonly [number, number],
   regions: readonly TextRegion[],
 ): TextPlacement[] {
-  if (regions.length) return groupedTextPlacements(blocks, regions, pageIndex, pageSize)
-  return fallbackTextPlacements(blocks, pageIndex, pageSize)
+  if (regions.length) return groupedTextPlacements(blocks, units, regions, pageIndex, pageSize)
+  return textOnlyPlacements(blocks, units, pageIndex, pageSize)
 }
 
-function fallbackTextPlacements(blocks: readonly TextBlock[], pageIndex: number, pageSize: readonly [number, number]): TextPlacement[] {
-  return [...blocks]
-    .sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0])
-    .map((block, index) => blockToTextPlacement(block, index, pageIndex, pageSize))
+function textOnlyPlacements(blocks: readonly TextBlock[], units: readonly TextUnit[], pageIndex: number, pageSize: readonly [number, number]): TextPlacement[] {
+  return blocks
+    .map((block, blockIndex) => ({ block, blockIndex }))
+    .sort((a, b) => a.block.bbox[1] - b.block.bbox[1] || a.block.bbox[0] - b.block.bbox[0])
+    .map(({ block, blockIndex }, index) => blockToTextPlacement(block, units[blockIndex]?.id ?? blockUnitId(pageIndex, blockIndex), index, pageIndex, pageSize))
 }
 
 function groupedTextPlacements(
   blocks: readonly TextBlock[],
+  units: readonly TextUnit[],
   regions: readonly TextRegion[],
   pageIndex: number,
   pageSize: readonly [number, number],
@@ -76,27 +57,31 @@ function groupedTextPlacements(
       .filter(({ block, index }) => !assigned.has(index) && containsCenter(anchor.bbox, block.bbox))
       .map(({ index }) => index)
     if (!memberIds.length) continue
-    const members = memberIds.map(index => blocks[index]!)
-    placements.push(groupToTextPlacement(members, anchor, placements.length, pageIndex, pageSize))
+    const members = memberIds.map(index => ({ block: blocks[index]!, index }))
+    placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize))
     memberIds.forEach(index => assigned.add(index))
   }
 
   for (let i = 0; i < blocks.length; i++) {
     if (assigned.has(i)) continue
-    placements.push(blockToTextPlacement(blocks[i]!, placements.length, pageIndex, pageSize))
+    placements.push(blockToTextPlacement(blocks[i]!, units[i]?.id ?? blockUnitId(pageIndex, i), placements.length, pageIndex, pageSize))
   }
   return placements.sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0])
 }
 
 function groupToTextPlacement(
-  members: readonly TextBlock[],
+  members: readonly { readonly block: TextBlock; readonly index: number }[],
+  units: readonly TextUnit[],
   anchor: Anchor,
   index: number,
   pageIndex: number,
   pageSize: readonly [number, number],
 ): TextPlacement {
-  const ordered = sortForReading(members)
-  const sourceText = ordered.map(block => block.text.trim()).filter(Boolean).join('\n')
+  const ordered = sortForReading(members.map(member => member.block))
+  const orderedUnitIds = ordered.map(block => {
+    const member = members.find(item => item.block === block)!
+    return units[member.index]?.id ?? blockUnitId(pageIndex, member.index)
+  })
   const inferred = classifyMergedBlocks(ordered)
   const role = anchor.kind === 'bubble' || anchor.kind === 'text_bubble' ? 'dialogue' : inferred
   const drawable = drawableForGroup(ordered, anchor, role, pageSize)
@@ -104,7 +89,7 @@ function groupToTextPlacement(
     id: `p${pageIndex}-r${index}`,
     pageIndex,
     pageSize,
-    sourceText,
+    sourceUnitIds: orderedUnitIds,
     drawable,
     bbox: polygonBBox(drawable, pageSize),
     textBoxes: ordered.flatMap(block => block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox]),
@@ -115,14 +100,14 @@ function groupToTextPlacement(
   }
 }
 
-function blockToTextPlacement(block: TextBlock, index: number, pageIndex: number, pageSize: readonly [number, number]): TextPlacement {
+function blockToTextPlacement(block: TextBlock, unitId: string, index: number, pageIndex: number, pageSize: readonly [number, number]): TextPlacement {
   const role = classifyBlock(block)
   const drawable = drawableForBlock(block, role, pageSize)
   return {
     id: `p${pageIndex}-r${index}`,
     pageIndex,
     pageSize,
-    sourceText: block.text,
+    sourceUnitIds: [unitId],
     drawable,
     bbox: polygonBBox(drawable, pageSize),
     textBoxes: block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox],
@@ -131,6 +116,10 @@ function blockToTextPlacement(block: TextBlock, index: number, pageIndex: number
     confidence: block.confidence,
     fontHint: fontHint(block),
   }
+}
+
+function blockUnitId(pageIndex: number, blockIndex: number): string {
+  return `p${pageIndex}-b${blockIndex}`
 }
 
 function dedupeAnchors(regions: readonly TextRegion[]): Anchor[] {

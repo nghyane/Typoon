@@ -10,6 +10,16 @@
 //! Per-page pipeline lives in `crate::pipeline::run_page`.
 //! R2 I/O lives entirely in this file (no mixed concerns).
 
+// ── jemalloc: aggressive dirty page decay so RSS drops between batches ───
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemalloc")]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"background_thread:true,dirty_decay_ms:100,muzzy_decay_ms:100\0";
+
 use std::{path::PathBuf, sync::Arc, time::{Instant, SystemTime}};
 
 use anyhow::{Context, Result};

@@ -60,8 +60,17 @@ function batchUnits(units: readonly TranslationUnit[], maxBatchChars: number): T
 
 function serializeBatch(units: readonly TranslationUnit[]): string {
   return units
-    .map(unit => `${marker(unit.id)}\n${unit.sourceText.trim()}`)
+    .map(unit => `${marker(unit.id)}\n${sourceTextForTranslation(unit.sourceText)}`)
     .join('\n')
+}
+
+function sourceTextForTranslation(sourceText: string): string {
+  return sourceText
+    .trim()
+    .replace(/([\p{L}\p{N}])-\s*\n\s*([\p{L}\p{N}])/gu, '$1$2')
+    .replace(/\s*\n+\s*/gu, ' ')
+    .replace(/[ \t]+/gu, ' ')
+    .trim()
 }
 
 function parseTranslatedBatch(text: string): Map<string, string> {
@@ -113,7 +122,6 @@ function parseGoogleTranslatePayload(payload: unknown): string {
 function toTranslatedUnit(unit: TranslationUnit, targetText: string): TranslatedUnit {
   return {
     unitId: unit.id,
-    placementId: unit.placementId,
     pageIndex: unit.pageIndex,
     kind: targetText.trim() ? unit.kind : 'skip',
     role: unit.role,

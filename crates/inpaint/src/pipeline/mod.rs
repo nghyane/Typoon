@@ -13,7 +13,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::adapters::png_codec;
-use crate::domain::{InpaintPlan, profile_for};
+use crate::domain::InpaintPlan;
 use crate::Inpainter;
 
 /// Debug-dump sink — writes intermediate buffers if `INPAINT_DEBUG_DIR` is set.
@@ -88,8 +88,7 @@ pub fn run_page(
 
     // 3. Route each region: flat-fill or AOT
     for (ri, region) in region_list.iter().enumerate() {
-        let profile = profile_for(region.dominant_class);
-        let decision = route::decide(region, &composite, &page_mask, w, h, &profile);
+        let decision = route::decide(region, &composite, &page_mask, w, h);
 
         match decision {
             route::Route::FlatFill { color } => {

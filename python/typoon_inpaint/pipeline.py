@@ -31,8 +31,6 @@ class InpaintPipeline:
     async def page(self, job_id: int, page_index: int) -> str:
         """Inpaint one page. Returns output R2 key."""
         async with self._sem:
-            # Scan msgpack now embeds the InpaintPlan.
-            # InpaintRuntime.inpaint_page_async accepts scan or bare plan.
             scan  = await self._fs.get(f"scan/{job_id}/{page_index:04d}.msgpack")
             jpeg  = await self._fs.get(f"prepared/{job_id}/{page_index:04d}.jpg")
             out_key = f"inpaint/{job_id}/{page_index:04d}.png"
@@ -41,10 +39,10 @@ class InpaintPipeline:
             debug_dir = str(page_sink.path) if not isinstance(page_sink, NullSink) else None
 
             png: bytes = await asyncio.to_thread(
-                self._rt.inpaint_page,
-                bytes(jpeg), bytes(scan), debug_dir,
+                self._rt.inpaint_page, jpeg, scan, debug_dir,
             )
-            await self._fs.put(out_key, bytes(png), "image/png")
+            del jpeg, scan
+            await self._fs.put(out_key, png, "image/png")
             log.info("page %04d done → %s", page_index, out_key)
             return out_key
 

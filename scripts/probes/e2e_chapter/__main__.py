@@ -39,7 +39,7 @@ async def scan_page(
     from typoon_inpaint.scan import build_plan_for_image
     t0 = time.perf_counter()
     plan_bytes = await build_plan_for_image(
-        img_path, lang=lang,
+        img_path, page_index=idx, lang=lang,
         sink=sink.subdir(f"page_{idx:04d}/scan"),
     )
     elapsed = time.perf_counter() - t0
@@ -98,18 +98,32 @@ async def inpaint_page(
         out_path = out_dir / f"{idx:04d}.png"
         out_path.write_bytes(bytes(png_bytes))
 
+        # Also write mask overlay on original for visual verification
+        from typoon_inpaint import rasterise_plan_mask
+        from PIL import Image
+        import numpy as np
+        mask    = rasterise_plan_mask(page["plan_bytes"], page["jpeg_bytes"])
+        img     = np.array(Image.open(page["path"]).convert("RGB"))
+        H, W    = img.shape[:2]
+        mask_a  = np.frombuffer(bytes(mask), dtype=np.uint8).reshape(H, W)
+        overlay = img.copy()
+        overlay[mask_a > 0, 0] = 220
+        overlay[mask_a > 0, 1] = (overlay[mask_a > 0, 1].astype(int) * 0.3).astype(np.uint8)
+        overlay[mask_a > 0, 2] = (overlay[mask_a > 0, 2].astype(int) * 0.3).astype(np.uint8)
+        Image.fromarray(overlay).save(out_dir / f"{idx:04d}_overlay.png")
+
     elapsed = time.perf_counter() - t0
 
     # Quick diagnostics from plan
     from typoon_inpaint import decode_plan
     plan = decode_plan(page["plan_bytes"])
-    origins = Counter(g["origin"] for g in plan["groups"])
-    classes = Counter(g["class"]  for g in plan["groups"])
+    kinds   = Counter(g["kind"]  for g in plan["groups"])
+    classes = Counter(g["class"] for g in plan["groups"])
 
     log.info(
-        "inpaint page %04d  %.1fs  groups=%d  origins=%s  out=%s",
+        "inpaint page %04d  %.1fs  groups=%d  kinds=%s  out=%s",
         idx, elapsed, len(plan["groups"]),
-        dict(origins), out_path.name,
+        dict(kinds), out_path.name,
     )
     return {
         "idx":        idx,
@@ -117,7 +131,7 @@ async def inpaint_page(
         "scan_ms":    page["scan_ms"],
         "n_groups":   len(plan["groups"]),
         "page_kind":  plan["page_kind"],
-        "origins":    dict(origins),
+        "kinds":      dict(kinds),
         "classes":    dict(classes),
         "out":        str(out_path),
     }
@@ -176,11 +190,11 @@ async def run(args) -> None:
 
     # Summary
     total_groups   = sum(r["n_groups"] for r in results)
-    all_origins    = Counter()
+    all_kinds      = Counter()
     all_classes    = Counter()
     all_page_kinds = Counter()
     for r in results:
-        all_origins.update(r["origins"])
+        all_kinds.update(r["kinds"])
         all_classes.update(r["classes"])
         all_page_kinds[r["page_kind"]] += 1
 
@@ -193,7 +207,7 @@ async def run(args) -> None:
         "scan_ms_avg":   round(sum(r["scan_ms"]    for r in results) / max(len(results),1)),
         "inpaint_ms_avg":round(sum(r["inpaint_ms"] for r in results) / max(len(results),1)),
         "total_groups":  total_groups,
-        "origins":       dict(all_origins),
+        "kinds":         dict(all_kinds),
         "classes":       dict(all_classes),
         "page_kinds":    dict(all_page_kinds),
         "output_dir":    str(out_dir),
@@ -210,7 +224,7 @@ async def run(args) -> None:
     print(f"  scan avg  : {summary['scan_ms_avg']}ms")
     print(f"  inpaint avg: {summary['inpaint_ms_avg']}ms")
     print(f"  groups    : {total_groups} total")
-    print(f"  origins   : {dict(all_origins)}")
+    print(f"  kinds     : {dict(all_kinds)}")
     print(f"  classes   : {dict(all_classes)}")
     print(f"  page_kinds: {dict(all_page_kinds)}")
     print(f"  output    : {out_dir}")

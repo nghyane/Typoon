@@ -46,15 +46,28 @@ export function createOverlayElement(
   root.style.overflow = 'hidden'
   root.style.setProperty('--typoon-page-scale', '1')
 
-  const byPlacementId = new Map(result.translations.map(unit => [unit.placementId, unit]))
+  const byUnitId = new Map(result.translations.map(unit => [unit.unitId, unit]))
   const textItems = result.placements
-    .map(placement => ({ placement, unit: byPlacementId.get(placement.id) }))
+    .map(placement => ({ placement, unit: translatedUnitForPlacement(placement, byUnitId) }))
     .filter((item): item is { placement: TextPlacement; unit: TranslatedUnit } => !!item.unit && item.unit.kind !== 'skip' && item.unit.targetText.trim() !== '')
 
   root.appendChild(createEraseLayer(buildErasePlan(result.placements, result.image, { strategy: options.eraseStrategy }), result.pageSize))
   root.appendChild(createTextLayer(textItems, result.pageSize, result.image))
   if (hasDebugOptions(options.debug)) root.appendChild(createDebugLayer(result.placements, result.pageSize, options.debug))
   return root
+}
+
+function translatedUnitForPlacement(placement: TextPlacement, byUnitId: ReadonlyMap<string, TranslatedUnit>): TranslatedUnit | null {
+  const units = placement.sourceUnitIds.map(id => byUnitId.get(id)).filter((unit): unit is TranslatedUnit => !!unit)
+  if (!units.length) return null
+  return {
+    unitId: units.map(unit => unit.unitId).join('+'),
+    pageIndex: placement.pageIndex,
+    kind: units.some(unit => unit.kind !== 'skip') ? placement.role === 'sfx' ? 'sfx' : 'dialogue' : 'skip',
+    role: placement.role,
+    sourceText: units.map(unit => unit.sourceText).join('\n'),
+    targetText: units.map(unit => unit.targetText).filter(Boolean).join('\n'),
+  }
 }
 
 function hasDebugOptions(options: OverlayDebugOptions | undefined): boolean {

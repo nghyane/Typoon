@@ -100,6 +100,51 @@ pre {
 
 .page-host:last-child { margin-bottom: 0; }
 
+[data-dev-pending-overlay="true"] {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-content: center;
+  gap: 14px;
+  background: rgba(0,0,0,.72);
+  color: #f4f4f5;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+[data-dev-failed-overlay="true"] {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  background: rgba(127,29,29,.78);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  pointer-events: none;
+}
+
+.pending-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto;
+  border: 3px solid rgba(255,255,255,.25);
+  border-top-color: #f97316;
+  border-radius: 999px;
+  animation: pending-spin .8s linear infinite;
+}
+
+@keyframes pending-spin {
+  to { transform: rotate(360deg); }
+}
+
 .page-host img {
   display: block;
   width: 100%;

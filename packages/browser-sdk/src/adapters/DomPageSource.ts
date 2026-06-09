@@ -1,4 +1,4 @@
-import type { PageSource } from '../session'
+import type { PageSource } from '../domain/source'
 import { imageAt, imagesIn, type DomPageOptions } from './domShared'
 
 export type DomPageSourceOptions = DomPageOptions

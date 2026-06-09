@@ -1,11 +1,10 @@
 """Domain types — Python mirror of crates/inpaint/src/domain/.
 
-These are the **single source of truth** for Python callers.
-Wire format: msgpack produced by the scan container.
+These are the **single source of truth** for Python callers and msgpack
+encoders. Wire format: msgpack consumed by `crates/inpaint`.
 
-Any change here must be reflected in:
-  crates/inpaint/src/domain/profile.rs  (Rust)
-  tests/fixtures/profiles-golden.json   (golden test)
+Any change here must be reflected in the Rust mirror and the plan
+version bumped.
 """
 from __future__ import annotations
 
@@ -13,39 +12,21 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-# ── Enums ─────────────────────────────────────────────────────────────────
+# ── Plain enums (mirror crates/inpaint/src/domain/plan.rs) ────────────────
 
-MaskOrigin = Literal["lens_obb", "lens_aabb", "ctd_unet", "polygon_fallback"]
 BlockClass = Literal["sfx", "dialogue", "narration"]
 PageKind   = Literal["bw", "color", "webtoon"]
 ShapeKind  = Literal["dialogue", "burst"]
 
 
-# ── Pad profile — one table, all layers ──────────────────────────────────
+# ── Wire format version ──────────────────────────────────────────────────
+#
+# Rust rejects any plan whose `version` field doesn't match.
 
-@dataclass(frozen=True, slots=True)
-class PadProfile:
-    container_pad_frac: float
-    container_pad_min:  int
-    mask_pad_frac:      float
-    mask_pad_min:       int
-    close_radius_frac:  float
-    close_radius_min:   int
-    context_frac:       float
-
-    def close_radius(self, short_edge: int) -> int:
-        return max(self.close_radius_min,
-                   round(short_edge * self.close_radius_frac))
+PLAN_VERSION = 2
 
 
-PROFILES: dict[BlockClass, PadProfile] = {
-    "sfx":       PadProfile(0.08, 4, 0.08, 2, 0.15, 2, 0.60),
-    "dialogue":  PadProfile(0.20, 4, 0.20, 2, 0.10, 2, 0.50),
-    "narration": PadProfile(0.20, 4, 0.20, 2, 0.12, 2, 0.50),
-}
-
-
-# ── Wire types ────────────────────────────────────────────────────────────
+# ── Mask contract (mirror crates/inpaint/src/domain/group.rs) ─────────────
 
 @dataclass(frozen=True, slots=True)
 class EraseRaster:
@@ -53,32 +34,78 @@ class EraseRaster:
     y:    int
     w:    int
     h:    int
-    data: bytes  # w*h bytes, 0 or 255
+    data: bytes   # zlib-compressed w*h u8 pixels, 0 or 255
+
+
+# MaskKind is a tagged union encoded as a dict on the wire:
+#   {"kind": "precise", "raster": {...}}
+#   {"kind": "coarse",  "raster": {...}, "dilate_px": 4}
+#   {"kind": "regen"}
+
+@dataclass(frozen=True, slots=True)
+class Precise:
+    raster: EraseRaster
+
+    def to_wire(self) -> dict:
+        return {"kind": "precise", "raster": _raster_to_wire(self.raster)}
 
 
 @dataclass(frozen=True, slots=True)
-class GroupMask:
+class Coarse:
+    raster:     EraseRaster
+    dilate_px:  int
+
+    def to_wire(self) -> dict:
+        return {
+            "kind":      "coarse",
+            "raster":    _raster_to_wire(self.raster),
+            "dilate_px": int(self.dilate_px),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Regen:
+    def to_wire(self) -> dict:
+        return {"kind": "regen"}
+
+
+MaskKind = Precise | Coarse | Regen
+
+
+def _raster_to_wire(r: EraseRaster) -> dict:
+    return {"x": r.x, "y": r.y, "w": r.w, "h": r.h, "data": r.data}
+
+
+# ── Group + plan ─────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class Group:
     idx:        int
     bbox:       tuple[int, int, int, int]   # x1, y1, x2, y2
-    origin:     MaskOrigin
     class_:     BlockClass
     shape_kind: ShapeKind
-    polygons:   tuple[list[tuple[float, float]], ...] = field(default_factory=tuple)
-    rasters:    tuple[EraseRaster, ...]               = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        if self.origin in ("lens_obb", "lens_aabb") and not self.polygons and not self.rasters:
-            raise ValueError(f"group {self.idx}: {self.origin} requires polygons or rasters")
-        if self.origin == "ctd_unet" and not self.rasters:
-            raise ValueError(f"group {self.idx}: ctd_unet requires rasters")
-        if self.origin == "polygon_fallback" and (self.polygons or self.rasters):
-            raise ValueError(
-                f"group {self.idx}: polygon_fallback must not ship pixel data")
+    mask:       MaskKind
 
 
 @dataclass(frozen=True, slots=True)
 class InpaintPlan:
     page_index: int
-    page_size:  tuple[int, int]   # W, H
+    page_size:  tuple[int, int]    # W, H
     page_kind:  PageKind
-    groups:     tuple[GroupMask, ...]
+    groups:     tuple[Group, ...]
+
+
+# ── Coarse-mask dilate policy (vision-side, single source of truth) ──────
+#
+# Inpaint receives the resulting `dilate_px` baked into the Coarse
+# variant; it has zero policy of its own. ~40 % of glyph short edge gives
+# a 14 px dialogue line ~5 px breathing room and a 30 px SFX glyph ~10 px.
+
+_DILATE_FRAC = 0.40
+_DILATE_MIN  = 2
+_DILATE_MAX  = 10
+
+
+def dilate_for_glyph(glyph_px: int) -> int:
+    """Outward dilate radius (px) for a Coarse raster, given glyph short edge."""
+    return max(_DILATE_MIN, min(_DILATE_MAX, round(glyph_px * _DILATE_FRAC)))

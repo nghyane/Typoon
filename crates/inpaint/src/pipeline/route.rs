@@ -5,13 +5,23 @@ use image::imageops::FilterType;
 use image::{ImageBuffer, Rgb};
 
 use crate::adapters::flat_fill;
-use crate::domain::{BBox, PadProfile};
+use crate::domain::{BBox, BlockClass};
 use crate::pipeline::regions::Region;
 
 const SNAP_MOD:             usize = 8;
 const DEFAULT_AOT_CANVAS:   usize = 512;
+const SMALL_AOT_CANVAS:     usize = 384;
 const TARGET_MASK_DENSITY:  f32   = 0.42;
 const MIN_CONTEXT_PX:       i32   = 32;
+
+/// Context grow factor per region class. Kept tiny + inline — the only
+/// inpaint-side knob that was ever class-dependent. Not a "policy table".
+fn context_frac(class: BlockClass) -> f32 {
+    match class {
+        BlockClass::Sfx => 0.60,   // bursts need more surround context
+        _               => 0.50,
+    }
+}
 
 pub enum Route {
     FlatFill { color: [u8; 3] },
@@ -27,18 +37,17 @@ pub struct AotTile {
 }
 
 pub fn decide(
-    region:  &Region,
-    rgb:     &[u8],
-    mask:    &[u8],
-    img_w:   usize,
-    img_h:   usize,
-    profile: &PadProfile,
+    region: &Region,
+    rgb:    &[u8],
+    mask:   &[u8],
+    img_w:  usize,
+    img_h:  usize,
 ) -> Route {
     // Try flat fill first (fast path — skip AOT entirely)
     if let Some(color) = flat_fill::probe(rgb, mask, img_w, img_h, &region.bbox) {
         return Route::FlatFill { color };
     }
-    Route::Aot { tile: build_tile(rgb, mask, img_w, img_h, &region.bbox, profile) }
+    Route::Aot { tile: build_tile(rgb, mask, img_w, img_h, &region.bbox, region.dominant_class) }
 }
 
 // ── AOT tile builder ─────────────────────────────────────────────────────
@@ -49,13 +58,13 @@ fn build_tile(
     src_w: usize,
     src_h: usize,
     bb:    &BBox,
-    profile: &PadProfile,
+    class: BlockClass,
 ) -> AotTile {
-    let canvas = canvas_size();
+    let canvas = canvas_size(bb);
     let bw = bb.width() as f32;
     let bh = bb.height() as f32;
     let short = bw.min(bh);
-    let mut context = ((short * profile.context_frac).round() as i32).max(MIN_CONTEXT_PX);
+    let mut context = ((short * context_frac(class)).round() as i32).max(MIN_CONTEXT_PX);
     let mut crop = expand_crop(bb, context, src_w as i32, src_h as i32);
 
     // Grow context until mask density ≤ TARGET_MASK_DENSITY or full page
@@ -99,13 +108,23 @@ fn build_tile(
     }
 }
 
-fn canvas_size() -> usize {
+fn canvas_size(bb: &BBox) -> usize {
     std::env::var("AOT_CANVAS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|&v| v >= SNAP_MOD)
         .map(|v| snap_up(v, SNAP_MOD))
-        .unwrap_or(DEFAULT_AOT_CANVAS)
+        .unwrap_or_else(|| adaptive_canvas_size(bb))
+}
+
+fn adaptive_canvas_size(bb: &BBox) -> usize {
+    let max_edge = bb.width().max(bb.height());
+    let area = bb.area();
+    if max_edge <= 256 && area <= 64_000 {
+        SMALL_AOT_CANVAS
+    } else {
+        DEFAULT_AOT_CANVAS
+    }
 }
 
 fn snap_up(v: usize, m: usize) -> usize { ((v + m - 1) / m) * m }

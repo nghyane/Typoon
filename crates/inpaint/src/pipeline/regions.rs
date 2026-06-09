@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Region merge: group scan BBoxes → inpaint regions (max 3 per page).
+//! Region merge: group scan BBoxes → inpaint regions.
 
-use crate::domain::{BBox, BlockClass, GroupMask};
+use crate::domain::{BBox, BlockClass, Group};
 
 const MERGE_DISTANCE: i32  = 96;
-const MAX_REGIONS:    usize = 3;
+const MAX_MERGED_EDGE: i32 = 720;
+const MAX_MERGED_AREA: i64 = 360_000;
 
 #[derive(Debug)]
 pub struct Region {
@@ -12,8 +13,8 @@ pub struct Region {
     pub dominant_class: BlockClass,
 }
 
-/// Merge group bboxes by L∞ distance, cap at `MAX_REGIONS`.
-pub fn merge(groups: &[GroupMask]) -> Vec<Region> {
+/// Merge nearby group bboxes, but never force far/large regions into one tile.
+pub fn merge(groups: &[Group]) -> Vec<Region> {
     if groups.is_empty() { return Vec::new(); }
 
     // Seed: one region per group
@@ -26,8 +27,10 @@ pub fn merge(groups: &[GroupMask]) -> Vec<Region> {
         let mut merged = false;
         'outer: for i in 0..regions.len() {
             for j in i + 1..regions.len() {
-                if regions[i].0.distance_to(&regions[j].0) <= MERGE_DISTANCE {
-                    let bb = regions[i].0.union(&regions[j].0);
+                let bb = regions[i].0.union(&regions[j].0);
+                if regions[i].0.distance_to(&regions[j].0) <= MERGE_DISTANCE
+                    && merge_is_safe(&bb)
+                {
                     let cl = dominant(regions[i].1, regions[j].1);
                     regions[i] = (bb, cl);
                     regions.remove(j);
@@ -39,23 +42,11 @@ pub fn merge(groups: &[GroupMask]) -> Vec<Region> {
         if !merged { break; }
     }
 
-    // Cap: forcibly merge the two closest until ≤ MAX_REGIONS
-    while regions.len() > MAX_REGIONS {
-        let (mut bi, mut bj) = (0, 1);
-        let mut best = i32::MAX;
-        for i in 0..regions.len() {
-            for j in i + 1..regions.len() {
-                let d = regions[i].0.distance_to(&regions[j].0);
-                if d < best { best = d; bi = i; bj = j; }
-            }
-        }
-        let merged_bb = regions[bi].0.union(&regions[bj].0);
-        let merged_cl = dominant(regions[bi].1, regions[bj].1);
-        regions[bi] = (merged_bb, merged_cl);
-        regions.remove(bj);
-    }
-
     regions.into_iter().map(|(bb, cl)| Region { bbox: bb, dominant_class: cl }).collect()
+}
+
+fn merge_is_safe(bb: &BBox) -> bool {
+    bb.width().max(bb.height()) <= MAX_MERGED_EDGE && bb.area() <= MAX_MERGED_AREA
 }
 
 fn dominant(a: BlockClass, b: BlockClass) -> BlockClass {

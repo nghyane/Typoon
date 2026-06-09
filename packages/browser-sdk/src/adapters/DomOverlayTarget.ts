@@ -1,4 +1,4 @@
-import type { TranslatedPage } from '../domain/translation'
+import type { RenderedPage } from '../domain/translation'
 import { attachOverlay, type OverlayOptions } from '../render/overlay'
 import { imageAt, pageHostForImage, type DomPageOptions } from './domShared'
 
@@ -17,7 +17,7 @@ export class DomOverlayTarget {
     return pageHostForImage(imageAt(this.container, index, this.imageSelector), this.hostSelector, index)
   }
 
-  attach(index: number, page: TranslatedPage, options?: OverlayOptions): HTMLElement {
+  attach(index: number, page: RenderedPage, options?: OverlayOptions): HTMLElement {
     const host = this.pageHost(index)
     host.querySelector('[data-typoon-overlay="true"]')?.remove()
     return attachOverlay(host, page, options)
