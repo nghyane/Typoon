@@ -93,10 +93,12 @@ pre {
 .page-host {
   position: relative;
   width: min(900px, 100%);
-  margin: 0 auto;
+  margin: 0 auto 28px;
   box-shadow: 0 24px 80px rgba(0,0,0,.5);
   background: white;
 }
+
+.page-host:last-child { margin-bottom: 0; }
 
 .page-host img {
   display: block;

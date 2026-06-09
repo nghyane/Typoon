@@ -14,6 +14,7 @@ import './style.css'
 
 const comicDetrModelUrl = new URL('../../../../workers/scan/container/comic-detr-v4s-int8.onnx', import.meta.url).href
 const ortWasmUrl = new URL(ortWebgpuWasmUrl, window.location.href).href
+const chapterPages = Array.from({ length: 20 }, (_, index) => `/chapter-20/${String(index + 1).padStart(3, '0')}.jpg`)
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -25,7 +26,7 @@ app.innerHTML = `
       <p class="muted">
         Client-only pipeline: browser encodes the page, recognizes text with Lens, detects regions locally, then translates with Google Translate.
       </p>
-      <button id="run">Run client Lens + Google Translate</button>
+      <button id="run">Translate 20-page chapter</button>
       <div class="controls" aria-label="overlay debug controls">
         <label><input id="erase" type="checkbox" checked /> erase flat-fill</label>
         <label><input id="debugDrawable" type="checkbox" /> drawable</label>
@@ -36,10 +37,12 @@ app.innerHTML = `
       <pre id="status">status idle</pre>
       <pre id="log">idle</pre>
     </aside>
-    <section class="reader">
-      <div id="pageHost" class="page-host">
-        <img id="page" src="/sample-page.jpg" alt="MangaDex sample page" />
-      </div>
+    <section id="reader" class="reader">
+      ${chapterPages.map((src, index) => `
+        <div class="page-host" data-page-index="${index}">
+          <img class="page-image" src="${src}" alt="MangaDex chapter page ${index + 1}" loading="eager" />
+        </div>
+      `).join('')}
     </section>
   </section>
 `
@@ -47,16 +50,16 @@ app.innerHTML = `
 const run = document.querySelector<HTMLButtonElement>('#run')!
 const status = document.querySelector<HTMLPreElement>('#status')!
 const log = document.querySelector<HTMLPreElement>('#log')!
-const host = document.querySelector<HTMLDivElement>('#pageHost')!
-const pages = new DomPageSource(host, { imageSelector: '#page' })
-const overlays = new DomOverlayTarget(host, { imageSelector: '#page' })
+const reader = document.querySelector<HTMLDivElement>('#reader')!
+const pages = new DomPageSource(reader, { imageSelector: '.page-image' })
+const overlays = new DomOverlayTarget(reader, { imageSelector: '.page-image', hostSelector: '.page-host' })
 const erase = document.querySelector<HTMLInputElement>('#erase')!
 const debugDrawable = document.querySelector<HTMLInputElement>('#debugDrawable')!
 const debugTextBoxes = document.querySelector<HTMLInputElement>('#debugTextBoxes')!
 const debugBounds = document.querySelector<HTMLInputElement>('#debugBounds')!
 const debugLabels = document.querySelector<HTMLInputElement>('#debugLabels')!
 
-let lastResult: TranslatedPage | null = null
+const translatedPages = new Map<number, TranslatedPage>()
 
 const models = new ModelRepository({
   manifest: {
@@ -90,21 +93,28 @@ session.subscribeStatus(snapshot => {
 
 const work = session.openWork({ id: 'dev-sample', sourceLang: 'en', targetLang: 'vi' })
 const segment = work.openSegment({
-  id: 'sample-page',
-  kind: 'upload',
+  id: 'chapter-20',
+  kind: 'chapter',
   pages,
-  continuity: 'discrete',
+  continuity: 'continuous',
 })
 
 run.addEventListener('click', async () => {
   run.disabled = true
-  host.querySelector('[data-typoon-overlay="true"]')?.remove()
-  log.textContent = 'running…'
+  clearOverlays()
+  translatedPages.clear()
+  log.textContent = 'running chapter…'
   try {
     await ensureMangaFontLoaded()
     await session.ensureReady()
-    lastResult = await segment.page(0).translate()
-    renderLastResult()
+    const startedAt = performance.now()
+    for (let index = 0; index < segment.pageCount; index++) {
+      logProgress(index, startedAt)
+      const page = await segment.page(index).translate()
+      translatedPages.set(index, page)
+      overlays.attach(index, page, overlayOptions())
+      logProgress(index + 1, startedAt)
+    }
   } catch (error) {
     log.textContent = error instanceof Error ? error.stack ?? error.message : String(error)
   } finally {
@@ -113,13 +123,17 @@ run.addEventListener('click', async () => {
 })
 
 for (const input of [erase, debugDrawable, debugTextBoxes, debugBounds, debugLabels]) {
-  input.addEventListener('change', renderLastResult)
+  input.addEventListener('change', renderTranslatedPages)
 }
 
-function renderLastResult(): void {
-  if (!lastResult) return
-  host.querySelector('[data-typoon-overlay="true"]')?.remove()
-  overlays.attach(0, lastResult, {
+function renderTranslatedPages(): void {
+  clearOverlays()
+  for (const [index, page] of translatedPages) overlays.attach(index, page, overlayOptions())
+  logProgress(translatedPages.size, null)
+}
+
+function overlayOptions() {
+  return {
     eraseStrategy: erase.checked ? 'flat-fill' : 'none',
     debug: {
       showDrawable: debugDrawable.checked,
@@ -127,24 +141,43 @@ function renderLastResult(): void {
       showTextBounds: debugBounds.checked,
       showLabels: debugLabels.checked,
     },
-  })
+  } as const
+}
+
+function clearOverlays(): void {
+  reader.querySelectorAll('[data-typoon-overlay="true"]').forEach(overlay => overlay.remove())
+}
+
+function logProgress(done: number, startedAt: number | null): void {
+  const elapsedMs = startedAt === null ? null : Math.round(performance.now() - startedAt)
   log.textContent = JSON.stringify({
+    progress: {
+      done,
+      total: segment.pageCount,
+      elapsedMs,
+    },
     metrics: collectTextMetrics(),
-    placements: lastResult.placements.map(placement => ({
-      id: placement.id,
-      role: placement.role,
-      text: placement.sourceText,
-      bbox: placement.bbox,
-      rotationDeg: placement.rotationDeg,
-      textBoxes: placement.textBoxes,
-      fontHint: placement.fontHint,
+    pages: [...translatedPages].map(([pageIndex, page]) => ({
+      pageIndex,
+      placementCount: page.placements.length,
+      translationCount: page.translations.length,
+      placements: page.placements.map(placement => ({
+        id: placement.id,
+        role: placement.role,
+        text: placement.sourceText,
+        bbox: placement.bbox,
+        rotationDeg: placement.rotationDeg,
+        textBoxes: placement.textBoxes,
+        fontHint: placement.fontHint,
+      })),
+      translations: page.translations,
     })),
-    translations: lastResult.translations,
   }, null, 2)
 }
 
 function collectTextMetrics(): unknown[] {
-  return [...host.querySelectorAll<HTMLElement>('[data-typoon-text="true"]')].map(el => ({
+  return [...reader.querySelectorAll<HTMLElement>('[data-typoon-text="true"]')].map(el => ({
+    page: Number(el.closest<HTMLElement>('[data-page-index]')?.dataset.pageIndex ?? -1),
     id: el.dataset.placementId,
     role: el.dataset.role,
     font: Number(el.dataset.fontSizePx),
