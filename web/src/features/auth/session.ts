@@ -1,34 +1,20 @@
-// Session — single source of truth for "who is the current viewer".
+// Session — cookie-based auth for PWA (Go backend).
 //
-// One endpoint (`GET /api/auth/me`), one cache key (`qk.session.self`),
-// one hook (`useSession`), one mutation surface (`useSignIn`/`useSignOut`).
-//
-// Token storage is `localStorage` (DA iframes block 3rd-party cookies).
-// Cache layer is React Query; routes read `useSession()` and AppLayout's
-// auth guard branches on `status` directly — no useEffect ping-pong.
+// No localStorage token. Cookies are httpOnly, sent automatically.
+// `GET /api/auth/session` returns user info or 401.
 
 import { useCallback } from 'react'
 import {
   useMutation, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query'
-
-import { discordSdk } from '@shared/discord/sdk'
 import { qk } from '@shared/api/keys'
-import { api, type ApiSessionUser, clearToken, setToken } from '@shared/api/api'
+import { api, type SessionUser } from '@shared/api/api'
 
+export type { SessionUser }
 
-// Public auth config the /login page needs before kicking off OAuth.
-export interface AuthConfig {
-  discord_client_id: string
-}
-
-export type SessionUser = ApiSessionUser
-
-
-// ── Storage flags ────────────────────────────────────────────────────
+// ── Storage flags ──────────────────────────────────────────────────
 
 const ERROR_KEY       = 'typoon_login_error'
-const STATE_KEY       = 'typoon_oauth_state'
 const INVALIDATED_KEY = 'typoon_session_invalidated'
 
 export function takeLoginError(): string | null {
@@ -51,20 +37,16 @@ export function takeSessionInvalidated(): boolean {
   return hit
 }
 
-
-// ── Session query ────────────────────────────────────────────────────
+// ── Session query ──────────────────────────────────────────────────
 
 class SessionRejectedError extends Error {
   constructor() { super('session rejected') }
 }
 
 async function fetchSession(): Promise<SessionUser | null> {
-  // No token → unauthenticated without round-trip
-  if (!localStorage.getItem('typoon_token')) return null
   try {
-    return await api.authMe()
+    return await api.getSession()
   } catch (err) {
-    // ApiError 401 already cleared token via the global handler
     if ((err as { status?: number })?.status === 401) {
       markSessionInvalidated()
       throw new SessionRejectedError()
@@ -103,104 +85,17 @@ export function useSessionUser(): SessionUser | null {
   return useSession().user
 }
 
+// ── Auth URLs ──────────────────────────────────────────────────────
 
-// ── Auth config ──────────────────────────────────────────────────────
-
-export function useAuthConfig() {
-  return useQuery<AuthConfig, Error>({
-    queryKey:  qk.session.config(),
-    queryFn:   () => api.authConfig(),
-    staleTime: Infinity,
-    gcTime:    Infinity,
-    retry:     1,
-  })
+export function loginUrl() {
+  return '/api/auth/discord/start?returnTo=' + encodeURIComponent(window.location.origin + '/')
 }
 
-
-// ── Preferences mutation ─────────────────────────────────────────────
-
-export function useUpdatePreferredLang() {
-  const qc = useQueryClient()
-  const mut = useMutation({
-    mutationFn: (lang: string | null) =>
-      api.updatePreferences({ preferred_target_lang: lang }),
-    onMutate: async (lang) => {
-      await qc.cancelQueries({ queryKey: qk.session.self() })
-      const prev = qc.getQueryData<SessionUser>(qk.session.self())
-      if (prev) {
-        qc.setQueryData<SessionUser>(qk.session.self(), {
-          ...prev, preferred_target_lang: lang,
-        })
-      }
-      return { prev }
-    },
-    onError: (_e: Error, _lang, ctx) => {
-      if (ctx?.prev) qc.setQueryData(qk.session.self(), ctx.prev)
-    },
-    onSuccess: (fresh) => {
-      qc.setQueryData(qk.session.self(), fresh)
-    },
-  })
-  return useCallback((lang: string | null) => mut.mutate(lang), [mut])
-}
-
-
-// ── OAuth flow ───────────────────────────────────────────────────────
-
-const REDIRECT_PATH = '/auth/callback'
-
-function redirectUri(): string {
-  return `${window.location.origin}${REDIRECT_PATH}`
-}
-
-export function buildAuthorizeUrl(clientId: string): string {
-  const state = crypto.randomUUID()
-  sessionStorage.setItem(STATE_KEY, state)
-  const params = new URLSearchParams({
-    client_id:     clientId,
-    redirect_uri:  redirectUri(),
-    response_type: 'code',
-    scope:         'identify email guilds guilds.members.read',
-    state,
-    prompt:        'consent',
-  })
-  return `https://discord.com/api/oauth2/authorize?${params}`
-}
-
-export function verifyState(received: string | null): boolean {
-  if (!received) return false
-  const expected = sessionStorage.getItem(STATE_KEY)
-  sessionStorage.removeItem(STATE_KEY)
-  return !!expected && expected === received
-}
-
-export async function exchangeCode(
-  code: string, overrideRedirectUri?: string,
-): Promise<string> {
-  const result = await api.discordExchange(code, overrideRedirectUri ?? redirectUri())
-  return result.token
-}
-
-/** Discord Activity login — SDK authorize → exchange code → JWT. */
-export async function discordActivityLogin(clientId: string): Promise<string> {
-  await discordSdk.ready()
-  const { code } = await discordSdk.commands.authorize({
-    client_id:     clientId,
-    response_type: 'code',
-    state:         '',
-    prompt:        'none',
-    scope:         ['identify', 'email', 'guilds', 'guilds.members.read', 'rpc.activities.write'],
-  })
-  return exchangeCode(code, 'https://127.0.0.1')
-}
-
-
-// ── Sign-in / sign-out hooks ─────────────────────────────────────────
+// ── Sign-in / sign-out ─────────────────────────────────────────────
 
 export function useSignIn() {
   const qc = useQueryClient()
-  return useCallback(async (token: string) => {
-    setToken(token)
+  return useCallback(async () => {
     sessionStorage.removeItem(INVALIDATED_KEY)
     qc.clear()
     await qc.refetchQueries({ queryKey: qk.session.self() })
@@ -210,16 +105,22 @@ export function useSignIn() {
 export function useSignOut() {
   const qc = useQueryClient()
   return useCallback(async () => {
-    clearToken()
+    try { await api.logout() } catch { /* ignore */ }
     qc.clear()
   }, [qc])
 }
 
-
-// ── Global 401 hook ──────────────────────────────────────────────────
+// ── Global 401 hook ────────────────────────────────────────────────
 
 export function handleUnauthorized(qc: QueryClient): void {
-  clearToken()
   markSessionInvalidated()
   qc.clear()
+}
+
+// ── Preferences (placeholder — Go endpoint TBD) ──────────────────
+
+export function useUpdatePreferredLang() {
+  return useCallback((_lang: string | null) => {
+    // TODO: POST /api/auth/me/preferences when Go backend supports it
+  }, [])
 }

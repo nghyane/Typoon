@@ -19,7 +19,7 @@ const root = fileURLToPath(new URL('.', import.meta.url))
 // cross-origin from any localhost dev URL.
 export default defineConfig(({ mode }) => {
   const env    = loadEnv(mode, process.cwd(), '')
-  const target = env.VITE_PUBLIC_BASE_URL || 'http://localhost:8787'
+  const target = env.VITE_PUBLIC_BASE_URL || 'http://localhost:3000'
 
   return {
     plugins: [

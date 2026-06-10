@@ -1,74 +1,19 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
-import {
-  exchangeCode, setLoginError, useSignIn, verifyState,
-} from '@features/auth/session'
+import { useEffect } from 'react'
 import { Spinner } from '@shared/ui/primitives'
 
 function CallbackPage() {
-  const nav     = useNavigate()
-  const signIn  = useSignIn()
-  const [status,  setStatus]  = useState<'working' | 'error'>('working')
-  const [message, setMessage] = useState('Đang đăng nhập…')
-
-  // React StrictMode runs effects twice in dev. The first run consumes
-  // the OAuth `code` (single-use!) and the CSRF state token (also
-  // single-use — we delete it from sessionStorage on read). The second
-  // run would always fail. Guard with a ref so only the first execution
-  // touches the network and storage.
-  const ranRef = useRef(false)
+  const nav = useNavigate()
 
   useEffect(() => {
-    if (ranRef.current) return
-    ranRef.current = true
-
-    const params  = new URLSearchParams(window.location.search)
-    const code    = params.get('code')
-    const state   = params.get('state')
-    const error   = params.get('error')
-    const errDesc = params.get('error_description')
-
-    const fail = (msg: string) => {
-      setLoginError(msg)
-      setStatus('error')
-      setMessage(msg)
-      setTimeout(() => nav({ to: '/login' }), 800)
-    }
-
-    if (error) {
-      fail(`Discord: ${errDesc || error}`)
-      return
-    }
-    if (!code) {
-      fail('Thiếu mã OAuth (code) từ Discord.')
-      return
-    }
-    if (!verifyState(state)) {
-      fail('Phiên đăng nhập đã hết hạn — vui lòng thử lại.')
-      return
-    }
-
-    exchangeCode(code)
-      .then(async (token) => {
-        // signIn writes the token + primes the session cache and
-        // waits on the first refetch so the guarded route below
-        // sees `authenticated`, not `loading`.
-        await signIn(token)
-        nav({ to: '/' })
-      })
-      .catch((e: Error) => fail(e.message))
-  }, [nav, signIn])
+    // Server handles the OAuth callback. Land at / and session query
+    // will pick up the cookie.
+    nav({ to: '/' })
+  }, [nav])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg">
-      <div className="text-center">
-        <div className="flex justify-center mb-3 text-text-subtle">
-          <Spinner size={20} />
-        </div>
-        <p className={`text-sm ${status === 'error' ? 'text-error-text' : 'text-text-muted'}`}>
-          {message}
-        </p>
-      </div>
+      <Spinner size={24} />
     </div>
   )
 }

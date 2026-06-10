@@ -1,109 +1,28 @@
-// /login — Discord OAuth entry, unified flow for web + Discord Activity.
+// /login — Discord OAuth, redirects to server-side flow.
 //
-// The old version had two independent effects that could race:
-//
-//   • effect A:  on mount, fetch auth config; if DA + not invalidated,
-//                kick off `discordActivityLogin` immediately.
-//   • effect B:  watch `useCurrentUser`; when user resolves, nav to '/'.
-//
-// Effect A read `sessionWasInvalidated()` synchronously on mount, but
-// the flag is set by `useCurrentUser`'s fetch which is asynchronous.
-// On a hot reload after a 401, the flag wasn't there yet — effect A
-// kicked off a silent re-authorize, the server re-issued a token,
-// the page reloaded into '/' which fetched `/api/auth/me` again,
-// 401'd again, set the flag, bounced back to /login… loop.
-//
-// The new version drives every decision off a single resolved-state
-// machine. We only act once `useSession` has reached a terminal
-// status. No "fire-and-forget on mount" effects, no race against the
-// session query.
+// Server handles: state → Discord → callback → set cookie → redirect back.
+// Client only shows the login button and handles post-login navigation.
 
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
-import { AlertCircle, ExternalLink } from 'lucide-react'
-
-import {
-  buildAuthorizeUrl, discordActivityLogin, takeLoginError,
-  takeSessionInvalidated, useAuthConfig, useSession, useSignIn,
-} from '@features/auth/session'
-import { isDiscordActivity } from '@shared/discord/sdk'
+import { AlertCircle } from 'lucide-react'
+import { loginUrl, takeLoginError, useSession } from '@features/auth/session'
 import { Spinner } from '@shared/ui/primitives'
-
 
 function LoginPage() {
   const nav     = useNavigate()
   const session = useSession()
-  const cfgQ    = useAuthConfig()
-  const signIn  = useSignIn()
+  const [pageError] = useState<string | null>(() => takeLoginError())
+  const [error, setError] = useState<string | null>(pageError)
+  const [authorizing, setAuthorizing] = useState(false)
 
-  // sessionStorage flags — read ONCE on mount to lock in the user's
-  // initial intent. Re-reading on every render would consume them
-  // multiple times (each `take*` clears the storage entry) and the
-  // UI would forget why it's on this page.
-  const [pageError]   = useState<string | null>(() => takeLoginError())
-  const [invalidated] = useState<boolean>(() => takeSessionInvalidated())
-
-  const [error,        setError]     = useState<string | null>(pageError)
-  const [authorizing,  setAuthorizing]   = useState(false)
-  /** DA auto-login fires exactly once per page mount. Without this
-   *  guard a `setError`-triggered re-render would re-enter the
-   *  effect and re-authorize on top of the existing in-flight call. */
-  const [autoFired,    setAutoFired]     = useState(false)
-
-  const config = cfgQ.data ?? null
-
-  // ── Redirect when the session resolves to authenticated ──────────────
-  // Runs every render; bail out cheaply unless status is terminal.
   useEffect(() => {
     if (session.status === 'authenticated') {
       nav({ to: '/' })
     }
   }, [session.status, nav])
 
-  // ── Decide whether to auto-start the DA login dance ──────────────────
-  // GATES (all must hold):
-  //   • running inside Discord Activity
-  //   • session query reached `unauthenticated` (NOT `loading`) so
-  //     we know the stored token, if any, has already been validated
-  //     and discarded. This is the gate the old code missed — it
-  //     fired DA login while `useCurrentUser` was still in flight.
-  //   • prior session was NOT invalidated by a 401 (silent re-auth
-  //     would silently re-bind the account to whichever Discord
-  //     user is active in the client right now).
-  //   • we haven't already fired once this mount.
-  //   • auth config has landed.
-  useEffect(() => {
-    if (!isDiscordActivity)                 return
-    if (session.status !== 'unauthenticated') return
-    if (invalidated)                        return
-    if (autoFired || authorizing)           return
-    if (!config)                            return
-
-    setAutoFired(true)
-    setAuthorizing(true)
-    discordActivityLogin(config.discord_client_id)
-      .then(async (token) => {
-        // signIn primes the session cache; the redirect effect
-        // above then picks it up and navigates. No `location.replace`
-        // hard reload — the SPA already has everything it needs.
-        await signIn(token)
-        nav({ to: '/' })
-      })
-      .catch((e: Error) => {
-        setError(e.message)
-        setAuthorizing(false)
-      })
-  }, [
-    session.status, invalidated, autoFired, authorizing,
-    config, nav, signIn,
-  ])
-
-  // ── Render ──────────────────────────────────────────────────────────
-
-  // While the session query is still in flight on a fresh mount we
-  // don't know yet whether the stored token is valid. Show a spinner
-  // instead of flashing the login button for the ~200ms RTT.
-  if (session.status === 'loading' || cfgQ.isPending) {
+  if (session.status === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
         <Spinner size={24} />
@@ -111,93 +30,16 @@ function LoginPage() {
     )
   }
 
-  // Auth-config fetch failed — without a client id we can't start
-  // any flow. Show the error verbatim; user retries by reloading.
-  if (cfgQ.error || !config?.discord_client_id) {
-    const msg = cfgQ.error?.message ?? 'Không tải được cấu hình đăng nhập.'
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg p-4">
-        <div className="w-full max-w-sm bg-surface rounded-md p-6 text-sm text-error-text">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={14} className="shrink-0 mt-0.5" />
-            <span className="break-words">{msg}</span>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // DA: spinner while auto-authorizing; explicit re-login card when
-  // the previous session was invalidated (drop DB / token expiry)
-  // OR when an authorize attempt errored. The card lets the user
-  // (or a different Discord account active in the same client) opt
-  // into the new session deliberately.
-  if (isDiscordActivity) {
-    const showCard = error !== null || (invalidated && !authorizing)
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        {!showCard ? (
-          <Spinner size={24} />
-        ) : (
-          <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
-            {error && (
-              <div className="flex items-center gap-2 text-error-text text-sm justify-center">
-                <AlertCircle size={14} />
-                <span>{error}</span>
-              </div>
-            )}
-            {!error && invalidated && (
-              <div className="text-sm text-text-muted">
-                Phiên cũ đã hết hạn. Đăng nhập lại để tiếp tục.
-              </div>
-            )}
-            <button
-              onClick={() => {
-                setError(null)
-                setAuthorizing(true)
-                discordActivityLogin(config.discord_client_id)
-                  .then(async (token) => {
-                    await signIn(token)
-                    nav({ to: '/' })
-                  })
-                  .catch((e: Error) => {
-                    setError(e.message)
-                    setAuthorizing(false)
-                  })
-              }}
-              disabled={authorizing}
-              className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-            >
-              {error ? 'Thử lại' : 'Đăng nhập lại'}
-            </button>
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  // ── Web flow: full login UI ─────────────────────────────────────────
-  const inviteFromError = error ? extractFirstUrl(error) : null
-  const errorText = inviteFromError && error
-    ? error.replace(inviteFromError, '').replace(/[:\s]+$/, '').trim()
-    : error
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg p-4">
       <div className="w-full max-w-sm">
-        <div className="bg-surface rounded-md p-6 shadow-[0_8px_24px_rgb(0,0,0,0.3)]">
+        <div className="bg-surface rounded-md p-6 border border-border-soft">
           {error && (
-            <div className="mb-4 p-3 rounded-sm bg-error-bg text-sm text-error-text space-y-2.5">
+            <div className="mb-4 p-3 rounded-sm bg-error-bg text-sm text-error-text">
               <div className="flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                <span className="break-words">{errorText}</span>
+                <span className="break-words">{error}</span>
               </div>
-              {inviteFromError && (
-                <a href={inviteFromError} target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-2 h-8 px-3 rounded-sm bg-[#5865F2] text-white text-xs font-medium hover:bg-[#4752C4] cursor-pointer">
-                  Tham gia Discord <ExternalLink size={11} />
-                </a>
-              )}
             </div>
           )}
 
@@ -205,9 +47,8 @@ function LoginPage() {
 
           <button
             onClick={() => {
-              if (authorizing) return
               setAuthorizing(true)
-              window.location.href = buildAuthorizeUrl(config.discord_client_id)
+              window.location.href = loginUrl()
             }}
             disabled={authorizing}
             className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
@@ -219,11 +60,6 @@ function LoginPage() {
       </div>
     </div>
   )
-}
-
-function extractFirstUrl(text: string): string | null {
-  const m = text.match(/https?:\/\/\S+/)
-  return m ? m[0] : null
 }
 
 function DiscordIcon() {
