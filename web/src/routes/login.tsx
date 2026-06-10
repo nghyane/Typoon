@@ -1,26 +1,51 @@
-// /login — Discord OAuth, redirects to server-side flow.
+// /login — PWA web login + Discord Activity silent auto-login.
 //
-// Server handles: state → Discord → callback → set cookie → redirect back.
-// Client only shows the login button and handles post-login navigation.
+// Web: redirects to /api/auth/discord/start (server handles OAuth).
+// DA:  discordSdk.commands.authorize({ prompt: 'none' }) → POST /api/auth/da/exchange.
 
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
-import { loginUrl, takeLoginError, useSession } from '@features/auth/session'
+import {
+  discordActivityLogin, isDiscordActivity, loginUrl,
+  takeLoginError, takeSessionInvalidated, useSession, useSignIn,
+} from '@features/auth/session'
 import { Spinner } from '@shared/ui/primitives'
 
 function LoginPage() {
-  const nav     = useNavigate()
-  const session = useSession()
-  const [pageError] = useState<string | null>(() => takeLoginError())
-  const [error, setError] = useState<string | null>(pageError)
+  const nav      = useNavigate()
+  const session  = useSession()
+  const signIn   = useSignIn()
+  const [pageError]   = useState<string | null>(() => takeLoginError())
+  const [invalidated] = useState<boolean>(() => takeSessionInvalidated())
+  const [error,       setError]     = useState<string | null>(pageError)
   const [authorizing, setAuthorizing] = useState(false)
+  const [daFired,     setDaFired]     = useState(false)
 
+  // Authenticated → go home
   useEffect(() => {
-    if (session.status === 'authenticated') {
-      nav({ to: '/' })
-    }
+    if (session.status === 'authenticated') nav({ to: '/' })
   }, [session.status, nav])
+
+  // DA — silent auto-login on mount
+  useEffect(() => {
+    if (!isDiscordActivity) return
+    if (session.status !== 'unauthenticated') return
+    if (invalidated || daFired) return
+
+    setDaFired(true)
+    setAuthorizing(true)
+
+    discordActivityLogin()
+      .then(async () => {
+        await signIn()
+        nav({ to: '/' })
+      })
+      .catch((e: Error) => {
+        setError(e.message)
+        setAuthorizing(false)
+      })
+  }, [session.status, invalidated, daFired, nav, signIn])
 
   if (session.status === 'loading') {
     return (
@@ -30,6 +55,36 @@ function LoginPage() {
     )
   }
 
+  // DA: spinner while auto-authorizing
+  if (isDiscordActivity && !error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg">
+        <Spinner size={24} />
+      </div>
+    )
+  }
+
+  // DA: error with retry
+  if (isDiscordActivity && error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-bg">
+        <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
+          <div className="text-sm text-error-text">{error}</div>
+          <button
+            onClick={() => {
+              setError(null)
+              setDaFired(false)
+            }}
+            className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium cursor-pointer"
+          >
+            Thử lại
+          </button>
+        </div>
+      </div>
+    )
+  )
+
+  // Web flow: login button
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg p-4">
       <div className="w-full max-w-sm">

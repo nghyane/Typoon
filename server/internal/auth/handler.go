@@ -3,6 +3,7 @@ package auth
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -102,13 +103,17 @@ func (h Handler) callback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) session(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("__Host-typoon-session")
-	if err != nil {
+	sessionToken := cookieToken(r)
+	if sessionToken == "" {
+		sessionToken = bearerToken(r)
+	}
+
+	if sessionToken == "" {
 		httpx.Error(w, httpx.Unauthorized("unauthorized", "Not authenticated"))
 		return
 	}
 
-	user, err := h.store.GetSession(r.Context(), cookie.Value)
+	user, err := h.store.GetSession(r.Context(), sessionToken)
 	if err != nil {
 		httpx.Error(w, httpx.Unauthorized("unauthorized", "Session expired"))
 		return
@@ -119,6 +124,22 @@ func (h Handler) session(w http.ResponseWriter, r *http.Request) {
 		DisplayName: user.Username,
 		AvatarURL:   user.Avatar,
 	})
+}
+
+func cookieToken(r *http.Request) string {
+	cookie, err := r.Cookie("__Host-typoon-session")
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func bearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if after, found := strings.CutPrefix(auth, "Bearer "); found {
+		return after
+	}
+	return ""
 }
 
 func (h Handler) logout(w http.ResponseWriter, r *http.Request) {

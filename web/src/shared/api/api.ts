@@ -9,6 +9,11 @@ const API_BASE = window.location.hostname.endsWith('.discordsays.com')
   ? ''
   : (import.meta.env.VITE_PUBLIC_BASE_URL ?? '')
 
+// DA token (cross-origin iframe can't send cookies, uses bearer instead).
+let daToken: string | null = null
+
+export const setDaToken = (t: string | null) => { daToken = t }
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 export class BackendUnavailableError extends Error {
@@ -38,6 +43,7 @@ async function request<T = unknown>(
       ...init,
       credentials: 'include',
       headers: {
+        ...(daToken ? { Authorization: `Bearer ${daToken}` } : {}),
         ...(init.headers ?? {}),
       },
     })
@@ -85,6 +91,14 @@ export const api = {
 
   logout: (): Promise<{ ok: boolean }> =>
     request('/api/auth/logout', { method: 'POST' }),
+
+  // DA — Discord Activity silent auth, returns token (no cookie).
+  daExchange: (code: string): Promise<{ token: string }> =>
+    request('/api/auth/da/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }),
 
   // Coin / wallet
   getCoinPackages: (): Promise<{ packages: Array<{

@@ -5,10 +5,11 @@
 
 import { useCallback } from 'react'
 import {
-  useMutation, useQuery, useQueryClient, type QueryClient,
+  useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query'
+import { discordSdk, isDiscordActivity } from '@shared/discord/sdk'
 import { qk } from '@shared/api/keys'
-import { api, type SessionUser } from '@shared/api/api'
+import { api, setDaToken, type SessionUser } from '@shared/api/api'
 
 export type { SessionUser }
 
@@ -85,10 +86,28 @@ export function useSessionUser(): SessionUser | null {
   return useSession().user
 }
 
+export { isDiscordActivity } from '@shared/discord/sdk'
+
 // ── Auth URLs ──────────────────────────────────────────────────────
 
 export function loginUrl() {
   return '/api/auth/discord/start?returnTo=' + encodeURIComponent(window.location.origin + '/')
+}
+
+// ── DA (Discord Activity) silent login ─────────────────────────────
+
+export async function discordActivityLogin(): Promise<void> {
+  await discordSdk.ready()
+  const { code } = await discordSdk.commands.authorize({
+    client_id:     import.meta.env.VITE_DISCORD_CLIENT_ID as string,
+    response_type: 'code',
+    state:         '',
+    prompt:        'none',
+    scope:         ['identify', 'guilds', 'guilds.members.read'],
+  })
+
+  const result = await api.daExchange(code)
+  setDaToken(result.token)
 }
 
 // ── Sign-in / sign-out ─────────────────────────────────────────────
