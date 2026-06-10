@@ -3,6 +3,8 @@ package translation
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/nghiahoang/typoon-api/internal/httpx"
 )
 
@@ -32,9 +34,9 @@ type SessionOutput struct {
 type SessionDeps struct {
 	Store  SessionStore
 	Ledger interface {
-		Hold(ctx context.Context, userID, sessionID string, xu int) error
-		Capture(ctx context.Context, userID, sessionID string, xu int) error
-		Release(ctx context.Context, userID, sessionID string, xu int) error
+		Hold(ctx context.Context, userID pgtype.UUID, sessionID string, xu int) error
+		Capture(ctx context.Context, userID pgtype.UUID, sessionID string, xu int) error
+		Release(ctx context.Context, userID pgtype.UUID, sessionID string, xu int) error
 	}
 }
 
@@ -62,7 +64,10 @@ func (u Usecase) CreateSession(ctx context.Context, deps SessionDeps, input Sess
 		return SessionOutput{}, err
 	}
 
-	if err := deps.Ledger.Hold(ctx, input.UserID, session.ID, rule.Xu); err != nil {
+	var uid pgtype.UUID
+	_ = uid.Scan(input.UserID)
+
+	if err := deps.Ledger.Hold(ctx, uid, session.ID, rule.Xu); err != nil {
 		deps.Store.updateState(ctx, session.ID, "error")
 		return SessionOutput{}, err
 	}

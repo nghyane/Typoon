@@ -78,7 +78,7 @@ func main() {
 			Prompts: prompts,
 		}, translation.SessionDeps{
 			Store:  translation.SessionStore{},
-			Ledger: wallet.NewLedger(walletStore),
+			Ledger: wallet.NewLedger(pool),
 		}),
 		LLM: llm.NewProbeHandler(llmClient),
 	})
