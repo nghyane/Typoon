@@ -80,6 +80,7 @@ func main() {
 			Store:  translation.SessionStore{},
 			Ledger: wallet.NewLedger(walletStore),
 		}),
+		LLM: llm.NewProbeHandler(llmClient),
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
