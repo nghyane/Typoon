@@ -107,13 +107,17 @@ func (h Handler) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.store.GetSession(r.Context(), cookie.Value)
+	user, err := h.store.GetSession(r.Context(), cookie.Value)
 	if err != nil {
 		httpx.Error(w, httpx.Unauthorized("unauthorized", "Session expired"))
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, session)
+	httpx.JSON(w, http.StatusOK, Session{
+		ID:          user.ID,
+		DisplayName: user.Username,
+		AvatarURL:   user.Avatar,
+	})
 }
 
 func (h Handler) logout(w http.ResponseWriter, r *http.Request) {

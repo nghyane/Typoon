@@ -8,9 +8,9 @@ type DiscordUser struct {
 }
 
 type Session struct {
-	UserID   string `json:"userId"`
-	Username string `json:"username"`
-	Avatar   string `json:"avatar"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
 }
 
 type Flow struct {

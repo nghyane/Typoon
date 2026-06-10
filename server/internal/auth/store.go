@@ -41,8 +41,8 @@ func (s Store) CreateSession(ctx context.Context, userID string) (string, error)
 	return randomHex(64), nil
 }
 
-func (s Store) GetSession(ctx context.Context, token string) (Session, error) {
-	return Session{}, fmt.Errorf("session not found")
+func (s Store) GetSession(ctx context.Context, token string) (DiscordUser, error) {
+	return DiscordUser{}, fmt.Errorf("session not found")
 }
 
 func (s Store) DeleteSession(ctx context.Context, token string) error {
