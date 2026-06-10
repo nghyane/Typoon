@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -43,7 +44,11 @@ func main() {
 
 	llmClient := llm.NewClient(
 		llmConfigFromEnv(),
-		llm.NewOpenAIChat(),
+		map[string]llm.Protocol{
+			"openai_chat_completions": llm.NewOpenAIChat(),
+			"openai_responses":        llm.NewOpenaiResponses(),
+			"anthropic_messages":      llm.NewOpenAIChat(), // stub
+		},
 	)
 
 	authStore := auth.NewStore(pool)
@@ -97,16 +102,26 @@ func connectOrNil(ctx context.Context, url string) *pgxpool.Pool {
 }
 
 func llmConfigFromEnv() []llm.Profile {
+	protocol := os.Getenv("LLM_PROTOCOL")
+	if protocol == "" {
+		protocol = "openai_chat_completions"
+	}
+
+	path := "/chat/completions"
+	if protocol == "openai_responses" {
+		path = "/responses"
+	}
+
 	return []llm.Profile{
 		{
 			ID:           "primary",
 			ProviderID:   "openai",
 			Model:        envDefault("LLM_MODEL", "gpt-4.1-mini"),
-			Protocol:     "openai_chat_completions",
+			Protocol:     protocol,
 			BaseURL:      envDefault("LLM_BASE_URL", "https://api.openai.com/v1"),
-			EndpointPath: "/chat/completions",
+			EndpointPath: path,
 			APIKey:       os.Getenv("LLM_API_KEY"),
-			Timeout:      60_000,
+			Timeout:      intEnv("LLM_TIMEOUT_MS", 60_000),
 		},
 	}
 }
@@ -118,4 +133,18 @@ func envDefault(key, fallback string) string {
 	}
 
 	return v
+}
+
+func intEnv(key string, fallback int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback
+	}
+
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fallback
+	}
+
+	return n
 }

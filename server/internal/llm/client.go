@@ -7,20 +7,20 @@ import (
 )
 
 type Client struct {
-	profiles []Profile
-	protocol Protocol
+	profiles  []Profile
+	protocols map[string]Protocol
 }
 
 type Protocol interface {
 	Do(ctx context.Context, profile Profile, req TextRequest) (TextResult, error)
 }
 
-func NewClient(profiles []Profile, protocol Protocol) Client {
-	return Client{profiles: profiles, protocol: protocol}
+func NewClient(profiles []Profile, protocols map[string]Protocol) Client {
+	return Client{profiles: profiles, protocols: protocols}
 }
 
 func (c Client) Generate(ctx context.Context, purpose string, req TextRequest) (TextResult, error) {
-	enabled := enabledProfiles(c.profiles)
+	enabled := c.enabledProfiles()
 	if len(enabled) == 0 {
 		return TextResult{}, fmt.Errorf("llm: no enabled profiles for purpose %q", purpose)
 	}
@@ -29,10 +29,14 @@ func (c Client) Generate(ctx context.Context, purpose string, req TextRequest) (
 	var lastErr error
 
 	for _, profile := range enabled {
+		protocol, ok := c.protocols[profile.Protocol]
+		if !ok {
+			return TextResult{}, fmt.Errorf("llm: unsupported protocol %q", profile.Protocol)
+		}
+
 		started := time.Now()
 
-		result, err := c.protocol.Do(ctx, profile, req)
-
+		result, err := protocol.Do(ctx, profile, req)
 		if err == nil {
 			attempts = append(attempts, Attempt{
 				ProviderID: profile.ProviderID,
@@ -76,10 +80,6 @@ func classify(err error) failureType {
 	return failureType{code: "llm_error", fallbackable: false}
 }
 
-func enabledProfiles(profiles []Profile) []Profile {
-	out := make([]Profile, 0, len(profiles))
-	for _, p := range profiles {
-		out = append(out, p)
-	}
-	return out
+func (c Client) enabledProfiles() []Profile {
+	return c.profiles
 }
