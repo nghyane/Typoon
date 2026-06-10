@@ -22,7 +22,7 @@ func (h Handler) Mount(r chi.Router) {
 }
 
 func (h Handler) wallet(w http.ResponseWriter, r *http.Request) {
-	result, err := h.usecase.Get(r.Context())
+	result, err := h.usecase.Get(r.Context(), firstUserID(r))
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -32,11 +32,19 @@ func (h Handler) wallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) ledger(w http.ResponseWriter, r *http.Request) {
-	result, err := h.usecase.ListLedger(r.Context())
+	result, err := h.usecase.ListLedger(r.Context(), firstUserID(r))
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, result)
+}
+
+func firstUserID(r *http.Request) string {
+	userID := r.Header.Get("X-User-ID")
+	if userID != "" {
+		return userID
+	}
+	return ""
 }
