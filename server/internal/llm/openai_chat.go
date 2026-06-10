@@ -33,21 +33,13 @@ func (p OpenAIChat) Do(ctx context.Context, profile Profile, req TextRequest) (T
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": req.User},
 		},
-		"stream": false,
+		"stream": true,
 	}
 
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return TextResult{}, err
-	}
-
+	payload, _ := json.Marshal(body)
 	url := joinURL(profile.BaseURL, profile.EndpointPath)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return TextResult{}, err
-	}
-
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+profile.APIKey)
 
@@ -59,48 +51,13 @@ func (p OpenAIChat) Do(ctx context.Context, profile Profile, req TextRequest) (T
 
 	if res.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
-		return TextResult{}, fmt.Errorf("llm upstream status %d: %s", res.StatusCode, string(bodyBytes))
+		return TextResult{}, fmt.Errorf("chat upstream status %d: %s", res.StatusCode, string(bodyBytes))
 	}
 
-	var decoded struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
-	}
-
-	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
+	text, usage, err := parseChatStream(res.Body)
+	if err != nil {
 		return TextResult{}, err
 	}
 
-	if len(decoded.Choices) == 0 {
-		return TextResult{}, fmt.Errorf("llm response has no choices")
-	}
-
-	return TextResult{
-		Text: decoded.Choices[0].Message.Content,
-		Usage: Usage{
-			Input:  decoded.Usage.PromptTokens,
-			Output: decoded.Usage.CompletionTokens,
-			Total:  decoded.Usage.TotalTokens,
-		},
-	}, nil
-}
-
-func joinURL(base, path string) string {
-	if len(base) > 0 && base[len(base)-1] == '/' {
-		base = base[:len(base)-1]
-	}
-
-	if len(path) > 0 && path[0] == '/' {
-		path = path[1:]
-	}
-
-	return base + "/" + path
+	return TextResult{Text: text, Usage: usage}, nil
 }
