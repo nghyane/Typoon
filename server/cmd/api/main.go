@@ -63,6 +63,9 @@ func main() {
 		Translation: translation.NewHandler(translation.Usecase{
 			LLM:     llmClient,
 			Prompts: prompts,
+		}, translation.SessionDeps{
+			Store:  translation.SessionStore{},
+			Ledger: wallet.NewLedger(walletStore),
 		}),
 	})
 
