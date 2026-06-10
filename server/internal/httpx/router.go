@@ -11,6 +11,7 @@ type Module interface {
 }
 
 type Deps struct {
+	Auth        Module
 	Coin        Module
 	Wallet      Module
 	Payment     Module
@@ -27,6 +28,7 @@ func NewRouter(deps Deps) chi.Router {
 		})
 	})
 
+	deps.Auth.Mount(r)
 	deps.Coin.Mount(r)
 	deps.Wallet.Mount(r)
 	deps.Payment.Mount(r)

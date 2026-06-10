@@ -18,6 +18,10 @@ func BadRequest(code, message string) AppError {
 	return AppError{Status: http.StatusBadRequest, Code: code, Message: message}
 }
 
+func Unauthorized(code, message string) AppError {
+	return AppError{Status: http.StatusUnauthorized, Code: code, Message: message}
+}
+
 func NotFound(code, message string) AppError {
 	return AppError{Status: http.StatusNotFound, Code: code, Message: message}
 }

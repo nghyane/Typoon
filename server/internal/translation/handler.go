@@ -20,6 +20,8 @@ func NewHandler(u Usecase, sd SessionDeps) Handler {
 func (h Handler) Mount(r chi.Router) {
 	r.Post("/api/translation-sessions", h.createSession)
 	r.Post("/api/translation-sessions/{id}/refine-windows", h.refine)
+	r.Post("/api/translation-sessions/{id}/finish", h.finish)
+	r.Post("/api/translation-sessions/{id}/cancel", h.cancel)
 }
 
 func (h Handler) createSession(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +49,28 @@ func (h Handler) refine(w http.ResponseWriter, r *http.Request) {
 	}
 
 	output, err := h.usecase.Refine(r.Context(), chi.URLParam(r, "id"), input)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, output)
+}
+
+func (h Handler) finish(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	output, err := h.usecase.FinishSession(r.Context(), h.sessionDeps, id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, output)
+}
+
+func (h Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	output, err := h.usecase.CancelSession(r.Context(), h.sessionDeps, id)
 	if err != nil {
 		httpx.Error(w, err)
 		return

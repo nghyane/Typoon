@@ -98,3 +98,11 @@ func (s SessionStore) updateState(ctx context.Context, sessionID string, state s
 func (s SessionStore) updateXuState(ctx context.Context, sessionID string, state string) error {
 	return nil
 }
+
+func (u Usecase) FinishSession(ctx context.Context, deps SessionDeps, sessionID string) (map[string]string, error) {
+	return map[string]string{"status": "done"}, nil
+}
+
+func (u Usecase) CancelSession(ctx context.Context, deps SessionDeps, sessionID string) (map[string]string, error) {
+	return map[string]string{"status": "cancelled"}, nil
+}

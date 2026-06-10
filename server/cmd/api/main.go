@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/nghiahoang/typoon-api/internal/auth"
 	"github.com/nghiahoang/typoon-api/internal/coin"
 	"github.com/nghiahoang/typoon-api/internal/config"
 	"github.com/nghiahoang/typoon-api/internal/httpx"
@@ -45,7 +46,14 @@ func main() {
 		llm.NewOpenAIChat(),
 	)
 
+	authStore := auth.NewStore(pool)
+
 	router := httpx.NewRouter(httpx.Deps{
+		Auth: auth.NewHandler(authStore, auth.NewDiscord(auth.DiscordConfig{
+			ClientID:     os.Getenv("DISCORD_CLIENT_ID"),
+			ClientSecret: os.Getenv("DISCORD_CLIENT_SECRET"),
+			RedirectURL:  os.Getenv("DISCORD_REDIRECT_URL"),
+		})),
 		Coin: coin.NewHandler(coin.Usecase{
 			Store: coinStore,
 		}),
