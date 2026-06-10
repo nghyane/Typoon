@@ -1,17 +1,17 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// OpenaiResponses calls the OpenAI Responses API (/v1/responses).
-// Used by models like gpt-5.4-mini that speak the responses protocol.
 type OpenaiResponses struct {
 	http *http.Client
 }
@@ -36,21 +36,13 @@ func (p OpenaiResponses) Do(ctx context.Context, profile Profile, req TextReques
 			"role":    "user",
 			"content": []map[string]any{{"type": "input_text", "text": req.User}},
 		}},
-		"stream": false,
+		"stream": true,
 	}
 
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return TextResult{}, err
-	}
-
+	payload, _ := json.Marshal(body)
 	url := joinURL(profile.BaseURL, profile.EndpointPath)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return TextResult{}, err
-	}
-
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+profile.APIKey)
 
@@ -65,43 +57,104 @@ func (p OpenaiResponses) Do(ctx context.Context, profile Profile, req TextReques
 		return TextResult{}, fmt.Errorf("llm upstream status %d: %s", res.StatusCode, string(bodyBytes))
 	}
 
-	var decoded struct {
-		OutputText string `json:"output_text"`
-		Output     []struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-			TotalTokens  int `json:"total_tokens"`
-		} `json:"usage"`
-	}
+	return parseStream(res.Body)
+}
 
-	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
-		return TextResult{}, err
-	}
+func parseStream(body io.Reader) (TextResult, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	text := decoded.OutputText
-	if text == "" {
-		for _, item := range decoded.Output {
-			for _, block := range item.Content {
-				text += block.Text
+	var text strings.Builder
+	var usage Usage
+	var event string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if line == "" {
+			event = ""
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(data), &obj); err != nil {
+			continue
+		}
+
+		// Responses API: output_text.delta
+		if event == "response.output_text.delta" {
+			if delta, ok := obj["delta"].(string); ok {
+				text.WriteString(delta)
 			}
+			continue
+		}
+
+		// Responses API: completed
+		if event == "response.completed" {
+			if resp, ok := obj["response"].(map[string]any); ok {
+				if u, ok := resp["usage"].(map[string]any); ok {
+					usage = parseUsage(u)
+				}
+			}
+			continue
+		}
+
+		// Chat Completions: choices[0].delta.content
+		if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if delta, ok := choice["delta"].(map[string]any); ok {
+					if content, ok := delta["content"].(string); ok {
+						text.WriteString(content)
+					}
+				}
+			}
+		}
+
+		// Usage in chat completions
+		if u, ok := obj["usage"].(map[string]any); ok {
+			usage = parseUsage(u)
 		}
 	}
 
-	if text == "" {
+	if err := scanner.Err(); err != nil {
+		return TextResult{}, fmt.Errorf("llm stream: %w", err)
+	}
+
+	resultText := strings.TrimSpace(text.String())
+	if resultText == "" {
 		return TextResult{}, fmt.Errorf("llm responses payload did not include output text")
 	}
 
-	return TextResult{
-		Text: text,
-		Usage: Usage{
-			Input:  decoded.Usage.InputTokens,
-			Output: decoded.Usage.OutputTokens,
-			Total:  decoded.Usage.TotalTokens,
-		},
-	}, nil
+	return TextResult{Text: resultText, Usage: usage}, nil
+}
+
+func parseUsage(u map[string]any) Usage {
+	return Usage{
+		Input:  firstInt(u, "input_tokens", "prompt_tokens"),
+		Output: firstInt(u, "output_tokens", "completion_tokens"),
+		Total:  firstInt(u, "total_tokens"),
+	}
+}
+
+func firstInt(m map[string]any, keys ...string) int {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return int(v)
+		}
+	}
+	return 0
 }
