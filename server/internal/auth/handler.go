@@ -23,6 +23,7 @@ func (h Handler) Mount(r chi.Router) {
 	r.Get("/api/auth/discord/callback", h.callback)
 	r.Get("/api/auth/session", h.session)
 	r.Post("/api/auth/logout", h.logout)
+	r.Post("/api/auth/da/exchange", h.daExchange)
 }
 
 func (h Handler) start(w http.ResponseWriter, r *http.Request) {
@@ -137,4 +138,48 @@ func (h Handler) logout(w http.ResponseWriter, r *http.Request) {
 	})
 
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// DA exchange — Discord Activity silent auth (no cookie, returns token in body).
+// DA iframe calls discordSdk.commands.authorize({ prompt: 'none' }) to get a code,
+// then posts it here. Server verifies the code, upserts the user, and returns
+// a session token for bearer auth in subsequent requests.
+func (h Handler) daExchange(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Code string `json:"code" validate:"required"`
+	}
+
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	// DA authorize uses 127.0.0.1 as redirect URI
+	token, err := h.discord.Exchange(r.Context(), input.Code)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	user, err := h.discord.GetUser(token)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	userID, err := h.store.UpsertUser(r.Context(), user)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	_ = h.store.CreateOAuthAccount(r.Context(), userID, "discord", user.ID)
+
+	sessionToken, err := h.store.CreateSession(r.Context(), userID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"token": sessionToken})
 }
