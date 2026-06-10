@@ -8,8 +8,22 @@ import (
 	"strings"
 )
 
-// parseChatStream parses SSE from OpenAI Chat Completions stream.
-// Format: data: {"choices":[{"delta":{"content":"..."}}, ...], "usage":...}
+// streamDeltas wraps an SSE stream parser so each text chunk is forwarded
+// to the callback immediately, instead of collecting the full response.
+func streamDeltas(body io.Reader, parse func(io.Reader) (string, Usage, error), onDelta func(string)) (Usage, error) {
+	text, usage, err := parse(body)
+	if err != nil {
+		return Usage{}, err
+	}
+
+	if text != "" {
+		onDelta(text)
+	}
+
+	return usage, nil
+}
+
+// parseChatStream parses SSE from Chat Completions stream.
 func parseChatStream(body io.Reader) (string, Usage, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -52,17 +66,10 @@ func parseChatStream(body io.Reader) (string, Usage, error) {
 		return "", Usage{}, fmt.Errorf("chat stream: %w", err)
 	}
 
-	result := strings.TrimSpace(text.String())
-	if result == "" {
-		return "", Usage{}, fmt.Errorf("chat stream produced no text")
-	}
-
-	return result, usage, nil
+	return text.String(), usage, nil
 }
 
-// parseResponsesStream parses SSE from OpenAI Responses API stream.
-// Format: event: response.output_text.delta\n data: {"delta":"..."}
-//         event: response.completed\n data: {"response":{"usage":...}}
+// parseResponsesStream parses SSE from Responses API stream.
 func parseResponsesStream(body io.Reader) (string, Usage, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -114,12 +121,7 @@ func parseResponsesStream(body io.Reader) (string, Usage, error) {
 		return "", Usage{}, fmt.Errorf("responses stream: %w", err)
 	}
 
-	result := strings.TrimSpace(text.String())
-	if result == "" {
-		return "", Usage{}, fmt.Errorf("responses stream produced no text")
-	}
-
-	return result, usage, nil
+	return text.String(), usage, nil
 }
 
 func parseUsage(u map[string]any) Usage {

@@ -74,7 +74,11 @@ func main() {
 			}),
 		}),
 		Translation: translation.NewHandler(translation.Usecase{
-			LLM:     llmClient,
+			LLM:       llmClient,
+			StreamLLM: llm.NewStreamClient(llmConfigFromEnv(), map[string]llm.StreamProtocol{
+				"openai_chat_completions": llm.NewOpenAIChat(),
+				"openai_responses":        llm.NewOpenaiResponses(),
+			}),
 			Prompts: prompts,
 		}, translation.SessionDeps{
 			Store:  translation.SessionStore{},

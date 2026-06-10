@@ -8,8 +8,9 @@ import (
 )
 
 type Usecase struct {
-	LLM     llm.Client
-	Prompts PromptBook
+	LLM       llm.Client
+	StreamLLM llm.StreamClient
+	Prompts   PromptBook
 }
 
 const maxUnitsPerWindow = 100

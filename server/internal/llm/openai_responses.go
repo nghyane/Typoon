@@ -62,3 +62,40 @@ func (p OpenaiResponses) Do(ctx context.Context, profile Profile, req TextReques
 
 	return TextResult{Text: text, Usage: usage}, nil
 }
+
+// DoStream calls onDelta for each token chunk from the responses stream.
+func (p OpenaiResponses) DoStream(ctx context.Context, profile Profile, req TextRequest, onDelta func(delta string)) (Usage, error) {
+	timeout := time.Duration(profile.Timeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	body := map[string]any{
+		"model":        profile.Model,
+		"instructions": req.System,
+		"input": []map[string]any{{
+			"role":    "user",
+			"content": []map[string]any{{"type": "input_text", "text": req.User}},
+		}},
+		"stream": true,
+	}
+
+	payload, _ := json.Marshal(body)
+	url := joinURL(profile.BaseURL, profile.EndpointPath)
+
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+profile.APIKey)
+
+	res, err := p.http.Do(httpReq)
+	if err != nil {
+		return Usage{}, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+		return Usage{}, fmt.Errorf("responses upstream status %d: %s", res.StatusCode, string(bodyBytes))
+	}
+
+	return streamDeltas(res.Body, parseResponsesStream, onDelta)
+}
