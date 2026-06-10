@@ -3,10 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "web",
-    "ext",
-    "packages/*",
-    "workers/*"
+    "packages/client"
   ],
   "devDependencies": {
     "@jsquash/jpeg": "^1.5.0",
