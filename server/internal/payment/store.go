@@ -2,10 +2,12 @@ package payment
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	sqlc "github.com/nghiahoang/typoon-api/internal/db/sqlc"
+	"github.com/nghiahoang/typoon-api/internal/httpx"
 )
 
 type Store struct {
@@ -17,18 +19,25 @@ func NewStore(db *pgxpool.Pool) Store {
 	return Store{db: db, q: sqlc.New()}
 }
 
-func (s Store) CreatePending(ctx context.Context, pkg any) (Order, error) {
-	return Order{}, nil
+func (s Store) requirePackage(ctx context.Context, id string) (PackageInfo, error) {
+	return PackageInfo{}, fmt.Errorf("db not connected")
 }
 
-func (s Store) Find(ctx context.Context, id string) (Order, error) {
-	return Order{}, nil
+type PackageInfo struct {
+	ID    string
+	Name  string
+	Xu    int
+	Price int
 }
 
-func (s Store) AttachCheckout(ctx context.Context, id, url string) error {
-	return nil
+func (s Store) createPending(ctx context.Context, pkg PackageInfo, orderCode string) (Order, error) {
+	return Order{}, fmt.Errorf("db not connected")
 }
 
-func (s Store) ApplyPaid(ctx context.Context, orderCode string, amount int) error {
-	return nil
+func (s Store) attachCheckout(ctx context.Context, orderID, url string) error {
+	return fmt.Errorf("db not connected")
+}
+
+func (s Store) requireOrder(ctx context.Context, id string) (Order, error) {
+	return Order{}, httpx.NotFound("payment_order_not_found", "Payment order not found")
 }

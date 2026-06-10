@@ -54,6 +54,11 @@ func main() {
 		}),
 		Payment: payment.NewHandler(payment.Usecase{
 			Store: paymentStore,
+			Payos: payment.NewPayOS(payment.PayOSConfig{
+				ClientID:    os.Getenv("PAYOS_CLIENT_ID"),
+				APIKey:      os.Getenv("PAYOS_API_KEY"),
+				ChecksumKey: os.Getenv("PAYOS_CHECKSUM_KEY"),
+			}),
 		}),
 		Translation: translation.NewHandler(translation.Usecase{
 			LLM:     llmClient,
