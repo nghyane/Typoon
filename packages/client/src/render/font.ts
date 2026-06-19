@@ -28,7 +28,10 @@ export const MANGA_FONT_FAMILY = MANGA_FONT_PROFILE.cssFamily
 
 export async function ensureMangaFontLoaded(sizePx = 24): Promise<void> {
   if (!('fonts' in document)) return
-  await document.fonts.load(`${sizePx}px ${MANGA_FONT_PROFILE.family}`)
+  await Promise.race([
+    document.fonts.load(`${sizePx}px ${MANGA_FONT_PROFILE.family}`),
+    new Promise<void>(resolve => setTimeout(resolve, 1_500)),
+  ]).then(() => undefined, () => undefined)
 }
 
 function lineHeightRatio(metrics: FontMetrics): number {

@@ -5,10 +5,12 @@ import { imageAt, pageHostForImage, type DomPageOptions } from './domShared'
 export type DomOverlayTargetOptions = DomPageOptions
 
 export class DomOverlayTarget {
+  private readonly container: HTMLElement
   private readonly imageSelector: string
   private readonly hostSelector?: string
 
-  constructor(private readonly container: HTMLElement, options: DomOverlayTargetOptions = {}) {
+  constructor(container: HTMLElement, options: DomOverlayTargetOptions = {}) {
+    this.container = container
     this.imageSelector = options.imageSelector ?? 'img'
     this.hostSelector = options.hostSelector
   }

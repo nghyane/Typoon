@@ -1,8 +1,11 @@
 export class AsyncLimiter {
+  readonly concurrency: number
   private active = 0
   private readonly queue: (() => void)[] = []
 
-  constructor(readonly concurrency: number) {}
+  constructor(concurrency: number) {
+    this.concurrency = concurrency
+  }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     await this.acquire()

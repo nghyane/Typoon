@@ -1,27 +1,33 @@
 import {
   DeepLTranslateWeb,
-  DomOverlayTarget,
-  DomPageSource,
   GoogleTranslateWeb,
   LensTextRecognizer,
   MangaTextRegionDetector,
+  MainThreadVisionRuntime,
   ModelRepository,
-  TranslationEngine,
+  TranslationRuntime,
+  attachOverlay,
+  detectBrowserCapabilities,
   type CapabilityStatus,
-  type RenderedPage,
+  type PageDocumentSource,
+  type PageOverlay,
+  type PipelineConcurrency,
   type Translator,
   ensureMangaFontLoaded,
+  createDebugLayer,
+  type OverlayDebugOptions,
 } from '../../src/index'
 import { OrtRuntime } from '../../src/models/OrtRuntime'
 import { OrtSessionPool } from '../../src/models/OrtSessionPool'
 import ortWebgpuWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
 import './style.css'
 
-const comicDetrModelUrl = new URL('../assets/comic-detr-v4s-webgpu.onnx', import.meta.url).href
 const ortWasmUrl = new URL(ortWebgpuWasmUrl, window.location.href).href
 const chapterPages = Array.from({ length: 20 }, (_, index) => `/chapter-20/${String(index + 1).padStart(3, '0')}.jpg`)
 
 const app = document.querySelector<HTMLDivElement>('#app')!
+
+const browserCaps = detectBrowserCapabilities()
 
 app.innerHTML = `
   <section class="shell">
@@ -29,7 +35,9 @@ app.innerHTML = `
       <p class="eyebrow">@typoon/client</p>
       <h1>Local overlay dev reader</h1>
       <p class="muted">
-        Client-only pipeline: browser encodes the page, recognizes text with Lens, detects regions locally, then translates with the selected web translator.
+        OCR runs immediately via Lens while Comic-DETR model downloads in background.<br />
+        Model auto-select: ${browserCaps.supportsWebGpu ? 'WebGPU (161 MB FP32)' : 'wasm (11 MB INT8)'}
+        ${browserCaps.isSafari ? '— Safari: single-thread wasm' : ''}
       </p>
       <section class="panel-section" aria-labelledby="translationSettingsTitle">
         <div class="section-heading">
@@ -39,8 +47,8 @@ app.innerHTML = `
         <label class="field">
           <span>Translator</span>
           <select id="translator">
+            <option value="deepl" selected>DeepL Web</option>
             <option value="google">Google Translate</option>
-            <option value="deepl">DeepL Web</option>
           </select>
         </label>
         <label id="deeplEndpointField" class="field" hidden>
@@ -62,6 +70,7 @@ app.innerHTML = `
           <h2 id="overlayDebugTitle">Overlay debug</h2>
         </div>
         <div class="check-list" aria-label="overlay debug controls">
+          <label><input id="useOnnx" type="checkbox" checked /> ONNX detect regions</label>
           <label><input id="erase" type="checkbox" checked /> erase flat-fill</label>
           <label><input id="debugDrawable" type="checkbox" /> drawable regions</label>
           <label><input id="debugTextBoxes" type="checkbox" /> OCR boxes</label>
@@ -93,9 +102,8 @@ const log = document.querySelector<HTMLPreElement>('#log')!
 const prepareModels = document.querySelector<HTMLButtonElement>('#prepareModels')!
 const modelStatus = document.querySelector<HTMLPreElement>('#modelStatus')!
 const reader = document.querySelector<HTMLDivElement>('#reader')!
-const pages = new DomPageSource(reader, { imageSelector: '.page-image' })
-const overlays = new DomOverlayTarget(reader, { imageSelector: '.page-image', hostSelector: '.page-host' })
 const erase = document.querySelector<HTMLInputElement>('#erase')!
+const useOnnx = document.querySelector<HTMLInputElement>('#useOnnx')!
 const debugDrawable = document.querySelector<HTMLInputElement>('#debugDrawable')!
 const debugTextBoxes = document.querySelector<HTMLInputElement>('#debugTextBoxes')!
 const debugBounds = document.querySelector<HTMLInputElement>('#debugBounds')!
@@ -104,51 +112,64 @@ const translatorSelect = document.querySelector<HTMLSelectElement>('#translator'
 const deeplEndpoint = document.querySelector<HTMLInputElement>('#deeplEndpoint')!
 const deeplEndpointField = document.querySelector<HTMLElement>('#deeplEndpointField')!
 
-const renderedPages = new Map<number, RenderedPage>()
+const renderedPages = new Map<number, PageOverlay>()
 
-const models = new ModelRepository({
-  manifest: {
-    version: 'dev-local',
-    models: {
-      comicDetr: {
-        id: 'comic-detr-v4s-webgpu',
-        version: 'dev-local',
-        url: comicDetrModelUrl,
-        sha256: '',
-        sizeBytes: 168874314,
-        inputSize: 640,
-        executionProviders: ['webgpu', 'wasm'],
-      },
-    },
+const pageSource: PageDocumentSource = {
+  pageCount: chapterPages.length,
+  async readPage(index, signal) {
+    const src = chapterPages[index]
+    if (!src) throw new RangeError(`page ${index} out of range`)
+    const res = await fetch(src, { signal })
+    if (!res.ok) throw new Error(`page ${index} fetch failed: ${res.status}`)
+    const blob = await res.blob()
+    const image = imageElement(index)
+    const size = image.naturalWidth && image.naturalHeight
+      ? { width: image.naturalWidth, height: image.naturalHeight }
+      : undefined
+    return { index, blob, size }
   },
+}
+
+const models = ModelRepository.fromHuggingFace({
+  repo: 'nghyane/comic-detr',
+  revision: 'v1',
 })
 
 const recognizer = new LensTextRecognizer()
-const comicDetrModel = models.model('comicDetr')
 
 const ortRuntime = new OrtRuntime()
 ortRuntime.configure({
   logLevel: 'fatal',
   wasmPaths: { wasm: ortWasmUrl },
-  wasmNumThreads: crossOriginIsolated
-    ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1))
-    : 1,
+  wasmNumThreads: browserCaps.modelHint.wasmNumThreads,
 })
 const sessionPool = new OrtSessionPool()
+
+const comicDetrModel = await models.model(browserCaps.modelHint.modelId)
+comicDetrModel.subscribeStatus(renderModelStatus)
 
 const detector = new MangaTextRegionDetector({
   model: comicDetrModel,
   sessionPool,
 })
-const scheduler = {
-  concurrency: { pages: 4, recognize: 4, detect: 1, translate: 4 },
-  retry: { recognize: { attempts: 2 }, translate: { attempts: 2 } },
+detector.subscribeStatus(renderModelStatus)
+
+const pipelineConcurrency: PipelineConcurrency = {
+  load: browserCaps.isMobile ? 2 : 4,
+  prepare: 1,
+  ocr: browserCaps.isMobile ? 2 : 3,
+  detect: 1,
+  translate: browserCaps.isMobile ? 3 : 4,
+  compose: browserCaps.isMobile ? 2 : 3,
 }
 
 status.textContent = 'status idle'
-comicDetrModel.subscribeStatus(renderModelStatus)
-detector.subscribeStatus(renderModelStatus)
 syncTranslatorControls()
+
+useOnnx.addEventListener('change', () => {
+  prepareModels.disabled = !useOnnx.checked
+  modelStatus.textContent = useOnnx.checked ? 'model idle' : 'ONNX disabled'
+})
 
 prepareModels.addEventListener('click', async () => {
   prepareModels.disabled = true
@@ -165,31 +186,48 @@ run.addEventListener('click', async () => {
   run.disabled = true
   prepareModels.disabled = true
   const translator = createTranslator()
-  const engine = createEngine(translator)
+  const runtime = createRuntime(translator)
   clearOverlays()
   clearPendingOverlays()
   clearFailedOverlays()
   renderedPages.clear()
   log.textContent = `running chapter with ${translator.name}…`
+  const startedAt = performance.now()
   try {
     await ensureMangaFontLoaded()
-    await detector.ensureReady()
     markPendingPages()
-    const segmentRun = engine.translateSegment({
-      source: pages,
-      sourceLang: 'en',
-      targetLang: 'vi',
+    const translationRun = runtime.createTranslationRun(pageSource, {
+      sourceLanguage: 'en',
+      targetLanguage: 'vi',
+      scope: 'all',
+      priority: { aroundPageIndex: 0 },
+      preparation: { type: 'identity' },
     })
-    segmentRun.onDisplay(page => {
-      renderedPages.set(page.pageIndex, page)
-      setPagePending(page.pageIndex, false)
-      overlays.attach(page.pageIndex, page, overlayOptions())
+    translationRun.subscribe(event => {
+      if (event.type === 'page-overlay') {
+        renderedPages.set(event.overlay.pageIndex, event.overlay)
+        setPagePending(event.overlay.pageIndex, false)
+        attachPageOverlay(event.overlay)
+        logProgress(renderedPages.size, startedAt)
+        return
+      }
+      if (event.type === 'page-status' && event.status === 'error') {
+        setPagePending(event.pageIndex, false)
+        setPageFailed(event.pageIndex, event.error)
+        return
+      }
+      if (event.type === 'progress') {
+        status.textContent = `status running ${event.progress.done}/${event.progress.total}`
+      }
     })
-    segmentRun.start()
-    await segmentRun.done
+    translationRun.start()
+    await translationRun.done
+    status.textContent = `status done ${renderedPages.size}/${pageSource.pageCount}`
+    logProgress(renderedPages.size, startedAt)
   } catch (error) {
     log.textContent = error instanceof Error ? error.stack ?? error.message : String(error)
   } finally {
+    runtime.dispose()
     await closeTranslator(translator)
     run.disabled = false
     prepareModels.disabled = false
@@ -198,44 +236,74 @@ run.addEventListener('click', async () => {
 
 translatorSelect.addEventListener('change', syncTranslatorControls)
 
-for (const input of [erase, debugDrawable, debugTextBoxes, debugBounds, debugLabels]) {
-  input.addEventListener('change', renderRenderedPages)
+erase.addEventListener('change', renderRenderedPages)
+
+for (const input of [debugDrawable, debugTextBoxes, debugBounds, debugLabels]) {
+  input.addEventListener('change', renderDebugLayers)
 }
 
 function renderRenderedPages(): void {
   clearOverlays()
-  for (const [index, page] of renderedPages) overlays.attach(index, page, overlayOptions())
+  for (const [, page] of renderedPages) attachPageOverlay(page)
   logProgress(renderedPages.size, null)
+}
+
+function renderDebugLayers(): void {
+  const debug = overlayDebugOptions()
+  const showDebug = hasDebugOptions(debug)
+
+  for (const [index, page] of renderedPages) {
+    const host = pageHost(index)
+    const overlay = host.querySelector<HTMLElement>('[data-typoon-overlay="true"]')
+    if (!overlay) {
+      attachPageOverlay(page)
+      continue
+    }
+
+    overlay.querySelectorAll('[data-typoon-debug-layer="true"]').forEach(layer => layer.remove())
+    if (showDebug) overlay.appendChild(createDebugLayer(page.placements, overlayPageSize(page), debug))
+  }
 }
 
 function overlayOptions() {
   return {
     eraseStrategy: erase.checked ? 'flat-fill' : 'none',
-    debug: {
-      showDrawable: debugDrawable.checked,
-      showTextBoxes: debugTextBoxes.checked,
-      showTextBounds: debugBounds.checked,
-      showLabels: debugLabels.checked,
-    },
+    debug: overlayDebugOptions(),
   } as const
 }
 
-function createEngine(translator: Translator): TranslationEngine {
-  return new TranslationEngine({
-    sourceLang: 'en',
-    targetLang: 'vi',
+function overlayDebugOptions(): OverlayDebugOptions {
+  return {
+    showDrawable: debugDrawable.checked,
+    showTextBoxes: debugTextBoxes.checked,
+    showTextBounds: debugBounds.checked,
+    showLabels: debugLabels.checked,
+  }
+}
+
+function hasDebugOptions(options: OverlayDebugOptions): boolean {
+  return !!(options.showDrawable || options.showTextBoxes || options.showTextBounds || options.showLabels)
+}
+
+function createRuntime(translator: Translator): TranslationRuntime {
+  return new TranslationRuntime({
+    vision: new MainThreadVisionRuntime({
+      detector: useOnnx.checked ? detector : undefined,
+    }),
     recognizer,
-    detector,
     translator,
-    scheduler,
+    concurrency: pipelineConcurrency,
   })
 }
 
 function createTranslator(): Translator {
   if (translatorSelect.value === 'deepl') {
-    return new DeepLTranslateWeb({ endpoint: deeplEndpoint.value.trim() || '/deepl/v2' })
+    return new DeepLTranslateWeb({
+      endpoint: deeplEndpoint.value.trim() || '/deepl/v2',
+      maxSessions: pipelineConcurrency.translate,
+    })
   }
-  return new GoogleTranslateWeb()
+  return new GoogleTranslateWeb({ maxConcurrency: pipelineConcurrency.translate })
 }
 
 function renderModelStatus(status: CapabilityStatus): void {
@@ -261,7 +329,9 @@ function formatBytes(bytes: number): string {
 }
 
 async function closeTranslator(translator: Translator): Promise<void> {
-  if ('close' in translator && typeof translator.close === 'function') await translator.close()
+  if ('close' in translator && typeof translator.close === 'function') {
+    try { await translator.close() } catch { /* best-effort */ }
+  }
 }
 
 function syncTranslatorControls(): void {
@@ -275,7 +345,7 @@ function clearOverlays(): void {
 }
 
 function markPendingPages(): void {
-  for (let index = 0; index < pages.pageCount; index++) {
+  for (let index = 0; index < pageSource.pageCount; index++) {
     if (!renderedPages.has(index)) setPagePending(index, true)
   }
 }
@@ -298,6 +368,36 @@ function clearFailedOverlays(): void {
   reader.querySelectorAll('[data-dev-failed-overlay="true"]').forEach(overlay => overlay.remove())
 }
 
+function setPageFailed(index: number, error: Error | undefined): void {
+  const host = pageHost(index)
+  host.querySelector('[data-dev-failed-overlay="true"]')?.remove()
+  const overlay = document.createElement('div')
+  overlay.dataset.devFailedOverlay = 'true'
+  overlay.textContent = error?.message ?? 'Translation failed'
+  host.appendChild(overlay)
+}
+
+function attachPageOverlay(page: PageOverlay): void {
+  const host = pageHost(page.pageIndex)
+  host.querySelector('[data-typoon-overlay="true"]')?.remove()
+  attachOverlay(host, {
+    pageSize: [page.pageSize.width, page.pageSize.height],
+    placements: page.placements,
+    translations: page.translations,
+    placementMargins: page.placementMargins,
+  }, overlayOptions())
+}
+
+function overlayPageSize(page: PageOverlay): readonly [number, number] {
+  return [page.pageSize.width, page.pageSize.height]
+}
+
+function imageElement(index: number): HTMLImageElement {
+  const image = pageHost(index).querySelector<HTMLImageElement>('.page-image')
+  if (!image) throw new RangeError(`page image not found: ${index}`)
+  return image
+}
+
 function pageHost(index: number): HTMLElement {
   const host = reader.querySelector<HTMLElement>(`[data-page-index="${index}"]`)
   if (!host) throw new RangeError(`page host not found: ${index}`)
@@ -309,19 +409,17 @@ function logProgress(done: number, startedAt: number | null): void {
   log.textContent = JSON.stringify({
     progress: {
       done,
-      total: pages.pageCount,
+      total: pageSource.pageCount,
       elapsedMs,
     },
     metrics: collectTextMetrics(),
     pages: [...renderedPages].map(([pageIndex, page]) => ({
       pageIndex,
-      phase: page.phase,
       placementCount: page.placements.length,
       translationCount: page.translations.length,
       placements: page.placements.map(placement => ({
         id: placement.id,
         role: placement.role,
-        text: sourceTextForPlacement(page, placement.sourceUnitIds),
         bbox: placement.bbox,
         rotationDeg: placement.rotationDeg,
         textBoxes: placement.textBoxes,
@@ -332,17 +430,24 @@ function logProgress(done: number, startedAt: number | null): void {
   }, null, 2)
 }
 
-function sourceTextForPlacement(page: RenderedPage, sourceUnitIds: readonly string[]): string {
-  const byId = new Map(page.textUnits.map(unit => [unit.id, unit.sourceText]))
-  return sourceUnitIds.map(id => byId.get(id)).filter(Boolean).join('\n')
-}
-
 function collectTextMetrics(): unknown[] {
   return [...reader.querySelectorAll<HTMLElement>('[data-typoon-text="true"]')].map(el => ({
     page: Number(el.closest<HTMLElement>('[data-page-index]')?.dataset.pageIndex ?? -1),
     id: el.dataset.placementId,
     role: el.dataset.role,
     font: Number(el.dataset.fontSizePx),
+    sourceFont: Number(el.dataset.sourceFontPx),
+    roleMedian: Number(el.dataset.roleMedianFontPx),
+    targetFont: Number(el.dataset.targetFontPx),
+    fontIntent: el.dataset.fontIntentReason,
+    fit: el.dataset.fitReason,
+    layout: el.dataset.layoutCandidate,
+    expansion: el.dataset.expansionReason ?? 'none',
+    margins: el.dataset.margins ?? '',
+    baseRect: el.dataset.baseRect ?? '',
+    safeBounds: el.dataset.safeBounds ?? '',
+    direction: el.dataset.direction,
+    directionReason: el.dataset.directionReason,
     maxDom: Number(el.dataset.maxDomFitPx),
     cap: el.dataset.capReason,
     overflow: el.dataset.overflow === 'true',

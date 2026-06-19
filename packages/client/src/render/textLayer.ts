@@ -114,6 +114,10 @@ function createTextBox(
   box.dataset.rotationDeg = rotationDeg.toFixed(2)
   box.dataset.lineCount = String(fit.lineCount)
   box.dataset.lineScore = fit.lineScore.toFixed(2)
+  box.dataset.maxFill = fit.maxFill.toFixed(3)
+  box.dataset.edgeGuardPx = String(fit.edgeGuardPx)
+  box.dataset.fontShortSideRatio = fit.fontShortSideRatio.toFixed(3)
+  box.dataset.safeShapeUsed = String(fit.safeShapeUsed)
   box.dataset.baseRect = formatRect(fit.baseRect)
   box.dataset.desiredFontSizePx = String(fit.desiredFontSizePx)
   box.dataset.layoutDirection = layout.direction
@@ -131,6 +135,8 @@ function createTextBox(
     box.dataset.margins = `${fit.expansion.margins.top},${fit.expansion.margins.right},${fit.expansion.margins.bottom},${fit.expansion.margins.left}`
     box.dataset.backgroundRgb = fit.expansion.backgroundRgb?.join(',') ?? ''
     box.dataset.backgroundTolerance = String(Math.round(fit.expansion.backgroundTolerance))
+    box.dataset.shapeConfidence = fit.expansion.shape ? fit.expansion.shape.confidence.toFixed(2) : ''
+    box.dataset.shapeSpans = fit.expansion.shape ? String(fit.expansion.shape.spans.length) : ''
   }
   box.style.position = 'absolute'
   box.style.left = `${(x / pageW) * 100}%`

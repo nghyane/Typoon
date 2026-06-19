@@ -61,7 +61,7 @@ function rotatedRectShape(bbox: BBox, rotationDeg: number, fill: string): EraseS
 }
 
 function textEraseBoxes(lineBoxes: readonly BBox[], fallback: BBox): BBox[] {
-  const boxes = lineBoxes.length ? lineBoxes : [fallback]
+  const boxes = lineBoxes.length ? [...lineBoxes, fallback] : [fallback]
   return boxes.map(box => {
     const w = box[2] - box[0]
     const h = box[3] - box[1]
@@ -69,6 +69,7 @@ function textEraseBoxes(lineBoxes: readonly BBox[], fallback: BBox): BBox[] {
     return [box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad] as BBox
   })
 }
+
 
 function solveRotatedLocalSize(bboxW: number, bboxH: number, rotationDeg: number): readonly [number, number] {
   const rad = Math.abs(rotationDeg) * Math.PI / 180

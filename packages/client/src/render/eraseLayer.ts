@@ -10,6 +10,7 @@ export function createEraseLayer(plan: ErasePlan, pageSize: readonly [number, nu
   svg.style.width = '100%'
   svg.style.height = '100%'
   svg.style.pointerEvents = 'none'
+  svg.style.zIndex = '0'
 
   if (plan.kind === 'flat-fill') {
     for (const shape of plan.shapes) svg.appendChild(createShapeElement(shape))

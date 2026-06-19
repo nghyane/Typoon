@@ -9,15 +9,28 @@ import type { Translator } from '../translators/translator'
 import type { TranslationPostEditor } from '../translators/postEditor'
 import type { StageScheduler } from './StageScheduler'
 import type { LayoutPlan, SegmentRequest, TranslationVersion } from '../domain/segment'
+import type { SegmentDisplayOptions } from './TranslationEngine'
 
 import { canvasPageFromImage } from '../pipeline/canvasPageFromImage'
 import { textUnitsFromBlocks } from '../pipeline/textUnits'
 import { translationUnitsFromTextUnits } from '../pipeline/translationUnits'
 import { textPlacementsFromRecognition, layoutPlacementsFromRegions } from '../pipeline/textPlacements'
-import { translateSegment } from '../pipeline/translateSegment'
 import { materializeRenderedPage } from '../pipeline/materializeRenderedPage'
 
 type PageListener = (page: RenderedPage) => void
+
+type RecognizedPageWork = {
+  readonly page: RecognizedTextPage
+  readonly pageUnits: readonly TranslationUnit[]
+}
+
+type PageState = {
+  readonly frame: CanvasPage
+  recognized?: RecognizedTextPage
+  pageUnits?: readonly TranslationUnit[]
+  translations?: readonly TranslatedUnit[]
+  regions?: readonly TextRegion[]
+}
 
 type Work = {
   frames: CanvasPage[] | null
@@ -35,8 +48,20 @@ type Work = {
 }
 
 export class SegmentTranslationRun {
+  private readonly request: SegmentRequest
+  private readonly deps: {
+    readonly source: PageSource
+    readonly recognizer: TextRecognizer
+    readonly translator: Translator
+    readonly postEditor?: TranslationPostEditor
+    readonly detector?: TextRegionDetector
+    readonly scheduler: StageScheduler
+    readonly display?: SegmentDisplayOptions
+    readonly signal?: AbortSignal
+  }
   private readonly listeners = new Set<PageListener>()
   private readonly abort = new AbortController()
+  private readonly pageStates = new Map<number, PageState>()
   private started = false
   private cancelled = false
   private readonly work: Work = {
@@ -57,17 +82,20 @@ export class SegmentTranslationRun {
   readonly done: Promise<readonly RenderedPage[]>
 
   constructor(
-    private readonly request: SegmentRequest,
-    private readonly deps: {
+    request: SegmentRequest,
+    deps: {
       readonly source: PageSource
       readonly recognizer: TextRecognizer
       readonly translator: Translator
       readonly postEditor?: TranslationPostEditor
       readonly detector?: TextRegionDetector
       readonly scheduler: StageScheduler
+      readonly display?: SegmentDisplayOptions
       readonly signal?: AbortSignal
     },
   ) {
+    this.request = request
+    this.deps = deps
     this.done = new Promise((resolve, reject) => {
       this.doneResolve = resolve
       this.doneReject = reject
@@ -94,34 +122,94 @@ export class SegmentTranslationRun {
     })
   }
 
-  // -- graph --
-
   private async run(): Promise<void> {
     const signal = this.combinedSignal()
 
     const frames = await this.pages(signal)
     this.work.frames = frames
 
+    for (const frame of frames) {
+      this.pageStates.set(frame.pageIndex, { frame })
+    }
+
+    const translationTasks: Array<Promise<readonly TranslatedUnit[]>> = []
+
     const regionsTask = this.regions(frames, signal)
 
-    const transcript = await this.transcript(frames, signal)
-    this.work.transcript = transcript
+    const recognized: RecognizedPageWork[] = await Promise.all(frames.map(frame =>
+      this.deps.scheduler.recognize(async () => {
+        const page = await this.deps.recognizer.recognizeText(frame.image, {
+          pageIndex: frame.pageIndex,
+          sourceLang: this.request.sourceLang,
+          signal,
+        })
 
-    const script = this.script(transcript)
+        const textUnits = textUnitsFromBlocks(page.blocks, page.pageIndex)
+        const pageUnits = translationUnitsFromTextUnits(textUnits)
+        const state = this.pageStates.get(frame.pageIndex)!
+
+        state.recognized = page
+        state.pageUnits = pageUnits
+
+        const progressive = this.deps.display?.progressive
+        if (progressive) {
+          const task = this.translateAndEmit(state, signal)
+          void task.catch(() => {})
+          translationTasks.push(task)
+        }
+
+        return { page, pageUnits }
+      }),
+    ))
+
+    recognized.sort((a, b) => a.page.pageIndex - b.page.pageIndex)
+
+    const transcript = recognized.map(item => item.page)
+    const script = recognized.flatMap(item => item.pageUnits)
+
+    let translatedUnits: readonly TranslatedUnit[]
+
+    if (!this.deps.display?.progressive) {
+      // Batch mode: translate full script
+      translatedUnits = await this.deps.translator.translateUnits({
+        units: script,
+        sourceLang: this.request.sourceLang ?? null,
+        targetLang: this.request.targetLang,
+        signal,
+      })
+      for (const [pageIndex, state] of this.pageStates) {
+        state.translations = translatedUnits.filter(u => u.pageIndex === pageIndex)
+      }
+    } else {
+      // Progressive mode: wait all page tasks
+      const outcomes = await Promise.allSettled(translationTasks)
+      const errors = outcomes
+        .filter((o): o is PromiseRejectedResult => o.status === 'rejected')
+        .map(o => o.reason)
+      if (errors.length > 0) throw errors[0]!
+      translatedUnits = outcomes
+        .filter((o): o is PromiseFulfilledResult<readonly TranslatedUnit[]> => o.status === 'fulfilled')
+        .flatMap(o => o.value)
+    }
+
+    translatedUnits = orderTranslatedUnits(translatedUnits, script)
+
+    this.work.transcript = transcript
     this.work.script = script
     this.work.unitsByPage = groupByPage(script)
+    this.work.machineVersion = { id: this.nextVersionId(), method: 'machine', units: translatedUnits }
 
     this.useLayout(this.planLayout())
 
-    const machine = await this.machine(script, signal)
-    this.work.machineVersion = machine
-    this.emitPages()
+    if (!this.deps.display?.progressive) {
+      this.emitPages()
+    }
 
     if (this.request.postEdit && this.deps.postEditor && this.work.layout) {
       const edited = await this.postEdit({
         transcript,
         script,
-        base: machine,
+        base: this.work.machineVersion,
         layout: this.work.layout,
         signal,
       })
@@ -139,7 +227,49 @@ export class SegmentTranslationRun {
     this.doneResolve(this.work.pages)
   }
 
-  // -- graph nodes --
+  private async translateAndEmit(state: PageState, signal: AbortSignal): Promise<readonly TranslatedUnit[]> {
+    const translations = await this.deps.translator.translateUnits({
+      units: state.pageUnits!,
+      sourceLang: this.request.sourceLang ?? null,
+      targetLang: this.request.targetLang,
+      signal,
+    })
+    state.translations = translations
+    this.tryEmitPage(state.frame.pageIndex)
+    return translations
+  }
+
+  private tryEmitPage(pageIndex: number): void {
+    if (this.cancelled) return
+
+    const state = this.pageStates.get(pageIndex)
+    if (!state?.recognized || !state.pageUnits || !state.translations) return
+
+    const textUnits = textUnitsFromBlocks(state.recognized.blocks, state.recognized.pageIndex)
+    const placements = state.regions?.length
+      ? layoutPlacementsFromRegions(state.recognized, textUnits, state.regions)
+      : textPlacementsFromRecognition(state.recognized, textUnits)
+
+    const rendered = materializeRenderedPage({
+      phase: 'text',
+      canvas: state.frame,
+      recognizedText: state.recognized,
+      textUnits,
+      translationUnits: state.pageUnits,
+      placements,
+      translations: state.translations,
+    })
+
+    const existing = this.work.pages.findIndex(page => page.pageIndex === rendered.pageIndex)
+    if (existing === -1) this.work.pages.push(rendered)
+    else this.work.pages[existing] = rendered
+
+    this.work.pages.sort((a, b) => a.pageIndex - b.pageIndex)
+
+    for (const fn of this.listeners) {
+      fn(rendered)
+    }
+  }
 
   private combinedSignal(): AbortSignal {
     if (this.deps.signal?.aborted) {
@@ -166,24 +296,6 @@ export class SegmentTranslationRun {
     return frames.sort((a, b) => a.pageIndex - b.pageIndex)
   }
 
-  private async transcript(
-    frames: CanvasPage[],
-    signal: AbortSignal,
-  ): Promise<RecognizedTextPage[]> {
-    const pages = await Promise.all(
-      frames.map(frame =>
-        this.deps.scheduler.recognize(() =>
-          this.deps.recognizer.recognizeText(frame.image, {
-            pageIndex: frame.pageIndex,
-            sourceLang: this.request.sourceLang,
-            signal,
-          }),
-        ),
-      ),
-    )
-    return pages.sort((a, b) => a.pageIndex - b.pageIndex)
-  }
-
   private async regions(
     frames: CanvasPage[],
     signal: AbortSignal,
@@ -193,18 +305,14 @@ export class SegmentTranslationRun {
 
     return Promise.all(
       frames.map(frame =>
-        this.deps.scheduler.detect(async () =>
-          detector.detectTextRegions(frame.image, { signal }),
-        ),
+        this.deps.scheduler.detect(async () => {
+          const regions = await detector.detectTextRegions(frame.image, { signal })
+          const state = this.pageStates.get(frame.pageIndex)
+          if (state) state.regions = regions
+          return regions
+        }),
       ),
     )
-  }
-
-  private script(transcript: RecognizedTextPage[]): TranslationUnit[] {
-    return transcript.flatMap(page => {
-      const textUnits = textUnitsFromBlocks(page.blocks, page.pageIndex)
-      return translationUnitsFromTextUnits(textUnits)
-    })
   }
 
   private planLayout(): LayoutPlan {
@@ -224,21 +332,6 @@ export class SegmentTranslationRun {
         }
       }),
     }
-  }
-
-  private async machine(
-    script: TranslationUnit[],
-    signal: AbortSignal,
-  ): Promise<TranslationVersion> {
-    const units = await translateSegment({
-      units: script,
-      translator: this.deps.translator,
-      sourceLang: this.request.sourceLang,
-      targetLang: this.request.targetLang,
-      signal,
-    })
-
-    return { id: this.nextVersionId(), method: 'machine', units }
   }
 
   private async postEdit(args: {
@@ -264,8 +357,6 @@ export class SegmentTranslationRun {
       baseId: version.baseId ?? args.base.id,
     }
   }
-
-  // -- state + display --
 
   private useLayout(plan: LayoutPlan): void {
     this.work.layout = plan
@@ -323,6 +414,14 @@ function groupByPage(units: readonly TranslationUnit[]): Map<number, Translation
   }
 
   return byPage
+}
+
+function orderTranslatedUnits(
+  units: readonly TranslatedUnit[],
+  script: readonly TranslationUnit[],
+): TranslatedUnit[] {
+  const order = new Map(script.map((unit, index) => [unit.id, index]))
+  return [...units].sort((a, b) => (order.get(a.unitId) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.unitId) ?? Number.MAX_SAFE_INTEGER))
 }
 
 function groupTranslatedByPage(units: readonly TranslatedUnit[]): Map<number, TranslatedUnit[]> {

@@ -1,6 +1,6 @@
 import type { TextPlacement, TextRole } from '../domain/planning'
 import type { BBox } from '../domain/geometry'
-import { type SafeMargins, type SafeMarginsDebug } from './backgroundFit'
+import { type SafeMargins, type SafeMarginsDebug, type SafeShapeProfile } from './backgroundFit'
 import { composeLines, type LineComposition, type LineLayoutCandidate } from './lineComposer'
 import { textFitRect, drawableRect, type FitRect } from './fitGeometry'
 import { bubbleShapeProfile, type BubbleShapeProfile } from './bubbleShape'
@@ -45,7 +45,11 @@ export interface FitResult {
   readonly layoutCandidate: LineLayoutCandidate
   readonly lineCount: number
   readonly lineScore: number
+  readonly maxFill: number
+  readonly edgeGuardPx: number
+  readonly fontShortSideRatio: number
   readonly expansion: SafeMarginsDebug | null
+  readonly safeShapeUsed: boolean
 }
 
 interface FontIntent {
@@ -76,13 +80,13 @@ export function fitLayout(
   const profile = textRenderProfile(cleanText, languageContext, placement.role, sourceText)
   const drawableBaseRect = drawableRect(placement)
   const baseRect = textFitRect(placement)
-  const shapeProfile = bubbleShapeProfile(placement.drawable, drawableBaseRect)
+  const drawableShapeProfile = shapeProfileForRect(placement, drawableBaseRect, preMargin)
   const fontIntent = fontIntentFor(placement, baseRect, context, profile)
-  const direction = pickDirection(placement, cleanText, drawableBaseRect, shapeProfile, fontIntent.targetFontPx, font, measurer)
+  const direction = pickDirection(placement, cleanText, drawableBaseRect, drawableShapeProfile, fontIntent.targetFontPx, font, measurer)
   const fontWeight = placement.role === 'sfx' ? '800' : '700'
 
   // Try fit in base rect at target font
-  const baseComposition = composeInRect(fontWeight, cleanText, baseRect, fontIntent.targetFontPx, placement, direction, shapeProfile, font, measurer, profile)
+  const baseComposition = composeInRect(fontWeight, cleanText, baseRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, baseRect, preMargin), font, measurer, profile)
 
   const expansion = preMargin && !overallBlocked(preMargin)
     ? constrainExpansionToGeometry(preMargin, baseRect, placement, profile)
@@ -92,8 +96,8 @@ export function fitLayout(
     return toFitResult(
       text, baseRect, baseRect, baseComposition, fontIntent, direction,
       baseComposition.fontSizePx < fontIntent.targetFontPx ? 'shrink' : 'target',
-      baseComposition, expansion ?? preMargin, directionReason(placement, baseRect, cleanText), font.lineHeightRatio,
-      profile,
+      baseComposition, expansion ?? preMargin, placement, directionReason(placement, baseRect, cleanText), font.lineHeightRatio,
+      profile, safeShapeUsedForRect(placement, baseRect, preMargin),
     )
   }
 
@@ -107,7 +111,7 @@ export function fitLayout(
 
   for (const candidateRect of candidates) {
     if (sameRect(candidateRect, baseRect)) continue
-    const comp = composeInRect(fontWeight, cleanText, candidateRect, fontIntent.targetFontPx, placement, direction, shapeProfile, font, measurer, profile)
+    const comp = composeInRect(fontWeight, cleanText, candidateRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, candidateRect, expansion), font, measurer, profile)
     const s = scoreCandidate(comp, fontIntent.targetFontPx, candidateRect, baseAspect, baseRect)
     if (s < bestScore || (s === bestScore && candidateRect.width > bestRect.width)) {
       bestScore = s
@@ -115,7 +119,7 @@ export function fitLayout(
     }
   }
 
-  const finalComposition = composeInRect(fontWeight, cleanText, bestRect, fontIntent.targetFontPx, placement, direction, shapeProfile, font, measurer, profile)
+  const finalComposition = composeInRect(fontWeight, cleanText, bestRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, bestRect, expansion), font, measurer, profile)
   const expanded = !sameRect(bestRect, baseRect)
   const overExpanded = expanded && excessiveExpansionFontLift(baseComposition, finalComposition)
   const outputRect = overExpanded ? baseRect : bestRect
@@ -126,8 +130,8 @@ export function fitLayout(
     text, outputRect, baseRect, outputComposition, fontIntent, direction,
     outputComposition.fontSizePx < fontIntent.targetFontPx || outputComposition.overflow ? 'shrink' : outputExpanded ? 'expanded' : 'target',
     outputComposition, outputExpanded ? expansion : preMargin,
-    directionReason(placement, baseRect, cleanText), font.lineHeightRatio,
-    profile,
+    placement, directionReason(placement, baseRect, cleanText), font.lineHeightRatio,
+    profile, safeShapeUsedForRect(placement, outputRect, outputExpanded ? expansion : preMargin),
   )
 
 }
@@ -135,13 +139,13 @@ export function fitLayout(
 // ── Page-level context ──────────────────────────────────────────────────────
 
 export function pageFontContext(placements: readonly TextPlacement[], pageWidth: number, languageContext?: RenderLanguageContext): PageFontContext {
-  const allSamples = placements.map(p => validSourceFontPx(p.fontHint?.sourceFontPx)).filter((px): px is number => px !== null)
+  const allSamples = placements.map(p => validSourceFontPx(p.fontHint?.sourceFontPx, textFitRect(p), p.role)).filter((px): px is number => px !== null)
   const preserveSourceScale = hasSourceScaleHierarchy(allSamples)
   const roleMedians = new Map<TextRole, number>()
   for (const role of ['dialogue', 'narration', 'sfx'] as const) {
     const samples = placements
       .filter(p => p.role === role)
-      .map(p => validSourceFontPx(p.fontHint?.sourceFontPx))
+      .map(p => validSourceFontPx(p.fontHint?.sourceFontPx, textFitRect(p), p.role))
       .filter((px): px is number => px !== null)
     if (samples.length) roleMedians.set(role, Math.round(median(samples)))
   }
@@ -219,7 +223,7 @@ function bestFontFit(args: {
 
   while (lo <= hi) {
     const mid = Math.floor((lo + hi) / 2)
-    const pad = innerPadding(mid, args.profile)
+    const pad = visualPadding(mid, args.profile, args.placement.role)
     const innerW = Math.max(1, args.rect.width - pad.x * 2)
     const innerH = Math.max(1, args.rect.height - pad.y * 2)
     const m = args.measurer.measure({ text: args.text, width: innerW, fontSizePx: mid, fontWeight: args.fontWeight })
@@ -240,6 +244,12 @@ function bestFontFit(args: {
     finalPx -= 1
     composition = composeFit(args, finalPx)
   }
+  const comfortFloor = Math.max(args.profile.minReadableFontPx, Math.floor(fontSizePx * comfortShrinkFloorRatio(args.placement.role, args.profile)))
+  const maxComfortFill = comfortMaxFill(args.placement.role, args.profile)
+  while (finalPx > comfortFloor && composition.fits && composition.maxFill > maxComfortFill) {
+    finalPx -= 1
+    composition = composeFit(args, finalPx)
+  }
   return { fontSizePx: finalPx, composition, maxDomFitPx: maxFitPx }
 }
 
@@ -257,7 +267,7 @@ function composeFit(
   },
   fontSizePx: number,
 ): LineComposition {
-  const pad = innerPadding(fontSizePx, args.profile)
+  const pad = visualPadding(fontSizePx, args.profile, args.placement.role)
   return composeLines({
     text: args.text,
     width: Math.max(1, args.rect.width - pad.x * 2),
@@ -415,6 +425,87 @@ function clampRect(rect: FitRect, bounds: BBox): FitRect {
   }
 }
 
+function shapeProfileForRect(
+  placement: TextPlacement,
+  rect: FitRect,
+  margin: SafeMarginsDebug | null,
+): BubbleShapeProfile {
+  const safeShape = placement.role === 'sfx' ? null : margin?.shape ?? null
+  return safeShapeProfileForRect(safeShape, rect) ?? bubbleShapeProfile(placement.drawable, rect)
+}
+
+function safeShapeUsedForRect(placement: TextPlacement, rect: FitRect, margin: SafeMarginsDebug | null): boolean {
+  if (placement.role === 'sfx') return false
+  return safeShapeProfileForRect(margin?.shape ?? null, rect) !== null
+}
+
+function safeShapeProfileForRect(shape: SafeShapeProfile | null, rect: FitRect): BubbleShapeProfile | null {
+  if (!shape || shape.confidence < 0.6 || shape.spans.length < 2 || Math.abs(rect.rotationDeg) > 0.1) return null
+  if (!safeShapeUsableForRect(shape, rect)) return null
+  return {
+    kind: 'polygon',
+    centerX: rect.x + rect.width / 2,
+    centerY: rect.y + rect.height / 2,
+    rect,
+    widthAt: (lineIndex, totalLines) => safeShapeWidthAt(shape, rect, lineIndex, totalLines),
+  }
+}
+
+function safeShapeWidthAt(shape: SafeShapeProfile, rect: FitRect, lineIndex: number, totalLines: number): number {
+  if (totalLines <= 0) return rect.width
+  const y = rect.y + ((lineIndex + 0.5) / totalLines) * rect.height
+  const band = Math.max(8, rect.height / Math.max(1, totalLines) * 0.55)
+  const widths = shape.spans
+    .filter(span => Math.abs(span.y - y) <= band && span.x2 > rect.x && span.x1 < rect.x + rect.width)
+    .map(span => shapeSpanWidth(span, rect))
+    .filter(width => width > 0)
+  if (!widths.length) {
+    const span = nearestShapeSpan(shape, y)
+    return span ? shapeSpanWidth(span, rect) : rect.width
+  }
+  return Math.max(1, median(widths))
+}
+
+function nearestShapeSpan(shape: SafeShapeProfile, y: number): SafeShapeProfile['spans'][number] | null {
+  let best: SafeShapeProfile['spans'][number] | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const span of shape.spans) {
+    const distance = Math.abs(span.y - y)
+    if (distance < bestDistance) {
+      best = span
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+function safeShapeUsableForRect(shape: SafeShapeProfile, rect: FitRect): boolean {
+  const widths = shape.spans
+    .filter(span => span.y >= rect.y && span.y <= rect.y + rect.height && span.x2 > rect.x && span.x1 < rect.x + rect.width)
+    .map(span => shapeSpanWidth(span, rect) / Math.max(1, rect.width))
+    .filter(ratio => ratio > 0)
+    .sort((a, b) => a - b)
+  if (widths.length < 3) return false
+  const lo = quantile(widths, 0.15)
+  const med = quantile(widths, 0.50)
+  const hi = quantile(widths, 0.85)
+  const meaningfulShape = hi - lo >= 0.18 || lo <= 0.72
+  const notNoiseNarrow = med >= 0.68 && hi >= 0.82
+  return meaningfulShape && notNoiseNarrow
+}
+
+function shapeSpanWidth(span: SafeShapeProfile['spans'][number], rect: FitRect): number {
+  const x1 = Math.max(rect.x, span.x1)
+  const x2 = Math.min(rect.x + rect.width, span.x2)
+  return Math.max(0, x2 - x1)
+}
+
+function quantile(sortedValues: readonly number[], q: number): number {
+  if (!sortedValues.length) return 0
+  const index = Math.min(sortedValues.length - 1, Math.max(0, Math.round((sortedValues.length - 1) * q)))
+  return sortedValues[index] ?? 0
+}
+
 // ── Direction ───────────────────────────────────────────────────────────────
 // Ported from typoon/vision/groupers/lens_native.py _infer_text_direction
 
@@ -456,22 +547,23 @@ function directionReason(placement: TextPlacement, rect: FitRect, text: string):
 // ── Font intent ─────────────────────────────────────────────────────────────
 
 function fontIntentFor(placement: TextPlacement, baseRect: FitRect, context: PageFontContext, profile: TextRenderProfile): FontIntent {
-  const sourceFontPx = validSourceFontPx(placement.fontHint?.sourceFontPx)
+  const sourceFontPx = validSourceFontPx(placement.fontHint?.sourceFontPx, baseRect, placement.role)
   const roleMedianFontPx = context.roleMedians.get(placement.role) ?? context.allMedianPx
+  const placementMaxPx = maxFontForPlacement(placement, baseRect, context.pageMaxPx, profile)
 
   // Preserve relative size: each bubble keeps its proportion to the page standard.
   if (roleMedianFontPx !== null && sourceFontPx !== null) {
-    const target = clampFont(sourceFontPx * profile.fontScale, context.pageMaxPx)
+    const target = clampFont(sourceFontPx * profile.fontScale, placementMaxPx)
     return { sourceFontPx, roleMedianFontPx, targetFontPx: target, reason: 'role-standard' }
   }
 
   if (roleMedianFontPx !== null) {
-    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, context.pageMaxPx), reason: 'fallback-role-median' }
+    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, placementMaxPx), reason: 'fallback-role-median' }
   }
   if (sourceFontPx !== null) {
-    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, context.pageMaxPx), reason: 'source' }
+    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, placementMaxPx), reason: 'source' }
   }
-  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, context.pageMaxPx), reason: 'fallback-geometry' }
+  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, placementMaxPx), reason: 'fallback-geometry' }
 }
 
 // ── Geometry fallback ───────────────────────────────────────────────────────
@@ -480,6 +572,17 @@ function geometryFallback(placement: TextPlacement, rect: FitRect): number {
   const shortSide = Math.min(rect.width, rect.height)
   const fraction = placement.role === 'sfx' ? 0.55 : placement.role === 'narration' ? 0.24 : 0.28
   return Math.round(shortSide * fraction)
+}
+
+function maxFontForPlacement(placement: TextPlacement, rect: FitRect, pageMaxPx: number, profile: TextRenderProfile): number {
+  if (placement.role === 'sfx') return pageMaxPx
+  const shortSide = Math.max(1, Math.min(rect.width, rect.height))
+  const heightFraction = placement.role === 'narration' ? 0.38
+    : profile.targetFamily === 'latin' ? 0.42
+    : profile.targetFamily === 'hangul' ? 0.44
+    : 0.46
+  const shortSideFraction = placement.role === 'narration' ? 0.40 : 0.48
+  return Math.max(MIN_FONT_SIZE, Math.min(pageMaxPx, rect.height * heightFraction, shortSide * shortSideFraction))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -492,13 +595,18 @@ function sameRect(a: FitRect, b: FitRect): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height && a.rotationDeg === b.rotationDeg
 }
 
-function validSourceFontPx(fontPx: number | undefined): number | null {
+function validSourceFontPx(fontPx: number | undefined, rect?: FitRect, role?: TextRole): number | null {
   if (!fontPx || fontPx < SOURCE_FONT_MIN || fontPx > SOURCE_FONT_MAX) return null
+  if (rect && role !== 'sfx') {
+    const shortSide = Math.max(1, Math.min(rect.width, rect.height))
+    const maxByGeometry = Math.max(SOURCE_FONT_MIN, Math.min(rect.height * 0.72, shortSide * 0.76))
+    if (fontPx > maxByGeometry) return null
+  }
   return fontPx
 }
 
-function clampFont(fontPx: number, pageMaxPx: number): number {
-  return Math.round(clamp(fontPx, MIN_FONT_SIZE, Math.min(ABS_MAX_FONT_SIZE, pageMaxPx)))
+function clampFont(fontPx: number, maxPx: number): number {
+  return Math.round(clamp(fontPx, MIN_FONT_SIZE, Math.min(ABS_MAX_FONT_SIZE, maxPx)))
 }
 
 function maxFontForPage(pageWidth: number, preserveSourceScale: boolean, profile: Pick<TextRenderProfile, 'pageMaxFraction' | 'hierarchyMaxFraction'>): number {
@@ -530,6 +638,34 @@ function innerPadding(fontPx: number, profile: TextRenderProfile): { readonly x:
   return { x: Math.round(fontPx * profile.innerPadXEm), y: Math.round(fontPx * profile.innerPadYEm) }
 }
 
+function visualPadding(fontPx: number, profile: TextRenderProfile, role: TextRole): { readonly x: number; readonly y: number } {
+  const inner = innerPadding(fontPx, profile)
+  const guard = edgeGuardPx(fontPx, profile, role)
+  return { x: inner.x + guard, y: inner.y + Math.ceil(guard * 0.75) }
+}
+
+function edgeGuardPx(fontPx: number, profile: TextRenderProfile, role: TextRole): number {
+  if (role === 'sfx') return Math.round(clamp(fontPx * 0.08, 2, 18))
+  const strokeEm = 0.08
+  const glyphEm = profile.targetFamily === 'latin' ? 0.08 : 0.06
+  const shapeEm = 0.04
+  return Math.ceil(clamp(fontPx * (strokeEm + glyphEm + shapeEm), 3, 24))
+}
+
+function comfortMaxFill(role: TextRole, profile: TextRenderProfile): number {
+  if (role === 'sfx') return 0.98
+  if (profile.targetFamily === 'latin') return 0.90
+  if (profile.targetFamily === 'hangul') return 0.92
+  return 0.94
+}
+
+function comfortShrinkFloorRatio(role: TextRole, profile: TextRenderProfile): number {
+  if (role === 'sfx') return 0.90
+  if (role === 'narration') return 0.82
+  if (profile.targetFamily === 'latin') return 0.78
+  return 0.82
+}
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n))
 }
@@ -553,11 +689,14 @@ function toFitResult(
   fitReasonValue: string,
   finalComp: SizedComposition,
   expansion: SafeMarginsDebug | null,
+  placement: TextPlacement,
   dirReason: string,
   lineHeightRatio: number,
   profile: TextRenderProfile,
+  safeShapeUsed: boolean,
 ): FitResult {
-  const padding = innerPadding(finalComp.fontSizePx, profile)
+  const padding = visualPadding(finalComp.fontSizePx, profile, placement.role)
+  const shortSide = Math.max(1, Math.min(rect.width, rect.height))
   return {
     text: finalComp.composition.text,
     fontSizePx: finalComp.fontSizePx,
@@ -579,6 +718,10 @@ function toFitResult(
     layoutCandidate: finalComp.composition.candidate,
     lineCount: finalComp.composition.lineCount,
     lineScore: finalComp.composition.score,
+    maxFill: finalComp.composition.maxFill,
+    edgeGuardPx: edgeGuardPx(finalComp.fontSizePx, profile, placement.role),
+    fontShortSideRatio: finalComp.fontSizePx / shortSide,
     expansion,
+    safeShapeUsed,
   }
 }

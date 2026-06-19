@@ -10,6 +10,7 @@ export interface BrowserModelHint {
 export interface BrowserCapabilities {
   readonly supportsWebGpu: boolean
   readonly isSafari: boolean
+  readonly isMobile: boolean
   readonly modelHint: BrowserModelHint
 }
 
@@ -20,6 +21,8 @@ export function detectBrowserCapabilities(): BrowserCapabilities {
   const isSafari = typeof navigator !== 'undefined'
     && /Safari/i.test(navigator.userAgent)
     && !/Chrome|CriOS/i.test(navigator.userAgent)
+  const isMobile = typeof navigator !== 'undefined'
+    && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1)
 
   const supportsCrossOriginIsolation = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
 
@@ -31,6 +34,7 @@ export function detectBrowserCapabilities(): BrowserCapabilities {
   return {
     supportsWebGpu,
     isSafari,
+    isMobile,
     modelHint: {
       modelId: supportsWebGpu ? 'comicDetr' : 'comicDetrWasm',
       preferredProvider: supportsWebGpu ? 'webgpu' : 'wasm',

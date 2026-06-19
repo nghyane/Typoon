@@ -10,6 +10,7 @@ export type BrowserSdkErrorCode =
 
 export class BrowserSdkError extends Error {
   readonly code: BrowserSdkErrorCode
+  readonly cause?: unknown
 
   constructor(code: BrowserSdkErrorCode, message: string, cause?: unknown) {
     super(message)

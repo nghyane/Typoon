@@ -2,9 +2,11 @@ import type { CapabilityProgress, CapabilityStatus, StatusListener, Unsubscribe 
 
 export class CapabilityMachine {
   private current: CapabilityStatus
+  private readonly name: string
   private readonly listeners = new Set<StatusListener>()
 
-  constructor(private readonly name: string) {
+  constructor(name: string) {
+    this.name = name
     this.current = { name, state: 'idle' }
   }
 

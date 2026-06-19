@@ -1,27 +1,38 @@
 import { ModelLoader } from '../models/ModelLoader'
 import { ModelRegistry } from '../models/ModelRegistry'
 import { ModelStore } from '../models/ModelStore'
-import { BrowserModelCache } from './BrowserModelCache'
+import { ModelIndexedDBCache } from './ModelIndexedDBCache'
+import { huggingFaceManifestUrl, type HuggingFaceModelRepositoryOptions } from './huggingFace'
 import type { ModelManifest } from '../domain/model'
-import type { ModelRepositoryOptions } from './modelTypes'
+import type { ModelAssetCache, ModelRepositoryOptions } from './modelTypes'
 
 export class ModelRepository {
   private manifestValue: ModelManifest | null = null
   private manifestPromise: Promise<ModelManifest> | null = null
+  private readonly options: ModelRepositoryOptions
   private readonly loaders = new Map<string, ModelLoader>()
 
-  constructor(private readonly options: ModelRepositoryOptions) {
+  static fromHuggingFace(options: HuggingFaceModelRepositoryOptions & {
+    readonly cacheName?: string
+    readonly cache?: ModelAssetCache
+  }): ModelRepository {
+    return new ModelRepository({
+      manifestUrl: huggingFaceManifestUrl(options),
+      cacheName: options.cacheName,
+      cache: options.cache,
+    })
+  }
+
+  constructor(options: ModelRepositoryOptions) {
+    this.options = options
     if (options.manifest) this.manifestValue = options.manifest
   }
 
-  model(id: string): ModelLoader {
+  async model(id: string): Promise<ModelLoader> {
     let loader = this.loaders.get(id)
     if (!loader) {
-      const manifest = this.manifestValue
-      if (!manifest) throw new Error('model manifest not loaded; call resolveManifest() or pass manifest in options')
-      const cache = this.options.cache ?? new BrowserModelCache(
-        this.options.cacheName ?? `typoon-models-${manifest.version}`,
-      )
+      const manifest = await this.resolveManifest()
+      const cache = this.options.cache ?? new ModelIndexedDBCache()
       loader = new ModelLoader(id, new ModelRegistry(manifest), new ModelStore(cache))
       this.loaders.set(id, loader)
     }

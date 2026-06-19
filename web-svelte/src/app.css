@@ -1,0 +1,208 @@
+@import "tailwindcss";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+@font-face {
+  font-family: "SamaritanTall";
+  src: url("/assets/SamaritanTall-TB.ttf") format("truetype");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* =========================================================
+   Typoon design tokens — Discord-native dark, Coral accent
+   Tailwind v4: tokens go through @theme so they emit utilities
+   (bg-bg, bg-surface, text-accent-text, border-border-soft, …).
+   Light theme is intentionally absent — app is dark-only,
+   matching the audience (Discord communities).
+   ========================================================= */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* layout — used as `w-sidebar`, `h-bar`, etc. */
+  --spacing-sidebar:  240px;
+  --spacing-sidebar-collapsed: 60px;
+  --spacing-bar:      48px;
+
+  /* surfaces (elevation: bg → surface → surface-2 → hover) */
+  --color-bg:         #1E1F22;
+  --color-surface:    #2B2D31;
+  --color-surface-2:  #313338;
+  --color-hover:      #383A40;
+  --color-interactive-hover: #404249;
+
+  /* borders — never darker than bg (no black grooves) */
+  --color-border:      #1A1B1E;
+  --color-border-soft: rgba(255, 255, 255, 0.04);
+  /* divider used inside elevated surfaces (pill, sheets) where
+     border-soft is too faint to read. Slightly brighter so the
+     hairline registers without becoming a line of light. */
+  --color-divider:     rgba(255, 255, 255, 0.08);
+
+  /* text ladder */
+  --color-text:         #F2F3F5;
+  --color-text-muted:   #B5BAC1;
+  --color-text-subtle:  #80848E;
+
+  /* accent — Coral. Used for primary CTA + selection only. */
+  --color-accent:       #FFA08C;
+  --color-accent-fg:    #1A1410;
+  --color-accent-bg:    rgba(244, 123, 103, 0.14);
+  --color-accent-text:  #FFB4A4;
+  --color-accent-strong: #F47B67;
+
+  /* info — running state. Discord-blue family. */
+  --color-info:        #4F88E6;
+  --color-info-bg:     rgba(79, 136, 230, 0.16);
+  --color-info-text:   #8AB4F2;
+
+  --color-success:     #23A55A;
+  --color-success-bg:  rgba(35, 165, 90, 0.16);
+  --color-success-text: #4FD17F;
+
+  --color-warning:     #F0B232;
+  --color-warning-bg:  rgba(240, 178, 50, 0.16);
+  --color-warning-text: #F5C76C;
+
+  --color-error:       #F23F43;
+  --color-error-bg:    rgba(242, 63, 67, 0.16);
+  --color-error-text:  #FF8A8D;
+
+  /* row state — neutral elevation + accent bar (avoids accent-on-accent) */
+  --color-row-active:  #34363C;
+}
+
+/* base reset */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-font-smoothing: antialiased; }
+
+html, body { height: 100%; }
+
+/* Safe-area insets — depends on the runtime host.
+ *
+ * - Outside Discord Activity (plain mobile browser): rely on the
+ *   browser's `env(safe-area-inset-*)`. iOS Safari fills these from
+ *   the device notch / home-indicator since the page is the topmost
+ *   content on screen.
+ *
+ * - Inside Discord Activity: the SDK injects
+ *   `--discord-safe-area-inset-*` on the iframe with the correct
+ *   values Discord wants us to honor (typically 0 because the
+ *   Discord client already renders its own chrome above/below the
+ *   iframe). We must NOT also use `env(safe-area-inset-*)` because
+ *   that still reports the underlying device notch — but the iframe
+ *   sits beneath Discord's header, so adding it again would push
+ *   our chrome down by the full notch height for nothing. That's
+ *   the "padding hơi cao so với app khác" we saw on iOS.
+ *
+ * The selector is set by `web/src/main.tsx` based on
+ * `window.location.hostname`. Falls back to env() if the class is
+ * missing for any reason. */
+:root {
+  --sait: env(safe-area-inset-top);
+  --saib: env(safe-area-inset-bottom);
+  --sail: env(safe-area-inset-left);
+  --sair: env(safe-area-inset-right);
+}
+
+:root.da-host {
+  --sait: var(--discord-safe-area-inset-top,    0px);
+  --saib: var(--discord-safe-area-inset-bottom, 0px);
+  --sail: var(--discord-safe-area-inset-left,   0px);
+  --sair: var(--discord-safe-area-inset-right,  0px);
+}
+
+/* Disable browser pull-to-refresh / rubber-band reload.
+   The reader is a long vertical scroll; on mobile a downward overscroll
+   at the top of the page would otherwise trigger a hard reload, killing
+   the open Bunle archive and re-fetching every visible page. `none`
+   also stops chained scroll bleeding into iframe ancestors (Discord
+   Activity wraps the app in an iframe). */
+html, body { overscroll-behavior: none; }
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* focus ring — coral, used by buttons via .ring-accent helper */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+label:focus-visible { outline: none; }
+
+/* mono numbers */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* scrollbars — overlay style, match dark theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-surface-2) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-2);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-hover); }
+
+/* spinner — used in Spinner component */
+@keyframes ts-spin { to { transform: rotate(360deg); } }
+.ts-spinner-circle {
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 9999px;
+  animation: ts-spin 0.8s linear infinite;
+}
+
+/* Reader slider — uniform thumb across WebKit / Firefox. The default
+   thumb on `<input type="range">` is huge and platform-themed; we
+   pull it back to a 12px coral dot that matches the rest of the
+   reader's atoms. `accent-color` already tints the FILL (the bar
+   below the thumb); only the thumb needs override. */
+.reader-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  border: 2px solid var(--color-surface);
+  cursor: pointer;
+  transition: transform 150ms ease-out;
+}
+.reader-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+.reader-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  border: 2px solid var(--color-surface);
+  cursor: pointer;
+  transition: transform 150ms ease-out;
+}
+.reader-slider::-moz-range-thumb:hover { transform: scale(1.15); }
+.reader-slider:disabled::-webkit-slider-thumb { background: var(--color-text-subtle); }
+.reader-slider:disabled::-moz-range-thumb     { background: var(--color-text-subtle); }

@@ -1,41 +1,49 @@
-import type { ImagePixels } from '../domain/image'
 import type { TextPlacement } from '../domain/planning'
 import type { TranslatedUnit } from '../domain/translation'
+import type { SafeMarginsDebug } from './backgroundFit'
 import { createDebugLayer, type OverlayDebugOptions } from './debugLayer'
 import { createEraseLayer } from './eraseLayer'
 import { buildErasePlan, type EraseStrategy } from './erasePlan'
-import { createTextLayer } from './textLayer'
+import type { RenderLanguageContext } from './languageProfile'
+import { createTextLayerFromFits, fitTextLayerItems } from './textLayer'
+
+type TextRenderItem = {
+  readonly placement: TextPlacement
+  readonly unit: TranslatedUnit
+  readonly margin: SafeMarginsDebug | undefined
+}
 
 export interface OverlayOptions {
   readonly eraseStrategy?: EraseStrategy
   readonly debug?: OverlayDebugOptions
+  readonly scaleMode?: 'contain' | 'width'
+}
+
+export interface OverlayRenderData {
+  readonly placements: readonly TextPlacement[]
+  readonly translations: readonly TranslatedUnit[]
+  readonly pageSize: readonly [number, number]
+  readonly placementMargins?: readonly SafeMarginsDebug[]
+  readonly fontContextPlacements?: readonly TextPlacement[]
+  readonly sourceLanguage?: string | null
+  readonly targetLanguage?: string | null
 }
 
 export function attachOverlay(
   host: HTMLElement,
-  result: {
-    placements: readonly TextPlacement[]
-    translations: readonly TranslatedUnit[]
-    pageSize: readonly [number, number]
-    image?: ImagePixels
-  },
+  data: OverlayRenderData,
   options: OverlayOptions = {},
 ): HTMLElement {
   const style = getComputedStyle(host)
   if (style.position === 'static') host.style.position = 'relative'
-  const overlay = createOverlayElement(result, options)
+  const overlay = createOverlayElement(data, options)
   host.appendChild(overlay)
-  bindOverlayScale(overlay, result.pageSize)
+  bindOverlayScale(overlay, data.pageSize, options.scaleMode ?? 'contain')
   return overlay
 }
 
 export function createOverlayElement(
-  result: {
-    placements: readonly TextPlacement[]
-    translations: readonly TranslatedUnit[]
-    pageSize: readonly [number, number]
-    image?: ImagePixels
-  },
+  data: OverlayRenderData,
   options: OverlayOptions = {},
 ): HTMLElement {
   const root = document.createElement('div')
@@ -43,18 +51,43 @@ export function createOverlayElement(
   root.style.position = 'absolute'
   root.style.inset = '0'
   root.style.pointerEvents = 'none'
-  root.style.overflow = 'hidden'
+  root.style.zIndex = '1'
   root.style.setProperty('--typoon-page-scale', '1')
 
-  const byUnitId = new Map(result.translations.map(unit => [unit.unitId, unit]))
-  const textItems = result.placements
-    .map(placement => ({ placement, unit: translatedUnitForPlacement(placement, byUnitId) }))
-    .filter((item): item is { placement: TextPlacement; unit: TranslatedUnit } => !!item.unit && item.unit.kind !== 'skip' && item.unit.targetText.trim() !== '')
+  const byUnitId = new Map(data.translations.map(unit => [unit.unitId, unit]))
+  const textItems = data.placements
+    .map((placement, index) => ({ placement, unit: translatedUnitForPlacement(placement, byUnitId), margin: data.placementMargins?.[index] }))
+    .filter((item): item is TextRenderItem => !!item.unit && item.unit.kind !== 'skip' && item.unit.targetText.trim() !== '')
+  const textMargins = alignedTextMargins(textItems)
+  const languageContext: RenderLanguageContext = {
+    sourceLanguage: data.sourceLanguage,
+    targetLanguage: data.targetLanguage,
+  }
+  const fittedTextItems = fitTextLayerItems(textItems, data.pageSize, {
+    placementMargins: textMargins,
+    fontContextPlacements: data.fontContextPlacements,
+    languageContext,
+  })
+  const fittedMargins = alignedTextMargins(fittedTextItems)
 
-  root.appendChild(createEraseLayer(buildErasePlan(result.placements, result.image, { strategy: options.eraseStrategy }), result.pageSize))
-  root.appendChild(createTextLayer(textItems, result.pageSize, result.image))
-  if (hasDebugOptions(options.debug)) root.appendChild(createDebugLayer(result.placements, result.pageSize, options.debug))
+  root.appendChild(createEraseLayer(
+    buildErasePlan(fittedTextItems.map(item => item.placement), {
+      strategy: options.eraseStrategy,
+      placementMargins: fittedMargins,
+    }),
+    data.pageSize,
+  ))
+  root.appendChild(createTextLayerFromFits(fittedTextItems, data.pageSize))
+  if (hasDebugOptions(options.debug)) root.appendChild(createDebugLayer(data.placements, data.pageSize, options.debug))
   return root
+}
+
+function alignedTextMargins(
+  items: readonly { readonly margin?: SafeMarginsDebug }[],
+): readonly SafeMarginsDebug[] | undefined {
+  if (!items.length) return undefined
+  const margins = items.map(item => item.margin)
+  return margins.every((margin): margin is SafeMarginsDebug => !!margin) ? margins : undefined
 }
 
 function translatedUnitForPlacement(placement: TextPlacement, byUnitId: ReadonlyMap<string, TranslatedUnit>): TranslatedUnit | null {
@@ -74,12 +107,12 @@ function hasDebugOptions(options: OverlayDebugOptions | undefined): boolean {
   return !!options && Object.values(options).some(Boolean)
 }
 
-function bindOverlayScale(overlay: HTMLElement, pageSize: readonly [number, number]): void {
+function bindOverlayScale(overlay: HTMLElement, pageSize: readonly [number, number], mode: NonNullable<OverlayOptions['scaleMode']>): void {
   const update = (): void => {
     const rect = overlay.getBoundingClientRect()
     const sx = rect.width / pageSize[0]
     const sy = rect.height / pageSize[1]
-    const scale = Math.min(sx, sy)
+    const scale = mode === 'width' ? sx : Math.min(sx, sy)
     overlay.style.setProperty('--typoon-page-scale', Number.isFinite(scale) && scale > 0 ? String(scale) : '1')
   }
   update()

@@ -3,55 +3,26 @@ import type { Translator } from '../translator'
 import { AsyncLimiter } from '../../flow/AsyncLimiter'
 import { batchUnits, parseTranslatedBatch, serializeBatch, toTranslatedUnit } from '../../pipeline/translation/MarkerProtocol'
 
-export interface DeepLGlossaryEntry {
-  readonly source: string
-  readonly target: string
-}
-
 export interface DeepLTranslateWebOptions {
   readonly endpoint?: string
-  readonly maxBatchChars?: number
   readonly requestTimeoutMs?: number
-  readonly targetModel?: string
-  readonly formality?: string
-  readonly glossary?: readonly DeepLGlossaryEntry[]
+  readonly maxBatchChars?: number
   readonly credentials?: RequestCredentials
-  /** Number of concurrent WebSocket sessions (default 4). */
   readonly maxSessions?: number
 }
 
-interface DeepLTranslateRequest {
-  readonly text: string
-  readonly sourceLang: string | null
-  readonly targetLang: string
-  readonly targetModel?: string
-  readonly formality?: string
-  readonly glossary: readonly DeepLGlossaryEntry[]
-  readonly signal?: AbortSignal
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>
-  readonly resolve: (value: T) => void
-  readonly reject: (error: unknown) => void
-}
-
-const DEFAULT_ENDPOINT = '/deepl/v2'
-const DEFAULT_MAX_BATCH_CHARS = 1_500
+const DEFAULT_ENDPOINT = 'https://927251094806098001.discordsays.com/deepl/v2'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
-const DEFAULT_MAX_SESSIONS = 4
-const DEEPL_PARTICIPANT_ID = 2
+const DEFAULT_MAX_BATCH_CHARS = 1_500
+const DEFAULT_MAX_SESSIONS = 8
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 
 export class DeepLTranslateWeb implements Translator {
   readonly name = 'deepl-translate-web'
   private readonly endpoint: string
-  private readonly maxBatchChars: number
   private readonly requestTimeoutMs: number
-  private readonly targetModel?: string
-  private readonly formality?: string
-  private readonly glossary: readonly DeepLGlossaryEntry[]
+  private readonly maxBatchChars: number
   private readonly credentials: RequestCredentials
   private readonly limiter: AsyncLimiter
   private sessions: DeepLSignalRSession[] = []
@@ -59,45 +30,41 @@ export class DeepLTranslateWeb implements Translator {
 
   constructor(options: DeepLTranslateWebOptions = {}) {
     this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT
-    this.maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
-    this.targetModel = options.targetModel
-    this.formality = options.formality
-    this.glossary = options.glossary ?? []
+    this.maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS
     this.credentials = options.credentials ?? 'same-origin'
     this.limiter = new AsyncLimiter(options.maxSessions ?? DEFAULT_MAX_SESSIONS)
   }
 
   async translateUnits({ units, sourceLang, targetLang, signal }: Parameters<Translator['translateUnits']>[0]): Promise<readonly TranslatedUnit[]> {
     const batches = batchUnits(units, this.maxBatchChars)
-    const results = new Array<readonly TranslatedUnit[]>(batches.length)
+    const resultBatches = new Array<readonly string[]>(batches.length)
 
-    await Promise.all(batches.map((batch, index) =>
+    await Promise.all(batches.map((batch, bi) =>
       this.limiter.run(async () => {
         if (batch.every(unit => !unit.sourceText.trim())) {
-          results[index] = batch.map(unit => toTranslatedUnit(unit, ''))
+          resultBatches[bi] = batch.map(() => '')
           return
         }
         const session = await this.acquireSession(signal)
         try {
-          const translated = await session.translate({
-            text: serializeBatch(batch),
-            sourceLang: normalizeLang(sourceLang),
-            targetLang: normalizeLang(targetLang) ?? targetLang,
-            targetModel: this.targetModel,
-            formality: this.formality,
-            glossary: this.glossary,
-            signal,
-          })
-          const byId = parseTranslatedBatch(translated)
-          results[index] = batch.map(unit => toTranslatedUnit(unit, byId.get(unit.id) ?? ''))
+          const translated = await session.translate(serializeBatch(batch), sourceLang, targetLang, signal)
+          resultBatches[bi] = parseTranslatedBatch(translated, batch.length)
         } finally {
           this.busy.delete(session)
         }
       }),
     ))
 
-    return results.flat()
+    const out: TranslatedUnit[] = []
+    for (let bi = 0; bi < batches.length; bi++) {
+      const batch = batches[bi]!
+      const results = resultBatches[bi]!
+      for (let j = 0; j < batch.length; j++) {
+        out.push(toTranslatedUnit(batch[j]!, results[j]))
+      }
+    }
+    return out
   }
 
   async close(): Promise<void> {
@@ -107,19 +74,14 @@ export class DeepLTranslateWeb implements Translator {
   }
 
   private async acquireSession(signal?: AbortSignal): Promise<DeepLSignalRSession> {
-    // Reuse an idle session
     const idle = this.sessions.find(s => !s.isClosed && !this.busy.has(s))
     if (idle) {
       this.busy.add(idle)
       return idle
     }
-
-    // Clean closed sessions
     for (let i = this.sessions.length - 1; i >= 0; i--) {
       if (this.sessions[i]!.isClosed) this.sessions.splice(i, 1)
     }
-
-    // Create new session up to the pool limit
     if (this.sessions.length < this.limiter.concurrency) {
       const session = new DeepLSignalRSession({
         endpoint: this.endpoint,
@@ -127,14 +89,28 @@ export class DeepLTranslateWeb implements Translator {
         credentials: this.credentials,
       })
       this.sessions.push(session)
-      await session.connect(signal)
       this.busy.add(session)
+      try {
+        await session.connect(signal)
+      } catch (error) {
+        this.busy.delete(session)
+        const index = this.sessions.indexOf(session)
+        if (index !== -1) this.sessions.splice(index, 1)
+        session.close()
+        throw error
+      }
       return session
     }
-
-    // Should never happen — limiter already bounds concurrency to pool size
     throw new Error('no idle deep session available')
   }
+}
+
+// ─── DeepL SignalR Session ────────────────────────────────────────────────
+
+interface Deferred<T> {
+  readonly promise: Promise<T>
+  readonly resolve: (value: T) => void
+  readonly reject: (error: unknown) => void
 }
 
 class DeepLSignalRSession {
@@ -151,7 +127,7 @@ class DeepLSignalRSession {
   private targetText = ''
   private maxTextLength = 1_500
 
-  constructor(options: { endpoint: string, requestTimeoutMs: number, credentials: RequestCredentials }) {
+  constructor(options: { endpoint: string; requestTimeoutMs: number; credentials: RequestCredentials }) {
     this.endpoint = options.endpoint
     this.requestTimeoutMs = options.requestTimeoutMs
     this.credentials = options.credentials
@@ -197,37 +173,26 @@ class DeepLSignalRSession {
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) ws.close()
   }
 
-  async translate(request: DeepLTranslateRequest): Promise<string> {
+  async translate(text: string, sourceLang: string | null, targetLang: string, signal?: AbortSignal): Promise<string> {
     if (this.closed) throw new Error('deepl session is closed')
-    if (request.text.length >= this.maxTextLength) {
+    if (text.length >= this.maxTextLength) {
       throw new Error(`deepl text must not exceed ${this.maxTextLength} characters`)
     }
 
     const pending = createDeferred<void>()
     this.pendingTranslation = pending
     const currentLen = this.sourceText.length
-    this.sourceText = request.text
+    this.sourceText = text
     this.send(encodeSignalRMessages([[
-      1,
-      {},
-      '0',
-      'AppendRequest',
+      1, {}, '0', 'AppendRequest',
       [new MsgpackExt(4, encodeParticipantRequest({
         baseVersion: this.baseVersion,
-        events: translationEvents({
-          text: request.text,
-          currentLen,
-          sourceLang: request.sourceLang,
-          targetLang: request.targetLang,
-          targetModel: request.targetModel,
-          formality: request.formality,
-          glossary: request.glossary,
-        }),
+        events: translationEvents({ text, currentLen, sourceLang, targetLang }),
       }))],
     ]]))
 
     try {
-      await waitFor(pending.promise, request.signal, this.requestTimeoutMs, 'deepl translation timed out')
+      await waitFor(pending.promise, signal, this.requestTimeoutMs, 'deepl translation timed out')
       return this.targetText
     } catch (error) {
       this.fail(asError(error))
@@ -258,9 +223,7 @@ class DeepLSignalRSession {
     const abort = requestAbortSignal(signal, this.requestTimeoutMs)
     try {
       const res = await fetch(this.sessionUrl('/sessions/negotiate', signalrEndpoint, 'negotiateVersion=1'), {
-        method: 'POST',
-        signal: abort.signal,
-        credentials: this.credentials,
+        method: 'POST', signal: abort.signal, credentials: this.credentials,
       })
       if (!res.ok) throw new Error(`deepl negotiate failed: ${res.status}`)
       const payload = await res.json() as Partial<NegotiateResponse>
@@ -299,10 +262,7 @@ class DeepLSignalRSession {
 
   private sendParticipate(): void {
     this.send(encodeSignalRMessages([[
-      1,
-      {},
-      '1',
-      'Participate',
+      1, {}, '1', 'Participate',
       [new MsgpackExt(3, new Uint8Array())],
     ]]))
   }
@@ -322,10 +282,7 @@ class DeepLSignalRSession {
       }
       return
     }
-    if (type === 2) {
-      this.handleExt(message[3])
-      return
-    }
+    if (type === 2) { this.handleExt(message[3]); return }
     if (type === 3) {
       const resultType = numberValue(message[3])
       if (resultType === 1) this.fail(new Error(String(message[4] ?? 'deepl invocation failed')))
@@ -345,8 +302,7 @@ class DeepLSignalRSession {
   }
 
   private errorFromExt(value: MsgpackValue | undefined): string | null {
-    if (!(value instanceof MsgpackExt)) return null
-    if (value.code !== 6) return null
+    if (!(value instanceof MsgpackExt) || value.code !== 6) return null
     return decodeClientErrorInfo(value.data)
   }
 
@@ -388,41 +344,14 @@ class DeepLSignalRSession {
   }
 }
 
+// ─── Translation events ───────────────────────────────────────────────────
 
-
-interface StartSessionResponse {
-  readonly signalrEndpoint: string
-}
-
-interface NegotiateResponse {
-  readonly connectionToken: string
-}
-
-interface TranslationEventInput {
-  readonly text: string
-  readonly currentLen: number
-  readonly sourceLang: string | null
-  readonly targetLang: string
-  readonly targetModel?: string
-  readonly formality?: string
-  readonly glossary: readonly DeepLGlossaryEntry[]
-}
-
-function normalizeLang(lang: string | null): string | null {
-  if (!lang) return null
-  const lower = lang.toLowerCase()
-  if (lower === 'auto') return null
-  if (lower.startsWith('zh-hant') || lower === 'zh-tw') return 'zh-TW'
-  if (lower.startsWith('zh')) return 'zh'
-  if (lower === 'en-us') return 'en-US'
-  if (lower === 'en-gb') return 'en-GB'
-  return lower.split('-')[0] ?? lower
-}
+const PARTICIPANT_ID = 2
 
 interface FieldEventInput {
   readonly fieldName: number
   readonly participantId: number
-  readonly textChange?: { readonly end: number, readonly text: string }
+  readonly textChange?: { readonly end: number; readonly text: string }
   readonly setProperty?: SetPropertyInput
 }
 
@@ -432,39 +361,28 @@ interface SetPropertyInput {
   readonly requestedTargetLanguage?: string
   readonly calculatedTargetLanguage?: string
   readonly maxTextLength?: number
-  readonly formality?: string | null
-  readonly targetModel?: string
-  readonly glossary?: readonly DeepLGlossaryEntry[]
 }
 
-function translationEvents(input: TranslationEventInput): readonly FieldEventInput[] {
-  const events: FieldEventInput[] = [
-    { fieldName: 2, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 8, formality: input.formality ?? null } },
-    { fieldName: 2, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 10, glossary: input.glossary } },
-    { fieldName: 2, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 5, requestedTargetLanguage: input.targetLang } },
+function translationEvents(input: { text: string; currentLen: number; sourceLang: string | null; targetLang: string }): readonly FieldEventInput[] {
+  return [
+    { fieldName: 2, participantId: PARTICIPANT_ID, setProperty: { propertyName: 5, requestedTargetLanguage: input.targetLang } },
+    input.sourceLang
+      ? { fieldName: 1, participantId: PARTICIPANT_ID, setProperty: { propertyName: 3, requestedSourceLanguage: input.sourceLang } }
+      : { fieldName: 1, participantId: PARTICIPANT_ID, setProperty: { propertyName: 3 } },
+    { fieldName: 1, participantId: PARTICIPANT_ID, textChange: { end: input.currentLen, text: input.text } },
   ]
-  events.push(input.sourceLang
-    ? { fieldName: 1, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 3, requestedSourceLanguage: input.sourceLang } }
-    : { fieldName: 1, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 3 } })
-  if (input.targetModel) {
-    events.push({ fieldName: 2, participantId: DEEPL_PARTICIPANT_ID, setProperty: { propertyName: 16, targetModel: input.targetModel } })
-  }
-  events.push({
-    fieldName: 1,
-    participantId: DEEPL_PARTICIPANT_ID,
-    textChange: { end: input.currentLen, text: input.text },
-  })
-  return events
 }
+
+// ─── Protobuf encoding ────────────────────────────────────────────────────
+
+interface StartSessionResponse { readonly signalrEndpoint: string }
+interface NegotiateResponse { readonly connectionToken: string }
 
 function encodeStartSessionRequest(): Uint8Array {
   return protoMessageBytes([
     protoVarint(1, 1),
     protoMessage(2, protoMessageBytes([
-      protoMessage(1, encodeDocumentField({
-        fieldName: 1,
-        properties: [{ propertyName: 14, maxTextLength: 1_500 }],
-      })),
+      protoMessage(1, encodeDocumentField({ fieldName: 1, properties: [{ propertyName: 14, maxTextLength: 1_500 }] })),
       protoMessage(1, encodeDocumentField({
         fieldName: 2,
         properties: [
@@ -477,16 +395,16 @@ function encodeStartSessionRequest(): Uint8Array {
   ])
 }
 
-function encodeDocumentField(input: { fieldName: number, properties: readonly SetPropertyInput[] }): Uint8Array {
+function encodeDocumentField(input: { fieldName: number; properties: readonly SetPropertyInput[] }): Uint8Array {
   return protoMessageBytes([
     protoVarint(1, input.fieldName),
-    ...input.properties.map(property => protoMessage(4, encodeSetPropertyOperation(property))),
+    ...input.properties.map(p => protoMessage(4, encodeSetPropertyOperation(p))),
   ])
 }
 
-function encodeParticipantRequest(input: { baseVersion: number, events: readonly FieldEventInput[] }): Uint8Array {
+function encodeParticipantRequest(input: { baseVersion: number; events: readonly FieldEventInput[] }): Uint8Array {
   return protoMessage(1, protoMessageBytes([
-    ...input.events.map(event => protoMessage(1, encodeFieldEvent(event))),
+    ...input.events.map(e => protoMessage(1, encodeFieldEvent(e))),
     protoMessage(2, encodeEventVersion(input.baseVersion)),
   ]))
 }
@@ -501,35 +419,15 @@ function encodeFieldEvent(input: FieldEventInput): Uint8Array {
     input.setProperty ? protoMessage(5, encodeSetPropertyOperation(input.setProperty)) : null,
     protoMessage(6, protoVarint(1, input.participantId)),
   ]
-  return protoMessageBytes(fields.filter(field => field !== null))
+  return protoMessageBytes(fields.filter(f => f !== null))
 }
 
 function encodeSetPropertyOperation(input: SetPropertyInput): Uint8Array {
   const fields: Uint8Array[] = [protoVarint(1, input.propertyName)]
-  if (input.requestedSourceLanguage) {
-    fields.push(protoMessage(4, protoMessage(1, protoString(1, input.requestedSourceLanguage))))
-  }
-  if (input.requestedTargetLanguage) {
-    fields.push(protoMessage(5, protoMessage(1, protoString(1, input.requestedTargetLanguage))))
-  }
-  if (input.formality !== undefined) {
-    const mode = input.formality ? protoString(1, input.formality) : new Uint8Array()
-    fields.push(protoMessage(8, protoMessage(1, mode)))
-  }
-  if (input.glossary) {
-    const entries = input.glossary
-      .filter(entry => entry.source.trim() && entry.target.trim())
-      .map(entry => protoMessage(1, protoMessageBytes([
-        protoString(1, entry.source),
-        protoString(2, entry.target),
-      ])))
-    fields.push(protoMessage(10, protoMessageBytes(entries)))
-  }
+  if (input.requestedSourceLanguage) fields.push(protoMessage(4, protoMessage(1, protoString(1, input.requestedSourceLanguage))))
+  if (input.requestedTargetLanguage) fields.push(protoMessage(5, protoMessage(1, protoString(1, input.requestedTargetLanguage))))
   if (input.maxTextLength) fields.push(protoMessage(14, protoVarint(1, input.maxTextLength)))
-  if (input.targetModel) fields.push(protoMessage(16, protoMessage(1, protoString(1, input.targetModel))))
-  if (input.calculatedTargetLanguage) {
-    fields.push(protoMessage(18, protoMessage(1, protoString(1, input.calculatedTargetLanguage))))
-  }
+  if (input.calculatedTargetLanguage) fields.push(protoMessage(18, protoMessage(1, protoString(1, input.calculatedTargetLanguage))))
   return protoMessageBytes(fields)
 }
 
@@ -537,25 +435,7 @@ function encodeEventVersion(version: number): Uint8Array {
   return protoMessage(1, protoVarint(1, version))
 }
 
-function protoMessageBytes(fields: readonly Uint8Array[]): Uint8Array {
-  return concatBytes(fields)
-}
-
-function protoVarint(fieldNumber: number, value: number): Uint8Array {
-  return concatBytes([encodeVarint((fieldNumber << 3) | 0), encodeVarint(value)])
-}
-
-function protoString(fieldNumber: number, value: string): Uint8Array {
-  return protoBytes(fieldNumber, textEncoder.encode(value))
-}
-
-function protoMessage(fieldNumber: number, value: Uint8Array): Uint8Array {
-  return protoBytes(fieldNumber, value)
-}
-
-function protoBytes(fieldNumber: number, value: Uint8Array): Uint8Array {
-  return concatBytes([encodeVarint((fieldNumber << 3) | 2), encodeVarint(value.length), value])
-}
+// ─── Protobuf decoding ────────────────────────────────────────────────────
 
 interface ParticipantResponse {
   readonly initialized: boolean
@@ -571,22 +451,9 @@ interface DecodedFieldEvent {
   readonly setProperty: DecodedSetProperty | null
 }
 
-interface DecodedTextChange {
-  readonly start: number
-  readonly end: number
-  readonly text: string
-}
-
-interface DecodedSetProperty {
-  readonly propertyName: number
-  readonly maxTextLength: number | null
-}
-
-interface ProtoField {
-  readonly fieldNumber: number
-  readonly wireType: number
-  readonly value: number | Uint8Array
-}
+interface DecodedTextChange { readonly start: number; readonly end: number; readonly text: string }
+interface DecodedSetProperty { readonly propertyName: number; readonly maxTextLength: number | null }
+interface ProtoField { readonly fieldNumber: number; readonly wireType: number; readonly value: number | Uint8Array }
 
 function decodeStartSessionResponse(bytes: Uint8Array): StartSessionResponse {
   const fields = readProtoFields(bytes)
@@ -613,7 +480,7 @@ function decodeConfirmedVersion(bytes: Uint8Array): number | null {
   return firstMessage(readProtoFields(bytes), 1, decodeEventVersion) ?? null
 }
 
-function decodePublishedMessage(bytes: Uint8Array): { readonly version: number | null, readonly events: readonly DecodedFieldEvent[] } {
+function decodePublishedMessage(bytes: Uint8Array): { readonly version: number | null; readonly events: readonly DecodedFieldEvent[] } {
   const fields = readProtoFields(bytes)
   return {
     version: firstMessage(fields, 2, decodeEventVersion) ?? null,
@@ -622,11 +489,12 @@ function decodePublishedMessage(bytes: Uint8Array): { readonly version: number |
 }
 
 function decodeMetaInfoIdleVersion(bytes: Uint8Array): number | null {
-  return firstMessage(readProtoFields(bytes), 1, idle => firstMessage(readProtoFields(idle), 1, decodeEventVersion) ?? null) ?? null
+  return firstMessage(readProtoFields(bytes), 1, idle =>
+    firstMessage(readProtoFields(idle), 1, decodeEventVersion) ?? null) ?? null
 }
 
 function decodeEventVersion(bytes: Uint8Array): number | null {
-  return firstMessage(readProtoFields(bytes), 1, value => firstVarint(readProtoFields(value), 1)) ?? null
+  return firstMessage(readProtoFields(bytes), 1, v => firstVarint(readProtoFields(v), 1)) ?? null
 }
 
 function decodeFieldEvent(bytes: Uint8Array): DecodedFieldEvent {
@@ -642,24 +510,16 @@ function decodeTextChange(bytes: Uint8Array): DecodedTextChange {
   const fields = readProtoFields(bytes)
   const range = firstMessage(fields, 1, rangeBytes => {
     const rangeFields = readProtoFields(rangeBytes)
-    return {
-      start: firstVarint(rangeFields, 1) ?? 0,
-      end: firstVarint(rangeFields, 2) ?? 0,
-    }
+    return { start: firstVarint(rangeFields, 1) ?? 0, end: firstVarint(rangeFields, 2) ?? 0 }
   }) ?? { start: 0, end: 0 }
-  return {
-    start: range.start,
-    end: range.end,
-    text: firstString(fields, 2) ?? '',
-  }
+  return { start: range.start, end: range.end, text: firstString(fields, 2) ?? '' }
 }
 
 function decodeSetProperty(bytes: Uint8Array): DecodedSetProperty {
   const fields = readProtoFields(bytes)
-  const maxTextLength = firstMessage(fields, 14, maxBytes => firstVarint(readProtoFields(maxBytes), 1)) ?? null
   return {
     propertyName: firstVarint(fields, 1) ?? 0,
-    maxTextLength,
+    maxTextLength: firstMessage(fields, 14, maxBytes => firstVarint(readProtoFields(maxBytes), 1)) ?? null,
   }
 }
 
@@ -674,9 +534,7 @@ function firstMessage<T>(fields: readonly ProtoField[], fieldNumber: number, dec
 }
 
 function fieldMessages(fields: readonly ProtoField[], fieldNumber: number): Uint8Array[] {
-  return fields
-    .filter(field => field.fieldNumber === fieldNumber && field.value instanceof Uint8Array)
-    .map(field => field.value as Uint8Array)
+  return fields.filter(f => f.fieldNumber === fieldNumber && f.value instanceof Uint8Array).map(f => f.value as Uint8Array)
 }
 
 function firstString(fields: readonly ProtoField[], fieldNumber: number): string | null {
@@ -722,16 +580,14 @@ function applyTextChange(original: string, change: DecodedTextChange): string {
   return `${original.slice(0, change.start)}${change.text}${original.slice(change.end)}`
 }
 
+// ─── MessagePack encoding/decoding ────────────────────────────────────────
+
 type MsgpackValue = null | boolean | number | string | Uint8Array | MsgpackExt | MsgpackValue[] | { readonly [key: string]: MsgpackValue }
 
 class MsgpackExt {
   readonly code: number
   readonly data: Uint8Array
-
-  constructor(code: number, data: Uint8Array) {
-    this.code = code
-    this.data = data
-  }
+  constructor(code: number, data: Uint8Array) { this.code = code; this.data = data }
 }
 
 function encodeSignalRMessages(messages: readonly MsgpackValue[]): Uint8Array {
@@ -808,13 +664,13 @@ function encodeMsgpackArray(value: readonly MsgpackValue[]): Uint8Array {
 
 function encodeMsgpackMap(value: { readonly [key: string]: MsgpackValue }): Uint8Array {
   const entries = Object.entries(value)
-  const body = concatBytes(entries.flatMap(([key, item]) => [encodeMsgpackString(key), encodeMsgpack(item)]))
+  const body = concatBytes(entries.flatMap(([k, v]) => [encodeMsgpackString(k), encodeMsgpack(v)]))
   if (entries.length < 16) return concatBytes([byte(0x80 | entries.length), body])
   if (entries.length <= 0xffff) return concatBytes([byte(0xde), uint16Bytes(entries.length), body])
   return concatBytes([byte(0xdf), uint32Bytes(entries.length), body])
 }
 
-function decodeMsgpack(bytes: Uint8Array, offset = 0): { readonly value: MsgpackValue, readonly offset: number } {
+function decodeMsgpack(bytes: Uint8Array, offset = 0): { readonly value: MsgpackValue; readonly offset: number } {
   const prefix = bytes[offset]
   if (prefix === undefined) throw new Error('unexpected end of msgpack data')
   offset += 1
@@ -841,8 +697,7 @@ function decodeMsgpack(bytes: Uint8Array, offset = 0): { readonly value: Msgpack
   if (prefix === 0xd2) return { value: readInt32(bytes, offset), offset: offset + 4 }
   if (prefix >= 0xd4 && prefix <= 0xd8) {
     const lengths = [1, 2, 4, 8, 16]
-    const length = lengths[prefix - 0xd4]!
-    return decodeMsgpackExt(bytes, offset + 1, length, bytes[offset] ?? 0)
+    return decodeMsgpackExt(bytes, offset + 1, lengths[prefix - 0xd4]!, bytes[offset] ?? 0)
   }
   if (prefix === 0xd9) return decodeMsgpackString(bytes, offset + 1, bytes[offset] ?? 0)
   if (prefix === 0xda) return decodeMsgpackString(bytes, offset + 2, readUint16(bytes, offset))
@@ -854,20 +709,20 @@ function decodeMsgpack(bytes: Uint8Array, offset = 0): { readonly value: Msgpack
   throw new Error(`unsupported msgpack prefix ${prefix}`)
 }
 
-function decodeMsgpackString(bytes: Uint8Array, offset: number, length: number): { readonly value: string, readonly offset: number } {
+function decodeMsgpackString(bytes: Uint8Array, offset: number, length: number): { readonly value: string; readonly offset: number } {
   return { value: textDecoder.decode(bytes.slice(offset, offset + length)), offset: offset + length }
 }
 
-function decodeMsgpackBin(bytes: Uint8Array, offset: number, length: number, lengthBytes: number): { readonly value: Uint8Array, readonly offset: number } {
+function decodeMsgpackBin(bytes: Uint8Array, offset: number, length: number, lengthBytes: number): { readonly value: Uint8Array; readonly offset: number } {
   const start = offset + lengthBytes
   return { value: bytes.slice(start, start + length), offset: start + length }
 }
 
-function decodeMsgpackExt(bytes: Uint8Array, offset: number, length: number, code: number): { readonly value: MsgpackExt, readonly offset: number } {
+function decodeMsgpackExt(bytes: Uint8Array, offset: number, length: number, code: number): { readonly value: MsgpackExt; readonly offset: number } {
   return { value: new MsgpackExt(int8(code), bytes.slice(offset, offset + length)), offset: offset + length }
 }
 
-function decodeMsgpackArray(bytes: Uint8Array, offset: number, length: number): { readonly value: MsgpackValue[], readonly offset: number } {
+function decodeMsgpackArray(bytes: Uint8Array, offset: number, length: number): { readonly value: MsgpackValue[]; readonly offset: number } {
   const value: MsgpackValue[] = []
   let nextOffset = offset
   for (let i = 0; i < length; i++) {
@@ -878,7 +733,7 @@ function decodeMsgpackArray(bytes: Uint8Array, offset: number, length: number): 
   return { value, offset: nextOffset }
 }
 
-function decodeMsgpackMap(bytes: Uint8Array, offset: number, length: number): { readonly value: { readonly [key: string]: MsgpackValue }, readonly offset: number } {
+function decodeMsgpackMap(bytes: Uint8Array, offset: number, length: number): { readonly value: { readonly [key: string]: MsgpackValue }; readonly offset: number } {
   const value: Record<string, MsgpackValue> = {}
   let nextOffset = offset
   for (let i = 0; i < length; i++) {
@@ -889,6 +744,8 @@ function decodeMsgpackMap(bytes: Uint8Array, offset: number, length: number): { 
   }
   return { value, offset: nextOffset }
 }
+
+// ─── Varint / binary helpers ──────────────────────────────────────────────
 
 function encodeVarint(value: number): Uint8Array {
   const bytes: number[] = []
@@ -902,7 +759,7 @@ function encodeVarint(value: number): Uint8Array {
   return new Uint8Array(bytes)
 }
 
-function readVarint(bytes: Uint8Array, offset: number): { readonly value: number, readonly offset: number } {
+function readVarint(bytes: Uint8Array, offset: number): { readonly value: number; readonly offset: number } {
   let result = 0
   let shift = 0
   let nextOffset = offset
@@ -923,67 +780,30 @@ function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.length, 0)
   const out = new Uint8Array(total)
   let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.length
-  }
+  for (const part of parts) { out.set(part, offset); offset += part.length }
   return out
 }
 
-function byte(value: number): Uint8Array {
-  return new Uint8Array([value & 0xff])
-}
+function byte(value: number): Uint8Array { return new Uint8Array([value & 0xff]) }
+function uint16Bytes(value: number): Uint8Array { return new Uint8Array([(value >> 8) & 0xff, value & 0xff]) }
+function uint32Bytes(value: number): Uint8Array { return new Uint8Array([(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff]) }
+function int16Bytes(value: number): Uint8Array { return uint16Bytes(value & 0xffff) }
+function int32Bytes(value: number): Uint8Array { return uint32Bytes(value >>> 0) }
+function float64Bytes(value: number): Uint8Array { const bytes = new Uint8Array(8); new DataView(bytes.buffer).setFloat64(0, value); return bytes }
 
-function uint16Bytes(value: number): Uint8Array {
-  return new Uint8Array([(value >> 8) & 0xff, value & 0xff])
-}
+function readUint16(bytes: Uint8Array, offset: number): number { return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0) }
+function readUint32(bytes: Uint8Array, offset: number): number { return ((bytes[offset] ?? 0) * 2 ** 24) + ((bytes[offset + 1] ?? 0) << 16) + ((bytes[offset + 2] ?? 0) << 8) + (bytes[offset + 3] ?? 0) }
+function readInt16(bytes: Uint8Array, offset: number): number { const v = readUint16(bytes, offset); return v & 0x8000 ? v - 0x10000 : v }
+function readInt32(bytes: Uint8Array, offset: number): number { return readUint32(bytes, offset) | 0 }
+function readFloat32(bytes: Uint8Array, offset: number): number { return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getFloat32(0) }
+function readFloat64(bytes: Uint8Array, offset: number): number { return new DataView(bytes.buffer, bytes.byteOffset + offset, 8).getFloat64(0) }
+function int8(value: number): number { return value & 0x80 ? value - 0x100 : value }
 
-function uint32Bytes(value: number): Uint8Array {
-  return new Uint8Array([(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff])
-}
-
-function int16Bytes(value: number): Uint8Array {
-  return uint16Bytes(value & 0xffff)
-}
-
-function int32Bytes(value: number): Uint8Array {
-  return uint32Bytes(value >>> 0)
-}
-
-function float64Bytes(value: number): Uint8Array {
-  const bytes = new Uint8Array(8)
-  new DataView(bytes.buffer).setFloat64(0, value)
-  return bytes
-}
-
-function readUint16(bytes: Uint8Array, offset: number): number {
-  return ((bytes[offset] ?? 0) << 8) | (bytes[offset + 1] ?? 0)
-}
-
-function readUint32(bytes: Uint8Array, offset: number): number {
-  return ((bytes[offset] ?? 0) * 2 ** 24) + ((bytes[offset + 1] ?? 0) << 16) + ((bytes[offset + 2] ?? 0) << 8) + (bytes[offset + 3] ?? 0)
-}
-
-function readInt16(bytes: Uint8Array, offset: number): number {
-  const value = readUint16(bytes, offset)
-  return value & 0x8000 ? value - 0x10000 : value
-}
-
-function readInt32(bytes: Uint8Array, offset: number): number {
-  return readUint32(bytes, offset) | 0
-}
-
-function readFloat32(bytes: Uint8Array, offset: number): number {
-  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getFloat32(0)
-}
-
-function readFloat64(bytes: Uint8Array, offset: number): number {
-  return new DataView(bytes.buffer, bytes.byteOffset + offset, 8).getFloat64(0)
-}
-
-function int8(value: number): number {
-  return value & 0x80 ? value - 0x100 : value
-}
+function protoMessageBytes(fields: readonly Uint8Array[]): Uint8Array { return concatBytes(fields) }
+function protoVarint(fieldNumber: number, value: number): Uint8Array { return concatBytes([encodeVarint((fieldNumber << 3) | 0), encodeVarint(value)]) }
+function protoString(fieldNumber: number, value: string): Uint8Array { return protoBytes(fieldNumber, textEncoder.encode(value)) }
+function protoMessage(fieldNumber: number, value: Uint8Array): Uint8Array { return protoBytes(fieldNumber, value) }
+function protoBytes(fieldNumber: number, value: Uint8Array): Uint8Array { return concatBytes([encodeVarint((fieldNumber << 3) | 2), encodeVarint(value.length), value]) }
 
 function apiUrl(endpoint: string, path: string): URL {
   const url = new URL(endpoint, baseHref())
@@ -992,16 +812,8 @@ function apiUrl(endpoint: string, path: string): URL {
   return url
 }
 
-function queryString(url: string): string {
-  const queryStart = url.indexOf('?')
-  return queryStart === -1 ? '' : url.slice(queryStart + 1)
-}
-
-function baseHref(): string {
-  if (typeof document !== 'undefined') return document.baseURI
-  if (typeof location !== 'undefined') return location.href
-  return 'http://localhost/'
-}
+function queryString(url: string): string { const q = url.indexOf('?'); return q === -1 ? '' : url.slice(q + 1) }
+function baseHref(): string { return typeof document !== 'undefined' ? document.baseURI : typeof location !== 'undefined' ? location.href : 'http://localhost/' }
 
 async function messageBytes(data: string | ArrayBuffer | Blob): Promise<Uint8Array> {
   if (typeof data === 'string') return textEncoder.encode(data)
@@ -1009,7 +821,9 @@ async function messageBytes(data: string | ArrayBuffer | Blob): Promise<Uint8Arr
   return new Uint8Array(data)
 }
 
-function requestAbortSignal(signal: AbortSignal | undefined, timeoutMs: number): { readonly signal: AbortSignal, readonly cleanup: () => void } {
+// ─── Async helpers ────────────────────────────────────────────────────────
+
+function requestAbortSignal(signal: AbortSignal | undefined, timeoutMs: number): { readonly signal: AbortSignal; readonly cleanup: () => void } {
   const controller = new AbortController()
   const abort = () => controller.abort(signal?.reason)
   const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(new Error('request timed out')), timeoutMs) : null
@@ -1028,57 +842,21 @@ function waitFor<T>(promise: Promise<T>, signal: AbortSignal | undefined, timeou
   if (!signal && timeoutMs <= 0) return promise
   return new Promise<T>((resolve, reject) => {
     let settled = false
-    const cleanup = () => {
-      settled = true
-      if (timeout !== null) clearTimeout(timeout)
-      signal?.removeEventListener('abort', abort)
-    }
-    const abort = () => {
-      if (settled) return
-      cleanup()
-      reject(signal?.reason ?? new Error('operation aborted'))
-    }
-    const timeout = timeoutMs > 0 ? setTimeout(() => {
-      if (settled) return
-      cleanup()
-      reject(new Error(timeoutMessage))
-    }, timeoutMs) : null
-    if (signal?.aborted) {
-      abort()
-      return
-    }
+    const cleanup = () => { settled = true; if (timeout !== null) clearTimeout(timeout); signal?.removeEventListener('abort', abort) }
+    const abort = () => { if (settled) return; cleanup(); reject(signal?.reason ?? new Error('operation aborted')) }
+    const timeout = timeoutMs > 0 ? setTimeout(() => { if (settled) return; cleanup(); reject(new Error(timeoutMessage)) }, timeoutMs) : null
+    if (signal?.aborted) { abort(); return }
     signal?.addEventListener('abort', abort, { once: true })
-    promise.then(value => {
-      if (settled) return
-      cleanup()
-      resolve(value)
-    }, error => {
-      if (settled) return
-      cleanup()
-      reject(error)
-    })
+    promise.then(value => { if (settled) return; cleanup(); resolve(value) }, error => { if (settled) return; cleanup(); reject(error) })
   })
 }
 
 function waitForWebSocketOpen(ws: WebSocket, signal: AbortSignal | undefined, timeoutMs: number): Promise<void> {
   return waitFor(new Promise<void>((resolve, reject) => {
-    const cleanup = () => {
-      ws.removeEventListener('open', open)
-      ws.removeEventListener('error', error)
-      ws.removeEventListener('close', close)
-    }
-    const open = () => {
-      cleanup()
-      resolve()
-    }
-    const error = () => {
-      cleanup()
-      reject(new Error('deepl websocket failed to open'))
-    }
-    const close = () => {
-      cleanup()
-      reject(new Error('deepl websocket closed before open'))
-    }
+    const cleanup = () => { ws.removeEventListener('open', open); ws.removeEventListener('error', error); ws.removeEventListener('close', close) }
+    const open = () => { cleanup(); resolve() }
+    const error = () => { cleanup(); reject(new Error('deepl websocket failed to open')) }
+    const close = () => { cleanup(); reject(new Error('deepl websocket closed before open')) }
     ws.addEventListener('open', open, { once: true })
     ws.addEventListener('error', error, { once: true })
     ws.addEventListener('close', close, { once: true })
@@ -1088,13 +866,8 @@ function waitForWebSocketOpen(ws: WebSocket, signal: AbortSignal | undefined, ti
 function createDeferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
   return { promise, resolve, reject }
 }
 
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
-}
+function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)) }

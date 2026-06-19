@@ -52,7 +52,8 @@ export class MangaTextRegionDetector implements TextRegionDetector, Capability {
     await this.runner.ensureReady(options)
   }
 
-  detectTextRegions(image: ImagePixels, options?: ReadyOptions): Promise<readonly TextRegion[]> {
+  async detectTextRegions(image: ImagePixels, options?: ReadyOptions): Promise<readonly TextRegion[]> {
+    await this.ensureReady(options)
     return this.runner.run(image, options)
   }
 

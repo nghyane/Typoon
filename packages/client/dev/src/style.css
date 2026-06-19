@@ -54,7 +54,7 @@ button {
   font-weight: 700;
   cursor: pointer;
 }
-button:disabled { opacity: .55; cursor: wait; }
+button:disabled { opacity: .55; }
 
 .primary-action { margin: 16px 0; }
 

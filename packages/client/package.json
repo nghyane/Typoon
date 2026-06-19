@@ -5,11 +5,19 @@
   "type": "module",
   "description": "Client runtime for realtime manga translation overlays.",
   "main": "src/index.ts",
-  "types": "src/index.ts",
+  "types": "dist/index.d.ts",
+  "exports": {
+    "./web-reader": {
+      "types": "./dist/web-reader.d.ts",
+      "default": "./src/web-reader.ts"
+    },
+    "./vision/vision.worker.ts": "./src/vision/vision.worker.ts"
+  },
   "scripts": {
     "dev": "vite dev",
     "generate:analysis": "../../.venv/bin/python scripts/generate-dev-analysis.py",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:types": "tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "typescript": "~5.8.3",
@@ -17,6 +25,7 @@
   },
   "dependencies": {
     "chrome-lens-ocr": "^4.1.1",
+    "comlink": "^4.4.2",
     "onnxruntime-web": "^1.26.0"
   }
 }

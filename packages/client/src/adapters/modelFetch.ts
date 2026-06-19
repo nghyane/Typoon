@@ -1,53 +1,21 @@
 import type { CapabilityProgress } from '../domain/capability'
-import type { ModelAssetCache, ModelDescriptor } from './modelTypes'
+import type { ModelDescriptor } from './modelTypes'
 import { verifyModel } from './modelVerify'
 
 export async function loadModelBytes(
   descriptor: ModelDescriptor,
-  cache: ModelAssetCache,
   onProgress: (progress: CapabilityProgress) => void,
   signal: AbortSignal | undefined,
 ): Promise<ArrayBuffer> {
   throwIfAborted(signal)
-  const cached = await readCachedModel(cache, descriptor.url)
-  throwIfAborted(signal)
-  if (cached) {
-    try {
-      await verifyModel(cached, descriptor)
-      throwIfAborted(signal)
-      return cached
-    } catch (error) {
-      console.warn('[typoon-client] cached model failed verification; fetching network copy', error)
-    }
-  }
 
-  throwIfAborted(signal)
   onProgress({ receivedBytes: 0, totalBytes: descriptor.sizeBytes, ratio: 0 })
   const response = await fetch(descriptor.url, { mode: 'cors', signal })
   if (!response.ok) throw new Error(`model fetch failed: ${response.status}`)
   const bytes = await readResponseBytes(response, signal, onProgress)
   throwIfAborted(signal)
   await verifyModel(bytes, descriptor)
-  throwIfAborted(signal)
-  if (!signal) await writeCachedModel(cache, descriptor.url, bytes)
   return bytes
-}
-
-async function readCachedModel(cache: ModelAssetCache, key: string): Promise<ArrayBuffer | null> {
-  try {
-    return await cache.match(key)
-  } catch (error) {
-    console.warn('[typoon-client] model cache read failed; fetching network copy', error)
-    return null
-  }
-}
-
-async function writeCachedModel(cache: ModelAssetCache, key: string, bytes: ArrayBuffer): Promise<void> {
-  try {
-    await cache.put(key, bytes)
-  } catch (error) {
-    console.warn('[typoon-client] model cache write failed; continuing with memory copy', error)
-  }
 }
 
 async function readResponseBytes(

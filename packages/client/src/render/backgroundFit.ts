@@ -13,6 +13,9 @@ const MIN_BACKGROUND_COVERAGE = 0.82
 const COMPONENT_MAX_AREA_RATIO = 3.0
 const COMPONENT_MAX_TALL_AREA_RATIO = 8.0
 const COMPONENT_MAX_RADIUS_FRACTION = 0.08
+const SHAPE_SCAN_MIN_STEP_PX = 3
+const SHAPE_SCAN_MAX_STEP_PX = 8
+const MIN_SHAPE_SPANS = 3
 
 export interface SafeMargins {
   readonly top: number
@@ -35,6 +38,19 @@ export interface SafeMarginsDebug {
   readonly safeBounds: BBox
   readonly componentBBox: BBox | null
   readonly componentConfidence: number
+  readonly shape: SafeShapeProfile | null
+}
+
+export interface SafeShapeSpan {
+  readonly y: number
+  readonly x1: number
+  readonly x2: number
+}
+
+export interface SafeShapeProfile {
+  readonly bounds: BBox
+  readonly spans: readonly SafeShapeSpan[]
+  readonly confidence: number
 }
 
 export function hasReliableBackgroundFill(margin: SafeMarginsDebug | null | undefined): margin is SafeMarginsDebug & { readonly backgroundRgb: Rgb } {
@@ -74,6 +90,15 @@ export function estimateSafeMargins(args: {
 
   const margins = marginsFromComponent(base, component.bbox)
   const reasons = marginsReasons(margins, component)
+  const shape = estimateSafeShapeProfile({
+    image: args.image,
+    bounds: component.bbox,
+    seed: base,
+    selfBoxes,
+    obstacles: args.obstacles,
+    background,
+    confidence: component.confidence,
+  })
 
   return {
     reasons,
@@ -83,6 +108,7 @@ export function estimateSafeMargins(args: {
     backgroundTolerance: background.tolerance,
     componentBBox: component.bbox,
     componentConfidence: component.confidence,
+    shape,
   }
 }
 
@@ -95,6 +121,7 @@ function emptyDebug(base: BBox, reason: string): SafeMarginsDebug {
     backgroundTolerance: 0,
     componentBBox: null,
     componentConfidence: 0,
+    shape: null,
   }
 }
 
@@ -224,6 +251,103 @@ function growthStrip(before: BBox, after: BBox, direction: Direction): BBox {
     case 'top': return [before[0], after[1], before[2], before[1]]
     case 'bottom': return [before[0], before[3], before[2], after[3]]
   }
+}
+
+function estimateSafeShapeProfile(args: {
+  readonly image: ImagePixels
+  readonly bounds: BBox
+  readonly seed: BBox
+  readonly selfBoxes: readonly BBox[]
+  readonly obstacles: readonly BBox[]
+  readonly background: BackgroundModel
+  readonly confidence: number
+}): SafeShapeProfile | null {
+  if (args.confidence < 0.6) return null
+  const height = bboxHeight(args.bounds)
+  if (height < 4 || bboxWidth(args.bounds) < 4) return null
+
+  const step = clamp(Math.floor(height / 36), SHAPE_SCAN_MIN_STEP_PX, SHAPE_SCAN_MAX_STEP_PX)
+  const y1 = Math.floor(args.bounds[1])
+  const y2 = Math.ceil(args.bounds[3])
+  const spans: SafeShapeSpan[] = []
+  let expectedRows = 0
+
+  for (let y = y1; y <= y2; y += step) {
+    expectedRows += 1
+    const span = scanShapeSpan(args, y)
+    if (span) spans.push(span)
+  }
+
+  if (spans.length < MIN_SHAPE_SPANS) return null
+  const coverage = spans.length / Math.max(1, expectedRows)
+  return { bounds: args.bounds, spans, confidence: args.confidence * coverage }
+}
+
+function scanShapeSpan(args: {
+  readonly image: ImagePixels
+  readonly bounds: BBox
+  readonly seed: BBox
+  readonly selfBoxes: readonly BBox[]
+  readonly obstacles: readonly BBox[]
+  readonly background: BackgroundModel
+}, y: number): SafeShapeSpan | null {
+  const x1 = Math.floor(args.bounds[0])
+  const x2 = Math.ceil(args.bounds[2])
+  const runs: Array<{ readonly x1: number; readonly x2: number }> = []
+  let start: number | null = null
+
+  for (let x = x1; x <= x2; x += 1) {
+    const ok = isShapePixel(args, x, y)
+    if (ok && start === null) start = x
+    if ((!ok || x === x2) && start !== null) {
+      const end = ok && x === x2 ? x + 1 : x
+      if (end - start >= 2) runs.push({ x1: start, x2: end })
+      start = null
+    }
+  }
+
+  const run = pickShapeRun(runs, args.seed)
+  return run ? { y, x1: run.x1, x2: run.x2 } : null
+}
+
+function isShapePixel(args: {
+  readonly image: ImagePixels
+  readonly selfBoxes: readonly BBox[]
+  readonly obstacles: readonly BBox[]
+  readonly background: BackgroundModel
+}, x: number, y: number): boolean {
+  if (args.selfBoxes.some(box => containsPoint(box, x, y))) return true
+  if (args.obstacles.some(box => containsPoint(box, x, y))) return false
+  const rgb = pixelAt(args.image, x, y)
+  return !!rgb && colorDistance(rgb, args.background.rgb) <= args.background.tolerance
+}
+
+function pickShapeRun(
+  runs: readonly { readonly x1: number; readonly x2: number }[],
+  seed: BBox,
+): { readonly x1: number; readonly x2: number } | null {
+  if (!runs.length) return null
+  const seedCx = (seed[0] + seed[2]) / 2
+  const containing = runs.filter(run => run.x1 <= seedCx && seedCx <= run.x2)
+  if (containing.length) return widestRun(containing)
+  const overlapping = runs
+    .map(run => ({ run, overlap: Math.max(0, Math.min(run.x2, seed[2]) - Math.max(run.x1, seed[0])) }))
+    .filter(item => item.overlap > 0)
+    .sort((a, b) => b.overlap - a.overlap || runWidth(b.run) - runWidth(a.run))
+  return overlapping[0]?.run ?? widestRun(runs)
+}
+
+function widestRun(runs: readonly { readonly x1: number; readonly x2: number }[]): { readonly x1: number; readonly x2: number } | null {
+  let best = runs[0]
+  if (!best) return null
+  for (const run of runs.slice(1)) {
+    if (runWidth(run) > runWidth(best)) best = run
+  }
+  return best
+}
+
+function runWidth(run: { readonly x1: number; readonly x2: number }): number {
+  return Math.max(0, run.x2 - run.x1)
 }
 
 interface BackgroundModel {

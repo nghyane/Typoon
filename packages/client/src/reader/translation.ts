@@ -5,6 +5,7 @@ import type { TextRegionDetector } from '../detectors/textRegions'
 import type { ChapterContentLayout } from '../domain/chapterContent'
 import type { ImagePixels } from '../domain/image'
 import type { TextRegion } from '../domain/regions'
+import type { CapabilityStatus } from '../domain/capability'
 import { OrtRuntime } from '../models/OrtRuntime'
 import { OrtSessionPool, type OrtProvider } from '../models/OrtSessionPool'
 import type { ChapterOcrChunk, SourcePageSize } from '../pipeline/chapterContent'
@@ -22,7 +23,6 @@ import {
   mergeChapterContentOverlay,
   translateChapterContentChunk,
   type ChapterContentOverlay,
-  type OverlayPlacementItem,
 } from '../pipeline/chapterContentTranslation'
 import { DeepLTranslateWeb } from '../translators/deepl-web/DeepLTranslateWeb'
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
@@ -33,10 +33,18 @@ export interface ReaderTranslationState {
   phase: ReaderPhase
   prepare: { done: number; total: number; preparedPages: number }
   translate: { done: number; total: number }
+  model: ReaderModelState
   sourceLanguage: string | null
   targetLanguage: string
-  pageSizes?: readonly (SourcePageSize | null)[]
   error?: string
+}
+
+export interface ReaderModelState {
+  readonly state: 'idle' | 'resolving' | 'downloading' | 'initializing' | 'ready' | 'failed'
+  readonly receivedBytes?: number
+  readonly totalBytes?: number
+  readonly ratio?: number
+  readonly error?: string
 }
 
 type Listener = (state: ReaderTranslationState) => void
@@ -70,12 +78,15 @@ const modelRepository = ModelRepository.fromHuggingFace({
 const ortSessionPool = new OrtSessionPool()
 let ortConfigured = false
 let textRegionDetectorPromise: Promise<TextRegionDetector> | null = null
+let latestModelState: ReaderModelState = { state: 'idle' }
+const modelStateListeners = new Set<(state: ReaderModelState) => void>()
 
 function init(pageCount: number, sourceLang: string | null, targetLang: string): ReaderTranslationState {
   return {
     phase: 'idle',
     prepare: { done: 0, total: pageCount, preparedPages: 0 },
     translate: { done: 0, total: pageCount },
+    model: latestModelState,
     sourceLanguage: sourceLang,
     targetLanguage: targetLang,
   }
@@ -96,9 +107,18 @@ export class ReaderTranslation {
   private readonly processingChunks = new Set<number>()
   private abort: AbortController | null = null
   private generation = 0
+  private overlayRevision = 0
+  private attachedOverlayKey = ''
   private active = false
   private renderFrame = 0
   private processingVisible = false
+  private readonly unsubscribeModelState: () => void
+
+  constructor() {
+    this.unsubscribeModelState = subscribeModelState(model => {
+      this.setState({ model })
+    })
+  }
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn)
@@ -108,11 +128,13 @@ export class ReaderTranslation {
 
   registerContentHost(host: HTMLElement): () => void {
     this.contentHost = host
+    this.attachedOverlayKey = ''
     this.bindViewportListeners()
     this.scheduleAttachOverlay()
     return () => {
       if (this.contentHost === host) {
         this.detachOverlay(host)
+        this.attachedOverlayKey = ''
         this.contentHost = null
         this.unbindViewportListeners()
       }
@@ -170,6 +192,7 @@ export class ReaderTranslation {
     this.active = false
     this.listeners.clear()
     this.unbindViewportListeners()
+    this.unsubscribeModelState()
     void this.translator?.close()
     this.translator = null
   }
@@ -179,7 +202,6 @@ export class ReaderTranslation {
     if (!chapter) return
 
     this.stopRun()
-    this.clearOverlay()
     const abort = new AbortController()
     this.abort = abort
 
@@ -187,14 +209,15 @@ export class ReaderTranslation {
       phase: 'loading',
       prepare: { done: 0, total: chapter.pageCount, preparedPages: 0 },
       translate: { done: 0, total: chapter.pageCount },
-      pageSizes: undefined,
       error: undefined,
     })
 
     try {
       await yieldAfterPaint()
       if (!this.isCurrent(generation) || abort.signal.aborted) return
-      prewarmTextRegionDetector(abort.signal)
+      this.clearOverlay()
+      await yieldToBrowser()
+      if (!this.isCurrent(generation) || abort.signal.aborted) return
       await ensureMangaFontLoaded()
       if (!this.isCurrent(generation) || abort.signal.aborted) return
       this.pageSizes = new Array<SourcePageSize | null>(chapter.pageCount).fill(null)
@@ -204,11 +227,12 @@ export class ReaderTranslation {
       this.overlay = emptyChapterContentOverlay(layout)
       this.setState({
         phase: 'translating',
-        pageSizes: this.pageSizes,
         prepare: { done: 0, total: chapter.pageCount, preparedPages: 0 },
         translate: { done: 0, total: chapter.pageCount },
       })
       await yieldAfterPaint()
+      if (!this.isCurrent(generation) || abort.signal.aborted) return
+      await yieldToIdle(250)
       if (!this.isCurrent(generation) || abort.signal.aborted) return
       this.scheduleAttachOverlay()
       this.scheduleVisibleChunkProcessing(generation)
@@ -230,7 +254,6 @@ export class ReaderTranslation {
     this.pageCache.set(index, page)
     this.pageSizes[index] = size
     this.setState({
-      pageSizes: [...this.pageSizes],
       prepare: { done: this.pageCache.size, total: chapter.pageCount, preparedPages: this.pageCache.size },
     })
     await yieldToBrowser()
@@ -276,7 +299,10 @@ export class ReaderTranslation {
       this.processedChunks.add(next)
       this.setState({ translate: progressFromChunks(this.processedChunks.size, this.chunks.length, this.chapter?.pageCount ?? this.chunks.length) })
     } catch (error) {
-      if (!abort.signal.aborted && this.isCurrent(generation)) this.setState({ phase: 'error', error: errorMessage(error) })
+      if (!abort.signal.aborted && this.isCurrent(generation)) {
+        if (this.abort === abort) this.abort = null
+        this.setState({ phase: 'error', error: errorMessage(error) })
+      }
       return
     } finally {
       this.processingChunks.delete(next)
@@ -324,14 +350,14 @@ export class ReaderTranslation {
     const capture = await captureChunkForOcr(index => this.loadPage(chapter, index, signal), layout, actualChunk, signal)
     await yieldAfterPaint()
     throwIfAborted(signal)
-    const [recognized, regions] = await Promise.all([
-      this.recognizer.recognizeEncoded(capture.encoded, {
-        pageIndex: actualChunk.index,
-        sourceLang: chapter.sourceLanguage,
-        signal,
-      }),
-      detectTextRegions(capture.image, signal),
-    ])
+    const recognized = await this.recognizer.recognizeEncoded(capture.encoded, {
+      pageIndex: actualChunk.index,
+      sourceLang: chapter.sourceLanguage,
+      signal,
+    })
+    await yieldAfterPaint()
+    throwIfAborted(signal)
+    const regions = await detectTextRegions(capture.image, signal)
     if (!this.isCurrent(generation)) return
     const translated = await translateChapterContentChunk({
       recognized,
@@ -346,6 +372,8 @@ export class ReaderTranslation {
     })
     if (!this.isCurrent(generation)) return
     this.overlay = mergeChapterContentOverlay(this.overlay, translated)
+    this.overlayRevision += 1
+    this.attachedOverlayKey = ''
     this.attachVisibleOverlay()
   }
 
@@ -354,18 +382,27 @@ export class ReaderTranslation {
     const overlay = this.overlay
     if (!host?.isConnected || !overlay) return
 
-    const visible = visiblePlacementItems(host, overlay)
+    const container = host.parentElement
+    if (!container) return
+    const pages = visiblePageElements(container)
+    const overlayKey = `${this.overlayRevision}:${pages.map(page => page.pageIndex).join(',')}`
+    if (overlayKey === this.attachedOverlayKey) return
     this.detachOverlay(host)
-    if (!visible.length) return
-    attachOverlay(host, {
-      pageSize: [overlay.contentSize.width, overlay.contentSize.height],
-      placements: visible.map(item => item.placement),
-      translations: overlay.translations,
-      placementMargins: visible.map(item => item.margin),
-      fontContextPlacements: overlay.placements,
-      sourceLanguage: this.chapter?.sourceLanguage ?? null,
-      targetLanguage: this.chapter?.targetLanguage ?? null,
-    }, { scaleMode: 'width' })
+    for (const page of pages) {
+      const items = placementItemsForPage(overlay, page.pageIndex)
+      if (!items.length) continue
+      const pageSize = pageSizeForOverlayPage(items, page)
+      attachOverlay(page.element, {
+        pageSize,
+        placements: items.map(item => item.placement),
+        translations: overlay.translations,
+        placementMargins: items.map(item => item.margin),
+        fontContextPlacements: overlay.placements,
+        sourceLanguage: this.chapter?.sourceLanguage ?? null,
+        targetLanguage: this.chapter?.targetLanguage ?? null,
+      }, { scaleMode: 'contain' })
+    }
+    this.attachedOverlayKey = overlayKey
   }
 
   private clearOverlay(): void {
@@ -375,11 +412,22 @@ export class ReaderTranslation {
     this.chunks = []
     this.processedChunks.clear()
     this.processingChunks.clear()
+    this.overlayRevision += 1
+    this.attachedOverlayKey = ''
     if (this.contentHost) this.detachOverlay(this.contentHost)
   }
 
   private detachOverlay(host: HTMLElement): void {
-    host.querySelectorAll('[data-typoon-overlay="true"]').forEach(node => node.remove())
+    for (const child of [...host.children]) {
+      if (child instanceof HTMLElement && child.dataset.typoonOverlay === 'true') child.remove()
+    }
+    const container = host.parentElement
+    if (!container) return
+    for (const page of container.querySelectorAll<HTMLElement>('[data-page-index]')) {
+      for (const child of [...page.children]) {
+        if (child instanceof HTMLElement && child.dataset.typoonOverlay === 'true') child.remove()
+      }
+    }
   }
 
   private measureLayout(): ChapterContentLayout | null {
@@ -529,11 +577,37 @@ async function captureChunkForOcr(
   }
 }
 
-function visiblePlacementItems(host: HTMLElement, overlay: ChapterContentOverlay): OverlayPlacementItem[] {
-  const { top, bottom } = visibleContentRange(host, overlay.contentSize, OVERLAY_VIEWPORT_MARGIN_PX)
+interface PageOverlayHost {
+  readonly pageIndex: number
+  readonly element: HTMLElement
+}
+
+function visiblePageElements(container: HTMLElement): PageOverlayHost[] {
+  const pages = [...container.querySelectorAll<HTMLElement>('[data-page-index]')]
+  return pages
+    .map(element => ({ element, pageIndex: Number(element.dataset.pageIndex) }))
+    .filter(page => Number.isFinite(page.pageIndex) && pageVisible(page.element, OVERLAY_VIEWPORT_MARGIN_PX))
+}
+
+function pageVisible(element: HTMLElement, marginPx: number): boolean {
+  const rect = element.getBoundingClientRect()
+  return rect.bottom >= -marginPx && rect.top <= window.innerHeight + marginPx
+}
+
+function placementItemsForPage(overlay: ChapterContentOverlay, pageIndex: number): Array<{ placement: ChapterContentOverlay['placements'][number]; margin: ChapterContentOverlay['placementMargins'][number] }> {
   return overlay.placements
     .map((placement, index) => ({ placement, margin: overlay.placementMargins[index]! }))
-    .filter(item => item.placement.bbox[3] >= top && item.placement.bbox[1] <= bottom)
+    .filter(item => item.placement.pageIndex === pageIndex)
+}
+
+function pageSizeForOverlayPage(
+  items: readonly { readonly placement: ChapterContentOverlay['placements'][number] }[],
+  page: PageOverlayHost,
+): readonly [number, number] {
+  const fromPlacement = items.find(item => item.placement.pageSize[0] > 0 && item.placement.pageSize[1] > 0)?.placement.pageSize
+  if (fromPlacement) return fromPlacement
+  const rect = page.element.getBoundingClientRect()
+  return [Math.max(1, rect.width), Math.max(1, rect.height)]
 }
 
 function visibleContentRange(
@@ -592,10 +666,6 @@ function defaultTextRegionDetector(signal: AbortSignal): Promise<TextRegionDetec
   return textRegionDetectorPromise
 }
 
-function prewarmTextRegionDetector(signal: AbortSignal): void {
-  void defaultTextRegionDetector(signal).catch(() => undefined)
-}
-
 async function createTextRegionDetector(signal: AbortSignal): Promise<TextRegionDetector> {
   throwIfAborted(signal)
   const caps = detectBrowserCapabilities()
@@ -606,8 +676,36 @@ async function createTextRegionDetector(signal: AbortSignal): Promise<TextRegion
     sessionPool: ortSessionPool,
     preferredProviders: preferredProviders(caps.modelHint.preferredProvider),
   })
+  detector.subscribeStatus(status => publishModelState(capabilityToModelState(status)))
+  publishModelState(capabilityToModelState(detector.status()))
   await detector.ensureReady({ signal })
   return detector
+}
+
+function subscribeModelState(listener: (state: ReaderModelState) => void): () => void {
+  modelStateListeners.add(listener)
+  listener(latestModelState)
+  return () => modelStateListeners.delete(listener)
+}
+
+function publishModelState(state: ReaderModelState): void {
+  latestModelState = state
+  for (const listener of modelStateListeners) {
+    try { listener(state) } catch {}
+  }
+}
+
+function capabilityToModelState(status: CapabilityStatus): ReaderModelState {
+  if (status.state === 'downloading') {
+    return {
+      state: 'downloading',
+      receivedBytes: status.progress.receivedBytes,
+      totalBytes: status.progress.totalBytes,
+      ratio: status.progress.ratio,
+    }
+  }
+  if (status.state === 'failed') return { state: 'failed', error: errorMessage(status.error) }
+  return { state: status.state }
 }
 
 function configureOrtRuntime(wasmNumThreads: number): void {
@@ -627,6 +725,16 @@ function preferredProviders(preferred: OrtProvider): readonly OrtProvider[] {
 
 async function yieldToBrowser(): Promise<void> {
   await new Promise<void>(resolve => setTimeout(resolve, 0))
+}
+
+function yieldToIdle(timeoutMs: number): Promise<void> {
+  const win = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  }
+  if (typeof win.requestIdleCallback === 'function') {
+    return new Promise<void>(resolve => { win.requestIdleCallback?.(() => resolve(), { timeout: timeoutMs }) })
+  }
+  return yieldToBrowser()
 }
 
 function yieldAfterPaint(): Promise<void> {

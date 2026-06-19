@@ -14,6 +14,10 @@ export const DEFAULT_STAGE_CONCURRENCY: StageConcurrencyPolicy = {
   translate: 4,
 }
 
+export interface SegmentDisplayOptions {
+  readonly progressive?: boolean
+}
+
 export interface TranslationEngineOptions {
   readonly sourceLang?: string
   readonly targetLang: string
@@ -22,6 +26,7 @@ export interface TranslationEngineOptions {
   readonly translator: Translator
   readonly postEditor?: TranslationPostEditor
   readonly scheduler?: StageSchedulerOptions
+  readonly display?: SegmentDisplayOptions
 }
 
 export interface TranslateSegmentOptions {
@@ -32,11 +37,16 @@ export interface TranslateSegmentOptions {
   readonly postEdit?: boolean
   readonly sessionId?: string
   readonly scheduler?: StageSchedulerOptions
+  readonly display?: SegmentDisplayOptions
   readonly signal?: AbortSignal
 }
 
 export class TranslationEngine {
-  constructor(private readonly options: TranslationEngineOptions) {}
+  private readonly options: TranslationEngineOptions
+
+  constructor(options: TranslationEngineOptions) {
+    this.options = options
+  }
 
   translateSegment(options: TranslateSegmentOptions): SegmentTranslationRun {
     const pageIndexes = options.pages ?? range(options.source.pageCount)
@@ -59,6 +69,7 @@ export class TranslationEngine {
         this.options.scheduler,
         options.scheduler,
       )),
+      display: resolveDisplayOptions(this.options.display, options.display),
       signal: options.signal,
     })
   }
@@ -71,6 +82,15 @@ function resolveSchedulerPolicy(
   return {
     concurrency: { ...DEFAULT_STAGE_CONCURRENCY, ...base?.concurrency, ...override?.concurrency },
     retry: { ...base?.retry, ...override?.retry },
+  }
+}
+
+function resolveDisplayOptions(
+  base: SegmentDisplayOptions | undefined,
+  override: SegmentDisplayOptions | undefined,
+): SegmentDisplayOptions {
+  return {
+    progressive: override?.progressive ?? base?.progressive,
   }
 }
 

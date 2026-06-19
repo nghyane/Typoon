@@ -4,9 +4,11 @@ import { imageAt, imagesIn, type DomPageOptions } from './domShared'
 export type DomPageSourceOptions = DomPageOptions
 
 export class DomPageSource implements PageSource {
+  private readonly container: HTMLElement
   private readonly imageSelector: string
 
-  constructor(private readonly container: HTMLElement, options: DomPageSourceOptions = {}) {
+  constructor(container: HTMLElement, options: DomPageSourceOptions = {}) {
+    this.container = container
     this.imageSelector = options.imageSelector ?? 'img'
   }
 

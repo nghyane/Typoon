@@ -21,9 +21,12 @@ export interface MainThreadOrtRunnerOptions {
 export class MainThreadOrtRunner implements TextRegionRunner {
   readonly name = 'manga-text-region-runner'
   private readonly capability = new CapabilityMachine(this.name)
+  private readonly options: MainThreadOrtRunnerOptions
   private sessionPromise: Promise<OrtSessionHandle> | null = null
 
-  constructor(private readonly options: MainThreadOrtRunnerOptions) {}
+  constructor(options: MainThreadOrtRunnerOptions) {
+    this.options = options
+  }
 
   status(): CapabilityStatus {
     return this.capability.status()

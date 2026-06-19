@@ -1,0 +1,13 @@
+export type BBox = readonly [number, number, number, number];
+export type Point = readonly [number, number];
+export type Polygon = readonly Point[];
+export declare function area(b: BBox): number;
+export declare function center(b: BBox): Point;
+export declare function containsCenter(outer: BBox, inner: BBox): boolean;
+export declare function containment(inner: BBox, outer: BBox): number;
+export declare function iou(a: BBox, b: BBox): number;
+export declare function union(bboxes: readonly BBox[]): BBox;
+export declare function clipBBox(bbox: BBox, pageSize: readonly [number, number]): BBox;
+export declare function bboxToPolygon(b: BBox): Polygon;
+export declare function polygonBBox(polygon: Polygon, pageSize: readonly [number, number]): BBox;
+export declare function inscribedEllipse(bbox: BBox, vertices?: number): Polygon;
