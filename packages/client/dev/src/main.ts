@@ -53,8 +53,8 @@ app.innerHTML = `
         </label>
         <label id="deeplEndpointField" class="field" hidden>
           <span>DeepL endpoint</span>
-          <input id="deeplEndpoint" type="text" value="/deepl/v2" spellcheck="false" />
-          <small>Local dev proxies /deepl to the configured DeepL web proxy.</small>
+          <input id="deeplEndpoint" type="text" value="" placeholder="default CDN proxy" spellcheck="false" />
+          <small>Blank uses the production CDN proxy for ita-free.www.deepl.com/v2.</small>
         </label>
       </section>
       <button id="run" class="primary-action">Translate 20-page chapter</button>
@@ -298,8 +298,9 @@ function createRuntime(translator: Translator): TranslationRuntime {
 
 function createTranslator(): Translator {
   if (translatorSelect.value === 'deepl') {
+    const endpoint = deeplEndpoint.value.trim()
     return new DeepLTranslateWeb({
-      endpoint: deeplEndpoint.value.trim() || '/deepl/v2',
+      ...(endpoint ? { endpoint } : {}),
       maxSessions: pipelineConcurrency.translate,
     })
   }

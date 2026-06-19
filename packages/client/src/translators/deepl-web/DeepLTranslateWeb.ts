@@ -11,7 +11,27 @@ export interface DeepLTranslateWebOptions {
   readonly maxSessions?: number
 }
 
-const DEFAULT_ENDPOINT = 'https://927251094806098001.discordsays.com/deepl/v2'
+const DEEPL_PROXY_HOST = '927251094806098001.discordsays.com'
+const DEEPL_UPSTREAM_HOST = 'ita-free.www.deepl.com'
+const DEFAULT_ENDPOINT = `https://${DEEPL_PROXY_HOST}/cdn/c/${DEEPL_UPSTREAM_HOST}/v2`
+const DEEPL_COMMON_UPSTREAM_HEADERS = {
+  'Accept-Language': 'en-US,en;q=0.9',
+  Origin: 'https://www.deepl.com',
+  Referer: 'https://www.deepl.com/',
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+}
+const DEEPL_START_SESSION_UPSTREAM_HEADERS = {
+  ...DEEPL_COMMON_UPSTREAM_HEADERS,
+  Accept: 'application/x-protobuf',
+  'Content-Type': 'application/x-protobuf',
+}
+const DEEPL_NEGOTIATE_UPSTREAM_HEADERS = {
+  ...DEEPL_COMMON_UPSTREAM_HEADERS,
+  Accept: 'application/json, text/plain, */*',
+}
+const DEEPL_WEBSOCKET_UPSTREAM_HEADERS = {
+  ...DEEPL_COMMON_UPSTREAM_HEADERS,
+}
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_BATCH_CHARS = 1_500
 const DEFAULT_MAX_SESSIONS = 8
@@ -207,7 +227,10 @@ class DeepLSignalRSession {
     try {
       const res = await fetch(apiUrl(this.endpoint, '/startSession'), {
         method: 'POST',
-        headers: { 'content-type': 'application/x-protobuf' },
+        headers: proxyRequestHeaders(
+          { 'content-type': 'application/x-protobuf' },
+          DEEPL_START_SESSION_UPSTREAM_HEADERS,
+        ),
         body: encodeStartSessionRequest(),
         signal: abort.signal,
         credentials: this.credentials,
@@ -223,7 +246,10 @@ class DeepLSignalRSession {
     const abort = requestAbortSignal(signal, this.requestTimeoutMs)
     try {
       const res = await fetch(this.sessionUrl('/sessions/negotiate', signalrEndpoint, 'negotiateVersion=1'), {
-        method: 'POST', signal: abort.signal, credentials: this.credentials,
+        method: 'POST',
+        headers: proxyRequestHeaders({}, DEEPL_NEGOTIATE_UPSTREAM_HEADERS),
+        signal: abort.signal,
+        credentials: this.credentials,
       })
       if (!res.ok) throw new Error(`deepl negotiate failed: ${res.status}`)
       const payload = await res.json() as Partial<NegotiateResponse>
@@ -236,6 +262,7 @@ class DeepLSignalRSession {
 
   private websocketUrl(signalrEndpoint: string, connectionToken: string): string {
     const url = this.sessionUrl('/sessions', signalrEndpoint, `id=${encodeURIComponent(connectionToken)}`)
+    url.searchParams.set('_h', encodeHeaderBlob(DEEPL_WEBSOCKET_UPSTREAM_HEADERS))
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
     return url.href
   }
@@ -804,6 +831,21 @@ function protoVarint(fieldNumber: number, value: number): Uint8Array { return co
 function protoString(fieldNumber: number, value: string): Uint8Array { return protoBytes(fieldNumber, textEncoder.encode(value)) }
 function protoMessage(fieldNumber: number, value: Uint8Array): Uint8Array { return protoBytes(fieldNumber, value) }
 function protoBytes(fieldNumber: number, value: Uint8Array): Uint8Array { return concatBytes([encodeVarint((fieldNumber << 3) | 2), encodeVarint(value.length), value]) }
+
+function proxyRequestHeaders(headers: Record<string, string>, upstreamHeaders: Record<string, string>): Headers {
+  const out = new Headers(headers)
+  if (Object.keys(upstreamHeaders).length > 0) out.set('X-Proxy-Headers', encodeHeaderBlob(upstreamHeaders))
+  return out
+}
+
+function encodeHeaderBlob(headers: Record<string, string>): string {
+  const sorted: Record<string, string> = {}
+  for (const key of Object.keys(headers).sort()) sorted[key] = headers[key]!
+  const bytes = textEncoder.encode(JSON.stringify(sorted))
+  let bin = ''
+  for (const byteValue of bytes) bin += String.fromCharCode(byteValue)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
 
 function apiUrl(endpoint: string, path: string): URL {
   const url = new URL(endpoint, baseHref())
