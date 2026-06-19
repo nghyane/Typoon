@@ -5,6 +5,7 @@ import { batchUnits, parseTranslatedBatch, serializeBatch, toTranslatedUnit } fr
 
 export interface DeepLTranslateWebOptions {
   readonly endpoint?: string
+  readonly websocketOrigin?: string
   readonly requestTimeoutMs?: number
   readonly maxBatchChars?: number
   readonly credentials?: RequestCredentials
@@ -14,6 +15,7 @@ export interface DeepLTranslateWebOptions {
 const DEEPL_PROXY_HOST = '927251094806098001.discordsays.com'
 const DEEPL_UPSTREAM_HOST = 'ita-free.www.deepl.com'
 const DEFAULT_ENDPOINT = `https://${DEEPL_PROXY_HOST}/cdn/c/${DEEPL_UPSTREAM_HOST}/v2`
+const DEFAULT_WEBSOCKET_ORIGIN = `wss://${DEEPL_UPSTREAM_HOST}`
 const DEEPL_COMMON_UPSTREAM_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
   Origin: 'https://www.deepl.com',
@@ -29,9 +31,6 @@ const DEEPL_NEGOTIATE_UPSTREAM_HEADERS = {
   ...DEEPL_COMMON_UPSTREAM_HEADERS,
   Accept: 'application/json, text/plain, */*',
 }
-const DEEPL_WEBSOCKET_UPSTREAM_HEADERS = {
-  ...DEEPL_COMMON_UPSTREAM_HEADERS,
-}
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_BATCH_CHARS = 1_500
 const DEFAULT_MAX_SESSIONS = 8
@@ -41,6 +40,7 @@ const textDecoder = new TextDecoder()
 export class DeepLTranslateWeb implements Translator {
   readonly name = 'deepl-translate-web'
   private readonly endpoint: string
+  private readonly websocketOrigin: string
   private readonly requestTimeoutMs: number
   private readonly maxBatchChars: number
   private readonly credentials: RequestCredentials
@@ -50,6 +50,7 @@ export class DeepLTranslateWeb implements Translator {
 
   constructor(options: DeepLTranslateWebOptions = {}) {
     this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT
+    this.websocketOrigin = options.websocketOrigin ?? DEFAULT_WEBSOCKET_ORIGIN
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.maxBatchChars = options.maxBatchChars ?? DEFAULT_MAX_BATCH_CHARS
     this.credentials = options.credentials ?? 'same-origin'
@@ -105,6 +106,7 @@ export class DeepLTranslateWeb implements Translator {
     if (this.sessions.length < this.limiter.concurrency) {
       const session = new DeepLSignalRSession({
         endpoint: this.endpoint,
+        websocketOrigin: this.websocketOrigin,
         requestTimeoutMs: this.requestTimeoutMs,
         credentials: this.credentials,
       })
@@ -135,6 +137,7 @@ interface Deferred<T> {
 
 class DeepLSignalRSession {
   private readonly endpoint: string
+  private readonly websocketOrigin: string
   private readonly requestTimeoutMs: number
   private readonly credentials: RequestCredentials
   private ws: WebSocket | null = null
@@ -147,8 +150,9 @@ class DeepLSignalRSession {
   private targetText = ''
   private maxTextLength = 1_500
 
-  constructor(options: { endpoint: string; requestTimeoutMs: number; credentials: RequestCredentials }) {
+  constructor(options: { endpoint: string; websocketOrigin: string; requestTimeoutMs: number; credentials: RequestCredentials }) {
     this.endpoint = options.endpoint
+    this.websocketOrigin = options.websocketOrigin
     this.requestTimeoutMs = options.requestTimeoutMs
     this.credentials = options.credentials
   }
@@ -261,9 +265,10 @@ class DeepLSignalRSession {
   }
 
   private websocketUrl(signalrEndpoint: string, connectionToken: string): string {
-    const url = this.sessionUrl('/sessions', signalrEndpoint, `id=${encodeURIComponent(connectionToken)}`)
-    url.searchParams.set('_h', encodeHeaderBlob(DEEPL_WEBSOCKET_UPSTREAM_HEADERS))
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const url = new URL(signalrEndpoint, this.websocketOrigin)
+    url.searchParams.set('id', connectionToken)
+    if (url.protocol === 'https:') url.protocol = 'wss:'
+    if (url.protocol === 'http:') url.protocol = 'ws:'
     return url.href
   }
 
