@@ -11,25 +11,17 @@ import { WorkSources } from './WorkSources'
 import { WorkDescription } from './WorkDescription'
 import { ChapterList } from './ChapterList'
 import { LinkSearchModal } from '../LinkSearchModal'
-import { UploadChapterDialog } from '../UploadChapterDialog'
 import { useWorkIdentity } from '../contexts/WorkIdentityContext'
-import { useWorkChapters } from '../contexts/WorkChaptersContext'
 
 
 export function WorkPageContent() {
   const { work } = useWorkIdentity()
-  const { merged } = useWorkChapters()
 
   const [attachOpen, setAttachOpen] = useState(false)
-  const [uploadOpen, setUploadOpen] = useState(false)
-
-  // Set of existing chapter refs — drives the upload dialog's
-  // conflict warning.
-  const existingRefs = new Set(merged.map(c => c.numberNorm))
 
   return (
-    <div className="pb-16">
-      <WorkHero onUpload={() => setUploadOpen(true)} />
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-16">
+      <WorkHero />
       <WorkSources onAttach={() => setAttachOpen(true)} />
       <WorkDescription />
       <ChapterList />
@@ -40,14 +32,6 @@ export function WorkPageContent() {
         workId={work.id}
         workTitle={work.title}
         ownSources={work.sources}
-      />
-      <UploadChapterDialog
-        open={uploadOpen}
-        onClose={() => setUploadOpen(false)}
-        workId={work.id}
-        workTitle={work.title}
-        sourceLang={work.source_lang}
-        existing={existingRefs}
       />
     </div>
   )

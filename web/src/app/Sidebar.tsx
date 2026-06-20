@@ -10,7 +10,7 @@ import { BRAND } from '../shared/brand'
 import { useState } from 'react'
 
 // =============================================================================
-// Sidebar — 4-tab shell, Hội-first.
+// Sidebar — reader-first app navigation.
 //
 //   Hội Mê Truyện  — guild feed (default landing for guild members)
 //   Thư viện        — personal library
@@ -19,7 +19,7 @@ import { useState } from 'react'
 //
 // Layout follows the legacy shape: brand row with toggle button on the
 // expanded state and click-to-expand on the collapsed brand tile;
-// primary nav block; flex-1 spacer; quota + foot nav at the bottom.
+// primary nav block; flex-1 spacer; foot nav at the bottom.
 // =============================================================================
 
 interface NavItem {
@@ -73,10 +73,10 @@ export function Sidebar() {
   // conflicted with the tab underline at the page level.
   const linkCls = (active: boolean) =>
     cn(
-      'group flex items-center h-8 w-full rounded-sm select-none cursor-pointer',
+      'group relative flex items-center h-8 w-full rounded-sm select-none cursor-pointer',
       'transition-colors duration-150',
       active
-        ? 'bg-surface-2 text-text font-medium'
+        ? 'bg-accent-bg text-accent-text font-medium'
         : 'text-text-muted hover:bg-hover hover:text-text',
     )
 
@@ -89,8 +89,11 @@ export function Sidebar() {
         title={collapsed ? label : undefined}
         className={linkCls(active)}
       >
+        {active && (
+          <span className="absolute left-1 top-1.5 bottom-1.5 w-0.5 rounded-full bg-accent" />
+        )}
         <span style={{ width: NAV_LANE }} className="h-full flex items-center justify-center shrink-0">
-          <Icon size={16} className={cn(active && 'text-accent-text')} />
+          <Icon size={16} className={cn(active && 'text-accent')} />
         </span>
         <span
           className="flex-1 min-w-0 truncate pr-2 text-sm transition-opacity duration-150"
@@ -160,7 +163,7 @@ export function Sidebar() {
           title="Thu gọn"
           aria-hidden={collapsed}
           tabIndex={collapsed ? -1 : 0}
-          className="size-7 mr-2 rounded-sm flex items-center justify-center text-text-subtle hover:text-text hover:bg-hover cursor-pointer shrink-0 transition-opacity duration-150"
+           className="size-7 mr-2 rounded-sm flex items-center justify-center text-text-subtle hover:text-text hover:bg-hover cursor-pointer shrink-0 transition-opacity duration-150"
           style={{ opacity: collapsed ? 0 : 1, pointerEvents: collapsed ? 'none' : 'auto' }}
         >
           <ChevronLeft size={14} />
@@ -174,7 +177,7 @@ export function Sidebar() {
 
       <div className="flex-1" />
 
-      {/* footer: quota + secondary nav */}
+      {/* footer: secondary nav */}
       <div className="px-2 pb-2 pt-2 flex flex-col gap-0.5">
         {navFoot.map(renderLink)}
       </div>

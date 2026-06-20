@@ -47,7 +47,7 @@ export function useImportToLibrary(
     onSuccess?:      (work: Work) => void
     /** Fires after a successful blank-create with the new Work so
      *  the caller can navigate the user to `/w/$id` and let them
-     *  upload chapters right away. */
+     *  attach sources later. */
     onBlankCreated?: (work: Work) => void
   } = {},
 ): ImportToLibrary {
@@ -106,7 +106,7 @@ export function useImportToLibrary(
       return work
     },
     onSuccess: (work) => {
-      toast.success('Đã tạo truyện mới. Tải chương đầu tiên ngay.')
+      toast.success('Đã tạo truyện mới. Hãy liên kết nguồn để đọc.')
       onBlankCreated?.(work)
       onSuccess?.(work)
     },

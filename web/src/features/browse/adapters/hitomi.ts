@@ -27,7 +27,7 @@
 //     2. Fetch gg.js for current CDN routing.
 //     3. Compute webp image URL for every file.
 
-import { pfetch } from '../proxy'
+import { fetchSource } from '../proxy'
 import type { BrowseArgs, ChapterPages, MangaDetail, MangaSummary, SourceManifest } from '../manifest/types'
 import type { SourceAdapter } from './types'
 
@@ -59,7 +59,7 @@ async function fetchGg(): Promise<GgData> {
   const now = Date.now()
   if (ggCache && now - ggCache.fetchedAt < GG_TTL) return ggCache
 
-  const res = await pfetch(`${LTN}/gg.js`, {
+  const res = await fetchSource(`${LTN}/gg.js`, {
     headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
   })
   if (!res.ok) throw new Error(`hitomi gg.js: HTTP ${res.status}`)
@@ -157,7 +157,7 @@ function getNozomiBuffer(nozomiUrl: string): Promise<ArrayBuffer> {
   const cached  = nozomiCache.get(nozomiUrl)
   if (cached && now - cached.fetchedAt < NOZOMI_TTL) return cached.promise
 
-  const promise = pfetch(nozomiUrl, {
+  const promise = fetchSource(nozomiUrl, {
     headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
   }).then((res) => {
     if (!res.ok) throw new Error(`hitomi nozomi: HTTP ${res.status}`)
@@ -199,7 +199,7 @@ const galleryBlockCache = new Map<number, Promise<GalleryBlock>>()
 function fetchGalleryBlock(id: number): Promise<GalleryBlock> {
   if (galleryBlockCache.has(id)) return galleryBlockCache.get(id)!
 
-  const promise = pfetch(`${LTN}/galleryblock/${id}.html`, {
+  const promise = fetchSource(`${LTN}/galleryblock/${id}.html`, {
     headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
   }).then(async (res) => {
     if (!res.ok) throw new Error(`hitomi galleryblock ${id}: HTTP ${res.status}`)
@@ -242,7 +242,7 @@ interface GalleryInfo {
 }
 
 async function fetchGalleryInfo(id: string): Promise<GalleryInfo> {
-  const res = await pfetch(`${LTN}/galleries/${id}.js`, {
+  const res = await fetchSource(`${LTN}/galleries/${id}.js`, {
     headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
   })
   if (!res.ok) throw new Error(`hitomi galleries/${id}.js: HTTP ${res.status}`)

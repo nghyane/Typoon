@@ -8,16 +8,15 @@
 // glass effects — the rest of the app uses solid surfaces and so
 // should the reader.
 
-import { ChevronLeft, ChevronDown, BookOpen, Languages, Sparkles } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
+import React from 'react'
 
-import { Button } from '@shared/ui/Button'
 import { cn } from '@shared/lib/cn'
 import { useWorkIdentity } from '@features/work/contexts/WorkIdentityContext'
 import { useWorkChapters } from '@features/work/contexts/WorkChaptersContext'
 import { useReader } from '../ReaderContext'
 import { useSourcePref } from '../hooks/useSourcePref'
-import { useChapterSources } from '../data/queries/useChapterSources'
 import { versionKeyOf } from '../data/selectors/resolveSource'
 import { pickBestVersion } from '@features/work/data/selectors/mergeChapters'
 
@@ -39,7 +38,6 @@ export function ReaderTopBar({
   const { merged } = useWorkChapters()
   const { workId, chapterRef, progress, chromeVisible } = useReader()
   const pref     = useSourcePref(workId)
-  const sources  = useChapterSources(workId, chapterRef)
 
   // Chapter position
   const idx = merged.findIndex(c => c.numberNorm === chapterRef)
@@ -51,7 +49,6 @@ export function ReaderTopBar({
   const sourceLabel = computeSourceLabel({
     chapter,
     pref,
-    sources,
     targetLang: work.target_lang,
   })
 
@@ -62,7 +59,7 @@ export function ReaderTopBar({
     <header
       className={cn(
         'fixed top-0 inset-x-0 z-30 h-bar',
-        'bg-surface border-b border-border-soft',
+        'bg-bg border-b border-border-soft',
         'pt-[var(--sait)] pl-[var(--sail)] pr-[var(--sair)]',
         'flex items-center gap-2 px-3',
         'transition-transform duration-200 ease-out',
@@ -94,74 +91,51 @@ export function ReaderTopBar({
         {work.title}
       </Link>
 
-      <Button
+      <ReaderChip
         ref={chapterTriggerRef}
-        variant="ghost"
-        size="sm"
         onClick={onOpenChapters}
         aria-label="Danh sách chương"
       >
-        <BookOpen size={14} className="text-text-subtle" />
         <span className="tabular-nums">Ch.{currentNumber}</span>
         {merged.length > 0 && (
           <span className="text-xs text-text-subtle tabular-nums font-normal">
             {chapterIndex}/{merged.length}
           </span>
         )}
-        <ChevronDown size={12} className="text-text-subtle" />
-      </Button>
+        <span className="text-text-subtle">▾</span>
+      </ReaderChip>
 
       {sourceLabel && (
         <>
           {/* Desktop chip — icon + language + source name */}
-          <Button
+          <ReaderChip
             ref={sourceTriggerRef}
-            variant="ghost"
-            size="sm"
             onClick={onOpenSources}
             aria-label="Nguồn đọc"
-            className="hidden sm:inline-flex"
+            className="hidden sm:inline-flex max-w-[12rem]"
           >
-            {sourceLabel.kind === 'translated' ? (
-              <Sparkles size={14} className="text-accent" />
-            ) : (
-              <Languages size={14} className="text-text-subtle" />
-            )}
             {sourceLabel.lang && (
-              <span className={cn(
-                'text-xs uppercase font-semibold tabular-nums',
-                sourceLabel.kind === 'translated' ? 'text-accent-text' : 'text-text-subtle',
-              )}>
+              <span className="text-xs uppercase font-semibold tabular-nums text-text-subtle">
                 {sourceLabel.lang}
               </span>
             )}
             <span className="text-text max-w-[7rem] truncate">
               {sourceLabel.name}
             </span>
-            <ChevronDown size={12} className="text-text-subtle" />
-          </Button>
+            <span className="text-text-subtle">▾</span>
+          </ReaderChip>
 
           {/* Mobile chip — language code only */}
-          <Button
-            variant="ghost"
-            size="sm"
+          <ReaderChip
             onClick={onOpenSources}
             aria-label="Nguồn đọc"
             className="sm:hidden"
           >
-            {sourceLabel.kind === 'translated' ? (
-              <Sparkles size={14} className="text-accent" />
-            ) : (
-              <Languages size={14} className="text-text-subtle" />
-            )}
-            <span className={cn(
-              'text-xs uppercase font-semibold tabular-nums',
-              sourceLabel.kind === 'translated' && 'text-accent-text',
-            )}>
+            <span className="text-xs uppercase font-semibold tabular-nums">
               {sourceLabel.lang ?? '—'}
             </span>
-            <ChevronDown size={12} className="text-text-subtle" />
-          </Button>
+            <span className="text-text-subtle">▾</span>
+          </ReaderChip>
         </>
       )}
 
@@ -180,56 +154,55 @@ export function ReaderTopBar({
 }
 
 
+const ReaderChip = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(
+  function ReaderChip({ className, type = 'button', ...props }, ref) {
+    return (
+      <button
+        ref={ref}
+        type={type}
+        className={cn(
+          'h-7 px-2 rounded-sm inline-flex items-center gap-1.5',
+          'bg-surface-2 text-xs text-text',
+          'hover:bg-hover transition-colors cursor-pointer',
+          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+          className,
+        )}
+        {...props}
+      />
+    )
+  },
+)
+
+
 // ── Source label ──────────────────────────────────────────────
 
 
 interface LabelInput {
   chapter:    import('@features/work/data/types').MergedChapter | null
   pref:       import('../data/types').SourcePref
-  sources:    import('../data/types').ChapterSources
   targetLang: string
 }
 
 
 type SourceLabel = {
-  /** 'translated' = AI/Typoon bundle. 'raw' = source manifest version. */
-  kind: 'translated' | 'raw'
   lang: string | null
   name: string
 }
 
 
 function computeSourceLabel(input: LabelInput): SourceLabel | null {
-  const { chapter, pref, sources, targetLang } = input
+  const { chapter, pref, targetLang } = input
   if (!chapter) return null
-
-  // Helper — does this chapter actually have a translated path?
-  const hasTranslated =
-    sources.saved?.kind === 'translated' ||
-    (sources.job && (sources.archiveLive || sources.job.archive_url))
-
-  // Explicit translated pick — show as AI bundle if it actually resolves
-  if (pref.kind === 'translated' && hasTranslated) {
-    return { kind: 'translated', lang: targetLang.toUpperCase(), name: 'Bản dịch của bạn' }
-  }
 
   // Explicit raw pick
   if (pref.kind === 'raw') {
     const v = chapter.sourceVersions.find(x => versionKeyOf(x) === pref.versionKey)
-    if (v) return { kind: 'raw', lang: v.lang.toUpperCase(), name: v.source.manifest.name }
-  }
-
-  // Auto:
-  //   - if a translated bundle is available, it's what the resolver
-  //     will return — surface that to the user
-  //   - otherwise the best raw version for target lang
-  if (pref.kind === 'auto' && hasTranslated) {
-    return { kind: 'translated', lang: targetLang.toUpperCase(), name: 'Bản dịch của bạn' }
+    if (v) return { lang: v.lang.toUpperCase(), name: v.source.manifest.name }
   }
 
   const best = pickBestVersion(chapter, targetLang.toLowerCase())
   if (best) {
-    return { kind: 'raw', lang: best.lang.toUpperCase(), name: best.source.manifest.name }
+    return { lang: best.lang.toUpperCase(), name: best.source.manifest.name }
   }
   return null
 }

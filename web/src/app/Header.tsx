@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Check, Globe, LogOut,
-  Search, Settings, Shield,
+  Settings, Shield,
 } from 'lucide-react'
 import { Link, useNavigate } from '@tanstack/react-router'
 
@@ -11,7 +11,7 @@ import {
   useSession, useSignOut, useUpdatePreferredLang,
   type SessionUser,
 } from '@features/auth/session'
-import { LANG_OPTIONS } from '@features/auth/readingLang'
+import { FALLBACK_LANG, LANG_OPTIONS } from '@features/auth/readingLang'
 import { Monogram } from '@shared/ui/primitives'
 
 
@@ -21,7 +21,6 @@ interface Props { user: SessionUser }
 export function Header({ user }: Props) {
   const { crumbs, title, slot, actions } = useHeaderStore()
   const back = crumbs[0]
-  const [, setSearchOpen] = useState(false)
 
   return (
     <header className="flex items-center gap-2 px-3 sm:px-5 h-bar bg-bg shrink-0">
@@ -45,22 +44,7 @@ export function Header({ user }: Props) {
       {/* center slot — route-injected (e.g. search input on /explore) */}
       {slot && <div className="flex-1 min-w-0">{slot}</div>}
 
-      {/* Desktop global search; hidden when the center slot is active. */}
-      {!slot && (
-        <button
-          onClick={() => setSearchOpen(true)}
-          title="Tìm nhanh (⌘K)"
-          className="hidden sm:flex items-center gap-2 h-8 px-2.5 w-56 rounded-sm bg-surface-2 text-text-subtle hover:bg-hover transition-colors cursor-pointer"
-        >
-          <Search size={14} className="shrink-0" />
-          <span className="flex-1 text-left text-sm select-none">Tìm nhanh…</span>
-          <kbd className="text-xs font-mono bg-black/30 rounded-xs px-1.5 py-0.5 text-text-subtle leading-none">
-            ⌘K
-          </kbd>
-        </button>
-      )}
-
-      {/* right slot — route-injected page actions (e.g. upload on /w/) */}
+      {/* right slot — route-injected page actions */}
       {actions && <div className="flex items-center gap-1 shrink-0">{actions}</div>}
 
       <UserMenu user={user} />
@@ -125,7 +109,7 @@ function UserMenu({ user }: { user: SessionUser }) {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-64 rounded-md bg-surface shadow-[0_8px_24px_rgb(0,0,0,0.4)] overflow-hidden z-50">
+        <div className="absolute right-0 top-full mt-1.5 w-64 rounded-md bg-surface border border-border-soft overflow-hidden z-50">
           {pane === 'root' ? (
             <RootPane
               user={user}
@@ -155,7 +139,7 @@ function RootPane({
   onLogout:       () => void
 }) {
   const currentLang = LANG_OPTIONS.find(
-    (o) => o.code === user.preferred_target_lang,
+    (o) => o.code === (user.preferred_target_lang ?? FALLBACK_LANG),
   )?.label ?? '—'
 
   return (
@@ -204,7 +188,7 @@ function RootPane({
 function LangPane({ onBack }: { onBack: () => void }) {
   const { user } = useSession()
   const update = useUpdatePreferredLang()
-  const current = user?.preferred_target_lang ?? ''
+  const current = user?.preferred_target_lang ?? FALLBACK_LANG
 
   return (
     <div>

@@ -1,3 +1,4 @@
-import * as ort from 'onnxruntime-web/webgpu';
+import type * as ort from 'onnxruntime-web/wasm';
 import type { ImagePixels } from '../../domain/image';
-export declare function createFeeds(image: ImagePixels): Record<string, ort.Tensor>;
+import type { OrtModule } from '../../models/OrtBackend';
+export declare function createFeeds(ortModule: OrtModule, image: ImagePixels): Record<string, ort.Tensor>;

@@ -9,7 +9,9 @@ export interface BrowserModelHint {
 
 export interface BrowserCapabilities {
   readonly supportsWebGpu: boolean
+  readonly supportsStableWebGpu: boolean
   readonly isSafari: boolean
+  readonly isIOS: boolean
   readonly isMobile: boolean
   readonly modelHint: BrowserModelHint
 }
@@ -23,6 +25,9 @@ export function detectBrowserCapabilities(): BrowserCapabilities {
     && !/Chrome|CriOS/i.test(navigator.userAgent)
   const isMobile = typeof navigator !== 'undefined'
     && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1)
+  const isIOS = typeof navigator !== 'undefined'
+    && (/iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+  const supportsStableWebGpu = supportsWebGpu && !isIOS
 
   const supportsCrossOriginIsolation = typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated
 
@@ -33,11 +38,13 @@ export function detectBrowserCapabilities(): BrowserCapabilities {
 
   return {
     supportsWebGpu,
+    supportsStableWebGpu,
     isSafari,
+    isIOS,
     isMobile,
     modelHint: {
-      modelId: supportsWebGpu ? 'comicDetr' : 'comicDetrWasm',
-      preferredProvider: supportsWebGpu ? 'webgpu' : 'wasm',
+      modelId: supportsStableWebGpu ? 'comicDetr' : 'comicDetrWasm',
+      preferredProvider: supportsStableWebGpu ? 'webgpu' : 'wasm',
       wasmNumThreads: wasmThreads,
     },
   }

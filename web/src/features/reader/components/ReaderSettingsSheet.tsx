@@ -71,7 +71,7 @@ function Body({ isDesktop }: { isDesktop: boolean }) {
 
   return (
     <div className="px-4 sm:px-5 py-4 space-y-6">
-      <Section title="Chế độ đọc" hint="Áp dụng cho mọi truyện">
+      <Section title="Chế độ đọc">
         <ModeSegmented
           value={s.style}
           onChange={(v) => patch({ style: v })}
@@ -134,7 +134,7 @@ function ModeSegmented({
             onClick={() => onChange(opt.value)}
             className={cn(
               'inline-flex flex-col items-center justify-center gap-2',
-              'h-14 px-2 rounded-sm text-xs font-medium',
+               'h-14 px-2 rounded-sm text-xs font-medium',
               'transition-colors duration-150 cursor-pointer',
               active
                 ? 'bg-accent-bg text-accent-text'

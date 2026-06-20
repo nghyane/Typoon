@@ -6,6 +6,7 @@ import {
   useDeferredValue, useEffect, useMemo, useRef, useState,
 } from 'react'
 import { Link } from '@tanstack/react-router'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Search } from 'lucide-react'
 
 import { BottomSheet } from '@shared/ui/BottomSheet'
@@ -70,8 +71,8 @@ export function ChapterPicker({ open, onClose, anchorRef }: Props) {
         onClose={onClose}
         anchorRef={anchorRef}
         align="end"
-        minWidth={320}
-        maxWidth={360}
+        minWidth={260}
+        maxWidth={320}
       >
         <Body onClose={onClose} />
       </Popover>
@@ -100,16 +101,27 @@ function Body({ onClose }: { onClose: () => void }) {
     )
   }, [merged, term])
 
-  // Scroll current chapter into view on open
-  const listRef = useRef<HTMLUListElement>(null)
+  const activeIndex = useMemo(
+    () => rows.findIndex(c => c.numberNorm === chapterRef),
+    [rows, chapterRef],
+  )
+
+  const listRef = useRef<HTMLDivElement>(null)
+  const virt = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => 36,
+    overscan: 10,
+    getItemKey: i => rows[i]?.numberNorm ?? i,
+  })
+
   useEffect(() => {
-    const el = listRef.current?.querySelector<HTMLElement>(`[data-ref="${chapterRef}"]`)
-    el?.scrollIntoView({ block: 'center' })
-  }, [chapterRef])
+    if (activeIndex >= 0) virt.scrollToIndex(activeIndex, { align: 'center' })
+  }, [activeIndex, virt])
 
   return (
     <div className="flex flex-col max-h-[60dvh] sm:max-h-[70vh]">
-      <div className="px-3 py-2 sticky top-0 bg-surface z-10 border-b border-border-soft">
+      <div className="px-3 py-2 sticky top-0 bg-surface z-10">
         <div className="relative">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle pointer-events-none" />
           <input
@@ -123,50 +135,75 @@ function Body({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      <ul ref={listRef} className="flex-1 overflow-y-auto p-2">
+      <div ref={listRef} className="flex-1 overflow-y-auto p-2">
         {rows.length === 0 ? (
-          <li className="px-3 py-8 text-center text-sm text-text-subtle">
+          <div className="px-3 py-8 text-center text-sm text-text-subtle">
             Không khớp tìm kiếm
-          </li>
-        ) : rows.map(c => {
-          const active = c.numberNorm === chapterRef
-          const subtitle = chapterSubtitle(c.number, c.label)
-          return (
-            <li key={c.numberNorm} data-ref={c.numberNorm}>
-              <Link
-                to="/r/$workId/$numberNorm"
-                params={{ workId, numberNorm: c.numberNorm }}
-                onClick={onClose}
-                className={cn(
-                  'relative flex items-center gap-3 h-9 px-3 rounded-sm text-sm',
-                  'transition-colors duration-150 cursor-pointer',
-                  active
-                    ? 'bg-accent-bg text-accent-text font-medium'
-                    : 'text-text-muted hover:text-text hover:bg-hover',
-                )}
-              >
-                {active && (
-                  <span
-                    aria-hidden
-                    className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent"
-                  />
-                )}
-                <span className="tabular-nums font-medium shrink-0">
-                  Ch.{c.number || c.numberNorm}
-                </span>
-                {subtitle && (
-                  <span className={cn(
-                    'truncate text-xs',
-                    active ? 'text-accent-text' : 'text-text-subtle',
-                  )}>
-                    {subtitle}
-                  </span>
-                )}
-              </Link>
-            </li>
-          )
-        })}
-      </ul>
+          </div>
+        ) : (
+          <div className="relative" style={{ height: virt.getTotalSize() }}>
+            {virt.getVirtualItems().map(vi => {
+              const c = rows[vi.index]!
+              return (
+                <ChapterRowLink
+                  key={vi.key}
+                  chapter={c}
+                  workId={workId}
+                  active={c.numberNorm === chapterRef}
+                  onClose={onClose}
+                  top={vi.start}
+                />
+              )
+            })}
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+
+function ChapterRowLink({
+  chapter, workId, active, onClose, top,
+}: {
+  chapter: import('@features/work/data/types').MergedChapter
+  workId: string
+  active: boolean
+  onClose: () => void
+  top: number
+}) {
+  const subtitle = chapterSubtitle(chapter.number, chapter.label)
+  return (
+    <Link
+      to="/r/$workId/$numberNorm"
+      params={{ workId, numberNorm: chapter.numberNorm }}
+      onClick={onClose}
+      className={cn(
+        'absolute left-0 right-0 flex items-center gap-3 h-9 px-3 rounded-sm text-sm',
+        'transition-colors duration-150 cursor-pointer',
+        active
+          ? 'bg-accent-bg text-accent-text font-medium'
+          : 'text-text-muted hover:text-text hover:bg-hover',
+      )}
+      style={{ transform: `translateY(${top}px)` }}
+    >
+      {active && (
+        <span
+          aria-hidden
+          className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent"
+        />
+      )}
+      <span className="tabular-nums font-medium shrink-0">
+        Ch.{chapter.number || chapter.numberNorm}
+      </span>
+      {subtitle && (
+        <span className={cn(
+          'truncate text-xs',
+          active ? 'text-accent-text' : 'text-text-subtle',
+        )}>
+          {subtitle}
+        </span>
+      )}
+    </Link>
   )
 }

@@ -16,7 +16,7 @@
 //   4. Select CDN host: unique_id > 140236 → i3, else i
 //   5. Build full URL list: {cdn}/{dir}/{hash}/{n}.{ext}
 
-import { pfetch } from '../proxy'
+import { fetchSource } from '../proxy'
 import type { ChapterPages, SourceManifest } from '../manifest/types'
 import type { SourceAdapter } from './types'
 
@@ -45,7 +45,7 @@ async function fetchReaderPage(
       .map(([k, v]) => `${k}=${v}`)
       .join('; ')
   }
-  const res = await pfetch(url, { headers })
+  const res = await fetchSource(url, { headers })
   if (!res.ok) throw new Error(`HentaiFox reader HTTP ${res.status}`)
   const html = await res.text()
   return new DOMParser().parseFromString(html, 'text/html')

@@ -14,6 +14,8 @@ data/
 # Cache / benchmark outputs
 cache/
 logs/
+.wrangler/
+.antigravitycli/
 
 # Project data (typoon storage, not web routes)
 /projects/
@@ -50,6 +52,7 @@ ext/*.zip
 
 # Workspace packages
 packages/*/node_modules/
+packages/*/dev/assets/*.onnx
 
 # Workers — local dev artifacts (each worker has its own node_modules + .wrangler)
 workers/*/node_modules/
@@ -64,4 +67,7 @@ workers/api/worker-configuration.d.ts
 # Build outputs that aren't checked in
 workers/*/src/*.wasm
 workers/*/src/*.wasm.gz
+workers/*/wheels/*.whl
+workers/*/container/*.whl
+workers/*/container/*.onnx
 *.so

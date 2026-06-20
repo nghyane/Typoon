@@ -7,8 +7,8 @@
 //
 // Clicking a result imports + closes immediately. The blank-create
 // fallback (BlankCreateRow + UrlPasteCard "Tạo trống thay") creates an
-// empty Work and navigates the user to its hub so they can upload the
-// first chapter from there.
+// empty Work and navigates the user to its hub so they can attach a
+// source later.
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'

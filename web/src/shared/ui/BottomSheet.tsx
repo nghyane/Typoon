@@ -83,7 +83,7 @@ export function BottomSheet({
           'max-h-[80dvh]',
           'flex flex-col',
           'bg-surface text-text',
-          'rounded-t-xl shadow-2xl',
+          'rounded-t-xl border-t border-border-soft',
           'pb-[var(--saib)]',
           'transition-transform duration-200 ease-out',
           !open && 'translate-y-full',

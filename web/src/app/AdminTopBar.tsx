@@ -9,10 +9,10 @@ import { cn } from '@shared/lib/cn'
 // AdminTopBar — top bar for the /admin/* workspace.
 //
 // Deliberately NOT the regular Header: admin work has no business
-// sharing a search box, sidebar nav, or pipeline pill with the manga
+// sharing a search box or sidebar nav with the manga
 // app. This bar is just three slots:
 //
-//   [ ← Quay lại app ]  [ Quản trị pipeline ]  [ avatar ]
+//   [ ← Quay lại app ]  [ Quản trị ]  [ avatar ]
 //
 // The "back to app" link is a verbatim affordance, not a hidden
 // gesture — admin always knows they're in a different workspace and
@@ -34,7 +34,7 @@ export function AdminTopBar({ user }: { user: SessionUser }) {
       <div className="flex-1 min-w-0 flex items-center gap-2 justify-center sm:justify-start sm:pl-4">
         <Shield size={14} className="text-accent-text shrink-0" />
         <span className="text-sm font-semibold text-text tracking-tight truncate">
-          Vận hành pipeline
+          Quản trị
         </span>
       </div>
 

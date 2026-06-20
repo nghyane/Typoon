@@ -21,13 +21,8 @@ import { Bunle, type PackInput } from '@nghyane/bunle'
 import { useMutation } from '@tanstack/react-query'
 import { useQueryClient } from '@tanstack/react-query'
 import { db } from '@shared/db'
-import {
-  useDownloadTranslatedArchive,
-} from '@features/reader/archives'
 import { fetchChapterPages } from '@features/browse/manifest/runtime'
-import { proxify } from '@features/browse/proxy'
-import { useSubmitJob } from '@features/jobs/useSubmitJob'
-import { packPagesToZip } from '@typoon/upload-sdk'
+import { useSourceFetch } from '@features/browse/SourceFetchProvider'
 import type { SourceVersion } from '../data/types'
 
 
@@ -47,13 +42,8 @@ export interface WorkActions {
   detachSource:  (source: string, upstream_ref: string)   => void
 
   // Chapters
-  /** Spawn (or re-spawn) a translate job. Same chapter_ref creates a
-   *  new job; older job rows stay in IDB for the row's history. */
-  spawnTranslate:     (chapterRef: string, version: SourceVersion) => Promise<void>
   /** Pack raw source pages into a BNL and save offline. */
   saveRawOffline:     (chapterRef: string, version: SourceVersion) => Promise<void>
-  /** Download a server-translated archive and save offline. */
-  downloadTranslated: (chapterRef: string, jobId: number, archiveUrl: string) => Promise<void>
 }
 
 
@@ -80,10 +70,7 @@ export function WorkActionsProvider({ workId, children }: Props) {
   const patchSt   = useUpdateLibraryStatus()
   const attach    = useAttachSource()
   const detach    = useDetachSource()
-  const dlBnl     = useDownloadTranslatedArchive()
-  const submitJob = useSubmitJob()
   const packRaw   = usePackRawArchive()
-  const spawnHelp = useSpawnTranslateHelper(workId, submitJob.submit)
 
   const rename = useCallback((title: string) => {
     const t = title.trim()
@@ -116,11 +103,6 @@ export function WorkActionsProvider({ workId, children }: Props) {
     [workId, detach],
   )
 
-  const spawnTranslate = useCallback(
-    (chapterRef: string, version: SourceVersion) => spawnHelp(chapterRef, version),
-    [spawnHelp],
-  )
-
   const saveRawOffline = useCallback(
     async (chapterRef: string, version: SourceVersion) => {
       const pages = await fetchChapterPages(version.source.manifest, version.ref.url)
@@ -134,28 +116,16 @@ export function WorkActionsProvider({ workId, children }: Props) {
     [workId, packRaw],
   )
 
-  const downloadTranslated = useCallback(
-    async (chapterRef: string, jobId: number, archiveUrl: string) => {
-      await dlBnl.mutateAsync({
-        work_id:     workId,
-        chapter_ref: chapterRef,
-        job_id:      jobId,
-        archive_url: archiveUrl,
-      })
-    },
-    [workId, dlBnl],
-  )
-
   const value = useMemo<WorkActions>(() => ({
     rename, setCover, resetCover,
     addLibrary, removeLibrary, setStatus,
     attachSource, detachSource,
-    spawnTranslate, saveRawOffline, downloadTranslated,
+    saveRawOffline,
   }), [
     rename, setCover, resetCover,
     addLibrary, removeLibrary, setStatus,
     attachSource, detachSource,
-    spawnTranslate, saveRawOffline, downloadTranslated,
+    saveRawOffline,
   ])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
@@ -165,11 +135,10 @@ export function WorkActionsProvider({ workId, children }: Props) {
 // ── Internal helpers (mutations not yet exported elsewhere) ──────
 
 
-/** Pack raw chapter pages into a BNL and persist to IDB. Mirrors the
- *  legacy `usePackRawArchive` but stays internal to this module so the
- *  action context owns its mutations. */
+/** Pack raw chapter pages into a BNL and persist to IDB. */
 function usePackRawArchive() {
   const qc = useQueryClient()
+  const { toBrowserUrl } = useSourceFetch()
   return useMutation({
     mutationFn: async (args: {
       work_id:     string
@@ -177,7 +146,7 @@ function usePackRawArchive() {
       raw_urls:    string[]
     }) => {
       const inputs: PackInput[] = await Promise.all(args.raw_urls.map(async (url) => {
-        const res = await fetch(proxify(url))
+        const res = await fetch(toBrowserUrl(url))
         if (!res.ok) throw new Error(`Trang lỗi: ${res.status}`)
         const blob = await res.blob()
         const data = await blob.arrayBuffer()
@@ -232,32 +201,4 @@ async function imageDimensions(blob: Blob): Promise<{ width: number; height: num
       img.src = url
     })
   }
-}
-
-
-/** Spawn translate job — fetch source pages, zip them, submit to /jobs.
- *  Bound to `workId` so callers only pass chapter-level info. */
-function useSpawnTranslateHelper(
-  workId: string,
-  submit: ReturnType<typeof useSubmitJob>['submit'],
-) {
-  return useCallback(async (chapterRef: string, version: SourceVersion) => {
-    const pages = await fetchChapterPages(version.source.manifest, version.ref.url)
-    if (!pages.pages.length) throw new Error('Chương trống.')
-    const bytes = await Promise.all(pages.pages.map(async (url, i) => {
-      const res = await fetch(proxify(url))
-      if (!res.ok) throw new Error(`Trang ${i + 1} lỗi ${res.status}`)
-      return { source: url, bytes: new Uint8Array(await res.arrayBuffer()) }
-    }))
-    const zip = packPagesToZip(bytes)
-    await submit({
-      work_id:     workId,
-      chapter_ref: chapterRef,
-      source_lang: version.ref.language
-                ?? version.source.manifest.languages[0]
-                ?? 'ja',
-      kind:        'translate',
-      zip,
-    })
-  }, [workId, submit])
 }

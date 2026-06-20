@@ -1,4 +1,4 @@
-import { detectBrowserCapabilities } from '../adapters/browserCapabilities'
+import { detectBrowserCapabilities, type BrowserCapabilities } from '../adapters/browserCapabilities'
 import { ModelRepository } from '../adapters/ModelRepository'
 import { MangaTextRegionDetector } from '../detectors/manga/MangaTextRegionDetector'
 import type { TextRegionDetector } from '../detectors/textRegions'
@@ -8,6 +8,7 @@ import type { TextRegion } from '../domain/regions'
 import type { CapabilityStatus } from '../domain/capability'
 import { OrtRuntime } from '../models/OrtRuntime'
 import { OrtSessionPool, type OrtProvider } from '../models/OrtSessionPool'
+import type { OrtModule } from '../models/OrtBackend'
 import type { ChapterOcrChunk, SourcePageSize } from '../pipeline/chapterContent'
 import type { EncodedOcrImage } from '../recognizers/text'
 import { attachOverlay } from '../render/overlay'
@@ -25,7 +26,10 @@ import {
   type ChapterContentOverlay,
 } from '../pipeline/chapterContentTranslation'
 import { DeepLTranslateWeb } from '../translators/deepl-web/DeepLTranslateWeb'
-import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
+import ortWebgpuMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url'
+import ortWebgpuWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
+import ortWasmMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url'
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url'
 
 export type ReaderPhase = 'idle' | 'loading' | 'preparing' | 'ready' | 'translating' | 'done' | 'error'
 
@@ -70,16 +74,27 @@ interface CapturedOcrChunk {
 
 const OVERLAY_VIEWPORT_MARGIN_PX = 1400
 const CHUNK_PROCESS_VIEWPORT_MARGIN_PX = 450
+const DISCORD_CDN_PROXY_BASE = 'https://927251094806098001.discordsays.com/cdn/c'
 
 const modelRepository = ModelRepository.fromHuggingFace({
   repo: 'nghyane/comic-detr',
   revision: 'v1',
+  proxyBase: DISCORD_CDN_PROXY_BASE,
 })
-const ortSessionPool = new OrtSessionPool()
-let ortConfigured = false
+let ortRuntimePromise: Promise<ConfiguredOrtRuntime> | null = null
 let textRegionDetectorPromise: Promise<TextRegionDetector> | null = null
 let latestModelState: ReaderModelState = { state: 'idle' }
 const modelStateListeners = new Set<(state: ReaderModelState) => void>()
+
+interface ConfiguredOrtRuntime {
+  readonly sessionPool: OrtSessionPool
+  readonly providers: readonly OrtProvider[]
+}
+
+interface OrtBackend {
+  readonly ort: OrtModule
+  readonly wasmPaths: { readonly wasm: string; readonly mjs: string }
+}
 
 function init(pageCount: number, sourceLang: string | null, targetLang: string): ReaderTranslationState {
   return {
@@ -669,12 +684,12 @@ function defaultTextRegionDetector(signal: AbortSignal): Promise<TextRegionDetec
 async function createTextRegionDetector(signal: AbortSignal): Promise<TextRegionDetector> {
   throwIfAborted(signal)
   const caps = detectBrowserCapabilities()
-  configureOrtRuntime(caps.modelHint.wasmNumThreads)
+  const ortRuntime = await configureOrtRuntime(caps)
   const model = await modelRepository.model(caps.modelHint.modelId)
   const detector = new MangaTextRegionDetector({
     model,
-    sessionPool: ortSessionPool,
-    preferredProviders: preferredProviders(caps.modelHint.preferredProvider),
+    sessionPool: ortRuntime.sessionPool,
+    preferredProviders: ortRuntime.providers,
   })
   detector.subscribeStatus(status => publishModelState(capabilityToModelState(status)))
   publishModelState(capabilityToModelState(detector.status()))
@@ -708,19 +723,52 @@ function capabilityToModelState(status: CapabilityStatus): ReaderModelState {
   return { state: status.state }
 }
 
-function configureOrtRuntime(wasmNumThreads: number): void {
-  if (ortConfigured) return
-  const runtime = new OrtRuntime()
+function configureOrtRuntime(caps: BrowserCapabilities): Promise<ConfiguredOrtRuntime> {
+  if (!ortRuntimePromise) {
+    ortRuntimePromise = createOrtRuntime(caps).catch(error => {
+      ortRuntimePromise = null
+      throw error
+    })
+  }
+  return ortRuntimePromise
+}
+
+async function createOrtRuntime(caps: BrowserCapabilities): Promise<ConfiguredOrtRuntime> {
+  const backend = await loadOrtBackend(caps.modelHint.preferredProvider)
+  const runtime = new OrtRuntime(backend.ort)
   runtime.configure({
     logLevel: 'fatal',
-    wasmPaths: { wasm: new URL(ortWasmUrl, window.location.href).href },
-    wasmNumThreads,
+    wasmPaths: backend.wasmPaths,
+    wasmNumThreads: caps.modelHint.wasmNumThreads,
   })
-  ortConfigured = true
+  return {
+    sessionPool: new OrtSessionPool(backend.ort),
+    providers: preferredProviders(caps.modelHint.preferredProvider),
+  }
+}
+
+async function loadOrtBackend(preferredProvider: OrtProvider): Promise<OrtBackend> {
+  if (preferredProvider === 'webgpu') {
+    return {
+      ort: (await import('onnxruntime-web/webgpu')) as OrtModule,
+      wasmPaths: absoluteWasmPaths(ortWebgpuWasmUrl, ortWebgpuMjsUrl),
+    }
+  }
+  return {
+    ort: await import('onnxruntime-web/wasm'),
+    wasmPaths: absoluteWasmPaths(ortWasmUrl, ortWasmMjsUrl),
+  }
+}
+
+function absoluteWasmPaths(wasm: string, mjs: string): OrtBackend['wasmPaths'] {
+  return {
+    wasm: new URL(wasm, window.location.href).href,
+    mjs: new URL(mjs, window.location.href).href,
+  }
 }
 
 function preferredProviders(preferred: OrtProvider): readonly OrtProvider[] {
-  return preferred === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm', 'webgpu']
+  return preferred === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm']
 }
 
 async function yieldToBrowser(): Promise<void> {

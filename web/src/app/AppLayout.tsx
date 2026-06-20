@@ -1,13 +1,12 @@
 import { useEffect, type ReactNode } from 'react'
-import { useNavigate, useMatches } from '@tanstack/react-router'
+import { useNavigate, useMatches, useRouterState } from '@tanstack/react-router'
 import { Sidebar } from './Sidebar'
 import { Header } from './Header'
 import { BottomNav } from './BottomNav'
 import { AdminTopBar } from './AdminTopBar'
 import { Toaster } from '@shared/ui/Toaster'
 import { ConfirmHost } from '@shared/ui/Confirm'
-import { useSession } from '@features/auth/session'
-import { useUserEventsStream } from '@features/jobs/queries'
+import { safeReturnTo, useRefreshSession, useSession } from '@features/auth/session'
 import { cn } from '@shared/lib/cn'
 
 // =============================================================================
@@ -33,42 +32,53 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const chrome  = leaf?.staticData?.chrome ?? 'app'
   const auth    = leaf?.staticData?.auth   ?? 'required'
 
+  // Public route (login, oauth callback): render children verbatim, no
+  // chrome, no guard. The page owns its full viewport.
+  if (auth === 'public') return <>{children}</>
+
+  return <AuthenticatedLayout chrome={chrome}>{children}</AuthenticatedLayout>
+}
+
+function AuthenticatedLayout({
+  children,
+  chrome,
+}: {
+  children: ReactNode
+  chrome: 'app' | 'admin' | 'bare'
+}) {
   const nav     = useNavigate()
   const session = useSession()
-
-  // Open a single WebSocket per authenticated session that multiplexes
-  // job progress for every concurrent translation. Without this, IDB +
-  // TanStack only see job state when something explicitly polls — the
-  // work-page chapter list (which uses Dexie live-query off IDB) would
-  // be stuck on "đang dịch" until the user navigates to the job detail.
-  useUserEventsStream(session.status === 'authenticated')
+  const currentHref = useRouterState({ select: s => s.location.href })
+  const refreshSession = useRefreshSession()
 
   // Auth guard — applies only to routes that require a session.
   // We branch on the discriminated status (not on `user`/`loading`
   // separately) so an `error` state doesn't get mistaken for
   // `unauthenticated` and silently bounce the user to /login.
   useEffect(() => {
-    if (auth !== 'required') return
-    if (session.status === 'unauthenticated') nav({ to: '/login' })
-  }, [auth, session.status, nav])
+    if (session.status === 'unauthenticated') {
+      nav({ to: '/login', search: { redirect: safeReturnTo(currentHref) } })
+    }
+  }, [currentHref, session.status, nav])
 
   // Global 401 → bounce to login. The session module already cleared
   // the token + cache when the unauthorized 401 fired; we just route.
   useEffect(() => {
-    const onUnauth = () => nav({ to: '/login' })
+    const onUnauth = () => {
+      nav({ to: '/login', search: { redirect: safeReturnTo(currentHref) } })
+    }
     window.addEventListener('typoon:unauthorized', onUnauth)
     return () => window.removeEventListener('typoon:unauthorized', onUnauth)
-  }, [nav])
-
-  // Public route (login, oauth callback): render children verbatim, no
-  // chrome, no guard. The page owns its full viewport.
-  if (auth === 'public') return <>{children}</>
+  }, [currentHref, nav])
 
   // Auth required but session not authenticated: avoid flashing app
   // chrome around an empty body before the redirect effect fires.
   // While `loading`, render nothing rather than the shell — the
   // session query resolves on every nav, the flicker would be
   // visible on every route switch otherwise.
+  if (session.status === 'error') {
+    return <AuthErrorScreen message={session.error.message} onRetry={refreshSession} />
+  }
   if (session.status !== 'authenticated') return null
   const user = session.user
 
@@ -134,6 +144,29 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </div>
       <Toaster />
       <ConfirmHost />
+    </div>
+  )
+}
+
+function AuthErrorScreen({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => unknown
+}) {
+  return (
+    <div className="min-h-dvh flex items-center justify-center bg-bg text-text p-4">
+      <div className="w-full max-w-sm bg-surface border border-border-soft rounded-md p-6 text-center space-y-4">
+        <div className="text-sm text-error-text">Không thể kiểm tra đăng nhập: {message}</div>
+        <button
+          type="button"
+          onClick={() => { void onRetry() }}
+          className="h-9 px-4 rounded-sm bg-accent text-white text-sm font-medium cursor-pointer"
+        >
+          Thử lại
+        </button>
+      </div>
     </div>
   )
 }

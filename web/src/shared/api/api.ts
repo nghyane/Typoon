@@ -52,7 +52,12 @@ async function request<T = unknown>(
   }
 
   if (res.status === 401) {
-    window.dispatchEvent(new CustomEvent('typoon:unauthorized'))
+    // /api/auth/session returns 401 normally when the user isn't
+    // logged in — don't fire the global unauthorized handler because
+    // it would clear the query cache, re-fetch the session, and loop.
+    if (path !== '/api/auth/session') {
+      window.dispatchEvent(new CustomEvent('typoon:unauthorized'))
+    }
     throw new ApiError(401, 'Unauthorized')
   }
 
@@ -80,6 +85,20 @@ export interface SessionUser {
   id:           string
   display_name: string
   avatar_url:   string | null
+  is_admin:     boolean
+  email?:       string | null
+  tier?:        { name: string }
+  preferred_target_lang?: string | null
+}
+
+export interface PublicSettings {
+  sourceFetch: {
+    origins: string[]
+  }
+  features: {
+    browse:      boolean
+    translation: boolean
+  }
 }
 
 // ── Endpoints ───────────────────────────────────────────────────────
@@ -99,6 +118,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     }),
+
+  getSettings: (): Promise<PublicSettings> =>
+    request('/api/settings'),
 
   // Coin / wallet
   getCoinPackages: (): Promise<{ packages: Array<{
@@ -140,4 +162,5 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
     }),
+
 }

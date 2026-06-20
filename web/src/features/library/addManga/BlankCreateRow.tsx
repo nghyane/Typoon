@@ -51,7 +51,7 @@ export function BlankCreateRow({
           }
         </p>
         <p className="text-xs text-text-subtle mt-1">
-          Vào trang truyện để tải chương từ file zip/cbz hoặc ảnh.
+          Vào trang truyện để liên kết nguồn đọc sau.
         </p>
       </div>
     </button>

@@ -1,18 +1,14 @@
-// Offline archives — Dexie store of saved .bnl files.
+// Offline archives — Dexie store of saved raw .bnl files.
 //
-// Two kinds:
-//   'translated'  downloaded from server (presigned archive_url)
-//   'raw'         client-packed from source-adapter pages
-//
-// Either way the stored blob is a valid BNL file the reader can
-// `Bunle.from(buf)` directly.
+// Stored blobs are valid BNL files the reader can `Bunle.from(buf)`
+// directly. Translation is rendered live in the reader overlay.
 
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bunle, type PackInput } from '@nghyane/bunle'
 
 import { db, type SavedArchive } from '@shared/db'
-import { proxify } from '@features/browse/proxy'
+import { useSourceFetch } from '@features/browse/SourceFetchProvider'
 
 export type { SavedArchive }
 
@@ -35,50 +31,13 @@ export function useSavedArchive(
 }
 
 
-// ── Download translated archive ─────────────────────────────────────
-
-export function useDownloadTranslatedArchive() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async (args: {
-      work_id:     string
-      chapter_ref: string
-      job_id:      number
-      archive_url: string
-    }) => {
-      const res = await fetch(args.archive_url)
-      if (!res.ok) throw new Error(`Download failed: ${res.status}`)
-      const blob = await res.blob()
-      // Validate it's a BNL by parsing the header (throws otherwise).
-      Bunle.from(await blob.arrayBuffer())
-
-      const item: SavedArchive = {
-        id:          archiveId(args.work_id, args.chapter_ref),
-        work_id:     args.work_id,
-        chapter_ref: args.chapter_ref,
-        kind:        'translated',
-        blob,
-        page_count:  0,                // filled below
-        byte_size:   blob.size,
-        saved_at:    new Date().toISOString(),
-        job_id:      args.job_id,
-      }
-      const buf = await blob.arrayBuffer()
-      item.page_count = Bunle.from(buf).pageCount
-      await db().archives.put(item)
-      return item
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['archives'] }),
-  })
-}
-
-
 // ── Pack raw chapter → BNL ──────────────────────────────────────────
 
 /** Pack a list of raw upstream image URLs into a BNL file and save it
  *  to IndexedDB. Useful for offline reading of un-translated chapters. */
 export function usePackRawArchive() {
   const qc = useQueryClient()
+  const { toBrowserUrl } = useSourceFetch()
   return useMutation({
     mutationFn: async (args: {
       work_id:     string
@@ -86,7 +45,7 @@ export function usePackRawArchive() {
       raw_urls:    string[]
     }) => {
       const inputs = await Promise.all(args.raw_urls.map(async (url) => {
-        const proxied = proxify(url)
+        const proxied = toBrowserUrl(url)
         const res = await fetch(proxied)
         if (!res.ok) throw new Error(`Raw page fetch failed: ${res.status} ${url}`)
         const blob = await res.blob()
@@ -142,7 +101,6 @@ export function useArchiveStorageStats() {
     return {
       count:        all.length,
       total_bytes,
-      translated:   all.filter(a => a.kind === 'translated').length,
       raw:          all.filter(a => a.kind === 'raw').length,
     }
   }, [])

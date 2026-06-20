@@ -4,34 +4,48 @@
 // DA:  discordSdk.commands.authorize({ prompt: 'none' }) → POST /api/auth/da/exchange.
 
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import {
-  discordActivityLogin, isDiscordActivity, loginUrl,
-  takeLoginError, takeSessionInvalidated, useSession, useSignIn,
+  discordActivityLogin, isDiscordActivity, loginUrl, safeReturnTo,
+  useRefreshSession, useSession, useSignIn,
 } from '@features/auth/session'
 import { Spinner } from '@shared/ui/primitives'
 
+type LoginSearch = {
+  redirect?: string
+  error?: string
+}
+
+function parseLoginSearch(search: Record<string, unknown>): LoginSearch {
+  return {
+    redirect: typeof search.redirect === 'string' ? safeReturnTo(search.redirect) : undefined,
+    error:    typeof search.error === 'string' ? search.error : undefined,
+  }
+}
+
 function LoginPage() {
   const nav      = useNavigate()
+  const search   = Route.useSearch()
   const session  = useSession()
   const signIn   = useSignIn()
-  const [pageError]   = useState<string | null>(() => takeLoginError())
-  const [invalidated] = useState<boolean>(() => takeSessionInvalidated())
-  const [error,       setError]     = useState<string | null>(pageError)
+  const refreshSession = useRefreshSession()
+  const [activityError, setActivityError] = useState<string | null>(null)
   const [authorizing, setAuthorizing] = useState(false)
   const [daFired,     setDaFired]     = useState(false)
+  const redirect = safeReturnTo(search.redirect)
+  const error = activityError ?? search.error ?? null
 
   // Authenticated → go home
   useEffect(() => {
-    if (session.status === 'authenticated') nav({ to: '/' })
-  }, [session.status, nav])
+    if (session.status === 'authenticated') nav({ to: redirect, replace: true })
+  }, [redirect, session.status, nav])
 
   // DA — silent auto-login on mount
   useEffect(() => {
     if (!isDiscordActivity) return
     if (session.status !== 'unauthenticated') return
-    if (invalidated || daFired) return
+    if (daFired) return
 
     setDaFired(true)
     setAuthorizing(true)
@@ -39,19 +53,28 @@ function LoginPage() {
     discordActivityLogin()
       .then(async () => {
         await signIn()
-        nav({ to: '/' })
+        nav({ to: redirect, replace: true })
       })
       .catch((e: Error) => {
-        setError(e.message)
+        setActivityError(e.message)
         setAuthorizing(false)
       })
-  }, [session.status, invalidated, daFired, nav, signIn])
+  }, [redirect, session.status, daFired, nav, signIn])
 
   if (session.status === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-bg">
         <Spinner size={24} />
       </div>
+    )
+  }
+
+  if (isDiscordActivity && session.status === 'error') {
+    return (
+      <DiscordActivityError
+        message={session.error.message}
+        onRetry={refreshSession}
+      />
     )
   }
 
@@ -67,22 +90,15 @@ function LoginPage() {
   // DA: error with retry
   if (isDiscordActivity && error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg">
-        <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
-          <div className="text-sm text-error-text">{error}</div>
-          <button
-            onClick={() => {
-              setError(null)
-              setDaFired(false)
-            }}
-            className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium cursor-pointer"
-          >
-            Thử lại
-          </button>
-        </div>
-      </div>
+      <DiscordActivityError
+        message={error}
+        onRetry={() => {
+          setActivityError(null)
+          setDaFired(false)
+        }}
+      />
     )
-  )
+  }
 
   // Web flow: login button
   return (
@@ -100,18 +116,44 @@ function LoginPage() {
 
           <p className="text-sm text-text-muted mb-4">Đăng nhập bằng Discord để tiếp tục.</p>
 
-          <button
-            onClick={() => {
+          <a
+            href={loginUrl(redirect)}
+            aria-disabled={authorizing}
+            onClick={(event) => {
+              if (authorizing) {
+                event.preventDefault()
+                return
+              }
               setAuthorizing(true)
-              window.location.href = loginUrl()
             }}
-            disabled={authorizing}
-            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] disabled:opacity-60 disabled:cursor-not-allowed transition-all cursor-pointer"
+            className="w-full inline-flex items-center justify-center gap-2 h-10 px-4 rounded-sm bg-[#5865F2] text-white text-sm font-medium hover:bg-[#4752C4] active:scale-[0.98] aria-disabled:opacity-60 aria-disabled:cursor-not-allowed transition-all cursor-pointer"
           >
             <DiscordIcon />
             {authorizing ? 'Đang chuyển hướng…' : 'Đăng nhập với Discord'}
-          </button>
+          </a>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function DiscordActivityError({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => unknown
+}) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-bg">
+      <div className="w-full max-w-xs p-6 bg-surface rounded-md text-center space-y-4">
+        <div className="text-sm text-error-text">{message}</div>
+        <button
+          onClick={() => { void onRetry() }}
+          className="w-full h-9 rounded-sm bg-[#5865F2] text-white text-sm font-medium cursor-pointer"
+        >
+          Thử lại
+        </button>
       </div>
     </div>
   )
@@ -126,6 +168,7 @@ function DiscordIcon() {
 }
 
 export const Route = createFileRoute('/login')({
+  validateSearch: parseLoginSearch,
   component: LoginPage,
   staticData: { chrome: 'bare', auth: 'public' },
 })

@@ -1,11 +1,10 @@
 // WorkHero — cover (left) + identity + actions (right).
 //
 // Pure context consumer. Identity from `useWorkIdentity()`, read target
-// from `useWorkChapters()`, mutations from `useWorkActions()`. Only the
-// `onUpload` callback comes from the parent (it owns modal state).
+// from `useWorkChapters()`, mutations from `useWorkActions()`.
 
 import { useEffect, useRef, useState } from 'react'
-import { Pencil, ChevronDown, BookmarkPlus, Upload } from 'lucide-react'
+import { Pencil, ChevronDown, BookmarkPlus, BookOpen } from 'lucide-react'
 
 import { Cover } from '@shared/ui/Cover'
 import { Button } from '@shared/ui/Button'
@@ -22,13 +21,11 @@ import type { Work } from '../data/types'
 
 
 interface Props {
-  /** Open the upload-chapter dialog. Owned by the page composition. */
-  onUpload: () => void
   /** Navigate to the read target. Owned by the route since it knows
    *  about TanStack Router. */
   onRead?: () => void
 }
-export function WorkHero({ onUpload, onRead }: Props) {
+export function WorkHero({ onRead }: Props = {}) {
   const { work, primaryDetail } = useWorkIdentity()
   const { readTarget } = useWorkChapters()
   const { rename, setCover, resetCover } = useWorkActions()
@@ -47,8 +44,8 @@ export function WorkHero({ onUpload, onRead }: Props) {
     : null
 
   return (
-    <section className="px-4 sm:px-6 pt-4 pb-3">
-      <div className="flex items-start gap-4">
+    <section className="pt-4 pb-3">
+      <div className="flex items-start gap-4 sm:gap-5">
         {/* Cover */}
         <button
           type="button"
@@ -56,7 +53,7 @@ export function WorkHero({ onUpload, onRead }: Props) {
           aria-label="Sửa ảnh bìa"
           className={cn(
             'group/cover relative w-[88px] sm:w-28 shrink-0',
-            'aspect-[2/3] rounded-md overflow-hidden shadow-md cursor-pointer',
+            'aspect-[2/3] rounded-md overflow-hidden bg-surface-2 cursor-pointer',
             'focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2',
           )}
         >
@@ -68,7 +65,7 @@ export function WorkHero({ onUpload, onRead }: Props) {
         </button>
 
         {/* Identity + actions */}
-        <div className="flex-1 min-w-0 space-y-2">
+        <div className="flex-1 min-w-0 space-y-2 pt-0.5">
           <TitleBlock title={work.title} onRename={rename} />
 
           {author && (
@@ -80,22 +77,15 @@ export function WorkHero({ onUpload, onRead }: Props) {
             status={primaryDetail?.status ?? null}
           />
 
-          {/* Row 1: core actions */}
-          <div className="flex items-stretch gap-2">
+          {/* Core actions */}
+          <div className="flex items-stretch gap-2 flex-wrap">
             {readLabel && (
               <Button variant="primary" size="md" onClick={handleRead}>
+                <BookOpen size={14} />
                 {readLabel}
               </Button>
             )}
             <BookmarkButton work={work} />
-          </div>
-
-          {/* Row 2: utility actions */}
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={onUpload}>
-              <Upload size={14} />
-              Thêm chương
-            </Button>
           </div>
         </div>
       </div>
@@ -147,7 +137,7 @@ function TitleBlock({ title, onRename }: { title: string; onRename: (t: string) 
   if (isDesktop) {
     return (
       <div className="group/title flex items-start gap-1.5 min-w-0">
-        <h1 className="text-lg font-semibold text-text leading-snug line-clamp-3 flex-1">
+        <h1 className="text-lg sm:text-2xl font-semibold text-text leading-snug line-clamp-3 flex-1 tracking-tight">
           {title}
         </h1>
         <button
@@ -175,7 +165,7 @@ function TitleBlock({ title, onRename }: { title: string; onRename: (t: string) 
         onClick={() => setEditing(true)}
         className="text-left min-w-0 w-full cursor-pointer"
       >
-        <h1 className="text-lg font-semibold text-text leading-snug line-clamp-3">
+        <h1 className="text-lg font-semibold text-text leading-snug line-clamp-3 tracking-tight">
           {title}
         </h1>
       </button>
@@ -393,7 +383,7 @@ function BookmarkButton({ work }: { work: Work }) {
           className={cn(
             'absolute left-0 top-full mt-1 z-30 min-w-[160px]',
             'bg-surface rounded-md border border-border-soft',
-            'shadow-[0_8px_24px_rgb(0,0,0,0.35)] py-1',
+             'border border-border-soft py-1',
           )}
         >
           {STATUS_OPTIONS.map(opt => (

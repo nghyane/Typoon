@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/nghiahoang/typoon-api/internal/httpx"
 	"github.com/nghiahoang/typoon-api/internal/llm"
 	"github.com/nghiahoang/typoon-api/internal/payment"
+	"github.com/nghiahoang/typoon-api/internal/settings"
 	"github.com/nghiahoang/typoon-api/internal/translation"
 	"github.com/nghiahoang/typoon-api/internal/wallet"
 )
@@ -53,11 +55,17 @@ func main() {
 
 	authStore := auth.NewStore(pool)
 
+	allowedOrigins := []string{"http://localhost:5173", "http://localhost:5174"}
+	if v := os.Getenv("ALLOWED_ORIGINS"); v != "" {
+		allowedOrigins = strings.Split(v, ",")
+	}
+
 	router := httpx.NewRouter(httpx.Deps{
 		Auth: auth.NewHandler(authStore, auth.NewDiscord(auth.DiscordConfig{
-			ClientID:     os.Getenv("DISCORD_CLIENT_ID"),
-			ClientSecret: os.Getenv("DISCORD_CLIENT_SECRET"),
-			RedirectURL:  os.Getenv("DISCORD_REDIRECT_URL"),
+			ClientID:            os.Getenv("DISCORD_CLIENT_ID"),
+			ClientSecret:        os.Getenv("DISCORD_CLIENT_SECRET"),
+			RedirectURL:         os.Getenv("DISCORD_REDIRECT_URL"),
+			ActivityRedirectURL: os.Getenv("DISCORD_ACTIVITY_REDIRECT_URL"),
 		})),
 		Coin: coin.NewHandler(coin.Usecase{
 			Store: coinStore,
@@ -73,8 +81,9 @@ func main() {
 				ChecksumKey: os.Getenv("PAYOS_CHECKSUM_KEY"),
 			}),
 		}),
+		Settings: settings.NewHandler(settings.NewStore(pool), authStore),
 		Translation: translation.NewHandler(translation.Usecase{
-			LLM:       llmClient,
+			LLM: llmClient,
 			StreamLLM: llm.NewStreamClient(llmConfigFromEnv(), map[string]llm.StreamProtocol{
 				"openai_chat_completions": llm.NewOpenAIChat(),
 				"openai_responses":        llm.NewOpenaiResponses(),
@@ -85,7 +94,7 @@ func main() {
 			Ledger: wallet.NewLedger(pool),
 		}),
 		LLM: llm.NewProbeHandler(llmClient),
-	})
+	}, allowedOrigins)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("typoon-api listening on %s", addr)

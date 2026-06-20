@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { cn } from '@shared/lib/cn'
-import { proxify } from '@features/browse/proxy'
+import { useSourceFetch } from '@features/browse/SourceFetchProvider'
 
 const API_BASE = window.location.hostname.endsWith('.discordsays.com')
   ? ''
@@ -8,7 +8,11 @@ const API_BASE = window.location.hostname.endsWith('.discordsays.com')
 
 // Resolve a cover URL — absolute upstream → CDN proxy,
 // relative `/files/...` → API base.
-export function coverUrl(src: string | null, version?: string | null): string | null {
+export function coverUrl(
+  src: string | null,
+  version: string | null | undefined,
+  proxify: (url: string) => string,
+): string | null {
   if (!src) return null
   const isAbs = /^https?:\/\//i.test(src)
   const base  = isAbs ? proxify(src) : `${API_BASE}${src}`
@@ -28,12 +32,13 @@ interface Props {
 
 export function Cover({ src, title, className, fontSize = 'text-xl', version }: Props) {
   const [failed, setFailed] = useState(false)
+  const { toBrowserUrl: proxify } = useSourceFetch()
 
   // Reset failure state when src changes — without this, switching projects
   // to one with a working cover still shows the fallback.
   useEffect(() => { setFailed(false) }, [src])
 
-  const url = !failed ? coverUrl(src, version) : null
+  const url = !failed ? coverUrl(src, version, proxify) : null
   const safeTitle = (title ?? '').trim()
 
   return (

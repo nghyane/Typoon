@@ -13,7 +13,7 @@
 //   • pages.count — numeric range 1..N for chapter pages
 //   • authRequired / cookieNames — cookie injection via proxy
 
-import { pfetch } from '../proxy'
+import { fetchSource } from '../proxy'
 import {
   queryHtmlOne, queryHtmlAll, queryJsonOne, queryJsonAll,
 } from './selectors'
@@ -93,7 +93,7 @@ async function exec(
     if (cookieHdr) headers['Cookie'] = cookieHdr
   }
 
-  const res = await pfetch(url, {
+  const res = await fetchSource(url, {
     headers,
     init: {
       method: req.method ?? 'GET',

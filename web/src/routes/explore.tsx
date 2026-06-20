@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { Search, Compass, Plus } from 'lucide-react'
+import { Search, Compass, Plus, Check } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 
 import { useEnabledSources } from '@features/browse/sources'
@@ -57,8 +57,8 @@ function ExplorePage() {
           <h1 className="text-lg font-semibold text-text inline-flex items-center gap-2">
             <Compass size={18} /> Khám phá
           </h1>
-          <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
-            <Plus size={14} /> Thêm thủ công
+          <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)}>
+            <Plus size={14} /> Thêm
           </Button>
         </div>
 
@@ -75,8 +75,8 @@ function ExplorePage() {
                 className={cn(
                   'inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-medium transition-colors',
                   sel
-                    ? 'bg-accent text-accent-text'
-                    : 'bg-surface text-text-muted hover:bg-hover hover:text-text',
+                    ? 'bg-accent-bg text-accent-text'
+                    : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
                 )}
               >
                 {s.manifest.name}
@@ -86,7 +86,7 @@ function ExplorePage() {
         </div>
 
         {active && hasSearch(active.manifest) && (
-          <div className="relative">
+          <div className="relative max-w-xl">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
             <input
               type="search"
@@ -151,7 +151,7 @@ function SourceContent({
                 type="button"
                 onClick={() => setShelfId(s.id)}
                 className={cn(
-                  'h-6 px-2.5 rounded-full text-xs font-medium transition-colors',
+                  'h-7 px-3 rounded-full text-xs font-medium transition-colors',
                   sel
                     ? 'bg-surface-2 text-text'
                     : 'text-text-muted hover:text-text',
@@ -235,18 +235,20 @@ function BrowseCard({
         {source.manifest.nsfw && (
           <Tag tone="error" size="sm" className="absolute top-1.5 right-1.5">18+</Tag>
         )}
-        {inLibrary && (
-          <div className="absolute inset-x-0 bottom-0 bg-bg/80 backdrop-blur-sm px-2 py-1 text-xs uppercase tracking-wider text-text-muted">
-            trong thư viện
-          </div>
-        )}
       </div>
       <div className="px-0.5 space-y-0.5">
         <div className="text-xs font-medium text-text line-clamp-2 leading-tight">
           {manga.title}
         </div>
-        <div className="text-xs uppercase tracking-wider text-text-subtle">
-          {source.manifest.name}
+        <div className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-text-subtle">
+          <span className="truncate">{source.manifest.name}</span>
+          {inLibrary && (
+            <Check
+              size={12}
+              className="shrink-0 text-success"
+              aria-label="Trong thư viện"
+            />
+          )}
         </div>
       </div>
     </button>

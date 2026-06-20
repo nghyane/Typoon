@@ -17,7 +17,11 @@ export function useSourcePref(workId: string): SourcePref {
   const q = useLocalSettings()
   return useMemo<SourcePref>(() => {
     const m = q.data?.reader_source_prefs ?? {}
-    return m[workId] ?? DEFAULT_PREF
+    const pref = m[workId]
+    if (!pref) return DEFAULT_PREF
+    if (pref.kind === 'auto') return pref
+    if (pref.kind === 'raw')  return pref
+    return DEFAULT_PREF
   }, [q.data, workId])
 }
 

@@ -1,13 +1,14 @@
 // ReaderBottomPill — fixed bottom chrome.
 //
 //   ┌────────────────────────────────────────────────┐
-//   │  ◀   │   Ch.5 · 12 / 187   │   ▶   │   ⚙       │
+//   │  ◀   │   Ch.5 · 12 / 187   │  [Slot]  │  ▶ ⚙  │
 //   └────────────────────────────────────────────────┘
 //
 // Solid surface, hairline border, system shadow. No backdrop blur.
 // Atoms use the design system (h-8 ghost buttons, divider hairlines).
+// Children slot sits between page indicator and next nav.
 
-import { ChevronLeft, ChevronRight, Settings } from 'lucide-react'
+import { type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 
 import { Button } from '@shared/ui/Button'
@@ -18,10 +19,10 @@ import { useReader } from '../ReaderContext'
 interface Props {
   onOpenSettings: () => void
   totalPages:     number
+  children?:      ReactNode
 }
 
-
-export function ReaderBottomPill({ onOpenSettings, totalPages }: Props) {
+export function ReaderBottomPill({ onOpenSettings, totalPages, children }: Props) {
   const { workId, prev, next, page, chromeVisible } = useReader()
 
   return (
@@ -38,37 +39,31 @@ export function ReaderBottomPill({ onOpenSettings, totalPages }: Props) {
     >
       <div
         className={cn(
-          'pointer-events-auto inline-flex items-center h-12 max-w-full',
-          'rounded-full bg-surface border border-border-soft',
-          'shadow-[0_8px_24px_rgb(0,0,0,0.35)]',
-          'gap-1 px-2',
+          'pointer-events-auto inline-flex items-center h-10 max-w-full',
+          'rounded-md bg-surface',
+          'gap-1 px-1.5',
         )}
       >
         <NavBtn target={prev} workId={workId} aria-label="Chương trước">
-          <ChevronLeft size={16} />
+          ‹
         </NavBtn>
-
-        <Divider />
 
         <PageIndicator page={page} total={totalPages} />
 
-        <Divider />
+        {children}
 
         <NavBtn target={next} workId={workId} aria-label="Chương sau">
-          <ChevronRight size={16} />
+          ›
         </NavBtn>
-
-        <Divider />
 
         <Button
           variant="ghost"
           size="sm"
-          icon
           onClick={onOpenSettings}
           aria-label="Cài đặt đọc"
-          className="rounded-full"
+          className="rounded-sm px-2"
         >
-          <Settings size={14} />
+          Aa
         </Button>
       </div>
     </footer>
@@ -103,11 +98,6 @@ function PageIndicator({ page, total }: { page: number; total: number }) {
 }
 
 
-function Divider() {
-  return <span className="block h-5 w-px bg-divider shrink-0" aria-hidden />
-}
-
-
 function NavBtn({
   target, workId, children, ...rest
 }: {
@@ -117,7 +107,7 @@ function NavBtn({
 } & React.HTMLAttributes<HTMLElement>) {
   const base = cn(
     'shrink-0 inline-flex items-center justify-center',
-    'size-8 rounded-full',
+    'size-8 rounded-sm text-lg leading-none',
     'transition-colors duration-150',
   )
   if (!target) {

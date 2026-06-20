@@ -26,7 +26,7 @@ import { BottomSheet } from '@shared/ui/BottomSheet'
 import { Button } from '@shared/ui/Button'
 import { Cover } from '@shared/ui/Cover'
 import { cn } from '@shared/lib/cn'
-import { proxify } from '@features/browse/proxy'
+import { useSourceFetch } from '@features/browse/SourceFetchProvider'
 
 
 interface Props {
@@ -104,7 +104,7 @@ function ActionsView({
   return (
     <div className="px-4 py-3 space-y-4">
       <div className="flex justify-center">
-        <div className="w-32 aspect-[2/3] rounded-md overflow-hidden shadow-md">
+        <div className="w-32 aspect-[2/3] rounded-md overflow-hidden">
           <Cover src={currentUrl} title={title} className="w-full h-full" />
         </div>
       </div>
@@ -208,7 +208,7 @@ function UrlView({
         />
 
         <div className="flex justify-center">
-          <div className="w-32 aspect-[2/3] rounded-md overflow-hidden shadow-md bg-surface-2">
+          <div className="w-32 aspect-[2/3] rounded-md overflow-hidden bg-surface-2">
             {valid ? (
               <PreviewImg
                 key={trimmed}
@@ -257,6 +257,7 @@ function PreviewImg({
   onLoad:  () => void
   onError: () => void
 }) {
+  const { toBrowserUrl: proxify } = useSourceFetch()
   // Route through proxify so cross-origin headers / referer policy
   // matches what the live Cover will fetch.
   return (

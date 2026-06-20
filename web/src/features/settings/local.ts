@@ -9,15 +9,15 @@ export type { SettingsBlob }
 const DEFAULT: SettingsBlob = {
   key:                 'global',
   theme:               'system',
-  reader_mode:         'pager',
-  default_target_lang: null,
+  reader_mode:         'webtoon',
+  default_target_lang: 'vi',
   updated_at:          new Date(0).toISOString(),
 }
 
 export function useLocalSettings() {
   return useQuery<SettingsBlob>({
-    queryKey: qk.settings(),
-    queryFn:  async () => (await db().settings.get('global')) ?? DEFAULT,
+    queryKey: qk.localSettings(),
+    queryFn:  async () => normalizeSettings(await db().settings.get('global')),
     staleTime: Infinity,
   })
 }
@@ -34,12 +34,22 @@ export function useUpdateLocalSettings() {
         if (v !== undefined) (clean as Record<string, unknown>)[k] = v
       }
       const next: SettingsBlob = {
-        ...cur, ...clean,
+        ...normalizeSettings(cur), ...clean,
         updated_at: new Date().toISOString(),
       }
       await db().settings.put(next)
       return next
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.settings() }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.localSettings() }),
   })
+}
+
+function normalizeSettings(value: SettingsBlob | undefined): SettingsBlob {
+  if (!value) return DEFAULT
+  return {
+    ...DEFAULT,
+    ...value,
+    reader_mode: value.reader_mode === 'pager' ? 'webtoon' : value.reader_mode,
+    default_target_lang: value.default_target_lang ?? DEFAULT.default_target_lang,
+  }
 }

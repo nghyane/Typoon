@@ -34,7 +34,7 @@ export function WorkSources({ onAttach }: Props) {
     : work.sources
 
   return (
-    <section className="px-4 sm:px-6 pt-1 pb-3">
+    <section className="pt-1 pb-3">
       <div className="flex items-center gap-2 mb-2">
         <h2 className="text-xs uppercase tracking-wider text-text-subtle font-medium">
           Nguồn

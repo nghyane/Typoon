@@ -1,10 +1,19 @@
+SHELL := /bin/bash
+
+ENV_FILE ?= .env
+ARGS ?=
+
+define with_env
+set -a; [ ! -f "$(ENV_FILE)" ] || source "$(ENV_FILE)"; set +a;
+endef
+
 .PHONY: run dev build test db-reset db-seed
 
 run:
-	go run ./cmd/api
+	$(with_env) exec go run ./cmd/api $(ARGS)
 
 dev:
-	gow run ./cmd/api
+	$(with_env) exec go run ./cmd/api $(ARGS)
 
 build:
 	go build -o bin/api ./cmd/api

@@ -18,11 +18,14 @@ import {
   type OverlayDebugOptions,
 } from '../../src/index'
 import { OrtRuntime } from '../../src/models/OrtRuntime'
-import { OrtSessionPool } from '../../src/models/OrtSessionPool'
+import { OrtSessionPool, type OrtProvider } from '../../src/models/OrtSessionPool'
+import type { OrtModule } from '../../src/models/OrtBackend'
+import ortWebgpuMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url'
 import ortWebgpuWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
+import ortWasmMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url'
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url'
 import './style.css'
 
-const ortWasmUrl = new URL(ortWebgpuWasmUrl, window.location.href).href
 const chapterPages = Array.from({ length: 20 }, (_, index) => `/chapter-20/${String(index + 1).padStart(3, '0')}.jpg`)
 
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -36,7 +39,7 @@ app.innerHTML = `
       <h1>Local overlay dev reader</h1>
       <p class="muted">
         OCR runs immediately via Lens while Comic-DETR model downloads in background.<br />
-        Model auto-select: ${browserCaps.supportsWebGpu ? 'WebGPU (161 MB FP32)' : 'wasm (11 MB INT8)'}
+        Model auto-select: ${browserCaps.supportsStableWebGpu ? 'WebGPU (161 MB FP32)' : 'wasm (11 MB INT8)'}
         ${browserCaps.isSafari ? '— Safari: single-thread wasm' : ''}
       </p>
       <section class="panel-section" aria-labelledby="translationSettingsTitle">
@@ -137,13 +140,14 @@ const models = ModelRepository.fromHuggingFace({
 
 const recognizer = new LensTextRecognizer()
 
-const ortRuntime = new OrtRuntime()
+const ortBackend = await loadOrtBackend(browserCaps.modelHint.preferredProvider)
+const ortRuntime = new OrtRuntime(ortBackend.ort)
 ortRuntime.configure({
   logLevel: 'fatal',
-  wasmPaths: { wasm: ortWasmUrl },
+  wasmPaths: ortBackend.wasmPaths,
   wasmNumThreads: browserCaps.modelHint.wasmNumThreads,
 })
-const sessionPool = new OrtSessionPool()
+const sessionPool = new OrtSessionPool(ortBackend.ort)
 
 const comicDetrModel = await models.model(browserCaps.modelHint.modelId)
 comicDetrModel.subscribeStatus(renderModelStatus)
@@ -151,6 +155,7 @@ comicDetrModel.subscribeStatus(renderModelStatus)
 const detector = new MangaTextRegionDetector({
   model: comicDetrModel,
   sessionPool,
+  preferredProviders: preferredProviders(browserCaps.modelHint.preferredProvider),
 })
 detector.subscribeStatus(renderModelStatus)
 
@@ -391,6 +396,35 @@ function attachPageOverlay(page: PageOverlay): void {
 
 function overlayPageSize(page: PageOverlay): readonly [number, number] {
   return [page.pageSize.width, page.pageSize.height]
+}
+
+interface DevOrtBackend {
+  readonly ort: OrtModule
+  readonly wasmPaths: { readonly wasm: string; readonly mjs: string }
+}
+
+async function loadOrtBackend(preferredProvider: OrtProvider): Promise<DevOrtBackend> {
+  if (preferredProvider === 'webgpu') {
+    return {
+      ort: (await import('onnxruntime-web/webgpu')) as OrtModule,
+      wasmPaths: absoluteWasmPaths(ortWebgpuWasmUrl, ortWebgpuMjsUrl),
+    }
+  }
+  return {
+    ort: await import('onnxruntime-web/wasm'),
+    wasmPaths: absoluteWasmPaths(ortWasmUrl, ortWasmMjsUrl),
+  }
+}
+
+function absoluteWasmPaths(wasm: string, mjs: string): DevOrtBackend['wasmPaths'] {
+  return {
+    wasm: new URL(wasm, window.location.href).href,
+    mjs: new URL(mjs, window.location.href).href,
+  }
+}
+
+function preferredProviders(preferred: OrtProvider): readonly OrtProvider[] {
+  return preferred === 'webgpu' ? ['webgpu', 'wasm'] : ['wasm']
 }
 
 function imageElement(index: number): HTMLImageElement {

@@ -1,42 +1,34 @@
 // ReaderShell — composition root for the reader page.
 //
-// Renders the page body (Pager / Strip) full-screen, with the top
-// bar / bottom pill / picker / settings sheet overlaid. Coordinates
-// chrome state via ReaderContext.
+// Keeps existing chrome (top bar, bottom pill, pickers) but replaces
+// the data layer with new hooks: useChapterPages.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 
-import { PagerView } from '../PagerView'
-import { StripView } from '../StripView'
-import { TapZones } from './TapZones'
+import { PageRenderer } from '../PageRenderer'
 import { ReaderTopBar } from './ReaderTopBar'
 import { ReaderBottomPill } from './ReaderBottomPill'
 import { ReaderSettingsSheet } from './ReaderSettingsSheet'
 import { ChapterPicker } from './ChapterPicker'
 import { SourcePicker } from './SourcePicker'
+import { useChapterPages } from '../hooks/useChapterPages'
 
 import { useReader } from '../ReaderContext'
-import { useReaderSettings, styleToLayout } from '../settings'
 import { usePreloadNext } from '../hooks/usePreloadNext'
-import { useRecordReading } from '@features/library/history'
-import type { ReaderSource } from '../sources'
+import { useActiveSource } from '../data/queries/useActiveSource'
 
 
-interface Props {
-  source:    ReaderSource
-  sourceKey: string
-}
+export function ReaderShell() {
+  const { workId, chapterRef, setPage, progress } = useReader()
 
-
-export function ReaderShell({ source, sourceKey }: Props) {
-  const { workId, chapterRef, page, setPage, progress } = useReader()
-  const settings = useReaderSettings()
-  const layout   = styleToLayout(settings.style)
-  const record   = useRecordReading()
-
-  // Background warm-up for the next chapter once the reader passes
-  // the threshold. Fire-and-forget; never blocks the current view.
   usePreloadNext({ workId, chapterRef, progress })
+
+  const { active, loading } = useActiveSource(workId, chapterRef)
+  console.warn('[ReaderShell] active.kind=', active.kind, 'loading=', loading, 'urls=', active.kind === 'raw-online' ? (active as any).urls?.length : 0)
+  const urls = active.kind === 'raw-online' ? active.urls : [] as readonly string[]
+  const pageKey = useMemo(() => urls.join('\n'), [urls])
+  const { blobs } = useChapterPages(urls, pageKey)
 
   const [pickerOpen,   setPickerOpen]   = useState(false)
   const [sourceOpen,   setSourceOpen]   = useState(false)
@@ -44,82 +36,41 @@ export function ReaderShell({ source, sourceKey }: Props) {
   const chapterTriggerRef = useRef<HTMLButtonElement>(null)
   const sourceTriggerRef  = useRef<HTMLButtonElement>(null)
 
-  // Persist reading position (debounced via record's mutation).
-  const handleChangePage = useCallback((next: number) => {
-    setPage(next)
-    record.mutate({
-      work_id:     workId,
-      chapter_ref: chapterRef,
-      page:        next,
-      total_pages: source.pageCount,
-    })
-  }, [setPage, record, workId, chapterRef, source.pageCount])
+  useEffect(() => { setPage(0); window.scrollTo(0, 0) }, [chapterRef, setPage])
 
-  // Reset page + scroll on chapter change. The route uses a `key` on
-  // ReaderBody to remount the data hooks, but the outer DOM may
-  // persist across renders if TanStack Router reuses the same
-  // component instance; explicit window scroll reset covers both
-  // cases.
-  useEffect(() => {
-    setPage(0)
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'auto' })
-    }
-  }, [chapterRef, setPage])
+  // Loading — active source not resolved yet.
+  if (loading || active.kind === 'none') {
+    return (
+      <div className="fixed inset-0 bg-bg flex items-center justify-center">
+        <Loader2 size={24} className="animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div className="fixed inset-0 bg-bg overflow-hidden">
-      {/* Body */}
-      <div className="absolute inset-0">
-        {layout.mode === 'strip' ? (
-          <StripView
-            source={source}
-            sourceKey={sourceKey}
-            pageIndex={page}
-            onChangePage={handleChangePage}
-          />
-        ) : (
-          <>
-            <PagerView
-              source={source}
-              sourceKey={sourceKey}
-              pageIndex={page}
-              onChangePage={handleChangePage}
-              direction={layout.direction === 'rtl' ? 'rtl' : 'ltr'}
-            />
-            <TapZones pageCount={source.pageCount} />
-          </>
-        )}
+      {/* Body — canvas pages in scroll strip */}
+      <div className="absolute inset-0 overflow-y-auto">
+        <div className="flex flex-col items-center">
+          {blobs.map((blob, i) => (
+            <PageRenderer key={i} blob={blob} index={i} className="w-full max-w-3xl" />
+          ))}
+        </div>
       </div>
 
       {/* Chrome */}
       <ReaderTopBar
         onOpenChapters={() => setPickerOpen(true)}
         onOpenSources={() => setSourceOpen(true)}
-        totalPages={source.pageCount}
+        totalPages={urls.length}
         chapterTriggerRef={chapterTriggerRef}
         sourceTriggerRef={sourceTriggerRef}
       />
-      <ReaderBottomPill
-        onOpenSettings={() => setSettingsOpen(true)}
-        totalPages={source.pageCount}
-      />
+      <ReaderBottomPill totalPages={urls.length} onOpenSettings={() => setSettingsOpen(true)} />
 
-      {/* Overlays */}
-      <ChapterPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        anchorRef={chapterTriggerRef}
-      />
-      <SourcePicker
-        open={sourceOpen}
-        onClose={() => setSourceOpen(false)}
-        anchorRef={sourceTriggerRef}
-      />
-      <ReaderSettingsSheet
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-      />
+      <ChapterPicker open={pickerOpen} onClose={() => setPickerOpen(false)} anchorRef={chapterTriggerRef} />
+      <SourcePicker open={sourceOpen} onClose={() => setSourceOpen(false)} anchorRef={sourceTriggerRef} />
+      <ReaderSettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
   )
 }

@@ -178,8 +178,7 @@ export function Popover({
       }}
       className={cn(
         'z-50',
-        'bg-surface text-text rounded-md border border-border-soft',
-        'shadow-xl',
+        'bg-surface text-text rounded-md',
         'flex flex-col overflow-hidden',
         // Defensive max-height so a long list doesn't blow past
         // the viewport when there isn't space to flip.

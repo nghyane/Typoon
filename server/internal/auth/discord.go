@@ -15,25 +15,39 @@ var discordEndpoint = oauth2.Endpoint{
 	TokenURL: "https://discord.com/api/oauth2/token",
 }
 
+const defaultActivityRedirectURL = "https://127.0.0.1"
+
 type Discord struct {
-	config *oauth2.Config
+	config         *oauth2.Config
+	activityConfig *oauth2.Config
 }
 
 type DiscordConfig struct {
-	ClientID     string
-	ClientSecret string
-	RedirectURL  string
+	ClientID            string
+	ClientSecret        string
+	RedirectURL         string
+	ActivityRedirectURL string
 }
 
 func NewDiscord(cfg DiscordConfig) Discord {
+	activityRedirectURL := cfg.ActivityRedirectURL
+	if activityRedirectURL == "" {
+		activityRedirectURL = defaultActivityRedirectURL
+	}
+
 	return Discord{
-		config: &oauth2.Config{
-			ClientID:     cfg.ClientID,
-			ClientSecret: cfg.ClientSecret,
-			RedirectURL:  cfg.RedirectURL,
-			Scopes:       []string{"identify"},
-			Endpoint:     discordEndpoint,
-		},
+		config:         discordOAuthConfig(cfg.ClientID, cfg.ClientSecret, cfg.RedirectURL),
+		activityConfig: discordOAuthConfig(cfg.ClientID, cfg.ClientSecret, activityRedirectURL),
+	}
+}
+
+func discordOAuthConfig(clientID, clientSecret, redirectURL string) *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       []string{"identify"},
+		Endpoint:     discordEndpoint,
 	}
 }
 
@@ -43,6 +57,10 @@ func (d Discord) AuthURL(state string) string {
 
 func (d Discord) Exchange(ctx context.Context, code string) (*oauth2.Token, error) {
 	return d.config.Exchange(ctx, code)
+}
+
+func (d Discord) ExchangeActivity(ctx context.Context, code string) (*oauth2.Token, error) {
+	return d.activityConfig.Exchange(ctx, code)
 }
 
 func (d Discord) GetUser(token *oauth2.Token) (DiscordUser, error) {

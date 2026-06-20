@@ -28,7 +28,7 @@ export function WorkDescription() {
   if (!hasDesc && !statParts.length) return null
 
   return (
-    <section className="px-4 sm:px-6 py-2 space-y-1.5">
+    <section className="py-2 space-y-1.5 max-w-3xl">
       {hasDesc && (
         <>
           <p

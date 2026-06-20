@@ -7,21 +7,18 @@
 //                              still browse what you've already opened.
 //   • manifest.chapter-pages — chapter image URLs. Immutable once
 //                              published; source down → still read.
-//   • translation.byId       — archive_url is immutable once
-//                              state='done'; cheap to keep so the
-//                              reader opens instantly post-reload.
 //   • work.byId              — short-TTL persist (60s effective) so
 //                              navigation reload doesn't flash
 //                              skeletons. Polling immediately reconciles.
 //
 // What's NOT persisted (negative list, explicit):
 //
-//   • workers / quota / session / tokens — realtime or auth-sensitive.
+//   • session / tokens                   — auth-sensitive.
 //   • library                            — short-lived, refetch-fast.
 //   • community / recent-reads / search — user-action-driven, ephemeral.
 //
 // Storage: IndexedDB via `idb-keyval` (one named store, single key for
-// the dehydrated cache blob). Survives 5+ MB without quota grief.
+// the dehydrated cache blob). Survives 5+ MB without local-storage pressure.
 //
 // Hydration is async by design (IDB is async). Consumers wrap their
 // app in `PersistQueryClientProvider` from

@@ -1,11 +1,12 @@
-import * as ort from 'onnxruntime-web/webgpu'
+import type * as ort from 'onnxruntime-web/wasm'
 import type { ImagePixels } from '../../domain/image'
+import type { OrtModule } from '../../models/OrtBackend'
 import { COMIC_DETR_INPUT_SIZE } from './ortTypes'
 
-export function createFeeds(image: ImagePixels): Record<string, ort.Tensor> {
+export function createFeeds(ortModule: OrtModule, image: ImagePixels): Record<string, ort.Tensor> {
   return {
-    images: new ort.Tensor('float32', prepareImageTensor(image), [1, 3, COMIC_DETR_INPUT_SIZE, COMIC_DETR_INPUT_SIZE]),
-    orig_target_sizes: new ort.Tensor('int64', new BigInt64Array([BigInt(image.width), BigInt(image.height)]), [1, 2]),
+    images: new ortModule.Tensor('float32', prepareImageTensor(image), [1, 3, COMIC_DETR_INPUT_SIZE, COMIC_DETR_INPUT_SIZE]),
+    orig_target_sizes: new ortModule.Tensor('int64', new BigInt64Array([BigInt(image.width), BigInt(image.height)]), [1, 2]),
   }
 }
 

@@ -9,6 +9,7 @@ import {
   CACHE_BUSTER, MAX_AGE_MS, persister, shouldDehydrateQuery,
 } from '@shared/api/persistence'
 import { handleUnauthorized } from '@features/auth/session'
+import { SourceFetchProvider } from '@features/browse/SourceFetchProvider'
 
 // Persist DA flag before router strips query params from the URL.
 if (new URLSearchParams(window.location.search).get('frame_id') != null) {
@@ -95,7 +96,9 @@ createRoot(document.getElementById('root')!).render(
         dehydrateOptions: { shouldDehydrateQuery },
       }}
     >
-      <RouterProvider router={router} />
+      <SourceFetchProvider>
+        <RouterProvider router={router} />
+      </SourceFetchProvider>
     </PersistQueryClientProvider>
   </StrictMode>,
 )

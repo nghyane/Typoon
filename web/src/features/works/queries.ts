@@ -195,7 +195,7 @@ export function useEnsureWorkFromSource() {
   })
 }
 
-/** Create a blank Work with no sources — used for upload-only flows. */
+/** Create a blank Work with no sources — used for manual library entries. */
 export function useCreateBlankWork() {
   const qc = useQueryClient()
   return useMutation({

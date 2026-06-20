@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@typoon/client": "workspace:*",
+    "onnxruntime-web": "^1.26.0",
     "@discord/embedded-app-sdk": "^2.5.0",
     "@nghyane/bunle": "^0.2.1",
     "@tailwindcss/vite": "^4.2.4",
@@ -18,7 +20,6 @@
     "@tanstack/react-query-persist-client": "^5.100.10",
     "@tanstack/react-router": "^1.169.1",
     "@tanstack/react-virtual": "^3.13.24",
-    "@typoon/upload-sdk": "workspace:*",
     "clsx": "^2.1.1",
     "dexie": "^4.4.2",
     "dexie-react-hooks": "^4.4.0",

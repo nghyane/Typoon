@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/cors"
 )
 
 type Module interface {
@@ -16,11 +17,21 @@ type Deps struct {
 	LLM         Module
 	Wallet      Module
 	Payment     Module
+	Settings    Module
 	Translation Module
 }
 
-func NewRouter(deps Deps) chi.Router {
+func NewRouter(deps Deps, allowedOrigins []string) chi.Router {
 	r := chi.NewRouter()
+
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   allowedOrigins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: true,
+		MaxAge:           300,
+	}))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		JSON(w, http.StatusOK, map[string]any{
@@ -34,6 +45,7 @@ func NewRouter(deps Deps) chi.Router {
 	deps.LLM.Mount(r)
 	deps.Wallet.Mount(r)
 	deps.Payment.Mount(r)
+	deps.Settings.Mount(r)
 	deps.Translation.Mount(r)
 
 	return r

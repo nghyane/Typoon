@@ -1,11 +1,11 @@
 // React Query key factory — v3.5 surface.
 //
 // Server-backed:
-//   session, jobs, quota, context (KV)
+//   session, context
 // Client-backed (Dexie, queried via TanStack Query for reactivity):
 //   works (resolution + metadata)
 //   library (pin/promotion layer over works)
-//   history, settings
+//   history, localSettings
 // Source-adapter (live HTTP via CORS proxy):
 //   manifest (search, detail, chapterPages, pageUrl)
 
@@ -15,17 +15,6 @@ export const qk = {
   session: {
     self:    ()                   => ['session'] as const,
     config:  ()                   => ['session', 'config'] as const,
-  },
-
-  jobs: {
-    list:    ()                   => ['jobs', 'list'] as const,
-    byId:    (id: number)         => ['jobs', id] as const,
-  },
-
-  quota:     ()                   => ['quota'] as const,
-
-  context: {
-    byWork:  (workId: string)     => ['context', workId] as const,
   },
 
   works: {
@@ -49,7 +38,8 @@ export const qk = {
     forWork: (workId: string)     => ['history', workId] as const,
   },
 
-  settings:  ()                   => ['settings'] as const,
+  localSettings:  ()              => ['settings', 'local'] as const,
+  publicSettings: ()              => ['settings', 'public'] as const,
 
   // Source adapters — same convention as before so existing browse-mode
   // code keeps working.

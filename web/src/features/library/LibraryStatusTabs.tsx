@@ -36,8 +36,8 @@ export function LibraryStatusTabs({ value, onChange, counts, className }: Props)
             className={cn(
               'inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-medium transition-colors',
               active
-                ? 'bg-accent text-accent-text'
-                : 'bg-surface text-text-muted hover:bg-hover hover:text-text',
+                ? 'bg-accent-bg text-accent-text'
+                : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
             )}
           >
             {tab.label}

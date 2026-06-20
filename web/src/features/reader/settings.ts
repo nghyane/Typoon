@@ -28,7 +28,7 @@ export interface ReaderSettings {
 
 
 export const READER_DEFAULTS: ReaderSettings = {
-  style:     'rtl',     // Vietnamese manga audience defaults to RTL
+  style:     'webtoon',
   pageWidth: 1040,
 }
 
@@ -69,7 +69,7 @@ export function useReaderSettings(): ReaderSettings {
       raw === 'standard' || raw === 'rtl' || raw === 'vertical' || raw === 'webtoon'
         ? raw
         : raw === 'strip' ? 'webtoon'
-        : raw === 'pager' ? 'rtl'
+        : raw === 'pager' ? 'webtoon'
         :                   READER_DEFAULTS.style
     return {
       style,
@@ -83,7 +83,7 @@ export function usePatchReaderSettings() {
   const m = useUpdateLocalSettings()
   return (patch: Partial<ReaderSettings>) => {
     m.mutate({
-      reader_mode:       patch.style as 'pager' | 'strip' | undefined,
+      reader_mode:       patch.style,
       reader_page_width: patch.pageWidth !== undefined
         ? clamp(patch.pageWidth, PAGE_WIDTH_MIN, PAGE_WIDTH_MAX)
         : undefined,

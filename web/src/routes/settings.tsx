@@ -1,14 +1,13 @@
-// /settings — account, tier, preferences, offline storage.
+// /settings — account, reader preferences, offline storage.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { LogOut, Database, HardDrive } from 'lucide-react'
+import { Globe2, LogOut, Database, HardDrive, Sparkles } from 'lucide-react'
 import { useSession, useSignOut, useUpdatePreferredLang } from '@features/auth/session'
-import { useQuota } from '@features/jobs/useQuota'
-import { QuotaMeter } from '@features/jobs/QuotaMeter'
-import { TierBadge } from '@features/jobs/TierBadge'
 import { useArchiveStorageStats } from '@features/reader/archives'
 import { useLocalSettings, useUpdateLocalSettings } from '@features/settings/local'
+import { useAllSources, useSources } from '@features/browse/sources'
+import { languageSummary } from '@shared/lib/lang'
 import { Spinner, Field, input as inputCls } from '@shared/ui/primitives'
 import { Button } from '@shared/ui/Button'
 
@@ -16,13 +15,19 @@ import { Button } from '@shared/ui/Button'
 function SettingsPage() {
   const session  = useSession()
   const signOut  = useSignOut()
-  const quota    = useQuota()
   const updPref  = useUpdatePreferredLang()
   const stats    = useArchiveStorageStats()
   const local    = useLocalSettings()
   const updLocal = useUpdateLocalSettings()
+  const sources  = useAllSources()
+  const ensureSources = useSources(s => s.ensureBundled)
+  const setSourceEnabled = useSources(s => s.setEnabled)
 
-  const [tab, setTab] = useState<'account' | 'reader' | 'storage'>('account')
+  const [tab, setTab] = useState<'account' | 'sources' | 'reader' | 'translation' | 'storage'>('account')
+
+  useEffect(() => {
+    ensureSources()
+  }, [ensureSources])
 
   if (session.status === 'loading' || !session.user) {
     return (
@@ -33,6 +38,12 @@ function SettingsPage() {
   }
 
   const user = session.user
+  const targetLang = user.preferred_target_lang ?? local.data?.default_target_lang ?? 'vi'
+  const updateTargetLang = (lang: string) => {
+    updPref(lang)
+    updLocal.mutate({ default_target_lang: lang })
+  }
+  const enabledSourceCount = sources.filter(s => s.enabled).length
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -44,7 +55,9 @@ function SettingsPage() {
       <div className="flex flex-wrap gap-1.5" role="tablist">
         {[
           { id: 'account', label: 'Tài khoản' },
+          { id: 'sources', label: `Nguồn (${enabledSourceCount}/${sources.length})` },
           { id: 'reader',  label: 'Trình đọc' },
+          { id: 'translation', label: 'Dịch' },
           { id: 'storage', label: 'Lưu trữ'   },
         ].map(t => {
           const sel = t.id === tab
@@ -57,7 +70,7 @@ function SettingsPage() {
               onClick={() => setTab(t.id as typeof tab)}
               className={
                 sel
-                  ? 'h-7 px-3 rounded-full text-xs font-medium bg-accent text-accent-text'
+                  ? 'h-7 px-3 rounded-full text-xs font-medium bg-accent-bg text-accent-text'
                   : 'h-7 px-3 rounded-full text-xs font-medium bg-surface text-text-muted hover:bg-hover hover:text-text'
               }
             >
@@ -84,26 +97,23 @@ function SettingsPage() {
                   <div className="text-xs text-text-muted truncate">{user.email}</div>
                 )}
               </div>
-              <TierBadge tier={user.tier} />
+              {user.tier && (
+                <span className="rounded-full bg-surface-2 px-2 py-1 text-xs text-text-subtle">
+                  {user.tier.name}
+                </span>
+              )}
             </div>
             <Button variant="ghost" size="sm" onClick={() => signOut()}>
               <LogOut size={14} /> Đăng xuất
             </Button>
           </div>
 
-          {quota.data && (
-            <div className="rounded-md bg-surface p-4">
-              <QuotaMeter quota={quota.data} />
-            </div>
-          )}
-
           <Field label="Ngôn ngữ đích mặc định">
             <select
               className={inputCls}
-              value={user.preferred_target_lang ?? ''}
-              onChange={e => updPref(e.target.value || null)}
+              value={targetLang}
+              onChange={e => updateTargetLang(e.target.value)}
             >
-              <option value="">— Không đặt mặc định —</option>
               <option value="vi">Tiếng Việt</option>
               <option value="en">Tiếng Anh</option>
             </select>
@@ -111,16 +121,69 @@ function SettingsPage() {
         </section>
       )}
 
+      {tab === 'sources' && (
+        <section className="space-y-3">
+          <div className="rounded-md bg-surface p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm">
+                <Globe2 size={14} className="text-accent" />
+                <span className="font-medium text-text">Nguồn truyện</span>
+              </div>
+              <Button variant="secondary" size="sm" onClick={() => ensureSources()}>
+                Cài nguồn mặc định
+              </Button>
+            </div>
+            <p className="text-xs text-text-muted">
+              Bật ít nhất một nguồn để tìm và thêm truyện. Nguồn mặc định đi kèm ứng dụng, không cần cài ngoài.
+            </p>
+
+            {sources.length === 0 ? (
+              <div className="rounded-md bg-surface-2 border border-dashed border-border-soft px-4 py-6 text-center">
+                <p className="text-sm text-text-muted">Chưa cài nguồn nào</p>
+                <p className="text-xs text-text-subtle mt-1">Bấm “Cài nguồn mặc định” để khôi phục danh sách nguồn.</p>
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {sources.map(source => (
+                  <li
+                    key={source.manifest.id}
+                    className="flex items-center justify-between gap-3 rounded-md bg-surface-2 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-text truncate">{source.manifest.name}</div>
+                      <div className="text-xs text-text-muted truncate">
+                        {source.manifest.host} · {languageSummary(source.manifest.languages)} · {source.origin}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSourceEnabled(source.manifest.id, !source.enabled)}
+                      className={source.enabled
+                        ? 'h-7 rounded-full bg-accent-bg px-3 text-xs font-medium text-accent-text'
+                        : 'h-7 rounded-full bg-surface px-3 text-xs font-medium text-text-muted hover:bg-hover hover:text-text'}
+                    >
+                      {source.enabled ? 'Đang bật' : 'Đã tắt'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+      )}
+
       {tab === 'reader' && local.data && (
         <section className="space-y-4">
-          <Field label="Chế độ đọc mặc định">
+          <Field label="Kiểu đọc mặc định">
             <select
               className={inputCls}
               value={local.data.reader_mode}
-              onChange={e => updLocal.mutate({ reader_mode: e.target.value as 'pager' | 'strip' })}
+              onChange={e => updLocal.mutate({ reader_mode: e.target.value as 'standard' | 'rtl' | 'vertical' | 'webtoon' })}
             >
-              <option value="pager">Từng trang (Pager)</option>
-              <option value="strip">Cuộn dọc (Strip)</option>
+              <option value="webtoon">Cuộn dọc</option>
+              <option value="rtl">Manga phải sang trái</option>
+              <option value="standard">Từng trang trái sang phải</option>
+              <option value="vertical">Từng trang dọc</option>
             </select>
           </Field>
 
@@ -138,6 +201,35 @@ function SettingsPage() {
         </section>
       )}
 
+      {tab === 'translation' && (
+        <section className="space-y-3">
+          <div className="rounded-md bg-surface p-4 space-y-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Sparkles size={14} className="text-accent" />
+              <span className="font-medium text-text">Dịch trong reader</span>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Ngôn ngữ đích">
+                <select
+                  className={inputCls}
+                  value={targetLang}
+                  onChange={e => updateTargetLang(e.target.value)}
+                >
+                  <option value="vi">Tiếng Việt</option>
+                  <option value="en">Tiếng Anh</option>
+                </select>
+              </Field>
+              <div className="rounded-md bg-surface-2 px-3 py-2">
+                <div className="text-xs text-text-subtle">Trạng thái</div>
+                <div className="mt-1 inline-flex items-center gap-1.5 text-sm font-medium text-accent-text">
+                  <Sparkles size={13} /> Realtime
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {tab === 'storage' && stats && (
         <section className="space-y-3">
           <div className="rounded-md bg-surface p-4 space-y-2">
@@ -146,20 +238,17 @@ function SettingsPage() {
               <span className="font-medium text-text">Bộ nhớ thiết bị</span>
             </div>
             <div className="text-xs text-text-muted space-y-1">
-              <div>Tổng: {(stats.total_bytes / 1_000_000).toFixed(1)} MB · {stats.count} archive</div>
-              <div>Đã dịch: {stats.translated} · Raw offline: {stats.raw}</div>
+              <div>Tổng: {(stats.total_bytes / 1_000_000).toFixed(1)} MB · {stats.count} gói offline</div>
+              <div>Raw offline: {stats.raw}</div>
             </div>
           </div>
 
           <div className="rounded-md bg-surface p-4 space-y-2">
             <div className="flex items-center gap-2 text-sm">
               <Database size={14} className="text-text-subtle" />
-              <span className="font-medium text-text">Server (R2)</span>
+              <span className="font-medium text-text">Dữ liệu dịch realtime</span>
             </div>
-            <p className="text-xs text-text-muted">
-              File trên server tự động xoá sau 7 ngày. Lưu offline trên thiết bị
-              để giữ vĩnh viễn (chiếm bộ nhớ trình duyệt).
-            </p>
+            <p className="text-xs text-text-muted">Cache bản dịch trong reader.</p>
           </div>
         </section>
       )}

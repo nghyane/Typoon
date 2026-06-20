@@ -2,7 +2,7 @@ import { ModelLoader } from '../models/ModelLoader'
 import { ModelRegistry } from '../models/ModelRegistry'
 import { ModelStore } from '../models/ModelStore'
 import { ModelIndexedDBCache } from './ModelIndexedDBCache'
-import { huggingFaceManifestUrl, type HuggingFaceModelRepositoryOptions } from './huggingFace'
+import { huggingFaceManifestUrl, proxyHuggingFaceUrl, type HuggingFaceModelRepositoryOptions } from './huggingFace'
 import type { ModelManifest } from '../domain/model'
 import type { ModelAssetCache, ModelRepositoryOptions } from './modelTypes'
 
@@ -20,12 +20,13 @@ export class ModelRepository {
       manifestUrl: huggingFaceManifestUrl(options),
       cacheName: options.cacheName,
       cache: options.cache,
+      resolveUrl: options.proxyBase ? url => proxyHuggingFaceUrl(url, options.proxyBase) : undefined,
     })
   }
 
   constructor(options: ModelRepositoryOptions) {
     this.options = options
-    if (options.manifest) this.manifestValue = options.manifest
+    if (options.manifest) this.manifestValue = this.withResolvedUrls(options.manifest)
   }
 
   async model(id: string): Promise<ModelLoader> {
@@ -40,28 +41,38 @@ export class ModelRepository {
   }
 
   async resolveManifest(signal?: AbortSignal): Promise<ModelManifest> {
-    if (this.options.manifest) {
-      this.manifestValue = this.options.manifest
-      return this.options.manifest
-    }
     if (this.manifestValue) return this.manifestValue
     if (!this.options.manifestUrl) throw new Error('model manifestUrl or manifest is required')
 
-    if (signal) {
-      const manifest = await fetchManifest(this.options.manifestUrl, signal)
-      throwIfAborted(signal)
-      this.manifestValue = manifest
-      return manifest
-    }
+    if (signal) return this.loadManifest(signal)
 
-    this.manifestPromise ??= fetchManifest(this.options.manifestUrl).then(manifest => {
-      this.manifestValue = manifest
-      return manifest
-    }).catch(error => {
+    this.manifestPromise ??= this.loadManifest().catch(error => {
       this.manifestPromise = null
       throw error
     })
     return this.manifestPromise
+  }
+
+  private async loadManifest(signal?: AbortSignal): Promise<ModelManifest> {
+    if (!this.options.manifestUrl) throw new Error('model manifestUrl or manifest is required')
+    const manifest = this.withResolvedUrls(await fetchManifest(this.options.manifestUrl, signal))
+    throwIfAborted(signal)
+    this.manifestValue = manifest
+    return manifest
+  }
+
+  private withResolvedUrls(manifest: ModelManifest): ModelManifest {
+    if (!this.options.resolveUrl) return manifest
+
+    let changed = false
+    const models: ModelManifest['models'] = {}
+    for (const [key, model] of Object.entries(manifest.models)) {
+      const url = this.options.resolveUrl(model.url)
+      changed ||= url !== model.url
+      models[key] = url === model.url ? model : { ...model, url }
+    }
+
+    return changed ? { ...manifest, models } : manifest
   }
 }
 

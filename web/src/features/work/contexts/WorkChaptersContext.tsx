@@ -1,11 +1,11 @@
 // WorkChaptersContext — chapter-list data layer.
 //
-// Composes 3 bulk live queries (archives, jobs, history) + the merged
+// Composes local archive/history queries + the merged
 // chapter spine into a single context. Chapter rows read state via
 // O(1) Map lookups instead of mounting per-row hooks (which would
 // cost N × 2 IDB cursors on a 4k-chapter work).
 //
-// Reactivity: any IDB write to archives/jobs/history triggers a single
+// Reactivity: any IDB write to archives/history triggers a single
 // emit at this level. The Map identity changes, downstream selectors
 // recompute, but only consumers of changed Map entries actually need
 // to react — rows use `getChapterState(map, ref)` which is stable per
@@ -15,7 +15,6 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react'
 
 import { useEnabledSources } from '@features/browse/sources'
 import { useWorkArchives } from '../data/queries/useWorkArchives'
-import { useWorkJobs } from '../data/queries/useWorkJobs'
 import { useWorkHistoryMap } from '../data/queries/useWorkHistoryMap'
 import { buildChapterStateMap } from '../data/selectors/chapterState'
 import { mergeChapters } from '../data/selectors/mergeChapters'
@@ -32,7 +31,7 @@ export interface WorkChapters {
   sourceChapters:   SourceChapterDetail[]
   chapterStateMap:  ReadonlyMap<string, ChapterState>
   historyMap:       ReadonlyMap<string, HistoryItem>
-  /** Chapters merged across sources + uploaded jobs. */
+  /** Chapters merged across attached sources. */
   totalChapters:    number
   readTarget:       ReadTarget | null
   loading:          boolean
@@ -56,7 +55,6 @@ export function WorkChaptersProvider({ children }: Props) {
   const { work, workId, manifestDetails, manifestsLoading } = useWorkIdentity()
   const installed  = useEnabledSources()
   const archives   = useWorkArchives(workId)
-  const jobs       = useWorkJobs(workId)
   const historyMap = useWorkHistoryMap(workId)
 
   // Shape source × refs for the merger
@@ -72,24 +70,15 @@ export function WorkChaptersProvider({ children }: Props) {
     return out
   }, [work.sources, manifestDetails, installed])
 
-  // Uploaded chapter refs = jobs whose chapter_ref exists.
-  // We don't render upload-only chapter rows here yet — preserved as a
-  // set so the merger can mark `hasUpload`.
-  const uploadedRefs = useMemo(() => {
-    const s = new Set<string>()
-    for (const j of jobs.values()) if (j.chapter_ref) s.add(j.chapter_ref)
-    return s
-  }, [jobs])
-
   const merged = useMemo(
-    () => mergeChapters(sourceChapters, uploadedRefs, work.target_lang.toLowerCase()),
-    [sourceChapters, uploadedRefs, work.target_lang],
+    () => mergeChapters(sourceChapters, work.target_lang.toLowerCase()),
+    [sourceChapters, work.target_lang],
   )
 
-  // Build state map ONCE — only refs that actually have archive/job land here
+  // Build state map ONCE — only refs that actually have a local archive land here
   const chapterStateMap = useMemo(
-    () => buildChapterStateMap(archives, jobs),
-    [archives, jobs],
+    () => buildChapterStateMap(archives),
+    [archives],
   )
 
   const readTarget = useMemo(

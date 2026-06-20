@@ -5,8 +5,7 @@
 //
 // Three tones (success / error / info) cover every reader signal
 // at this stage. `action` is optional and renders as a secondary
-// pill inside the toast — used by the reader's spawn pipeline to
-// surface a "Đọc ngay" affordance once a translation finishes.
+// pill inside the toast.
 
 import { create } from 'zustand'
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react'
@@ -106,7 +105,7 @@ export function Toaster() {
             key={t.id}
             className={cn(
               'pointer-events-auto flex items-center gap-2.5 min-w-72 max-w-md pl-3 pr-2 py-2.5',
-              'rounded-md bg-surface text-text shadow-[0_8px_24px_rgb(0,0,0,0.4)] text-sm',
+              'rounded-md bg-surface text-text border border-border-soft text-sm',
               'animate-[fadeIn_120ms_ease-out]',
             )}
           >

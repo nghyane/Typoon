@@ -41,9 +41,9 @@ export class MainThreadOrtRunner implements TextRegionRunner {
   }
 
   async run(image: ImagePixels, options: ReadyOptions = {}): Promise<readonly TextRegion[]> {
-    const { session } = await this.getSession(options)
+    const { ort, session } = await this.getSession(options)
     throwIfAborted(options.signal)
-    const output = await session.run(createFeeds(image))
+    const output = await session.run(createFeeds(ort, image))
     throwIfAborted(options.signal)
     return parseDetections(output, session.outputNames, image.width, image.height, this.options.confidenceThreshold)
   }

@@ -28,7 +28,7 @@
 //     calls for pages on the same thumb page share one inflight Promise —
 //     no duplicate fetches even when multiple pages enter the viewport at once.
 
-import { pfetch } from '../proxy'
+import { fetchSource } from '../proxy'
 import { queryHtmlAll } from '../manifest/selectors'
 import type { ChapterPages, MangaDetail, SourceManifest } from '../manifest/types'
 import type { SourceAdapter } from './types'
@@ -75,7 +75,7 @@ async function fetchHtml(
   const headers: Record<string, string> = { Referer: 'https://e-hentai.org/' }
   const c = cookieHeader(userCookies)
   if (c) headers['Cookie'] = c
-  const res = await pfetch(url, { headers })
+  const res = await fetchSource(url, { headers })
   if (!res.ok) throw new Error(`E-Hentai: HTTP ${res.status} on ${url}`)
   return new DOMParser().parseFromString(await res.text(), 'text/html')
 }
@@ -87,7 +87,7 @@ async function postApi(
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const c = cookieHeader(userCookies)
   if (c) headers['Cookie'] = c
-  const res = await pfetch(API, {
+  const res = await fetchSource(API, {
     headers,
     init: { method: 'POST', body: JSON.stringify(body) },
   })

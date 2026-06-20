@@ -30,9 +30,9 @@ export function ChapterRow({ row, targetLang }: {
       to="/r/$workId/$numberNorm"
       params={{ workId: work.id, numberNorm: chapter.numberNorm }}
       className={cn(
-        'flex items-center gap-3 px-3 py-2.5',
+        'flex items-center gap-3 px-2 py-2.5',
         'cursor-pointer group',
-        'focus-visible:outline-none focus-visible:bg-hover',
+        'hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover',
       )}
     >
       <span className="tabular-nums font-medium text-text-muted group-hover:text-text shrink-0 transition-colors">
@@ -54,7 +54,6 @@ export function ChapterRow({ row, targetLang }: {
           chapterRef={chapter.numberNorm}
           chapterNumber={chapter.number || chapter.numberNorm}
           version={version}
-          targetLang={targetLang}
           state={state}
         />
       </span>
@@ -80,7 +79,7 @@ function RowLabel({ row, className }: { row: Row; className?: string }) {
   if (!version) {
     return (
       <span className={cn('truncate text-text', className)}>
-        <span className="text-text-muted">Tải lên</span>
+        <span className="text-text-muted">Chưa có nguồn đọc</span>
         {chapter.label && (
           <span className="text-text-subtle"> · {chapter.label}</span>
         )}

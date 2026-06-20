@@ -139,7 +139,7 @@ export function Spinner({ size = 14, className }: { size?: number; className?: s
 
 const AVATAR_PALETTE = [
   '#4F88E6', '#23A55A', '#F0B232', '#F47B67',
-  '#8B5CF6', '#EC4899', '#0EA5E9', '#10B981',
+  '#F47B67', '#EC4899', '#0EA5E9', '#10B981',
 ] as const
 
 function hashColor(seed: string): string {

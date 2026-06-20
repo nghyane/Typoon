@@ -70,7 +70,7 @@ function LibraryPage() {
             <p className="text-xs text-text-muted">{items.length} truyện</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
+            <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)}>
               <Plus size={14} /> Thêm
             </Button>
             <Link to="/explore">
@@ -81,7 +81,7 @@ function LibraryPage() {
 
         <LibraryStatusTabs value={status} onChange={setStatus} counts={counts} />
 
-        <div className="relative">
+        <div className="relative max-w-xl">
           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
           <input
             type="search"

@@ -7,36 +7,11 @@ import { useCallback } from 'react'
 import {
   useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query'
-import { discordSdk, isDiscordActivity } from '@shared/discord/sdk'
+import { discordSdk } from '@shared/discord/sdk'
 import { qk } from '@shared/api/keys'
 import { api, setDaToken, type SessionUser } from '@shared/api/api'
 
 export type { SessionUser }
-
-// ── Storage flags ──────────────────────────────────────────────────
-
-const ERROR_KEY       = 'typoon_login_error'
-const INVALIDATED_KEY = 'typoon_session_invalidated'
-
-export function takeLoginError(): string | null {
-  const e = sessionStorage.getItem(ERROR_KEY)
-  if (e) sessionStorage.removeItem(ERROR_KEY)
-  return e
-}
-
-export function setLoginError(msg: string) {
-  sessionStorage.setItem(ERROR_KEY, msg)
-}
-
-function markSessionInvalidated() {
-  sessionStorage.setItem(INVALIDATED_KEY, '1')
-}
-
-export function takeSessionInvalidated(): boolean {
-  const hit = sessionStorage.getItem(INVALIDATED_KEY) === '1'
-  if (hit) sessionStorage.removeItem(INVALIDATED_KEY)
-  return hit
-}
 
 // ── Session query ──────────────────────────────────────────────────
 
@@ -49,7 +24,6 @@ async function fetchSession(): Promise<SessionUser | null> {
     return await api.getSession()
   } catch (err) {
     if ((err as { status?: number })?.status === 401) {
-      markSessionInvalidated()
       throw new SessionRejectedError()
     }
     throw err
@@ -90,8 +64,15 @@ export { isDiscordActivity } from '@shared/discord/sdk'
 
 // ── Auth URLs ──────────────────────────────────────────────────────
 
-export function loginUrl() {
-  return '/api/auth/discord/start?returnTo=' + encodeURIComponent(window.location.origin + '/')
+export function loginUrl(returnTo = '/') {
+  return '/api/auth/discord/start?returnTo=' + encodeURIComponent(safeReturnTo(returnTo))
+}
+
+export function safeReturnTo(value: unknown): string {
+  if (typeof value !== 'string') return '/'
+  if (!value.startsWith('/') || value.startsWith('//')) return '/'
+  if (value.startsWith('/login') || value.startsWith('/auth/callback')) return '/'
+  return value
 }
 
 // ── DA (Discord Activity) silent login ─────────────────────────────
@@ -115,10 +96,18 @@ export async function discordActivityLogin(): Promise<void> {
 export function useSignIn() {
   const qc = useQueryClient()
   return useCallback(async () => {
-    sessionStorage.removeItem(INVALIDATED_KEY)
     qc.clear()
-    await qc.refetchQueries({ queryKey: qk.session.self() })
+    const user = await api.getSession()
+    qc.setQueryData(qk.session.self(), user)
+    return user
   }, [qc])
+}
+
+export function useRefreshSession() {
+  const qc = useQueryClient()
+  return useCallback(() => (
+    qc.invalidateQueries({ queryKey: qk.session.self() })
+  ), [qc])
 }
 
 export function useSignOut() {
@@ -132,14 +121,15 @@ export function useSignOut() {
 // ── Global 401 hook ────────────────────────────────────────────────
 
 export function handleUnauthorized(qc: QueryClient): void {
-  markSessionInvalidated()
   qc.clear()
 }
 
 // ── Preferences (placeholder — Go endpoint TBD) ──────────────────
 
-export function useUpdatePreferredLang() {
-  return useCallback((_lang: string | null) => {
+type UpdatePreferredLang = (lang: string | null) => void
+
+export function useUpdatePreferredLang(): UpdatePreferredLang {
+  return useCallback(() => {
     // TODO: POST /api/auth/me/preferences when Go backend supports it
   }, [])
 }

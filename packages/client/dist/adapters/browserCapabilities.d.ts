@@ -8,7 +8,9 @@ export interface BrowserModelHint {
 }
 export interface BrowserCapabilities {
     readonly supportsWebGpu: boolean;
+    readonly supportsStableWebGpu: boolean;
     readonly isSafari: boolean;
+    readonly isIOS: boolean;
     readonly isMobile: boolean;
     readonly modelHint: BrowserModelHint;
 }

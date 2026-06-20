@@ -6,13 +6,12 @@
 //              so a single id survives "browse → read 1 chap → add to library"
 //              with zero data movement.
 //   history  — last-read position per (work, chapter). Independent of pinning.
-//   jobs     — local mirror of server jobs (≤ 7d retention).
 //   archives — offline-saved chapter blobs.
 //   settings — single-row user preferences blob.
 //
 // Identity model:
 //   `Work.id` is a stable nanoid. It survives source add/remove because
-//   the server-side KV ctx is keyed on `(user, work_id)` — moving away
+//   server-side context is keyed on `(user, work_id)` — moving away
 //   from "${source}:${upstream_ref}" composite ids was the whole point
 //   of v3.5.
 //
@@ -45,8 +44,7 @@ export interface WorkSource {
 export type LibraryStatus = 'reading' | 'plan' | 'done' | 'dropped'
 
 export interface Work {
-  /** Stable client-generated nanoid. Used as `work_id` in /api/jobs and
-   *  KV `ctx:{user}:{work_id}`. */
+  /** Stable client-generated nanoid. Also keys per-work context on the backend. */
   id:            string
   /** Display title. Auto-synced to the primary source's title on
    *  attach/detach unless `title_overridden` is true (user renamed
@@ -59,14 +57,14 @@ export interface Work {
   title_overridden?: boolean
   cover_url:     string | null
   /** Sticky flag: set when the user chose a custom cover (URL paste
-   *  or upload). Stops attach/detach from clobbering their choice.
+   *  or custom image). Stops attach/detach from clobbering their choice.
    *  Same semantics as `title_overridden`. */
   cover_overridden?: boolean
   source_lang:   string
   target_lang:   string
   nsfw:          boolean
 
-  /** Source materials backing this work. Empty array = blank/upload-only. */
+  /** Source materials backing this work. Empty array = manual library entry. */
   sources:       WorkSource[]
 
   /** Derived array of `"${source}:${upstream_ref}"`, mirrored from
@@ -108,22 +106,6 @@ export interface HistoryItem {
 }
 
 
-// ── Jobs ────────────────────────────────────────────────────────────
-
-export interface JobRef {
-  id:              number
-  work_id:         string | null
-  chapter_ref:     string | null
-  kind:            'translate' | 'analyze'
-  state:           'init' | 'uploading' | 'pending' | 'running' | 'done' | 'error' | 'expired'
-  archive_url:     string | null
-  archive_expires: string | null
-  page_count:      number | null
-  created_at:      string
-  expires_at:      string
-}
-
-
 // ── Settings ────────────────────────────────────────────────────────
 
 export interface SettingsBlob {
@@ -159,7 +141,6 @@ export interface SettingsBlob {
 
 export type ReaderSourcePref =
   | { kind: 'auto' }
-  | { kind: 'translated' }
   | { kind: 'raw'; versionKey: string }
 
 
@@ -170,12 +151,11 @@ export interface SavedArchive {
   id:          string
   work_id:     string
   chapter_ref: string
-  kind:        'translated' | 'raw'
+  kind:        'raw'
   blob:        Blob
   page_count:  number
   byte_size:   number
   saved_at:    string
-  job_id?:     number
 }
 
 
@@ -184,7 +164,6 @@ export interface SavedArchive {
 export class TypoonDb extends Dexie {
   works!:    EntityTable<Work,         'id'>
   history!:  EntityTable<HistoryItem,  'id'>
-  jobs!:     EntityTable<JobRef,       'id'>
   settings!: EntityTable<SettingsBlob, 'key'>
   archives!: EntityTable<SavedArchive, 'id'>
 
@@ -198,19 +177,16 @@ export class TypoonDb extends Dexie {
     this.version(1).stores({
       works:    '&id, last_opened_at, updated_at, *sourceKey',
       history:  '&id, work_id, last_read_at',
-      jobs:     '&id, work_id, state, expires_at',
       settings: '&key',
       archives: '&id, work_id, kind, saved_at',
     })
 
-    // v2 — compound `[work_id+chapter_ref]` on jobs + archives.
-    // `useResolveArchive` queries by both keys at once; without this,
-    // Dexie falls back to a full scan + JS filter (works but logs a
-    // warning and is O(N)).
+    // v2 — compound `[work_id+chapter_ref]` on archives.
+    // Archive queries by both keys at once; without this, Dexie falls
+    // back to a full scan + JS filter (works but logs a warning and is O(N)).
     this.version(2).stores({
       works:    '&id, last_opened_at, updated_at, *sourceKey',
       history:  '&id, work_id, last_read_at',
-      jobs:     '&id, work_id, [work_id+chapter_ref], state, expires_at',
       settings: '&key',
       archives: '&id, work_id, [work_id+chapter_ref], kind, saved_at',
     })

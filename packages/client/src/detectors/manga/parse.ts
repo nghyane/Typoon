@@ -1,4 +1,4 @@
-import * as ort from 'onnxruntime-web/webgpu'
+import type * as ort from 'onnxruntime-web/wasm'
 import type { TextRegion } from '../../domain/regions'
 
 const BBOX_PAD_PX = 6

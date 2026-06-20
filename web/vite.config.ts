@@ -7,16 +7,13 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 
-// Dev proxies `/api` and `/files` to a backend so the web app can
-// stay same-origin in the browser. Default target = local FastAPI
-// (`http://localhost:8000`); override with `VITE_PUBLIC_BASE_URL`
-// (e.g. point at the production DA host for read-only QA against
-// real data).
-//
-// We do NOT proxy `/cdn` — browse-mode hits bunle-cdn directly via
-// `https://927251094806098001.discordsays.com/cdn/c/...` because
-// `Access-Control-Allow-Origin: *` lets the browser accept it
-// cross-origin from any localhost dev URL.
+// Dev proxies `/api`, `/files`, and `/cdn` so the web app can stay
+// same-origin in the browser. `/api` and `/files` default to the local
+// backend (`http://localhost:3000`); override with `VITE_PUBLIC_BASE_URL`.
+// `/cdn` only forwards local dev traffic to the stable CDN gateway. The
+// gateway owns runtime pool selection/configuration.
+const cdnTarget = 'https://bunle-cdn-ceu.pages.dev'
+
 export default defineConfig(({ mode }) => {
   const env    = loadEnv(mode, process.cwd(), '')
   const target = env.VITE_PUBLIC_BASE_URL || 'http://localhost:3000'
@@ -40,7 +37,15 @@ export default defineConfig(({ mode }) => {
     server: {
       proxy: {
         '/api':   { target, changeOrigin: true },
-        '/cdn':   { target, changeOrigin: true },
+        '/cdn':   {
+          target: cdnTarget,
+          changeOrigin: true,
+        },
+        '/deepl': {
+          target: cdnTarget,
+          changeOrigin: true,
+          ws: true,
+        },
         '/files': { target, changeOrigin: true },
       },
     },

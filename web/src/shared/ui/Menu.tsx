@@ -119,7 +119,7 @@ export function Menu({ trigger, items, align = 'end', className, triggerClassNam
           role="menu"
           className={cn(
             'absolute top-full mt-1 z-30 min-w-[180px]',
-            'bg-surface rounded-md shadow-[0_8px_24px_rgb(0,0,0,0.35)] border border-border-soft',
+            'bg-surface rounded-md border border-border-soft',
             'py-1',
             align === 'end' ? 'right-0' : 'left-0',
           )}

@@ -10,9 +10,8 @@
 // direction, so the control simultaneously shows current state and
 // the action when tapped.
 //
-// Upload + future batch actions live in the page header's `actions`
-// slot (route-injected) so the toolbar can stay focused on filter
-// + meta. See `routes/w.$workId.tsx`.
+// Reader actions live inside the reader; this toolbar stays focused on
+// filtering and chapter navigation.
 //
 // `langCounts` is the per-lang chapter count across every source.
 // Languages with 0 chapters never appear so the picker stays terse.
@@ -55,8 +54,7 @@ export function ChapterToolbar({
   return (
     <div
       className={cn(
-        'sticky top-0 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6',
-        'pt-3 pb-2 bg-bg/95 backdrop-blur-xs',
+        'sticky top-0 z-10 pt-3 pb-2 bg-bg/95 border-b border-border-soft/60',
         'flex items-center gap-2 flex-wrap sm:flex-nowrap',
       )}
     >
@@ -188,7 +186,7 @@ function LangPicker({
           role="menu"
           className={cn(
             'absolute top-full left-0 mt-1 z-30 min-w-[220px]',
-            'bg-surface rounded-md shadow-[0_8px_24px_rgb(0,0,0,0.35)]',
+            'bg-surface rounded-md border border-border-soft',
             'border border-border-soft py-1 max-h-[60vh] overflow-y-auto',
           )}
         >

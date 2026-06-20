@@ -81,7 +81,7 @@ export function Modal({
   return (
     <div
       className={cn(
-        'fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm',
+        'fixed inset-0 flex items-center justify-center bg-black/60',
         'p-4',
         'pt-[max(1rem,var(--sait))] pb-[max(1rem,var(--saib))]',
         'pl-[max(1rem,var(--sail))] pr-[max(1rem,var(--sair))]',
@@ -91,7 +91,7 @@ export function Modal({
     >
       <div
         className={cn(
-          'w-full bg-surface text-text rounded-md shadow-[0_24px_64px_rgb(0,0,0,0.5)]',
+          'w-full bg-surface text-text rounded-md border border-border-soft',
           'flex flex-col max-h-[88vh] overflow-hidden',
           SIZE[size],
         )}

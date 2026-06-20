@@ -42,7 +42,7 @@ export function WorkCard({ work, className }: Props) {
           <Tag tone="error" size="sm" className="absolute top-1.5 right-1.5">18+</Tag>
         )}
         {work.badge && (
-          <div className="absolute bottom-0 inset-x-0 px-2 py-1 text-xs text-white bg-bg/80 backdrop-blur-sm">
+          <div className="absolute bottom-0 inset-x-0 px-2 py-1 text-xs text-white bg-bg/90">
             {work.badge}
           </div>
         )}

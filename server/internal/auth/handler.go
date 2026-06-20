@@ -1,8 +1,8 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -21,7 +21,7 @@ func NewHandler(store Store, discord Discord) Handler {
 
 func (h Handler) Mount(r chi.Router) {
 	r.Get("/api/auth/discord/start", h.start)
-	r.Get("/api/auth/discord/callback", h.callback)
+	r.Post("/api/auth/discord/callback", h.callback)
 	r.Get("/api/auth/session", h.session)
 	r.Post("/api/auth/logout", h.logout)
 	r.Post("/api/auth/da/exchange", h.daExchange)
@@ -35,7 +35,7 @@ func (h Handler) start(w http.ResponseWriter, r *http.Request) {
 
 	flow, err := h.store.CreateFlow(r.Context(), returnURL)
 	if err != nil {
-		httpx.Error(w, err)
+		writeError(w, err)
 		return
 	}
 
@@ -44,21 +44,23 @@ func (h Handler) start(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) callback(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
-	code := r.URL.Query().Get("code")
+	var input struct {
+		Code  string `json:"code"  validate:"required"`
+		State string `json:"state" validate:"required"`
+	}
 
-	if state == "" || code == "" {
-		httpx.Error(w, httpx.BadRequest("invalid_callback", "Missing state or code"))
+	if err := httpx.Decode(r, &input); err != nil {
+		httpx.Error(w, err)
 		return
 	}
 
-	flow, err := h.store.ValidateFlow(r.Context(), state)
+	flow, err := h.store.ValidateFlow(r.Context(), input.State)
 	if err != nil {
-		httpx.Error(w, httpx.BadRequest("invalid_state", "Invalid OAuth state"))
+		writeFlowError(w, err)
 		return
 	}
 
-	token, err := h.discord.Exchange(r.Context(), code)
+	token, err := h.discord.Exchange(r.Context(), input.Code)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -70,36 +72,34 @@ func (h Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.store.UpsertUser(r.Context(), user)
+	userID, err := h.store.UpsertDiscordUser(r.Context(), user)
 	if err != nil {
-		httpx.Error(w, err)
+		writeError(w, err)
 		return
 	}
 
-	_ = h.store.CreateOAuthAccount(r.Context(), userID, "discord", user.ID)
-
 	sessionToken, err := h.store.CreateSession(r.Context(), userID)
 	if err != nil {
-		httpx.Error(w, err)
+		writeError(w, err)
 		return
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "__Host-typoon-session",
+		Name:     "typoon-session",
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 30,
 	})
 
-	redirectURL := flow.ReturnURL
-	if parsed, err := url.Parse(redirectURL); err == nil && parsed.Path == "" {
-		redirectURL = "/"
+	returnTo := flow.ReturnURL
+	if returnTo == "" {
+		returnTo = "/"
 	}
 
-	http.Redirect(w, r, redirectURL, http.StatusFound)
+	httpx.JSON(w, http.StatusOK, map[string]string{"returnTo": returnTo})
 }
 
 func (h Handler) session(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +115,7 @@ func (h Handler) session(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.GetSession(r.Context(), sessionToken)
 	if err != nil {
-		httpx.Error(w, httpx.Unauthorized("unauthorized", "Session expired"))
+		writeSessionError(w, err)
 		return
 	}
 
@@ -123,11 +123,12 @@ func (h Handler) session(w http.ResponseWriter, r *http.Request) {
 		ID:          user.ID,
 		DisplayName: user.Username,
 		AvatarURL:   user.Avatar,
+		IsAdmin:     user.IsAdmin,
 	})
 }
 
 func cookieToken(r *http.Request) string {
-	cookie, err := r.Cookie("__Host-typoon-session")
+	cookie, err := r.Cookie("typoon-session")
 	if err != nil {
 		return ""
 	}
@@ -143,17 +144,17 @@ func bearerToken(r *http.Request) string {
 }
 
 func (h Handler) logout(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("__Host-typoon-session")
+	cookie, err := r.Cookie("typoon-session")
 	if err == nil {
 		_ = h.store.DeleteSession(r.Context(), cookie.Value)
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "__Host-typoon-session",
+		Name:     "typoon-session",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   isHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	})
@@ -175,8 +176,7 @@ func (h Handler) daExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DA authorize uses 127.0.0.1 as redirect URI
-	token, err := h.discord.Exchange(r.Context(), input.Code)
+	token, err := h.discord.ExchangeActivity(r.Context(), input.Code)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -188,19 +188,45 @@ func (h Handler) daExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.store.UpsertUser(r.Context(), user)
+	userID, err := h.store.UpsertDiscordUser(r.Context(), user)
 	if err != nil {
-		httpx.Error(w, err)
+		writeError(w, err)
 		return
 	}
 
-	_ = h.store.CreateOAuthAccount(r.Context(), userID, "discord", user.ID)
-
 	sessionToken, err := h.store.CreateSession(r.Context(), userID)
 	if err != nil {
-		httpx.Error(w, err)
+		writeError(w, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]string{"token": sessionToken})
+}
+
+func writeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrDatabaseNotConfigured) {
+		httpx.Error(w, httpx.FailedDependency("auth_unavailable", "Auth database is not configured"))
+		return
+	}
+	httpx.Error(w, err)
+}
+
+func writeFlowError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrInvalidFlow) {
+		httpx.Error(w, httpx.BadRequest("invalid_state", "Invalid OAuth state"))
+		return
+	}
+	writeError(w, err)
+}
+
+func writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrSessionNotFound) {
+		httpx.Error(w, httpx.Unauthorized("unauthorized", "Session expired"))
+		return
+	}
+	writeError(w, err)
+}
+
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }

@@ -34,7 +34,7 @@ import { ChapterRow } from './ChapterRow'
  *  user filters by a non-target language. */
 export interface Row {
   chapter: MergedChapter
-  /** Surfaced version for this row. Null for upload-only chapters. */
+  /** Surfaced version for this row. */
   version: SourceVersion | null
   /** Stable key for the virtualizer. */
   key:     string
@@ -56,9 +56,6 @@ export function ChapterList() {
         if (seen.has(v.lang)) continue
         seen.add(v.lang)
         m.set(v.lang, (m.get(v.lang) ?? 0) + 1)
-      }
-      if (ch.hasUpload && !seen.has(tgt)) {
-        m.set(tgt, (m.get(tgt) ?? 0) + 1)
       }
     }
     return [...m.entries()].sort((a, b) => {
@@ -97,7 +94,7 @@ export function ChapterList() {
 
       if (targetMode) {
         const v = pickBestVersion(ch, tgt)
-        if (activeLang !== null && !ch.hasUpload && (!v || v.lang !== tgt)) continue
+        if (activeLang !== null && (!v || v.lang !== tgt)) continue
         out.push({ chapter: ch, version: v, key: ch.numberNorm })
       } else {
         for (const v of ch.sourceVersions) {
@@ -117,7 +114,7 @@ export function ChapterList() {
   }, [merged, haystacks, deferredQ, activeLang, sortBy, tgt])
 
   return (
-    <section className="px-4 sm:px-6">
+    <section>
       <ChapterToolbar
         q={q}
         setQ={setQ}
@@ -246,7 +243,7 @@ function EmptyView({
 }) {
   if (totalChapters === 0) {
     return <EmptyState icon={Languages} title="Chưa có chương"
-      hint="Liên kết một nguồn hoặc tải lên file zip/cbz." />
+      hint="Liên kết một nguồn để đọc và dịch trực tiếp trong reader." />
   }
   if (q.trim()) {
     return <EmptyState title="Không khớp tìm kiếm"

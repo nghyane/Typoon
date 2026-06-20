@@ -27,7 +27,7 @@ export function BottomNav() {
   return (
     <nav
       className={cn(
-        'sm:hidden flex items-stretch bg-surface border-t border-border shrink-0',
+        'sm:hidden flex items-stretch bg-surface border-t border-border-soft shrink-0',
         // Bar grows by the iOS home-indicator inset so its surface
         // color reaches the bottom of the viewport (no `bg-bg` gap
         // showing through under the bar). Tap targets stay inside
@@ -43,10 +43,15 @@ export function BottomNav() {
             to={to}
             className={cn(
               'flex-1 flex flex-col items-center justify-center gap-0.5 text-xs transition-colors',
-              active ? 'text-accent-text' : 'text-text-subtle',
+              active ? 'text-accent-text' : 'text-text-subtle hover:text-text',
             )}
           >
-            <Icon size={18} />
+            <span className={cn(
+              'h-6 min-w-9 px-2 rounded-full inline-flex items-center justify-center',
+              active && 'bg-accent-bg',
+            )}>
+              <Icon size={17} />
+            </span>
             <span>{label}</span>
           </Link>
         )
