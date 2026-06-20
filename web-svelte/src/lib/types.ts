@@ -51,6 +51,7 @@ export interface ReaderData {
   chapterRef: string;
   urls: string[];
   pageTokens?: string[] | null;
+  pageHeaders?: Record<string, string> | null;
   sourceId?: string;
   selectedVersionKey?: string | null;
   targetLang: string;

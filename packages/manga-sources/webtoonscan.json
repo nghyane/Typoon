@@ -1,0 +1,124 @@
+{
+  "id":        "webtoonscan",
+  "name":      "Webtoonscan",
+  "host":      "webtoonscan.com",
+  "homepage":  "https://webtoonscan.com",
+  "languages": ["en"],
+  "version":   "1.0",
+  "accent":    "amber",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://webtoonscan.com/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://webtoonscan.com/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Chap)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://webtoonscan.com/manga/page/{page}/?m_orderby=latest",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".page-item-detail.manga",
+          "fields": {
+            "url":   ".post-title a@href || .item-thumb a@href",
+            "title": ".post-title a || .item-thumb a@title",
+            "cover": ".item-thumb img@data-lazy-src || .item-thumb img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://webtoonscan.com/manga/page/{page}/?m_orderby=views",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".page-item-detail.manga",
+          "fields": {
+            "url":   ".post-title a@href || .item-thumb a@href",
+            "title": ".post-title a || .item-thumb a@title",
+            "cover": ".item-thumb img@data-lazy-src || .item-thumb img@src"
+          }
+        }
+      },
+      {
+        "id":    "new",
+        "label": "Truyện mới",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://webtoonscan.com/manga/page/{page}/?m_orderby=new-manga",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".page-item-detail.manga",
+          "fields": {
+            "url":   ".post-title a@href || .item-thumb a@href",
+            "title": ".post-title a || .item-thumb a@title",
+            "cover": ".item-thumb img@data-lazy-src || .item-thumb img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://webtoonscan.com/page/{page}/?s={q:q}&post_type=wp-manga",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":   ".c-tabs-item",
+      "fields": {
+        "url":   ".post-title a@href || .tab-thumb a@href",
+        "title": ".post-title a || .tab-thumb a@title",
+        "cover": ".tab-thumb img@data-lazy-src || .tab-thumb img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       ".post-title h1",
+        "cover":       ".summary_image img@data-lazy-src || .summary_image img@src",
+        "description": ".description-summary .summary__content",
+        "author":      ".author-content",
+        "status":      ".post-status .summary-content"
+      },
+      "chapters": {
+        "list": ".listing-chapters_wrap li.wp-manga-chapter",
+        "fields": {
+          "url":    "a@href",
+          "number": "a",
+          "label":  "a",
+          "date":   ".chapter-release-date"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   ".reading-content img.wp-manga-chapter-img",
+      "fields": { "url": "@data-src || @src" }
+    }
+  }
+}

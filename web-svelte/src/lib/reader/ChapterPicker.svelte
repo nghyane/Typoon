@@ -51,7 +51,7 @@
   }
 </script>
 
-<ReaderDropdown {open} {anchor} {onClose} align="end" width="min(26rem, calc(100vw - 1rem))">
+<ReaderDropdown {open} {anchor} {onClose} align="end" width="min(26rem, calc(100vw - 1rem))" widthPx={416}>
   <div class="flex flex-col max-h-[min(70dvh,34rem)]">
     <div class="flex items-center justify-between gap-3 px-3 py-2 border-b border-divider">
       <div class="min-w-0">

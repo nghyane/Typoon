@@ -8,6 +8,7 @@
     align = 'end',
     side = 'auto',
     width = 'min(24rem, calc(100vw - 1rem))',
+    widthPx = 384,
     children,
   }: {
     open: boolean;
@@ -16,6 +17,7 @@
     align?: 'start' | 'end';
     side?: 'auto' | 'top' | 'bottom';
     width?: string;
+    widthPx?: number;
     children: import('svelte').Snippet;
   } = $props();
 
@@ -27,7 +29,7 @@
     const rect = anchor.getBoundingClientRect();
     const gap = 8;
     const margin = 8;
-    const panelWidth = Math.min(384, window.innerWidth - margin * 2);
+    const panelWidth = Math.min(widthPx, window.innerWidth - margin * 2);
     const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
     const spaceAbove = rect.top - gap - margin;
     const openTop = side === 'top' || (side === 'auto' && spaceAbove > spaceBelow && spaceBelow < 220);
@@ -69,7 +71,7 @@
 {#if open && anchor}
   <div
     bind:this={panel}
-    class={cn('fixed z-50 overflow-hidden rounded-lg border border-divider bg-surface text-text shadow-2xl')}
+    class={cn('fixed z-50 overflow-hidden rounded-md border border-border-soft bg-surface/95 text-text shadow-lg backdrop-blur')}
     style={style}
     role="menu"
   >

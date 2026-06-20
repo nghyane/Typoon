@@ -9,6 +9,10 @@
   "nsfw":      true,
   "adapter":   "hitomi",
 
+  "imageHeaders": {
+    "Referer": "https://hitomi.la/"
+  },
+
   "defaults": {
     "type":     "all",
     "language": "all"

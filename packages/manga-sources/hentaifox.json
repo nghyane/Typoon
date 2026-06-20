@@ -9,6 +9,10 @@
   "nsfw":      true,
   "adapter":   "hentaifox",
 
+  "imageHeaders": {
+    "Referer": "https://hentaifox.com/"
+  },
+
   "authRequired": "cookie",
   "cookieNames":  ["cf_clearance"],
 

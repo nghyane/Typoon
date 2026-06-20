@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, Download, Languages, Loader2 } from 'lucide-svelte';
+  import { AlertCircle, ChevronDown, ChevronLeft, EyeOff, Languages, Loader2 } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
   import { resolvePageUrl } from '$lib/source/runtime/endpoints';
   import { cn } from '$lib/cn';
   import { localSettings, READER_PAGE_WIDTH_MAX, READER_PAGE_WIDTH_MIN } from '$lib/localSettings.svelte';
+  import { session } from '$lib/auth/session.svelte';
+  import { trackDiscordJoinRequired, trackTranslateClick } from '$lib/analytics/client';
   import type { ReaderData } from '$lib/types';
   import { ReaderNavigation } from '$lib/reader/ReaderNavigation.svelte';
   import { ReaderSourceResolver } from '$lib/reader/ReaderSourceResolver.svelte';
@@ -13,6 +15,8 @@
   import ChapterPicker from '$lib/reader/ChapterPicker.svelte';
   import PageRenderer from '$lib/reader/PageRenderer.svelte';
   import SourcePicker from '$lib/reader/SourcePicker.svelte';
+
+  const DISCORD_INVITE_URL = 'https://discord.gg/zuwqbbdZ';
 
   let { data }: { data: ReaderData | null } = $props();
 
@@ -22,6 +26,8 @@
   let contentOverlayEl = $state<HTMLDivElement | null>(null);
   let chapterTriggerEl = $state<HTMLButtonElement | null>(null);
   let sourceTriggerEl = $state<HTMLButtonElement | null>(null);
+  let joinRequiredTracked = $state(false);
+  let translationHidden = $state(false);
 
   const translation = new SvelteReaderTranslation();
 
@@ -43,13 +49,16 @@
       if (!token || !src) return rawUrl;
       return resolvePageUrl(src.manifest, token);
     },
+    () => source.activePageHeaders,
   );
 
   const targetLang = $derived(data?.targetLang ?? localSettings.state.default_target_lang ?? 'vi');
+  const canTranslateLanguage = $derived(!sameLanguage(source.activeSourceLang, targetLang));
+  const translationVisible = $derived(translation.state.phase === 'done' && !translationHidden);
 
   $effect(() => {
     const pageCount = source.activeUrls.length;
-    if (!data || pageCount <= 0) { translation.clear(); return; }
+    if (!data || pageCount <= 0 || !canTranslateLanguage) { translation.clear(); return; }
     translation.setChapter({
       chapterKey: [data.workId, data.chapterRef, source.activeVersionKey ?? '', source.activeSourceId ?? '', pageCount, source.activeSourceLang ?? '', targetLang].join(':'),
       pageCount,
@@ -57,6 +66,14 @@
       sourceLanguage: source.activeSourceLang ?? null,
       targetLanguage: targetLang,
     });
+  });
+
+  $effect(() => {
+    data?.workId;
+    data?.chapterRef;
+    source.activeVersionKey;
+    targetLang;
+    translationHidden = false;
   });
 
   const pageSlots = $derived(Array.from({ length: Math.max(source.activeUrls.length, pages.blobs.length) }, (_, i) => pages.blobs[i] ?? null));
@@ -68,6 +85,7 @@
   const readingProgress = $derived(pageCount > 0 ? Math.max(0, Math.min(1, nav.scrollProgress)) : 0);
   const currentPageDisplay = $derived(pageCount > 0 ? Math.min(nav.pageIndex + 1, pageCount) : 0);
   const translationBusy = $derived(isTranslationBusy(translation.state.phase));
+  const translationBlocked = $derived(session.state.status === 'authenticated' && session.state.user.is_guild_member === false);
   const chapterDisplay = $derived(shortChapterNumber(data?.chapterNumber, data?.chapterRef));
   const readerPageWidth = $derived(localSettings.state.reader_page_width);
 
@@ -80,16 +98,39 @@
     return translation.registerContentHost(host);
   });
 
+  $effect(() => {
+    if (!canTranslateLanguage || !translationBlocked) { joinRequiredTracked = false; return; }
+    if (joinRequiredTracked) return;
+    joinRequiredTracked = true;
+    trackDiscordJoinRequired({
+      source_id: source.activeSourceId ?? '',
+      source_name: source.activeSourceName ?? '',
+      page_count: pageCount,
+    });
+  });
+
   function handleTranslationButton(): void {
     chapterPickerOpen = false;
     sourcePickerOpen = false;
     const p = translation.state.phase;
-    if (isTranslationBusy(p)) cancelTranslation();
-    else if (p === 'ready' || p === 'done' || p === 'error') translation.translate();
-  }
-
-  function cancelTranslation(): void {
-    translation.cancel();
+    if (translationBlocked && !isTranslationBusy(p)) return;
+    if (isTranslationBusy(p)) return;
+    if (p === 'done') {
+      translationHidden = !translationHidden;
+      return;
+    }
+    else if (p === 'ready' || p === 'error') {
+      trackTranslateClick({
+        phase: p,
+        source_id: source.activeSourceId ?? '',
+        source_name: source.activeSourceName ?? '',
+        source_lang: source.activeSourceLang ?? '',
+        target_lang: targetLang,
+        page_count: pageCount,
+      });
+      translationHidden = false;
+      translation.translate();
+    }
   }
 
   function setPageWidth(value: number): void {
@@ -104,10 +145,9 @@
     return phase === 'loading' || phase === 'preparing' || phase === 'translating';
   }
 
-  function translationActionLabel(state: typeof translation.state): string {
-    if (isTranslationBusy(state.phase)) return 'Hủy';
-    if (state.phase === 'done') return 'Dịch lại';
-    if (state.phase === 'error' || state.model.state === 'failed') return 'Thử lại';
+  function translationActionLabel(state: typeof translation.state, hidden: boolean): string {
+    if (isTranslationBusy(state.phase)) return 'Đang…';
+    if (state.phase === 'done' && !hidden) return 'Ẩn';
     return 'Dịch';
   }
 
@@ -117,12 +157,10 @@
     if (state.phase === 'loading') return 'Chuẩn bị';
     if (state.phase === 'preparing') return `${state.prepare.done}/${state.prepare.total}`;
     if (state.phase === 'translating') return `${state.translate.done}/${state.translate.total}`;
-    if (state.phase === 'done') return 'Xong';
-    if (state.phase === 'error' || state.model.state === 'failed') return 'Lỗi';
     return '';
   }
 
-  function translationDetail(state: typeof translation.state): string {
+  function translationDetail(state: typeof translation.state, hidden: boolean): string {
     if (state.model.state === 'downloading') return formatModelBytes(state.model.receivedBytes, state.model.totalBytes);
     if (state.model.state === 'resolving') return 'Đang kiểm tra cache model';
     if (state.model.state === 'initializing') return 'Đang khởi động runtime nhận diện';
@@ -130,13 +168,12 @@
     if (state.phase === 'loading') return 'Tải font và chuẩn bị vùng đọc';
     if (state.phase === 'preparing') return `${state.prepare.done}/${state.prepare.total} trang`;
     if (state.phase === 'translating') return `${state.translate.done}/${state.translate.total} trang`;
-    if (state.phase === 'done') return `${state.translate.done}/${state.translate.total} trang hoàn tất`;
+    if (state.phase === 'done') return hidden ? 'Bấm để hiện bản dịch' : 'Bấm để ẩn bản dịch';
     if (state.phase === 'error') return state.error || 'Bấm để thử lại';
     return 'Sẵn sàng';
   }
 
   function translationProgress(state: typeof translation.state): number {
-    if (state.phase === 'done') return 1;
     if (state.model.state === 'downloading' && state.model.ratio !== undefined) return clamp01(state.model.ratio);
     if (state.phase === 'translating' && state.translate.total > 0) return clamp01(state.translate.done / state.translate.total);
     if (state.phase === 'preparing' && state.prepare.total > 0) return clamp01(state.prepare.done / state.prepare.total) * 0.25;
@@ -156,6 +193,18 @@
 
   function clamp01(value: number): number {
     return Math.max(0, Math.min(1, value));
+  }
+
+  function sameLanguage(sourceLang: string | null | undefined, target: string | null | undefined): boolean {
+    const source = normalizeLang(sourceLang);
+    const targetLang = normalizeLang(target);
+    return !!source && !!targetLang && source === targetLang;
+  }
+
+  function normalizeLang(value: string | null | undefined): string {
+    const lang = value?.trim().toLowerCase() ?? '';
+    if (lang === 'multi' || lang === 'auto') return '';
+    return lang;
   }
 
   function shortChapterNumber(number: string | null | undefined, fallback: string | null | undefined): string {
@@ -189,7 +238,7 @@
               </div>
             {/each}
           {/if}
-          <div bind:this={contentOverlayEl} class="absolute inset-0 overflow-hidden pointer-events-none z-[1]" aria-hidden="true"></div>
+          <div bind:this={contentOverlayEl} class="absolute inset-0 overflow-hidden pointer-events-none z-[1]" style={translationHidden ? 'display:none;' : ''} aria-hidden="true"></div>
         </div>
       </div>
     </div>
@@ -207,10 +256,10 @@
           <ChevronDown size={12} class="text-text-subtle" />
         </button>
         {#if source.activeSourceName}
-          <button bind:this={sourceTriggerEl} type="button" onclick={() => { sourcePickerOpen = !sourcePickerOpen; chapterPickerOpen = false; }} class="hidden sm:inline-flex h-7 px-3 rounded-full items-center gap-1.5 bg-surface-2 text-xs font-medium text-text hover:bg-hover transition-colors cursor-pointer max-w-[12rem]" aria-label="Nguồn đọc" aria-expanded={sourcePickerOpen}>
+          <button bind:this={sourceTriggerEl} type="button" onclick={() => { sourcePickerOpen = !sourcePickerOpen; chapterPickerOpen = false; }} class="hidden sm:inline-flex h-7 px-2 rounded-full items-center gap-1 bg-surface-2 text-[11px] font-medium text-text hover:bg-hover transition-colors cursor-pointer max-w-[9rem]" aria-label="Chọn nguồn" aria-expanded={sourcePickerOpen}>
             {#if source.sourceSwitching}<Loader2 size={11} class="animate-spin text-text-subtle" />{/if}
             {#if source.activeSourceLang}<span class="uppercase tabular-nums text-text-subtle">{source.activeSourceLang}</span>{/if}
-            <span class="max-w-[7rem] truncate">{source.activeSourceName}</span>
+            <span class="max-w-[5.5rem] truncate">{source.activeSourceName}</span>
             <ChevronDown size={12} class="text-text-subtle" />
           </button>
         {/if}
@@ -245,37 +294,38 @@
           />
           <span class="hidden lg:inline shrink-0 tabular-nums text-text-subtle">{readerPageWidth}px</span>
         </label>
-        {#if translationStatusLabel(translation.state)}
-          <span class="hidden md:inline-flex h-8 max-w-24 shrink-0 items-center rounded-sm px-2 text-xs tabular-nums text-text-subtle" title={translationDetail(translation.state)}>
+        {#if canTranslateLanguage && translationStatusLabel(translation.state)}
+          <span class="hidden md:inline-flex h-8 max-w-24 shrink-0 items-center rounded-sm px-2 text-xs tabular-nums text-text-subtle" title={translationDetail(translation.state, translationHidden)}>
             {translationStatusLabel(translation.state)}
           </span>
         {/if}
-        <button
-          class={cn(
-            'inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter] disabled:opacity-50 disabled:cursor-not-allowed',
-            translationBusy
-              ? 'bg-info-bg text-info-text hover:bg-info-bg/80'
-              : translation.state.phase === 'ready'
-              ? 'border-accent/40 bg-accent text-accent-fg hover:brightness-110'
-              : translation.state.phase === 'done'
-                ? 'border-success-bg bg-success-bg text-success-text hover:bg-success-bg/90'
+        {#if canTranslateLanguage}
+          <button
+            class={cn(
+              'inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter] disabled:opacity-50 disabled:cursor-not-allowed',
+              translationBusy
+                ? 'bg-info-bg text-info-text hover:bg-info-bg/80'
+                : translationVisible
+                  ? 'border-border-soft bg-surface-2 text-text hover:bg-hover'
+                : translation.state.phase === 'ready' || translation.state.phase === 'done'
+                ? 'border-accent/40 bg-accent text-accent-fg hover:brightness-110'
                 : translation.state.phase === 'error' || translation.state.model.state === 'failed'
-                  ? 'bg-error-bg text-error-text hover:bg-error-bg/80'
-              : 'border-border-soft bg-bg text-text hover:bg-hover',
-          )}
-          disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle'}
-          aria-label={translationBusy ? 'Hủy dịch' : 'Dịch chương'}
-          title={translationDetail(translation.state)}
-          onclick={handleTranslationButton}
-        >
-          {#if translationBusy}<Loader2 class="shrink-0 animate-spin" size={14} />
-          {:else if translation.state.phase === 'error' || translation.state.model.state === 'failed'}<AlertCircle class="shrink-0" size={15} />
-          {:else if translation.state.phase === 'done'}<CheckCircle2 class="shrink-0" size={15} />
-          {:else if translation.state.model.state === 'downloading'}<Download class="shrink-0" size={15} />
-          {:else}<Languages class="shrink-0" size={15} />{/if}
-          <span>{translationActionLabel(translation.state)}</span>
-        </button>
-        {#if translationProgress(translation.state) > 0}
+                    ? 'bg-error-bg text-error-text hover:bg-error-bg/80'
+                : 'border-border-soft bg-bg text-text hover:bg-hover',
+            )}
+            disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle' || translationBusy || (translationBlocked && !translationBusy)}
+            aria-label={translationVisible ? 'Ẩn bản dịch' : 'Dịch chương'}
+            title={translationBlocked ? 'Tham gia Discord để dùng chức năng dịch.' : translationDetail(translation.state, translationHidden)}
+            onclick={handleTranslationButton}
+          >
+            {#if translationBusy}<Loader2 class="shrink-0 animate-spin" size={14} />
+            {:else if translation.state.phase === 'error' || translation.state.model.state === 'failed'}<AlertCircle class="shrink-0" size={15} />
+            {:else if translationVisible}<EyeOff class="shrink-0" size={15} />
+            {:else}<Languages class="shrink-0" size={15} />{/if}
+            <span>{translationActionLabel(translation.state, translationHidden)}</span>
+          </button>
+        {/if}
+        {#if canTranslateLanguage && translationProgress(translation.state) > 0}
           <span class="absolute inset-x-0 bottom-0 h-0.5 bg-bg" aria-hidden="true">
             <span class="block h-full bg-accent transition-[width] duration-200" style={`width:${translationProgress(translation.state) * 100}%`}></span>
           </span>
@@ -283,10 +333,17 @@
       </div>
     </footer>
 
+    {#if canTranslateLanguage && translationBlocked}
+      <div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 flex max-w-[90vw] items-center gap-2 rounded-md border border-warning-text/20 bg-warning-bg px-3 py-2 text-xs text-warning-text shadow-lg">
+        <AlertCircle size={14} class="shrink-0" />
+        <span>Tham gia Discord để dùng chức năng dịch.</span>
+        <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" class="shrink-0 font-semibold underline underline-offset-2">Tham gia</a>
+      </div>
+    {/if}
     {#if source.sourceError}<div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 max-w-[90vw] rounded-md bg-error-bg text-error-text border border-border-soft px-3 py-2 text-xs">{source.sourceError}</div>{/if}
 
     <ChapterPicker open={chapterPickerOpen} anchor={chapterTriggerEl} onClose={() => { chapterPickerOpen = false; }} chapters={data.chapters ?? []} workId={data.workId} currentRef={data.chapterRef} />
-    <SourcePicker open={sourcePickerOpen} anchor={sourceTriggerEl} onClose={() => { sourcePickerOpen = false; }} versions={data.versions ?? []} activeKey={source.activeVersionKey} targetLang={data.targetLang} busy={source.sourceSwitching} onPick={(version) => { void source.switchSource(version); }} />
+    <SourcePicker open={sourcePickerOpen} anchor={sourceTriggerEl} onClose={() => { sourcePickerOpen = false; }} versions={data.versions ?? []} activeKey={source.activeVersionKey} {targetLang} busy={source.sourceSwitching} onPick={(version) => { void source.switchSource(version); }} />
   </div>
 {/if}
 

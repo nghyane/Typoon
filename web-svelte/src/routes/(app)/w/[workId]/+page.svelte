@@ -81,6 +81,11 @@
   const detailFailures = $derived(detailQueries.filter((query) => query.error));
   const chapters = $derived(mergeChapters(sourceChapters, work?.target_lang.toLowerCase() ?? 'vi'));
   const detail = $derived(detailQueries.find((query) => query.data)?.data ?? null);
+  const coverHeaders = $derived.by(() => {
+    if (!work?.cover_url) return detail?.coverHeaders;
+    const origin = work.sources.find((source) => source.cover_url === work.cover_url);
+    return origin ? sourceImageHeaders(origin.source) : undefined;
+  });
   const strippedDescription = $derived(stripHtml(detail?.description ?? ''));
   const descOverflows = $derived(strippedDescription.length > 240);
 
@@ -133,6 +138,10 @@
   function sourceLabel(id: string): string {
     return getSource(id)?.manifest.name ?? id;
   }
+
+  function sourceImageHeaders(id: string): Record<string, string> | undefined {
+    return getSource(id)?.manifest.imageHeaders;
+  }
 </script>
 
 <svelte:head><title>{work?.title ?? '…'} — Hội Mê Truyện</title></svelte:head>
@@ -149,7 +158,7 @@
     <section class="pt-4 pb-3">
       <div class="flex items-start gap-4 sm:gap-5">
         <div class="relative w-[88px] sm:w-28 shrink-0 aspect-[2/3] rounded-md overflow-hidden bg-surface-2">
-          <Cover src={work.cover_url ?? detail?.cover ?? null} title={work.title} class="w-full h-full" />
+          <Cover src={work.cover_url ?? detail?.cover ?? null} headers={coverHeaders} title={work.title} class="w-full h-full" />
         </div>
         <div class="flex-1 min-w-0 space-y-2 pt-0.5">
           <h1 class="text-lg sm:text-2xl font-semibold text-text leading-snug line-clamp-3 tracking-tight">{work.title}</h1>
@@ -324,7 +333,7 @@
     ? 'flex-1 basis-[200px] min-w-[180px] max-w-[320px] flex items-center gap-2 h-11 pl-2 pr-1 rounded-sm bg-surface-2 border-l-2 border-accent'
     : 'flex-1 basis-[200px] min-w-[180px] max-w-[320px] flex items-center gap-2 h-11 pl-2 pr-1 rounded-sm bg-surface-2'}>
     <div class="w-6 h-8 shrink-0 rounded-xs overflow-hidden">
-      <Cover src={source.cover_url} title={source.title} class="w-full h-full" fontSize="text-[10px]" />
+      <Cover src={source.cover_url} headers={sourceImageHeaders(source.source)} title={source.title} class="w-full h-full" fontSize="text-[10px]" />
     </div>
     <div class="flex-1 min-w-0 text-sm truncate">
       {#if source.languages[0]}<span class="text-xs text-text-subtle font-medium mr-1.5">{source.languages[0].toUpperCase()}</span>{/if}

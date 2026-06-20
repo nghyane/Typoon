@@ -454,7 +454,7 @@
                         busy && pendingKey !== key && 'opacity-60 cursor-not-allowed',
                       )}
                     >
-                      <Cover src={hit.manga.cover} title={hit.manga.title} class="w-8 aspect-[2/3] rounded-xs shrink-0" fontSize="text-xs" />
+                      <Cover src={hit.manga.cover} headers={hit.manga.coverHeaders} title={hit.manga.title} class="w-8 aspect-[2/3] rounded-xs shrink-0" fontSize="text-xs" />
                       <div class="flex-1 min-w-0">
                         <p class="text-sm text-text truncate leading-tight">{hit.manga.title}</p>
                         {#if hit.source.manifest.languages.length > 0}

@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { Check, Compass, Plus, Search } from 'lucide-svelte';
-  import { listEnabledSources } from '$lib/source/registry';
+  import { listSources } from '$lib/source/registry';
   import {
     assembleFilterParams,
     assembleFilterState,
@@ -22,9 +22,10 @@
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import Spinner from '$lib/ui/Spinner.svelte';
   import { cn } from '$lib/cn';
+  import { trackSourceOpen, trackSourceSelect } from '$lib/analytics/client';
   import { createInfiniteQuery, createMutation } from '@tanstack/svelte-query';
 
-  let sources = $state<InstalledSource[]>([]);
+  let allSources = $state<InstalledSource[]>([]);
   let sourceId = $state('');
   let shelfId = $state('');
   let query = $state('');
@@ -36,6 +37,8 @@
   let existingByUrl = $state<Record<string, Pick<Work, 'id' | 'in_library'>>>({});
   let loadMoreSentinel = $state<HTMLDivElement | null>(null);
 
+  const sources = $derived(allSources.filter((s) => s.enabled));
+  const disabledSourceCount = $derived(allSources.filter((s) => !s.enabled).length);
   const source = $derived(sources.find((s) => s.manifest.id === sourceId) ?? null);
   const shelves = $derived(source ? getShelves(source.manifest) : []);
   const canSearch = $derived(source ? hasSearch(source.manifest) : false);
@@ -112,8 +115,9 @@
   // ── Source / shelf init ───────────────────────────────────────
 
   onMount(() => {
-    sources = listEnabledSources();
-    sourceId = sources[0]?.manifest.id ?? '';
+    const nextSources = listSources();
+    allSources = nextSources;
+    sourceId = nextSources.find((s) => s.enabled)?.manifest.id ?? '';
   });
 
   $effect(() => {
@@ -140,11 +144,31 @@
     return `${source?.manifest.id ?? ''}::${manga.url}`;
   }
 
+  function selectSource(next: InstalledSource): void {
+    sourceId = next.manifest.id;
+    trackSourceSelect({
+      context: 'explore',
+      source_id: next.manifest.id,
+      source_name: next.manifest.name,
+    });
+  }
+
+  async function openSourceSettings(): Promise<void> {
+    await goto('/settings?tab=sources');
+  }
+
   async function openManga(manga: MangaSummary): Promise<void> {
     if (!source || pendingMangaKey) return;
     const key = mangaKey(manga);
     pendingMangaKey = key;
     openError = '';
+    trackSourceOpen({
+      context: 'explore',
+      source_id: source.manifest.id,
+      source_name: source.manifest.name,
+      shelf_id: typeof target === 'string' ? target : 'search',
+      has_query: !!debouncedQuery,
+    });
     try {
       const work = await ensureMutation.mutateAsync(manga);
       await goto(`/w/${work.id}`);
@@ -161,7 +185,16 @@
 <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-5">
   {#if sources.length === 0}
     <div class="max-w-3xl mx-auto px-4 sm:px-6 py-10">
-      <EmptyState title="Chưa có nguồn nào" hint="Mở Settings → Nguồn để bật ít nhất một nguồn." />
+      <EmptyState title="Chưa có nguồn nào" hint="Mở Cài đặt → Nguồn để bật ít nhất một nguồn." />
+      {#if disabledSourceCount > 0}
+        <div class="-mt-10 flex justify-center">
+          <button type="button" onclick={openSourceSettings}
+            class="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-dashed border-border-soft bg-surface text-xs font-medium text-text-muted transition-colors hover:bg-hover hover:text-text cursor-pointer"
+          >
+            <Plus size={12} /> Thêm nguồn
+          </button>
+        </div>
+      {/if}
     </div>
   {:else}
     <header class="space-y-3">
@@ -173,16 +206,23 @@
           <Plus size={14} /> Thêm
         </Button>
       </div>
-      <div class="flex flex-wrap gap-2" role="tablist" aria-label="Nguồn truyện">
+      <div class="flex flex-wrap gap-2" aria-label="Nguồn truyện">
         {#each sources as s (s.manifest.id)}
           {@const selected = s.manifest.id === sourceId}
-          <button type="button" role="tab" aria-selected={selected}
-            onclick={() => { sourceId = s.manifest.id; }}
+          <button type="button" aria-pressed={selected}
+            onclick={() => { selectSource(s); }}
             class={cn('inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-medium transition-colors',
               selected ? 'bg-accent-bg text-accent-text' : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
             )}
           >{s.manifest.name}</button>
         {/each}
+        {#if disabledSourceCount > 0}
+          <button type="button" onclick={openSourceSettings}
+            class="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-dashed border-border-soft bg-surface text-xs font-medium text-text-muted transition-colors hover:bg-hover hover:text-text cursor-pointer"
+          >
+            <Plus size={12} /> Thêm nguồn
+          </button>
+        {/if}
       </div>
       {#if source && canSearch}
         <div class="relative max-w-xl">
@@ -236,7 +276,7 @@
             )}
           >
             <div class="relative aspect-[3/4] rounded-sm overflow-hidden bg-surface-2">
-              <Cover src={manga.cover} title={manga.title} class="absolute inset-0 transition-transform group-hover:scale-[1.02]" />
+              <Cover src={manga.cover} headers={manga.coverHeaders} title={manga.title} class="absolute inset-0 transition-transform group-hover:scale-[1.02]" />
               {#if pending}
                 <span class="absolute inset-0 grid place-items-center bg-bg/45"><Spinner size={20} /></span>
               {/if}

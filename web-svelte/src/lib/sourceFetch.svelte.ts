@@ -1,10 +1,24 @@
 // $lib/sourceFetch.svelte.ts
-// Two fetch layers, matching React's proxy.ts architecture:
-//   fetchSource   — module-level singleton for runtime.ts (uses configured CDN proxy)
-//   useSourceFetch() — CDN origins for browser <img> URLs (Cover component)
+// Source transport only. Source-specific headers/cache are passed in by manifests/adapters.
+//   fetchSource   — proxy fetch for source runtime/adapters
+//   useSourceFetch() — proxy URL builder for browser-loaded images
 
 let _cdnInstance: ReturnType<typeof createSourceFetch> | null = null;
 const SOURCE_CDN_BASE = 'https://927251094806098001.discordsays.com/cdn/c';
+
+export type SourceCachePolicy = 'auto' | 'immutable' | 'ttl' | 'reload' | 'bypass' | 'no-store' | 'only-if-cached';
+
+export interface SourceCacheOptions {
+	policy?: SourceCachePolicy;
+	key?: string;
+	ttl?: number;
+}
+
+interface SourceFetchOptions {
+	headers?: Record<string, string>;
+	init?: RequestInit;
+	cache?: SourceCacheOptions;
+}
 
 /** CDN-based instance for browser image URLs (Cover component). */
 export function useSourceFetch() {
@@ -29,54 +43,42 @@ function createSourceFetch(origins: readonly string[]) {
 		return origin;
 	}
 
-	function _toBrowserUrl(url: string, headers?: Record<string, string>, mode: 'fetch' | 'image' = 'image'): string {
+	function _toBrowserUrl(url: string, headers?: Record<string, string>, cache?: SourceCacheOptions): string {
 		let u: URL;
 		try { u = new URL(url); } catch { return url; }
 		if (u.protocol !== 'https:' && u.protocol !== 'http:') return url;
 		const path = `${gatewayFor(`${u.host}${u.pathname}`)}/${u.host}${u.pathname}`;
 		const params = new URLSearchParams(u.searchParams);
-		const proxyHeaders = headersFor(u, mode, headers);
-		if (Object.keys(proxyHeaders).length > 0) params.set('_h', encodeHeaderBlob(proxyHeaders));
+		if (headers && Object.keys(headers).length > 0) params.set('_h', encodeHeaderBlob(headers));
+		applyCacheParams(params, cache);
 		const qs = params.toString();
 		return qs ? `${path}?${qs}` : path;
 	}
 
-	function _fetch(url: string, opts: { headers?: Record<string, string>; init?: RequestInit } = {}): Promise<Response> {
+	function _fetch(url: string, opts: SourceFetchOptions = {}): Promise<Response> {
 		const headers = new Headers(opts.init?.headers);
-		const proxyHeaders = headersForUrl(url, 'fetch', opts.headers);
-		if (Object.keys(proxyHeaders).length > 0) {
-			headers.set('X-Proxy-Headers', encodeHeaderBlob(proxyHeaders));
+		if (opts.headers && Object.keys(opts.headers).length > 0) {
+			headers.set('X-Proxy-Headers', encodeHeaderBlob(opts.headers));
 		}
-		return fetch(_toBrowserUrl(url, undefined, 'fetch'), { ...opts.init, headers });
+		applyCacheHeaders(headers, opts.cache);
+		return fetch(_toBrowserUrl(url), { ...opts.init, headers });
 	}
 
 	return { toBrowserUrl: _toBrowserUrl, fetch: _fetch };
 }
 
-function headersForUrl(url: string, mode: 'fetch' | 'image', explicit?: Record<string, string>): Record<string, string> {
-	try { return headersFor(new URL(url), mode, explicit); } catch { return explicit ?? {}; }
+function applyCacheParams(params: URLSearchParams, cache?: SourceCacheOptions): void {
+	if (!cache) return;
+	if (cache.policy) params.set('_pc', cache.policy);
+	if (cache.key) params.set('_pk', cache.key);
+	if (cache.ttl != null) params.set('_pt', String(Math.max(0, Math.floor(cache.ttl))));
 }
 
-function headersFor(url: URL, mode: 'fetch' | 'image', explicit?: Record<string, string>): Record<string, string> {
-	return { ...mangadexHeaders(url, mode), ...(explicit ?? {}) };
-}
-
-function mangadexHeaders(url: URL, mode: 'fetch' | 'image'): Record<string, string> {
-	if (url.host !== 'api.mangadex.org' && url.host !== 'uploads.mangadex.org') return {};
-	return {
-		'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-		'Accept': mode === 'fetch' ? 'application/json, text/plain, */*' : 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-		'Accept-Language': 'en-US,en;q=0.9',
-		'Accept-Encoding': 'gzip, deflate, br, zstd',
-		'Referer': 'https://mangadex.org/',
-		'Origin': 'https://mangadex.org',
-		'Sec-Fetch-Site': 'same-site',
-		'Sec-Fetch-Mode': mode === 'fetch' ? 'cors' : 'no-cors',
-		'Sec-Fetch-Dest': mode === 'fetch' ? 'empty' : 'image',
-		'Sec-CH-UA': '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"',
-		'Sec-CH-UA-Mobile': '?0',
-		'Sec-CH-UA-Platform': '"macOS"',
-	};
+function applyCacheHeaders(headers: Headers, cache?: SourceCacheOptions): void {
+	if (!cache) return;
+	if (cache.policy) headers.set('X-Proxy-Cache', cache.policy);
+	if (cache.key) headers.set('X-Proxy-Cache-Key', cache.key);
+	if (cache.ttl != null) headers.set('X-Proxy-Cache-TTL', String(Math.max(0, Math.floor(cache.ttl))));
 }
 
 function encodeHeaderBlob(headers: Record<string, string>): string {

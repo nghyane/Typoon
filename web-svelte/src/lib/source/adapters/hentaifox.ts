@@ -1,4 +1,5 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { sourceCache } from '../runtime/cache';
 import type { ChapterPages, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
 
@@ -14,12 +15,15 @@ function pickCdn(uniqueId: number): string {
 	return uniqueId > 140236 ? 'i3.hentaifox.com' : 'i.hentaifox.com';
 }
 
-async function fetchReaderPage(galleryId: string, userCookies: Record<string, string>): Promise<Document> {
+async function fetchReaderPage(sourceId: string, galleryId: string, userCookies: Record<string, string>): Promise<Document> {
 	const headers: Record<string, string> = { Referer: 'https://hentaifox.com/' };
 	if (Object.keys(userCookies).length > 0) {
 		headers.Cookie = Object.entries(userCookies).map(([key, value]) => `${key}=${value}`).join('; ');
 	}
-	const res = await fetchSource(`https://hentaifox.com/g/${galleryId}/1/`, { headers });
+	const res = await fetchSource(`https://hentaifox.com/g/${galleryId}/1/`, {
+		headers,
+		cache: sourceCache(sourceId, 'chapter', ['reader', galleryId], userCookies),
+	});
 	if (!res.ok) throw new Error(`HentaiFox reader HTTP ${res.status}`);
 	return new DOMParser().parseFromString(await res.text(), 'text/html');
 }
@@ -42,14 +46,14 @@ function inputVal(doc: Document, id: string): string {
 
 export const hentaifoxAdapter: SourceAdapter = {
 	async fetchChapterPages(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		chapterUrl: string,
 		userCookies: Record<string, string>,
 	): Promise<ChapterPages> {
 		const match = /hentaifox\.com\/(?:gallery|g)\/(\d+)/.exec(chapterUrl);
 		if (!match?.[1]) throw new Error(`Cannot extract galleryId from: ${chapterUrl}`);
 
-		const doc = await fetchReaderPage(match[1], userCookies);
+		const doc = await fetchReaderPage(manifest.id, match[1], userCookies);
 		const totalStr = inputVal(doc, 'pages');
 		const imageDir = inputVal(doc, 'image_dir');
 		const galleryHash = inputVal(doc, 'gallery_id');
@@ -68,6 +72,6 @@ export const hentaifoxAdapter: SourceAdapter = {
 			pages.push(`${base}/${i}.${EXT_MAP[extCode] ?? 'jpg'}`);
 		}
 
-		return { url: chapterUrl, pages };
+		return { url: chapterUrl, pages, pageHeaders: manifest.imageHeaders };
 	},
 };

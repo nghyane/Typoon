@@ -18,10 +18,15 @@ class ChapterPages {
   #sourceFetch = useSourceFetch();
   #ac: AbortController | null = null;
 
-  constructor(rawUrls: () => readonly string[], key: () => string) {
+  constructor(
+    rawUrls: () => readonly string[],
+    key: () => string,
+    pageHeaders: () => Record<string, string> | null | undefined = () => undefined,
+  ) {
     $effect(() => {
       const urls = rawUrls();
       const _k = key(); // trigger re-run when key changes
+      const headers = pageHeaders() ?? undefined;
       if (!urls.length) return;
 
       const ac = new AbortController();
@@ -37,7 +42,7 @@ class ChapterPages {
       const fetchOne = async (i: number) => {
         try {
           const sf = this.#sourceFetch;
-          const proxied = sf.toBrowserUrl(urls[i]!);
+          const proxied = sf.toBrowserUrl(urls[i]!, headers);
           const res = await fetch(proxied, { signal: ac.signal });
           if (!res.ok) throw new Error(`${res.status}`);
           const blob = await res.blob();
@@ -77,6 +82,10 @@ class ChapterPages {
   }
 }
 
-export function useChapterPages(rawUrls: () => readonly string[], key: () => string) {
-  return new ChapterPages(rawUrls, key);
+export function useChapterPages(
+  rawUrls: () => readonly string[],
+  key: () => string,
+  pageHeaders?: () => Record<string, string> | null | undefined,
+) {
+  return new ChapterPages(rawUrls, key, pageHeaders);
 }

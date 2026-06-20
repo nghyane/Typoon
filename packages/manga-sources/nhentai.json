@@ -1,0 +1,98 @@
+{
+  "id":        "nhentai",
+  "name":      "nHentai",
+  "host":      "nhentai.net",
+  "homepage":  "https://nhentai.net",
+  "languages": ["en", "ja", "zh"],
+  "version":   "1.0",
+  "accent":    "pink",
+  "nsfw":      true,
+  "adapter":   "nhentai",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://nhentai.net/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://nhentai.net/"
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới nhất",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://nhentai.net/?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 25 },
+          "list":   ".gallery",
+          "fields": {
+            "url":   "a.cover@href",
+            "title": ".caption || a.cover img@alt",
+            "cover": "a.cover img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://nhentai.net/popular/?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 25 },
+          "list":   ".gallery",
+          "fields": {
+            "url":   "a.cover@href",
+            "title": ".caption || a.cover img@alt",
+            "cover": "a.cover img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://nhentai.net/search/?q={q:q}&page={page}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 25 },
+      "list":   ".gallery",
+      "fields": {
+        "url":   "a.cover@href",
+        "title": ".caption || a.cover img@alt",
+        "cover": "a.cover img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       "h1.title .pretty || h1.title",
+        "cover":       "#cover img@src",
+        "description": "#tags a[href^=\"/category/\"] .name",
+        "author":      "#tags a[href^=\"/artist/\"] .name"
+      },
+      "chapters": {
+        "list": "#cover",
+        "fields": {
+          "url":    "a@href",
+          "number": "=1",
+          "label":  "=Ch.1"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   "#thumbnail-container a.gallerythumb img",
+      "fields": { "url": "@src" }
+    }
+  }
+}

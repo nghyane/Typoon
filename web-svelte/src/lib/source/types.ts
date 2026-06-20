@@ -94,6 +94,7 @@ export interface ChapterEndpoint extends HttpRequest {
 	extract?: string;
 	list?: Selector;
 	fields?: { url: Selector };
+	pageHeaders?: Record<string, string>;
 	rootExtras?: Record<string, Selector>;
 	pages?: {
 		extras: Record<string, Selector>;
@@ -113,6 +114,8 @@ export interface SourceManifest {
 	nsfw?: boolean;
 	version: string;
 	adapter?: string;
+	requestHeaders?: Record<string, string>;
+	imageHeaders?: Record<string, string>;
 	authRequired?: 'none' | 'cookie' | 'token';
 	cookieNames?: string[];
 	icon?: string;
@@ -141,6 +144,7 @@ export interface MangaSummary {
 	url: string;
 	title: string;
 	cover: string | null;
+	coverHeaders?: Record<string, string>;
 }
 
 export interface MangaChapterRef {
@@ -167,6 +171,7 @@ export interface ChapterPages {
 	url: string;
 	pages: string[];
 	tokens?: string[];
+	pageHeaders?: Record<string, string>;
 }
 
 export interface BrowseArgs {

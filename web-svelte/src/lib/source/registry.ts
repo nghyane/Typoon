@@ -6,6 +6,7 @@ const bundled: Record<string, { default: SourceManifest }> = import.meta.glob(
 );
 
 const storageKey = 'typoon.sources.v7.svelte';
+const defaultEnabledSourceIds = new Set(['baozimh', 'naver-webtoon', 'truyenqq']);
 
 function isManifest(value: { default: unknown }): value is { default: SourceManifest } {
 	const manifest = value.default as Partial<SourceManifest> | undefined;
@@ -47,7 +48,7 @@ export function listSources(): InstalledSource[] {
 		manifest,
 		origin: 'bundled' as const,
 		installedAt: 0,
-		enabled: enabled[manifest.id] ?? true,
+		enabled: enabled[manifest.id] ?? defaultEnabledSourceIds.has(manifest.id),
 	}));
 }
 
@@ -58,6 +59,13 @@ export function listEnabledSources(): InstalledSource[] {
 export function setSourceEnabled(id: string, value: boolean): void {
 	const enabled = readEnabled();
 	enabled[id] = value;
+	writeEnabled(enabled);
+	invalidateCache();
+}
+
+export function enableDefaultSources(): void {
+	const enabled = readEnabled();
+	for (const manifest of bundledManifests) enabled[manifest.id] = defaultEnabledSourceIds.has(manifest.id);
 	writeEnabled(enabled);
 	invalidateCache();
 }

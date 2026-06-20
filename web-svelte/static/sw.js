@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hoimetruyen-v1';
+const CACHE_NAME = 'hoimetruyen-v2';
 const APP_SHELL = [
 	'/',
 	'/manifest.webmanifest',
@@ -12,7 +12,12 @@ const APP_SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()));
+	event.waitUntil(self.skipWaiting());
+	warmAppShell();
+});
+
+self.addEventListener('message', (event) => {
+	if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -74,4 +79,10 @@ async function putCache(request, response) {
 	if (!response || !response.ok) return;
 	const cache = await caches.open(CACHE_NAME);
 	await cache.put(request, response.clone());
+}
+
+function warmAppShell() {
+	caches.open(CACHE_NAME)
+		.then((cache) => Promise.allSettled(APP_SHELL.map((url) => cache.add(url))))
+		.catch(() => undefined);
 }

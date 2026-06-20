@@ -10,6 +10,7 @@
     fontSize = 'text-xl',
     version,
     aspect,
+    headers,
   }: {
     src?: string | null;
     title?: string | null;
@@ -18,26 +19,30 @@
     fontSize?: string;
     version?: string | null;
     aspect?: string;
+    headers?: Record<string, string> | null;
   } = $props();
 
   const sf = useSourceFetch();
   let failed = $state(false);
   const safeTitle = $derived((title ?? alt ?? '').trim());
-  const url = $derived(!failed ? coverUrl(src, version, sf.toBrowserUrl) : null);
+  const url = $derived(!failed ? coverUrl(src, version, headers ?? undefined, sf.toBrowserUrl) : null);
 
   $effect(() => {
     src;
+    version;
+    headers;
     failed = false;
   });
 
   function coverUrl(
     value: string | null | undefined,
     v: string | null | undefined,
-    proxify: (url: string) => string,
+    h: Record<string, string> | undefined,
+    proxify: (url: string, headers?: Record<string, string>) => string,
   ): string | null {
     if (!value) return null;
     const isAbs = /^https?:\/\//i.test(value);
-    const base = isAbs ? proxify(value) : value;
+    const base = isAbs ? proxify(value, h) : value;
     if (!v) return base;
     return base.includes('?')
       ? `${base}&v=${encodeURIComponent(v)}`

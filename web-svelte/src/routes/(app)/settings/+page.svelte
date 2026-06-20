@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { Database, Download, Globe2, HardDrive, LogOut, Sparkles } from 'lucide-svelte';
   import { session } from '$lib/auth/session.svelte';
   import { languageSummary } from '$lib/lang';
   import { localSettings, type ThemeMode } from '$lib/localSettings.svelte';
-  import { listSources, setSourceEnabled } from '$lib/source/registry';
+  import { enableDefaultSources, listSources, setSourceEnabled } from '$lib/source/registry';
   import type { InstalledSource } from '$lib/source/types';
   import { cn } from '$lib/cn';
   import Button from '$lib/ui/Button.svelte';
@@ -31,8 +32,19 @@
     { id: 'storage', label: 'Lưu trữ' },
   ]);
 
+  function parseTab(value: string | null): Tab {
+    return value === 'account'
+      || value === 'sources'
+      || value === 'reader'
+      || value === 'translation'
+      || value === 'storage'
+      ? value
+      : 'account';
+  }
+
   onMount(() => {
     localSettings.load();
+    tab = parseTab($page.url.searchParams.get('tab'));
     sources = listSources();
   });
 
@@ -46,7 +58,7 @@
   }
 
   function enableBundled(): void {
-    for (const source of sources) setSourceEnabled(source.manifest.id, true);
+    enableDefaultSources();
     refreshSources();
   }
 
@@ -145,10 +157,10 @@
               <Globe2 size={14} class="text-accent" />
               <span class="font-medium text-text">Nguồn truyện</span>
             </div>
-            <Button variant="secondary" size="sm" onclick={enableBundled}>Cài nguồn mặc định</Button>
+            <Button variant="secondary" size="sm" onclick={enableBundled}>Khôi phục mặc định</Button>
           </div>
           <p class="text-xs text-text-muted">
-            Bật ít nhất một nguồn để tìm và thêm truyện. Nguồn mặc định đi kèm ứng dụng, không cần cài ngoài.
+            Mặc định chỉ bật TruyenQQ, Naver Webtoon và Baozi. Nguồn 18+ cần bật thủ công tại đây.
           </p>
 
           {#if sources.length === 0}

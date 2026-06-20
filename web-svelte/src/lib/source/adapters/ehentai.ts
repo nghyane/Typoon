@@ -7,6 +7,10 @@ const API = 'https://api.e-hentai.org/api.php';
 const GALLERY_RE = /e-hentai\.org\/g\/(\d+)\/([a-f0-9]+)/;
 const THUMBS_PER_PAGE = 20;
 const PAGE_HASH_RE = /\/s\/([a-f0-9]+)\/\d+-(\d+)/;
+const GDATA_TTL = 60 * 60 * 24 * 30;
+const THUMB_TTL = 60 * 60 * 24 * 30;
+const READER_TTL = 60 * 15;
+const SHOWPAGE_TTL = 60 * 5;
 
 const thumbCache = new Map<string, Promise<Map<number, string>>>();
 
@@ -21,22 +25,49 @@ function cookieHeader(userCookies: Record<string, string>): string | null {
 	return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join('; ') : null;
 }
 
-async function fetchHtml(url: string, userCookies: Record<string, string>): Promise<Document> {
+function cacheKey(base: string, userCookies: Record<string, string>): string {
+	const cookie = cookieHeader(userCookies);
+	return cookie ? `${base}:ck:${hashString(cookie)}` : base;
+}
+
+function hashString(value: string): string {
+	let h = 2166136261;
+	for (let i = 0; i < value.length; i += 1) {
+		h ^= value.charCodeAt(i);
+		h = Math.imul(h, 16777619);
+	}
+	return (h >>> 0).toString(36);
+}
+
+function ttlCache(key: string, ttl: number) {
+	return { policy: 'ttl' as const, key, ttl };
+}
+
+async function fetchHtml(
+	url: string,
+	userCookies: Record<string, string>,
+	cache?: ReturnType<typeof ttlCache>,
+): Promise<Document> {
 	const headers: Record<string, string> = { Referer: 'https://e-hentai.org/' };
 	const cookie = cookieHeader(userCookies);
 	if (cookie) headers.Cookie = cookie;
-	const res = await fetchSource(url, { headers });
+	const res = await fetchSource(url, { headers, cache });
 	if (!res.ok) throw new Error(`E-Hentai: HTTP ${res.status} on ${url}`);
 	return new DOMParser().parseFromString(await res.text(), 'text/html');
 }
 
-async function postApi(body: object, userCookies: Record<string, string>): Promise<Record<string, unknown>> {
+async function postApi(
+	body: object,
+	userCookies: Record<string, string>,
+	cache?: ReturnType<typeof ttlCache>,
+): Promise<Record<string, unknown>> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	const cookie = cookieHeader(userCookies);
 	if (cookie) headers.Cookie = cookie;
 	const res = await fetchSource(API, {
 		headers,
 		init: { method: 'POST', body: JSON.stringify(body) },
+		cache,
 	});
 	if (!res.ok) throw new Error(`E-Hentai API: HTTP ${res.status}`);
 	return res.json() as Promise<Record<string, unknown>>;
@@ -46,6 +77,7 @@ async function fetchGdata(gid: string, token: string, userCookies: Record<string
 	const json = await postApi(
 		{ method: 'gdata', gidlist: [[parseInt(gid, 10), token]], namespace: 1 },
 		userCookies,
+		ttlCache(cacheKey(`eh:gdata:v1:${gid}:${token}`, userCookies), GDATA_TTL),
 	);
 	const meta = (json as { gmetadata?: unknown[] }).gmetadata?.[0];
 	if (!meta || typeof meta !== 'object') throw new Error('E-Hentai gdata: no metadata');
@@ -67,9 +99,13 @@ function getThumbPage(
 	thumbPageIdx: number,
 	userCookies: Record<string, string>,
 ): Promise<Map<number, string>> {
-	const key = `${gid}/${thumbPageIdx}`;
+	const key = cacheKey(`${gid}/${galleryToken}/${thumbPageIdx}`, userCookies);
 	if (!thumbCache.has(key)) {
-		const promise = fetchHtml(`https://e-hentai.org/g/${gid}/${galleryToken}/?p=${thumbPageIdx}`, userCookies)
+		const promise = fetchHtml(
+			`https://e-hentai.org/g/${gid}/${galleryToken}/?p=${thumbPageIdx}`,
+			userCookies,
+			ttlCache(cacheKey(`eh:thumb:v1:${gid}:${galleryToken}:${thumbPageIdx}`, userCookies), THUMB_TTL),
+		)
 			.then(parseThumbPage);
 		thumbCache.set(key, promise);
 	}
@@ -94,21 +130,13 @@ async function resolveUrl(
 	showkey: string,
 	userCookies: Record<string, string>,
 ): Promise<string> {
-	if (page === 1) {
-		const hash = await getHash(gid, galleryToken, 1, userCookies);
-		if (!hash) throw new Error(`E-Hentai: hash missing for page 1 (gid ${gid})`);
-		const doc = await fetchHtml(`https://e-hentai.org/s/${hash}/${gid}-1`, userCookies);
-		const src = (doc.querySelector('#img') as HTMLImageElement | null)?.src;
-		if (!src) throw new Error(`E-Hentai: #img not found on reader page 1 (gid ${gid})`);
-		return src;
-	}
-
-	const prevHash = await getHash(gid, galleryToken, page - 1, userCookies);
-	if (!prevHash) throw new Error(`E-Hentai: hash missing for page ${page - 1} (gid ${gid})`);
+	const hash = await getHash(gid, galleryToken, page, userCookies);
+	if (!hash) throw new Error(`E-Hentai: hash missing for page ${page} (gid ${gid})`);
 
 	const json = await postApi(
-		{ method: 'showpage', gid: parseInt(gid, 10), page: page - 1, imgkey: prevHash, showkey },
+		{ method: 'showpage', gid: parseInt(gid, 10), page, imgkey: hash, showkey },
 		userCookies,
+		ttlCache(cacheKey(`eh:showpage:v1:${gid}:${page}:${hash}:${showkey}`, userCookies), SHOWPAGE_TTL),
 	);
 	const i3Html = (json.i3 as string | undefined) ?? '';
 	const match = /id="img"[^>]*src="([^"]+)"/.exec(i3Html);
@@ -130,7 +158,7 @@ function decodeToken(token: string): { gid: string; page: number; galleryToken: 
 
 export const ehentaiAdapter: SourceAdapter = {
 	async fetchMangaDetail(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		mangaUrl: string,
 		userCookies: Record<string, string>,
 	): Promise<MangaDetail> {
@@ -152,6 +180,7 @@ export const ehentaiAdapter: SourceAdapter = {
 			url: mangaUrl,
 			title,
 			cover: (meta.thumb as string | undefined) ?? null,
+			coverHeaders: manifest.imageHeaders,
 			description: (meta.category as string | undefined) ?? null,
 			author: (meta.uploader as string | undefined) ?? null,
 			status: lang ? `language:${lang}` : null,
@@ -171,7 +200,7 @@ export const ehentaiAdapter: SourceAdapter = {
 	},
 
 	async fetchChapterPages(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		chapterUrl: string,
 		userCookies: Record<string, string>,
 	): Promise<ChapterPages> {
@@ -187,7 +216,11 @@ export const ehentaiAdapter: SourceAdapter = {
 		const readerPromise = thumbPromise.then(async (thumbMap) => {
 			const hash1 = thumbMap.get(1);
 			if (!hash1) throw new Error('E-Hentai: hash missing for page 1');
-			return fetchHtml(`https://e-hentai.org/s/${hash1}/${gid}-1`, userCookies);
+			return fetchHtml(
+				`https://e-hentai.org/s/${hash1}/${gid}-1`,
+				userCookies,
+				ttlCache(cacheKey(`eh:reader:v1:${gid}:${hash1}:1`, userCookies), READER_TTL),
+			);
 		});
 		const [, readerDoc] = await Promise.all([thumbPromise, readerPromise]);
 
@@ -202,12 +235,11 @@ export const ehentaiAdapter: SourceAdapter = {
 		if (!showkey) throw new Error('E-Hentai: showkey not found');
 
 		const pages = new Array<string>(pageCount).fill('');
-		pages[0] = (readerDoc.querySelector('#img') as HTMLImageElement | null)?.src ?? '';
 		const tokens = Array.from({ length: pageCount }, (_value, index) =>
 			encodeToken(gid, index + 1, galleryToken, showkey),
 		);
 
-		return { url: chapterUrl, pages, tokens };
+		return { url: chapterUrl, pages, tokens, pageHeaders: manifest.imageHeaders };
 	},
 
 	async resolvePageUrl(

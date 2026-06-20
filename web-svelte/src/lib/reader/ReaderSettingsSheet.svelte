@@ -10,7 +10,7 @@
   }
 </script>
 
-<ReaderDropdown {open} {anchor} {onClose} align="end" width="min(23rem, calc(100vw - 1rem))">
+<ReaderDropdown {open} {anchor} {onClose} align="end" width="min(23rem, calc(100vw - 1rem))" widthPx={368}>
   <div class="px-4 py-3 border-b border-divider">
     <div class="text-sm font-semibold text-text">Cài đặt đọc</div>
     <div class="text-xs text-text-subtle">Tối ưu cho dịch overlay</div>

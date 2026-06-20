@@ -4,6 +4,8 @@ const SESSION_KEY = 'typoon.discordSession.v1';
 const OAUTH_STATE_KEY = 'typoon.discordOAuthState.v1';
 const STATE_TTL_MS = 10 * 60 * 1000;
 const CACHE_STALE_MS = 15 * 60 * 1000;
+const DISCORD_ACTIVITY_REDIRECT_URI = 'https://127.0.0.1';
+const initialDiscordActivitySearch = browser ? discordActivitySearchFromLocation(window.location) : '';
 
 export class ApiError extends Error {
 	readonly status: number;
@@ -28,6 +30,7 @@ export interface SessionUser {
 	display_name: string;
 	avatar_url: string | null;
 	is_admin: boolean;
+	is_guild_member?: boolean;
 	email?: string | null;
 	tier?: { name: string };
 	preferred_target_lang?: string | null;
@@ -100,7 +103,7 @@ export function missingDiscordConfig(): string[] {
 	return missing;
 }
 
-export const isDiscordActivity = browser && window.location.hostname.endsWith('.discordsays.com');
+export const isDiscordActivity = !!initialDiscordActivitySearch;
 
 export const authApi = {
 	getSession,
@@ -168,7 +171,46 @@ export function safeReturnTo(value: unknown): string {
 }
 
 export async function discordActivityLogin(): Promise<void> {
-	await startDiscordLogin('/');
+	if (!browser) return;
+	if (!isDiscordActivity) throw new Error('Trang này không chạy trong Discord Activity.');
+	const missing = missingDiscordConfig();
+	if (missing.length > 0) throw new Error(`Thiếu cấu hình Discord khi build: ${missing.join(', ')}.`);
+	if (!crypto.subtle) throw new Error('Trình duyệt không hỗ trợ Discord Activity PKCE.');
+
+	const activitySearch = initialDiscordActivitySearch || discordActivitySearchFromLocation(window.location);
+	if (!activitySearch) throw new Error('Discord Activity thiếu frame_id.');
+
+	const { DiscordSDK } = await import('@discord/embedded-app-sdk');
+	class DiscordActivitySDK extends DiscordSDK {
+		override _getSearch(): string { return activitySearch; }
+	}
+	const discordSdk = new DiscordActivitySDK(discordEntitlementConfig.clientId);
+	await discordSdk.ready();
+
+	const codeVerifier = randomCodeVerifier();
+	const { code } = await discordSdk.commands.authorize({
+		client_id: discordEntitlementConfig.clientId,
+		response_type: 'code',
+		prompt: 'none',
+		scope: ['identify', 'guilds.members.read'],
+		code_challenge: await pkceChallenge(codeVerifier),
+		code_challenge_method: 'S256',
+	});
+
+	const token = await exchangeDiscordCode(code, codeVerifier, DISCORD_ACTIVITY_REDIRECT_URI);
+	const accessToken = token.access_token ?? '';
+	const expiresIn = Number(token.expires_in ?? '0');
+	if (!accessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+		throw new Error('Discord không trả về access token hợp lệ.');
+	}
+
+	await discordSdk.commands.authenticate({ access_token: accessToken });
+	await refreshDiscordSession({
+		accessToken,
+		tokenType: token.token_type ?? 'Bearer',
+		scope: token.scope ?? '',
+		expiresAt: Date.now() + expiresIn * 1000,
+	});
 }
 
 export async function exchangeDiscordCallback(fragment: URLSearchParams, query = new URLSearchParams()): Promise<string> {
@@ -206,7 +248,7 @@ async function exchangeDiscordCodeCallback(query: URLSearchParams): Promise<stri
 	const cached = consumeOAuthStateCache(state);
 	if (!cached.codeVerifier) throw new Error('Phiên đăng nhập Discord cũ không có PKCE verifier. Hãy đăng nhập lại.');
 
-	const token = await exchangeDiscordCode(code, cached.codeVerifier);
+	const token = await exchangeDiscordCode(code, cached.codeVerifier, callbackUrl());
 	const accessToken = token.access_token ?? '';
 	const expiresIn = Number(token.expires_in ?? '0');
 	if (!accessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
@@ -229,6 +271,7 @@ async function getSession(): Promise<SessionUser> {
 	const now = Date.now();
 	const graceMs = discordEntitlementConfig.cacheGraceHours * 60 * 60 * 1000;
 	const inGrace = now - cached.checkedAt <= graceMs;
+	if (cached.user.is_guild_member === undefined && now < cached.expiresAt) return refreshDiscordSession(cached);
 	if (now - cached.checkedAt < CACHE_STALE_MS) return cached.user;
 
 	if (now < cached.expiresAt) {
@@ -252,22 +295,34 @@ async function logout(): Promise<{ ok: boolean }> {
 
 async function refreshDiscordSession(token: Pick<DiscordSessionCache, 'accessToken' | 'tokenType' | 'scope' | 'expiresAt'>): Promise<SessionUser> {
 	const discordUser = await discordFetch<DiscordUserResponse>('/me', token.accessToken);
-	const roles = discordEntitlementConfig.guildId
-		? (await discordFetch<DiscordGuildMemberResponse>(`/member?guild_id=${encodeURIComponent(discordEntitlementConfig.guildId)}`, token.accessToken)).roles ?? []
-		: [];
-	const plan = resolvePlan(roles);
+	const membership = await fetchDiscordMembership(token.accessToken);
+	const plan = resolvePlan(membership.roles);
 	const user: SessionUser = {
 		id: discordUser.id,
 		display_name: discordUser.global_name || discordUser.username,
 		avatar_url: avatarUrl(discordUser),
 		is_admin: false,
+		is_guild_member: membership.isGuildMember,
 		email: discordUser.email ?? null,
 		tier: plan ? { name: plan.name } : undefined,
 		preferred_target_lang: null,
-		roles,
+		roles: membership.roles,
 	};
 	writeSession({ ...token, checkedAt: Date.now(), user });
 	return user;
+}
+
+async function fetchDiscordMembership(accessToken: string): Promise<{ roles: string[]; isGuildMember: boolean }> {
+	if (!discordEntitlementConfig.guildId) return { roles: [], isGuildMember: true };
+	try {
+		return {
+			roles: (await discordFetch<DiscordGuildMemberResponse>(`/member?guild_id=${encodeURIComponent(discordEntitlementConfig.guildId)}`, accessToken)).roles ?? [],
+			isGuildMember: true,
+		};
+	} catch (err) {
+		if (err instanceof ApiError && err.status === 404) return { roles: [], isGuildMember: false };
+		throw err;
+	}
 }
 
 async function discordFetch<T>(path: string, accessToken: string): Promise<T> {
@@ -282,7 +337,7 @@ async function discordFetch<T>(path: string, accessToken: string): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
-async function exchangeDiscordCode(code: string, codeVerifier: string): Promise<DiscordTokenResponse> {
+async function exchangeDiscordCode(code: string, codeVerifier: string, redirectURI: string): Promise<DiscordTokenResponse> {
 	let res: Response;
 	try {
 		res = await fetch(`${discordEntitlementConfig.proxyBase}/token`, {
@@ -292,7 +347,7 @@ async function exchangeDiscordCode(code: string, codeVerifier: string): Promise<
 				client_id: discordEntitlementConfig.clientId,
 				code,
 				code_verifier: codeVerifier,
-				redirect_uri: callbackUrl(),
+				redirect_uri: redirectURI,
 			}),
 		});
 	} catch {
@@ -315,6 +370,24 @@ function resolvePlan(roles: readonly string[]): DiscordPlan | null {
 
 function callbackUrl(): string {
 	return `${window.location.origin}/auth/callback`;
+}
+
+function discordActivitySearchFromLocation(location: Location): string {
+	if (!location.hostname.endsWith('.discordsays.com')) return '';
+	const direct = searchWithFrameId(location.search);
+	if (direct) return direct;
+
+	const redirect = new URLSearchParams(location.search).get('redirect') ?? '';
+	if (!redirect) return '';
+	try {
+		return searchWithFrameId(new URL(redirect, location.origin).search);
+	} catch {
+		return '';
+	}
+}
+
+function searchWithFrameId(search: string): string {
+	return new URLSearchParams(search).has('frame_id') ? search : '';
 }
 
 function createOAuthState(returnTo: string, codeVerifier?: string): string {

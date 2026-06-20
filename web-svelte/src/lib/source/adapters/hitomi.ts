@@ -1,10 +1,12 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { sourceCache } from '../runtime/cache';
 import type { BrowseArgs, ChapterPages, MangaDetail, MangaSummary, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
 
 const DOMAIN2 = 'gold-usergeneratedcontent.net';
 const LTN = `https://ltn.${DOMAIN2}`;
 const PAGE_SIZE = 25;
+const HITOMI_HEADERS = { Referer: 'https://hitomi.la/' };
 
 interface GgData {
 	m: (g: number) => number;
@@ -16,31 +18,32 @@ interface GgData {
 let ggCache: GgData | null = null;
 const GG_TTL = 60 * 60 * 1000;
 
-async function fetchGg(): Promise<GgData> {
+async function fetchGg(sourceId: string): Promise<GgData> {
 	const now = Date.now();
 	if (ggCache && now - ggCache.fetchedAt < GG_TTL) return ggCache;
 
 	const res = await fetchSource(`${LTN}/gg.js`, {
-		headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
+		headers: { ...HITOMI_HEADERS, Origin: 'https://hitomi.la' },
+		cache: sourceCache(sourceId, 'metadata', ['gg.js'], {}, GG_TTL / 1000),
 	});
 	if (!res.ok) throw new Error(`hitomi gg.js: HTTP ${res.status}`);
 	const text = await res.text();
 
 	const b = /\bb:\s*'([^']+)'/.exec(text)?.[1] ?? '';
-	const set1 = new Set<number>();
+	const defaultM = parseInt(/var\s+o\s*=\s*(\d)/.exec(text)?.[1] ?? '0', 10);
+	const mOverrides = new Map<number, number>();
 	const switchBody = /switch\s*\(g\)\s*\{([\s\S]+?)\}\s*return/.exec(text)?.[1] ?? '';
 	const segments = switchBody.split(/o\s*=\s*(\d)/);
 	for (let i = 0; i < segments.length - 1; i += 2) {
 		const value = parseInt(segments[i + 1]!, 10);
-		if (value !== 1) continue;
 		const cases = segments[i]!.match(/case\s+(\d+):/g) ?? [];
 		for (const item of cases) {
-			set1.add(parseInt(item.replace(/case\s+/, '').replace(':', ''), 10));
+			mOverrides.set(parseInt(item.replace(/case\s+/, '').replace(':', ''), 10), value);
 		}
 	}
 
 	ggCache = {
-		m: (g: number) => (set1.has(g) ? 1 : 0),
+		m: (g: number) => mOverrides.get(g) ?? defaultM,
 		s: (hash: string) => {
 			const match = /(..)(.)$/.exec(hash);
 			return match ? parseInt(match[2]! + match[1]!, 16).toString(10) : '0';
@@ -64,6 +67,10 @@ function imageUrl(hash: string, ext: 'webp' | 'avif', gg: GgData): string {
 	return `https://${subdomain}.${DOMAIN2}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
 }
 
+function imageHeaders(manifest: SourceManifest): Record<string, string> {
+	return manifest.imageHeaders ?? HITOMI_HEADERS;
+}
+
 const GALLERY_ID_RE = /-(\d+)\.html/;
 
 function extractGalleryId(url: string): string | null {
@@ -78,13 +85,14 @@ interface NozomiEntry {
 const nozomiCache = new Map<string, NozomiEntry>();
 const NOZOMI_TTL = 10 * 60_000;
 
-function getNozomiBuffer(nozomiUrl: string): Promise<ArrayBuffer> {
+function getNozomiBuffer(sourceId: string, nozomiUrl: string): Promise<ArrayBuffer> {
 	const now = Date.now();
 	const cached = nozomiCache.get(nozomiUrl);
 	if (cached && now - cached.fetchedAt < NOZOMI_TTL) return cached.promise;
 
 	const promise = fetchSource(nozomiUrl, {
-		headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
+		headers: { ...HITOMI_HEADERS, Origin: 'https://hitomi.la' },
+		cache: sourceCache(sourceId, 'browse', ['nozomi', nozomiUrl]),
 	}).then((res) => {
 		if (!res.ok) throw new Error(`hitomi nozomi: HTTP ${res.status}`);
 		return res.arrayBuffer();
@@ -93,8 +101,8 @@ function getNozomiBuffer(nozomiUrl: string): Promise<ArrayBuffer> {
 	return promise;
 }
 
-async function fetchNozomiPage(nozomiUrl: string, page: number): Promise<number[]> {
-	const buffer = await getNozomiBuffer(nozomiUrl);
+async function fetchNozomiPage(sourceId: string, nozomiUrl: string, page: number): Promise<number[]> {
+	const buffer = await getNozomiBuffer(sourceId, nozomiUrl);
 	const slice = buffer.slice(page * PAGE_SIZE * 4, page * PAGE_SIZE * 4 + PAGE_SIZE * 4);
 	const view = new DataView(slice);
 	const ids: number[] = [];
@@ -113,11 +121,12 @@ interface GalleryBlock {
 
 const galleryBlockCache = new Map<number, Promise<GalleryBlock>>();
 
-function fetchGalleryBlock(id: number): Promise<GalleryBlock> {
+function fetchGalleryBlock(sourceId: string, id: number): Promise<GalleryBlock> {
 	if (galleryBlockCache.has(id)) return galleryBlockCache.get(id)!;
 
 	const promise = fetchSource(`${LTN}/galleryblock/${id}.html`, {
-		headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
+		headers: { ...HITOMI_HEADERS, Origin: 'https://hitomi.la' },
+		cache: sourceCache(sourceId, 'metadata', ['galleryblock', id]),
 	}).then(async (res) => {
 		if (!res.ok) throw new Error(`hitomi galleryblock ${id}: HTTP ${res.status}`);
 		const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
@@ -156,9 +165,10 @@ interface GalleryInfo {
 	datepublished: string | null;
 }
 
-async function fetchGalleryInfo(id: string): Promise<GalleryInfo> {
+async function fetchGalleryInfo(sourceId: string, id: string): Promise<GalleryInfo> {
 	const res = await fetchSource(`${LTN}/galleries/${id}.js`, {
-		headers: { Referer: 'https://hitomi.la/', Origin: 'https://hitomi.la' },
+		headers: { ...HITOMI_HEADERS, Origin: 'https://hitomi.la' },
+		cache: sourceCache(sourceId, 'metadata', ['galleryinfo', id]),
 	});
 	if (!res.ok) throw new Error(`hitomi galleries/${id}.js: HTTP ${res.status}`);
 	const text = await res.text();
@@ -182,7 +192,7 @@ function nozomiUrlFromFilterState(state: Record<string, string | string[]> | und
 
 export const hitomiAdapter: SourceAdapter = {
 	async fetchBrowse(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		shelfOrSearch: string | { search: true },
 		args: BrowseArgs = {},
 	): Promise<MangaSummary[]> {
@@ -191,11 +201,11 @@ export const hitomiAdapter: SourceAdapter = {
 			? `${LTN}/n/${encodeURIComponent(args.q.trim().toLowerCase().replace(/\s+/g, '_'))}-all.nozomi`
 			: nozomiUrlFromFilterState(args.filterState);
 
-		const ids = await fetchNozomiPage(nozomiUrl, page);
+		const ids = await fetchNozomiPage(manifest.id, nozomiUrl, page);
 		if (!ids.length) return [];
 
-		void fetchNozomiPage(nozomiUrl, page + 1).catch(() => {});
-		const blocks = await Promise.allSettled(ids.map(fetchGalleryBlock));
+		void fetchNozomiPage(manifest.id, nozomiUrl, page + 1).catch(() => {});
+		const blocks = await Promise.allSettled(ids.map((id) => fetchGalleryBlock(manifest.id, id)));
 		return blocks
 			.filter((result): result is PromiseFulfilledResult<GalleryBlock> => result.status === 'fulfilled')
 			.map(({ value }) => ({
@@ -203,19 +213,20 @@ export const hitomiAdapter: SourceAdapter = {
 				url: value.url,
 				title: value.title,
 				cover: value.cover,
+				coverHeaders: imageHeaders(manifest),
 			}));
 	},
 
 	async fetchMangaDetail(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		mangaUrl: string,
 		_userCookies: Record<string, string>,
 	): Promise<MangaDetail> {
 		const id = extractGalleryId(mangaUrl);
 		if (!id) throw new Error(`hitomi: cannot extract gallery ID from: ${mangaUrl}`);
 
-		const info = await fetchGalleryInfo(id);
-		const block = await fetchGalleryBlock(parseInt(id, 10));
+		const info = await fetchGalleryInfo(manifest.id, id);
+		const block = await fetchGalleryBlock(manifest.id, parseInt(id, 10));
 		const langMap: Record<string, string> = {
 			japanese: 'ja',
 			chinese: 'zh',
@@ -231,6 +242,7 @@ export const hitomiAdapter: SourceAdapter = {
 			url: mangaUrl,
 			title,
 			cover: block.cover,
+			coverHeaders: imageHeaders(manifest),
 			description: info.type ?? null,
 			author: info.artists?.map((artist) => artist.artist).join(', ') ?? null,
 			status: info.language ?? null,
@@ -250,15 +262,15 @@ export const hitomiAdapter: SourceAdapter = {
 	},
 
 	async fetchChapterPages(
-		_manifest: SourceManifest,
+		manifest: SourceManifest,
 		chapterUrl: string,
 		_userCookies: Record<string, string>,
 	): Promise<ChapterPages> {
 		const id = extractGalleryId(chapterUrl);
 		if (!id) throw new Error(`hitomi: cannot extract gallery ID from: ${chapterUrl}`);
 
-		const [info, gg] = await Promise.all([fetchGalleryInfo(id), fetchGg()]);
+		const [info, gg] = await Promise.all([fetchGalleryInfo(manifest.id, id), fetchGg(manifest.id)]);
 		const pages = info.files.map((file) => imageUrl(file.hash, file.hasavif ? 'avif' : 'webp', gg));
-		return { url: chapterUrl, pages };
+		return { url: chapterUrl, pages, pageHeaders: imageHeaders(manifest) };
 	},
 };

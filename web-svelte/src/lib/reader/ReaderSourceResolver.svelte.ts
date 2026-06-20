@@ -16,6 +16,7 @@ interface SourceResolverDeps {
 export class ReaderSourceResolver {
   activeUrls = $state<string[]>([]);
   activeTokens = $state<string[] | null>(null);
+  activePageHeaders = $state<Record<string, string> | null>(null);
   activeSourceId = $state<string | undefined>(undefined);
   activeSourceName = $state<string | undefined>(undefined);
   activeSourceLang = $state<string | undefined>(undefined);
@@ -46,6 +47,7 @@ export class ReaderSourceResolver {
       const generation = ++this.#loadGeneration;
       this.activeUrls = d.urls ?? [];
       this.activeTokens = d.pageTokens ?? null;
+      this.activePageHeaders = d.pageHeaders ?? null;
       this.activeSourceId = d.sourceId ?? version?.sourceId;
       this.activeSourceName = d.sourceName ?? version?.sourceName;
       this.activeSourceLang = d.sourceLang ?? version?.lang;
@@ -106,6 +108,7 @@ export class ReaderSourceResolver {
 
       this.activeUrls = nextPages.pages;
       this.activeTokens = nextPages.tokens ?? null;
+      this.activePageHeaders = nextPages.pageHeaders ?? null;
 
       if (options.persist !== false) {
         localSettings.update({

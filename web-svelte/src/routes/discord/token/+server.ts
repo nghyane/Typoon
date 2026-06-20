@@ -19,7 +19,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	if (!/^\d{5,32}$/.test(clientID)) return json({ error: 'invalid_client_id' }, 400);
 	if (!code || code.length > 512) return json({ error: 'invalid_code' }, 400);
 	if (!/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) return json({ error: 'invalid_code_verifier' }, 400);
-	if (!isCallbackUrl(redirectURI)) return json({ error: 'invalid_redirect_uri' }, 400);
+	if (!isAllowedRedirectUrl(redirectURI)) return json({ error: 'invalid_redirect_uri' }, 400);
 
 	const form = new URLSearchParams({
 		client_id: clientID,
@@ -40,9 +40,10 @@ function stringField(value: unknown): string {
 	return typeof value === 'string' ? value.trim() : '';
 }
 
-function isCallbackUrl(value: string): boolean {
+function isAllowedRedirectUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
+		if (url.href === 'https://127.0.0.1/') return true;
 		return (url.protocol === 'https:' || url.hostname === 'localhost') && url.pathname === '/auth/callback';
 	} catch {
 		return false;

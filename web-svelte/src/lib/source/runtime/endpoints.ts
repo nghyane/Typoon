@@ -1,6 +1,7 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
 import { getAdapter } from '../adapters';
 import { applyChapterNumberNorm, compileChapterNumberNorm } from '../normalize';
+import { sourceCache, type SourceCacheScope } from './cache';
 import { queryHtmlAll, queryHtmlOne, queryJsonAll, queryJsonOne } from '../selectors';
 import type {
 	BrowseArgs, BrowseEndpoint, ChapterFields, ChapterListSpec, ChapterPages,
@@ -22,6 +23,14 @@ function tpl(t: string, v: Vars) {
 		const x = v[n]; if (x == null) return '';
 		return mod === 'q' ? encodeURIComponent(String(x)) : String(x);
 	});
+}
+
+function tplHeaders(headers: Record<string, string> | undefined, vars: Vars): Record<string, string> | undefined {
+	if (!headers) return undefined;
+	if (Object.keys(headers).length === 0) return undefined;
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) out[key] = tpl(value, vars);
+	return out;
 }
 
 function absUrl(href: string | null | undefined, base: string) {
@@ -60,17 +69,20 @@ async function fetchE(
 	req: HttpRequest, vars: Vars,
 	cookies: Record<string, string> = {},
 	m?: SourceManifest,
+	scope: SourceCacheScope = 'metadata',
 ): Promise<Fetched> {
 	const u = tpl(req.url, vars);
-	const h: Record<string, string> = { ...(req.headers ?? {}) };
+	const requestBody = req.body ? tpl(req.body, vars) : void 0;
+	const h: Record<string, string> = tplHeaders({ ...(m?.requestHeaders ?? {}), ...(req.headers ?? {}) }, vars) ?? {};
 	if (m) { const c = cookieHdr(m, cookies); if (c) h.Cookie = c; }
 	const r = await fetchSource(u, {
 		headers: h,
-		init: { method: req.method ?? 'GET', body: req.body ? tpl(req.body, vars) : void 0 },
+		init: { method: req.method ?? 'GET', body: requestBody },
+		cache: m ? sourceCache(m.id, scope, [req.method ?? 'GET', u, requestBody ?? '', vars], cookies) : undefined,
 	});
 	if (!r.ok) throw new Error(`HTTP ${r.status} on ${u}`);
-	const body = req.parse === 'json' ? await r.json() : new DOMParser().parseFromString(await r.text(), 'text/html');
-	return { url: u, parsed: body };
+	const parsedBody = req.parse === 'json' ? await r.json() : new DOMParser().parseFromString(await r.text(), 'text/html');
+	return { url: u, parsed: parsedBody };
 }
 
 // ── select ─────────────────────────────────────────────────────────
@@ -204,16 +216,18 @@ export async function fetchBrowse(
 	const page = args.page ?? 1;
 	const off = ep.pagination?.type === 'offset' ? (page - 1) * ep.pagination.pageSize : 0;
 	const vars: Vars = { q: args.q ?? '', page, offset: off, filterParams: args.filterParams ?? '' };
-	const { url, parsed } = await fetchE(ep, vars, args.userCookies ?? {}, m);
+	const { url, parsed } = await fetchE(ep, vars, args.userCookies ?? {}, m, 'browse');
 	const re = rootExtras(parsed, ep.parse, ep.rootExtras, vars);
 	const g: Vars = { ...vars, ...re };
 	const items = rows(parsed, ep.list, ep.parse)
 		.filter((r) => ep.keepIf ? keep(r, ep.keepIf, g) : true)
-		.map((r) => {
+		.map((r): MangaSummary | null => {
 			const extras = ep.extras ? resolve(r, ep.extras, g) : {};
 			const f = resolve(r, ep.fields as Fields, { ...g, ...extras });
 			const u = absUrl(f.url, url); if (!u) return null;
-			return { id: u, url: u, title: f.title || '(không tên)', cover: absUrl(f.cover, url) };
+			const summary: MangaSummary = { id: u, url: u, title: f.title || '(không tên)', cover: absUrl(f.cover, url) };
+			if (m.imageHeaders) summary.coverHeaders = m.imageHeaders;
+			return summary;
 		})
 		.filter((s): s is MangaSummary => s !== null);
 	return dedupeMangaSummaries(items);
@@ -228,7 +242,7 @@ export async function fetchMangaDetail(
 	if (m.adapter) { const a = getAdapter(m.adapter); if (a?.fetchMangaDetail) return a.fetchMangaDetail(m, mangaUrl, cookies); }
 	const ep = m.endpoints.manga;
 	const vars: Vars = { mangaUrl, language: args.language ?? m.languages[0], ...extract(mangaUrl, ep.extract) };
-	const { url: base, parsed } = await fetchE(ep, vars, cookies, m);
+	const { url: base, parsed } = await fetchE(ep, vars, cookies, m, 'manga');
 	const re = rootExtras(parsed, ep.parse, ep.rootExtras, vars);
 	const rt = rootRow(parsed, ep.parse);
 	const ex = ep.extras ? resolve(rt, ep.extras, { ...vars, ...re }) : {};
@@ -243,13 +257,15 @@ export async function fetchMangaDetail(
 	if (f.updatedAt && chapters.length > 0 && chapters.every((c) => !c.date)) {
 		const l = lastChapter(chapters); if (l) l.date = f.updatedAt;
 	}
-	return {
+	const detail: MangaDetail = {
 		id: mangaUrl, url: mangaUrl,
 		title: f.title || '(không tên)', cover: absUrl(f.cover, base),
 		description: f.description ?? null, author: f.author ?? null, status: f.status ?? null,
 		availableLanguages: parseLangList(f.availableLangs),
 		chapters,
 	};
+	if (m.imageHeaders) detail.coverHeaders = m.imageHeaders;
+	return detail;
 }
 
 async function chaptersExternal(
@@ -258,13 +274,13 @@ async function chaptersExternal(
 	const norm = compileChapterNumberNorm(ep.chapterNumberNorm ?? m.chapterNumberNorm);
 	const ps = ep.pagination?.pageSize;
 	if (!ps) {
-		const { url, parsed } = await fetchE(ep, { ...vars, page: 1, offset: 0 }, cookies, m);
+		const { url, parsed } = await fetchE(ep, { ...vars, page: 1, offset: 0 }, cookies, m, 'chapters');
 		return externalChapterRows(rows(parsed, ep.list, ep.parse), url, vars, ep, norm);
 	}
 	const all: MangaChapterRef[] = [];
 	let page = 1, off = 0;
 	while (true) {
-		const { url, parsed } = await fetchE(ep, { ...vars, page, offset: off }, cookies, m);
+		const { url, parsed } = await fetchE(ep, { ...vars, page, offset: off }, cookies, m, 'chapters');
 		const rs = rows(parsed, ep.list, ep.parse);
 		all.push(...externalChapterRows(rs, url, vars, ep, norm));
 		if (rs.length < ps) break;
@@ -281,13 +297,14 @@ export async function fetchChapterPages(
 	const ep = m.endpoints?.chapter;
 	if (!ep) throw new Error(`Source ${m.id} has no chapter endpoint`);
 	const vars: Vars = { chapterUrl, ...extract(chapterUrl, ep.extract) };
-	const { url: reqUrl, parsed } = await fetchE(ep, vars, cookies, m);
+	const { url: reqUrl, parsed } = await fetchE(ep, vars, cookies, m, 'chapter');
+	const pageHeaders = tplHeaders({ ...(m.imageHeaders ?? {}), ...(ep.pageHeaders ?? {}) }, vars);
 
 	const l = ep.list, f = ep.fields;
-	if (l && f) return { url: chapterUrl, pages: pageList(parsed, { parse: ep.parse, list: l, fields: f as Fields }, vars, reqUrl) };
+	if (l && f) return { url: chapterUrl, pages: pageList(parsed, { parse: ep.parse, list: l, fields: f as Fields }, vars, reqUrl), pageHeaders };
 	if (ep.pages) {
 		const pages = pageSpec(parsed, ep, ep.pages, vars, m.id);
-		return { url: chapterUrl, pages };
+		return { url: chapterUrl, pages, pageHeaders };
 	}
 	throw new Error(`chapter endpoint missing list/pages spec (${m.id})`);
 }

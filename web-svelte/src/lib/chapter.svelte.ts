@@ -5,6 +5,7 @@ import { useSourceFetch } from './sourceFetch.svelte';
 import type { PageBlob } from './types';
 
 type ResolvePageUrl = (index: number, rawUrl: string) => Promise<string>;
+type PageHeaders = () => Record<string, string> | null | undefined;
 
 export class ChapterPages {
   blobs = $state<PageBlob[]>([]);
@@ -20,22 +21,27 @@ export class ChapterPages {
   #inflight = new Map<number, Promise<Blob>>();
   #key = '';
   #resolveUrl: ResolvePageUrl;
+  #pageHeaders: PageHeaders;
   #sf = useSourceFetch();
+  #headers: Record<string, string> | undefined;
   #urls: readonly string[] = [];
 
   constructor(
     urls: () => readonly string[],
     resolveUrl: ResolvePageUrl = (_index, rawUrl) => Promise.resolve(rawUrl),
+    pageHeaders: PageHeaders = () => undefined,
   ) {
     this.#resolveUrl = resolveUrl;
+    this.#pageHeaders = pageHeaders;
 
     $effect(() => {
       const list = urls();
+      const headers = this.#pageHeaders() ?? undefined;
       untrack(() => {
-        const key = list.join('\n');
+        const key = `${list.join('\n')}\n\u0000${stableHeaders(headers)}`;
         if (key === this.#key) return;
         this.#key = key;
-        this.#start(list);
+        this.#start(list, headers);
       });
       return () => this.#ac?.abort();
     });
@@ -54,10 +60,11 @@ export class ChapterPages {
     this.#ac?.abort();
   }
 
-  #start(list: readonly string[]): void {
+  #start(list: readonly string[], headers: Record<string, string> | undefined): void {
     this.#ac?.abort();
     this.#generation += 1;
     this.#urls = [...list];
+    this.#headers = headers;
     this.#inflight.clear();
     this.#doneIndexes.clear();
 
@@ -110,7 +117,7 @@ export class ChapterPages {
       const rawUrl = await this.#resolveUrl(index, this.#urls[index] ?? '');
       if (!rawUrl) throw new Error(`missing page url ${index + 1}`);
       throwIfAborted(signal);
-      const res = await fetch(this.#sf.toBrowserUrl(rawUrl), { signal });
+      const res = await fetch(this.#sf.toBrowserUrl(rawUrl, this.#headers), { signal });
       if (!res.ok) throw new Error(`${res.status}`);
       const blob = await res.blob();
       const size = await readImageSize(blob);
@@ -137,6 +144,11 @@ export class ChapterPages {
     this.done = this.#doneIndexes.size;
     this.loading = this.done < this.total;
   }
+}
+
+function stableHeaders(headers: Record<string, string> | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) return '';
+  return JSON.stringify(Object.fromEntries(Object.entries(headers).sort(([a], [b]) => a.localeCompare(b))));
 }
 
 async function readImageSize(blob: Blob): Promise<{ width: number; height: number }> {

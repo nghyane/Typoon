@@ -1,0 +1,108 @@
+{
+  "id":        "truyenqq",
+  "name":      "TruyenQQ",
+  "host":      "truyenqq.com.vn",
+  "homepage":  "https://truyenqq.com.vn",
+  "languages": ["vi"],
+  "version":   "1.0",
+  "accent":    "cyan",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://truyenqq.com.vn/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://truyenqq.com.vn/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Chap|Chương)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://truyenqq.com.vn/truyen-moi",
+          "parse":  "html",
+          "list":   ".listing .inner > .item",
+          "fields": {
+            "url":   ".info h3 a@href || .cover a@href",
+            "title": ".info h3 a || .cover a@title",
+            "cover": ".cover img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Truyện hot",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://truyenqq.com.vn/truyen-hot?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".listing .inner > .item",
+          "fields": {
+            "url":   ".info h3 a@href || .cover a@href",
+            "title": ".info h3 a || .cover a@title",
+            "cover": ".cover img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://truyenqq.com.vn/tim-kiem?s={q:q}&page={page}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":   ".listing .inner > .item",
+      "fields": {
+        "url":   ".info h3 a@href || .cover a@href",
+        "title": ".info h3 a || .cover a@title",
+        "cover": ".cover img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       "h1[itemprop=\"name\"] || .mRightCol h1",
+        "cover":       ".poster img@src",
+        "description": "#gioithieu [itemprop=\"description\"]",
+        "author":      ".book-meta .line:nth-child(1) .result",
+        "status":      ".book-meta .line:nth-child(2) .result",
+        "updatedAt":   ".book-meta .line:nth-child(5) .result"
+      },
+      "chapters": {
+        "list": "#chapter-list .reading-list .item",
+        "fields": {
+          "url":    ".chapter-name@href",
+          "number": ".chapter-name",
+          "label":  ".chapter-name",
+          "date":   ".item-time"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   ".reading-content img",
+      "fields": { "url": "@data-src || @src" }
+    }
+  }
+}

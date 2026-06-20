@@ -9,6 +9,10 @@
   "nsfw":      true,
   "adapter":   "ehentai",
 
+  "imageHeaders": {
+    "Referer": "https://e-hentai.org/"
+  },
+
   "defaults": {
     "category": "all"
   },
