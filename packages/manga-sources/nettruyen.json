@@ -1,0 +1,109 @@
+{
+  "id":        "nettruyen",
+  "name":      "NetTruyen",
+  "host":      "nettruyen.gg",
+  "homepage":  "https://nettruyen.gg",
+  "languages": ["vi"],
+  "version":   "1.0",
+  "accent":    "blue",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://nettruyen.gg/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://nettruyen.gg/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Chap|Chương)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://nettruyen.gg/trang-chu?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".item",
+          "fields": {
+            "url":   "h3 a@href || .image a@href",
+            "title": "h3 a",
+            "cover": ".image img@data-original || .image img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Truyện hot",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://nettruyen.gg/truyen-tranh-hot?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".item",
+          "fields": {
+            "url":   "h3 a@href || .image a@href",
+            "title": "h3 a",
+            "cover": ".image img@data-original || .image img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://nettruyen.gg/tim-truyen?keyword={q:q}&page={page}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 20 },
+      "list":   ".item",
+      "fields": {
+        "url":   "h3 a@href || .image a@href",
+        "title": "h3 a",
+        "cover": ".image img@data-original || .image img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       "h1[itemprop=\"name\"] || .title-detail",
+        "cover":       ".detail-info img@src || .detail-info img@data-original",
+        "description": "#gioithieu [itemprop=\"description\"] || .detail-content",
+        "author":      ".author .col-xs-8",
+        "status":      ".status .col-xs-8",
+        "updatedAt":   ".update .col-xs-8"
+      },
+      "chapters": {
+        "list": "#chapter-list .row",
+        "fields": {
+          "url":    "a@href",
+          "number": ".chapter a",
+          "label":  ".chapter a",
+          "date":   ".date"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   "#ctl00_divCenter img",
+      "fields": { "url": "@src" }
+    }
+  }
+}

@@ -33,8 +33,9 @@
         "label": "Mới cập nhật",
         "endpoint": {
           "method": "GET",
-          "url":    "https://truyenqq.com.vn/truyen-moi",
+          "url":    "https://truyenqq.com.vn/truyen-moi?page={page}",
           "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
           "list":   ".listing .inner > .item",
           "fields": {
             "url":   ".info h3 a@href || .cover a@href",

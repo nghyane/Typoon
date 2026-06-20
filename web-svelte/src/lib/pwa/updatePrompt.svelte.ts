@@ -1,4 +1,7 @@
-import { browser, version as appVersion } from '$app/environment';
+import { browser } from '$app/environment';
+
+// Dynamic build-time version from vite.config.ts
+const appVersion = import.meta.env.VITE_APP_VERSION ?? Date.now().toString();
 import { track } from '$lib/analytics/client';
 
 const DISMISSED_VERSION_KEY = 'typoon.dismissedUpdateVersion.v1';

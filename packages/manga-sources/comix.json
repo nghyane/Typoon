@@ -1,0 +1,106 @@
+{
+  "id":        "comix",
+  "name":      "Comix.to",
+  "host":      "comix.to",
+  "homepage":  "https://comix.to",
+  "languages": ["en", "ko", "zh", "ja"],
+  "version":   "1.0",
+  "accent":    "indigo",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://comix.to/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://comix.to/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Chap|Chương)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://comix.to/",
+          "parse":  "html",
+          "list":   ".manga-item",
+          "fields": {
+            "url":   "a@href",
+            "title": "h3",
+            "cover": "img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://comix.to/",
+          "parse":  "html",
+          "list":   ".manga-item.popular",
+          "fields": {
+            "url":   "a@href",
+            "title": "h3",
+            "cover": "img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://comix.to/search?q={q:q}",
+      "parse":  "html",
+      "list":   ".manga-item",
+      "fields": {
+        "url":   "a@href",
+        "title": "h3",
+        "cover": "img@src"
+      }
+    },
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       "h1",
+        "cover":       ".cover img@src",
+        "description": ".synopsis",
+        "author":      ".author",
+        "status":      ".status",
+        "updatedAt":   ".updated"
+      },
+      "chapters": {
+        "list": "#chapter-list li",
+        "fields": {
+          "url":    "a@href",
+          "number": "a",
+          "label":  "a",
+          "date":   ".date"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   ".reader img",
+      "fields": { "url": "@src" }
+    }
+  }
+}

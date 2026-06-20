@@ -11,6 +11,8 @@
     { "id": "truyenqq",      "url": "./truyenqq.json" },
     { "id": "webtoonscan",   "url": "./webtoonscan.json" },
     { "id": "nhentai",       "url": "./nhentai.json" },
-    { "id": "naver-webtoon", "url": "./naver-webtoon.json" }
+    { "id": "naver-webtoon", "url": "./naver-webtoon.json" },
+    { "id": "nettruyen",     "url": "./nettruyen.json" },
+    { "id": "comix",         "url": "./comix.json" }
   ]
 }
