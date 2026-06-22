@@ -102,27 +102,27 @@
   </div>
 {:else}
   <div class="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-    <header>
+    <header class="space-y-3">
       <h1 class="text-lg font-semibold text-text">Cài đặt</h1>
-    </header>
 
-    <div class="flex flex-wrap gap-1.5" role="tablist">
-      {#each tabs as item (item.id)}
-        {@const selected = item.id === tab}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={selected}
-          onclick={() => { tab = item.id; }}
-          class={cn(
-            'h-7 px-3 rounded-full text-xs font-medium transition-colors',
-            selected ? 'bg-accent-bg text-accent-text' : 'bg-surface text-text-muted hover:bg-hover hover:text-text',
-          )}
-        >
-          {item.label}
-        </button>
-      {/each}
-    </div>
+      <div class="flex flex-wrap gap-2" role="tablist">
+        {#each tabs as item (item.id)}
+          {@const selected = item.id === tab}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onclick={() => { tab = item.id; }}
+            class={cn(
+              'h-7 px-3 rounded-full text-xs font-medium transition-colors',
+              selected ? 'bg-accent-bg text-accent-text' : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
+            )}
+          >
+            {item.label}
+          </button>
+        {/each}
+      </div>
+    </header>
 
     {#if tab === 'account'}
       <section class="space-y-6">
