@@ -1,6 +1,8 @@
 import { type TranslationConfig } from './translationConfig';
 import { type ReaderModelState } from './visionRuntime';
 export type ReaderPhase = 'idle' | 'loading' | 'ready' | 'translating' | 'done' | 'error';
+/** Translation backend the reader uses. AI/custom LLM gateway is future work. */
+export type TranslationProvider = 'deepl' | 'google';
 export interface ReaderTranslationState {
     phase: ReaderPhase;
     prepare: {
@@ -31,6 +33,7 @@ export interface ReaderTranslationChapter {
 }
 export interface ReaderTranslationOptions {
     readonly config?: TranslationConfig;
+    readonly provider?: TranslationProvider;
 }
 export declare class ReaderTranslation {
     private readonly listeners;
@@ -40,6 +43,8 @@ export declare class ReaderTranslation {
     private readonly config;
     private readonly pipeline;
     private translator;
+    private translatorProvider;
+    private provider;
     private chapter;
     private pages;
     private state;
@@ -62,6 +67,8 @@ export declare class ReaderTranslation {
     translate(): void;
     /** Toggle translation visibility. Fixes the broken hide behavior. */
     setHidden(hidden: boolean): void;
+    /** Choose the translation backend. Applies to the next translate() run. */
+    setProvider(provider: TranslationProvider): void;
     cancel(): void;
     dispose(): void;
     private start;
@@ -75,6 +82,7 @@ export declare class ReaderTranslation {
     private visibleRange;
     private evictPages;
     private ensureTranslator;
+    private disposeTranslator;
     private syncOverlay;
     private clearOverlay;
     private clearOverlayKeepActive;

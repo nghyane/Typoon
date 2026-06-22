@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import type { TranslationProvider } from './reader/translation.svelte';
 
 export type ReaderMode = 'webtoon';
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -13,6 +14,7 @@ export interface LocalSettings {
 	reader_page_width: number;
 	reader_source_prefs: Record<string, SourcePref>;
 	default_target_lang: string;
+	translation_provider: TranslationProvider;
 	updated_at: string;
 }
 
@@ -24,6 +26,7 @@ const defaults: LocalSettings = {
 	reader_page_width: 1040,
 	reader_source_prefs: {},
 	default_target_lang: 'vi',
+	translation_provider: 'deepl',
 	updated_at: new Date(0).toISOString(),
 };
 
@@ -61,6 +64,7 @@ function normalize(value: Partial<LocalSettings>): LocalSettings {
 		reader_source_prefs: normalizeSourcePrefs(value.reader_source_prefs),
 		theme: isThemeMode(value.theme) ? value.theme : defaults.theme,
 		default_target_lang: value.default_target_lang ?? defaults.default_target_lang,
+		translation_provider: isTranslationProvider(value.translation_provider) ? value.translation_provider : defaults.translation_provider,
 		updated_at: value.updated_at ?? defaults.updated_at,
 	};
 }
@@ -71,6 +75,10 @@ function isReaderMode(value: unknown): value is ReaderMode {
 
 function isThemeMode(value: unknown): value is ThemeMode {
 	return value === 'system' || value === 'light' || value === 'dark';
+}
+
+function isTranslationProvider(value: unknown): value is TranslationProvider {
+	return value === 'deepl' || value === 'google';
 }
 
 function normalizeSourcePrefs(value: unknown): Record<string, SourcePref> {

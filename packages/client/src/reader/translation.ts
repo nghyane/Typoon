@@ -17,6 +17,8 @@ import { ensureMangaFontLoaded } from '../render/font'
 import { LensTextRecognizer } from '../recognizers/lens/LensTextRecognizer'
 import type { SourcePageSize } from '../pipeline/chapterContent'
 import { DeepLTranslateWeb } from '../translators/deepl-web/DeepLTranslateWeb'
+import { GoogleTranslateWeb } from '../translators/google-web/GoogleTranslateWeb'
+import type { Translator } from '../translators/translator'
 import { PagePipeline } from './pagePipeline'
 import { PageScheduler } from './pageScheduler'
 import { planPageScans, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
@@ -32,6 +34,9 @@ import {
 } from './visionRuntime'
 
 export type ReaderPhase = 'idle' | 'loading' | 'ready' | 'translating' | 'done' | 'error'
+
+/** Translation backend the reader uses. AI/custom LLM gateway is future work. */
+export type TranslationProvider = 'deepl' | 'google'
 
 export interface ReaderTranslationState {
   phase: ReaderPhase
@@ -60,6 +65,7 @@ export interface ReaderTranslationChapter {
 
 export interface ReaderTranslationOptions {
   readonly config?: TranslationConfig
+  readonly provider?: TranslationProvider
 }
 
 function init(pageCount: number, sourceLang: string | null, targetLang: string, model: ReaderModelState): ReaderTranslationState {
@@ -83,7 +89,9 @@ export class ReaderTranslation {
   private readonly config: TranslationConfig
   private readonly pipeline: PagePipeline
 
-  private translator: DeepLTranslateWeb | null = null
+  private translator: Translator | null = null
+  private translatorProvider: TranslationProvider | null = null
+  private provider: TranslationProvider
   private chapter: ReaderTranslationChapter | null = null
   private pages: PageProvider | null = null
   private state: ReaderTranslationState
@@ -99,6 +107,7 @@ export class ReaderTranslation {
 
   constructor(options: ReaderTranslationOptions = {}) {
     this.config = options.config ?? defaultTranslationConfig
+    this.provider = options.provider ?? 'deepl'
     this.overlays = new OverlayManager(this.config.chunk.overlayMarginPx)
     this.pipeline = new PagePipeline({
       recognizer: this.recognizer,
@@ -174,6 +183,11 @@ export class ReaderTranslation {
     this.setState({ hidden })
   }
 
+  /** Choose the translation backend. Applies to the next translate() run. */
+  setProvider(provider: TranslationProvider): void {
+    this.provider = provider
+  }
+
   cancel(): void {
     this.generation += 1
     this.stopRun()
@@ -197,8 +211,7 @@ export class ReaderTranslation {
     this.listeners.clear()
     this.overlays.dispose()
     this.unsubscribeModelState()
-    void this.translator?.close()
-    this.translator = null
+    this.disposeTranslator()
   }
 
   private async start(generation: number): Promise<void> {
@@ -370,13 +383,25 @@ export class ReaderTranslation {
     pages.evictExcept(keep)
   }
 
-  private ensureTranslator(): DeepLTranslateWeb {
-    if (this.translator) return this.translator
+  private ensureTranslator(): Translator {
+    if (this.translator && this.translatorProvider === this.provider) return this.translator
+    this.disposeTranslator()
     const caps = detectBrowserCapabilities()
-    this.translator = new DeepLTranslateWeb({
-      maxSessions: caps.isMobile ? this.config.translator.maxSessionsMobile : this.config.translator.maxSessionsDesktop,
-    })
+    const maxSessions = caps.isMobile ? this.config.translator.maxSessionsMobile : this.config.translator.maxSessionsDesktop
+    this.translator = this.provider === 'google'
+      ? new GoogleTranslateWeb()
+      : new DeepLTranslateWeb({ maxSessions })
+    this.translatorProvider = this.provider
     return this.translator
+  }
+
+  private disposeTranslator(): void {
+    const translator = this.translator
+    if (translator && 'close' in translator && typeof translator.close === 'function') {
+      void (translator as { close(): unknown }).close()
+    }
+    this.translator = null
+    this.translatorProvider = null
   }
 
   private syncOverlay(): void {

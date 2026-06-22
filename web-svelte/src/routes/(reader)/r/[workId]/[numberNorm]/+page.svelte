@@ -109,6 +109,10 @@
   });
 
   $effect(() => {
+    translation.setProvider(localSettings.state.translation_provider);
+  });
+
+  $effect(() => {
     if (!canTranslateLanguage || !translationBlocked) { joinRequiredTracked = false; return; }
     if (joinRequiredTracked) return;
     joinRequiredTracked = true;

@@ -1,8 +1,8 @@
 // reader/translation.svelte.ts — Svelte wrapper for ReaderTranslation.
 
-import { ReaderTranslation, type ReaderTranslationChapter, type ReaderTranslationState } from '@typoon/client/web-reader';
+import { ReaderTranslation, type ReaderTranslationChapter, type ReaderTranslationState, type TranslationProvider } from '@typoon/client/web-reader';
 
-export type { ReaderTranslationChapter, ReaderTranslationState };
+export type { ReaderTranslationChapter, ReaderTranslationState, TranslationProvider };
 
 export class SvelteReaderTranslation {
   state = $state<ReaderTranslationState>(empty);
@@ -17,6 +17,7 @@ export class SvelteReaderTranslation {
   registerContentHost(el: HTMLElement): () => void { return this.#rt.registerContentHost(el); }
   registerPage(pageIndex: number, el: HTMLElement): () => void { return this.#rt.registerPage(pageIndex, el); }
   translate(): void { this.#rt.translate(); }
+  setProvider(provider: TranslationProvider): void { this.#rt.setProvider(provider); }
   setHidden(hidden: boolean): void { this.#rt.setHidden(hidden); }
   cancel(): void { this.#rt.cancel(); }
   dispose(): void {

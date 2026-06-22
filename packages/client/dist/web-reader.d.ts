@@ -13,4 +13,4 @@ export type { PageOverlay } from './domain/overlay';
 export type { PageAsset } from './domain/source';
 export type { PreparedPageHandle } from './domain/prepared';
 export type { PreparedTextResult, PreparedTranslationResult } from './pipeline/translatePreparedPage';
-export { ReaderTranslation, type ReaderModelState, type ReaderTranslationChapter, type ReaderTranslationState } from './reader/translation';
+export { ReaderTranslation, type ReaderModelState, type ReaderTranslationChapter, type ReaderTranslationState, type TranslationProvider } from './reader/translation';
