@@ -10,17 +10,19 @@ import type { PageScanUnit, ReaderPageOverlay, SeamOverlay, PlacementItem } from
 import { emptyReaderPageOverlay } from '../domain/pageScan'
 import type { TextPlacement } from '../domain/planning'
 import type { TranslationUnit, TranslatedUnit } from '../domain/translation'
+import type { RecognizedTextPage } from '../domain/text'
+import type { TextRegion } from '../domain/regions'
 import type { SafeMarginsDebug } from '../render/backgroundFit'
 import { estimateSafeMargins } from '../render/backgroundFit'
 import { textFitRect } from '../render/fitGeometry'
 import { LensTextRecognizer } from '../recognizers/lens/LensTextRecognizer'
 import { buildOverlayPlacements } from '../pipeline/composeOverlay'
-import { textFromRecognition, translatePreparedText } from '../pipeline/translatePreparedPage'
+import { textFromRecognition, translatePreparedText, type PreparedTextResult } from '../pipeline/translatePreparedPage'
 import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
 import { textRoleContext, type TextRoleContext } from '../pipeline/textRole'
 import type { Translator } from '../translators/translator'
 import type { BBox } from '../domain/geometry'
-import { capturePageScan } from './pageCapture'
+import { capturePageScan, type CapturedPageScan } from './pageCapture'
 import {
   routePlacement,
   canvasPlacementToSource,
@@ -53,6 +55,27 @@ interface RoutedItem {
   readonly margin: SafeMarginsDebug
 }
 
+interface CoreFrame {
+  readonly x: number
+  readonly y: number
+  readonly width: number
+  readonly height: number
+}
+
+interface ScannedPage {
+  readonly capture: CapturedPageScan
+  readonly clean: RecognizedTextPage
+  readonly regions: readonly TextRegion[]
+  readonly coreFrame: CoreFrame
+  readonly roleContext: TextRoleContext
+}
+
+interface ComposedPage {
+  readonly text: PreparedTextResult
+  readonly renderPlacements: readonly TextPlacement[]
+  readonly translationInput: readonly TranslationUnit[]
+}
+
 export class PagePipeline {
   constructor(private readonly deps: PagePipelineDeps) {}
 
@@ -60,6 +83,21 @@ export class PagePipeline {
     const { unit, signal } = args
     const empty = emptyReaderPageOverlay(unit.pageIndex, unit.source)
 
+    const scanned = await this.scanPage(args)
+    const composed = this.composePlacements(scanned, unit.pageIndex)
+    if (!composed) return empty
+
+    const translations = await this.translatePlacements(composed, args)
+    throwIfAborted(signal)
+
+    const margins = estimateCanvasMargins(scanned.capture.image, composed.renderPlacements)
+    const geo: CanvasGeometry = { captureScale: scanned.capture.captureScale, haloTopPx: scanned.capture.haloTopPx }
+    return this.route(unit, composed.renderPlacements, margins, geo, translations)
+  }
+
+  /** Capture core+halo, OCR, detect regions, drop noise, derive role context. */
+  private async scanPage(args: PagePipelineArgs): Promise<ScannedPage> {
+    const { unit, signal } = args
     const capture = await capturePageScan(unit, args.loadPage, this.deps.config.scan, signal)
     throwIfAborted(signal)
     const recognized = await this.deps.recognizer.recognizeEncoded(capture.encoded, {
@@ -71,7 +109,7 @@ export class PagePipeline {
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
     throwIfAborted(signal)
 
-    const coreFrame = {
+    const coreFrame: CoreFrame = {
       x: 0,
       y: capture.haloTopPx * capture.captureScale,
       width: capture.image.width,
@@ -82,29 +120,33 @@ export class PagePipeline {
       const cy = (block.bbox[1] + block.bbox[3]) / 2
       return cy >= coreFrame.y && cy < coreFrame.y + coreFrame.height
     })
-    const pageRoleContext: TextRoleContext = coreOwnedBlocks.length
-      ? textRoleContext(coreOwnedBlocks)
-      : {}
-    const text = textFromRecognition({ pageIndex: unit.pageIndex, recognized: clean, regions, roleContext: pageRoleContext })
-    const placements = buildOverlayPlacements({ recognized: text.recognized, textUnits: text.textUnits, regions, roleContext: pageRoleContext })
-    if (!placements.length) return empty
+    const roleContext: TextRoleContext = coreOwnedBlocks.length ? textRoleContext(coreOwnedBlocks) : {}
+    return { capture, clean, regions, coreFrame, roleContext }
+  }
+
+  /** Build overlay placements + synthetic translation units; null if nothing to do. */
+  private composePlacements(scanned: ScannedPage, pageIndex: number): ComposedPage | null {
+    const { clean, regions, roleContext } = scanned
+    const text = textFromRecognition({ pageIndex, recognized: clean, regions, roleContext })
+    const placements = buildOverlayPlacements({ recognized: text.recognized, textUnits: text.textUnits, regions, roleContext })
+    if (!placements.length) return null
 
     const translationInput = translationInputFromPlacements(placements, text.translationUnits)
-    if (!hasTranslatableUnit(translationInput)) return empty
+    if (!hasTranslatableUnit(translationInput)) return null
     const renderPlacements = placements.map(p => ({ ...p, sourceUnitIds: renderSourceUnitIds(p) }))
+    return { text, renderPlacements, translationInput }
+  }
 
+  /** Translate the composed units and return the translated payloads. */
+  private async translatePlacements(composed: ComposedPage, args: PagePipelineArgs): Promise<readonly TranslatedUnit[]> {
     const translated = await translatePreparedText({
-      text: { ...text, textUnits: [], translationUnits: translationInput },
+      text: { ...composed.text, textUnits: [], translationUnits: composed.translationInput },
       translator: this.deps.translator(),
       sourceLanguage: args.sourceLanguage,
       targetLanguage: args.targetLanguage,
-      signal,
+      signal: args.signal,
     })
-    throwIfAborted(signal)
-
-    const margins = estimateCanvasMargins(capture.image, renderPlacements)
-    const geo: CanvasGeometry = { captureScale: capture.captureScale, haloTopPx: capture.haloTopPx }
-    return this.route(unit, renderPlacements, margins, geo, translated.translations)
+    return translated.translations
   }
 
   private route(
