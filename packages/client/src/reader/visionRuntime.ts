@@ -44,6 +44,9 @@ let latestModelState: ReaderModelState = { state: 'idle' }
 const modelStateListeners = new Set<(state: ReaderModelState) => void>()
 
 function repository(config: TranslationConfig): ModelRepository {
+  // Config-first-wins is intentional: the app uses a single TranslationConfig
+  // for its lifetime, so a later differing config never reaches here. If
+  // per-config repositories are ever needed, key this by repo/revision instead.
   if (!modelRepository) {
     modelRepository = ModelRepository.fromHuggingFace({
       repo: config.model.repo,
@@ -87,13 +90,11 @@ export function prewarmTextRegionDetector(config: TranslationConfig = defaultTra
 }
 
 function defaultTextRegionDetector(signal: AbortSignal, config: TranslationConfig): Promise<TextRegionDetector> {
-  if (!detectorPromise) {
-    detectorPromise = createTextRegionDetector(signal, config).catch(error => {
-      detectorPromise = null
-      throw error
-    })
-  }
-  return detectorPromise
+  return lazyOnce(
+    () => detectorPromise,
+    p => { detectorPromise = p },
+    () => createTextRegionDetector(signal, config),
+  )
 }
 
 async function createTextRegionDetector(signal: AbortSignal, config: TranslationConfig): Promise<TextRegionDetector> {
@@ -133,13 +134,11 @@ function capabilityToModelState(status: CapabilityStatus): ReaderModelState {
 }
 
 function configureOrtRuntime(caps: BrowserCapabilities): Promise<ConfiguredOrtRuntime> {
-  if (!ortRuntimePromise) {
-    ortRuntimePromise = createOrtRuntime(caps).catch(error => {
-      ortRuntimePromise = null
-      throw error
-    })
-  }
-  return ortRuntimePromise
+  return lazyOnce(
+    () => ortRuntimePromise,
+    p => { ortRuntimePromise = p },
+    () => createOrtRuntime(caps),
+  )
 }
 
 async function createOrtRuntime(caps: BrowserCapabilities): Promise<ConfiguredOrtRuntime> {
@@ -174,4 +173,23 @@ function absoluteWasmPaths(wasm: string, mjs: string): OrtBackend['wasmPaths'] {
     wasm: new URL(wasm, window.location.href).href,
     mjs: new URL(mjs, window.location.href).href,
   }
+}
+
+/**
+ * Memoize an async factory in a caller-owned slot: run it once, cache the
+ * promise, and reset the slot on rejection so a later call retries cleanly.
+ */
+function lazyOnce<T>(
+  get: () => Promise<T> | null,
+  set: (promise: Promise<T> | null) => void,
+  factory: () => Promise<T>,
+): Promise<T> {
+  const existing = get()
+  if (existing) return existing
+  const promise = factory().catch(error => {
+    set(null)
+    throw error
+  })
+  set(promise)
+  return promise
 }
