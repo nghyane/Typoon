@@ -27,9 +27,6 @@ export interface WorkDetail extends WorkCover {
   tags?: string[];
 }
 
-export type TranslationPhase =
-  | 'idle' | 'loading-model' | 'translating' | 'done' | 'error';
-
 export interface ReaderChapterLink {
   numberNorm: string;
   number: string;

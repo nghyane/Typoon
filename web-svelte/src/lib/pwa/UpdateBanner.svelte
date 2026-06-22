@@ -6,7 +6,7 @@
   const stalled = $derived(pwaUpdate.state.phase === 'stalled');
 </script>
 
-{#if pwaUpdate.state.available}
+{#if pwaUpdate.available}
   <div class="fixed inset-x-0 top-[max(0.5rem,var(--sait))] z-[80] flex justify-center px-3 pointer-events-none">
     <div class="pointer-events-auto flex max-w-[min(42rem,calc(100vw-1.5rem))] items-center gap-2 rounded-md border border-accent/20 bg-surface/95 px-3 py-2 text-sm text-text shadow-lg backdrop-blur">
       <span class="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-accent-bg text-accent-text">

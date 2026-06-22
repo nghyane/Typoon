@@ -6,6 +6,7 @@
   "languages": ["en", "ko", "zh", "ja"],
   "version":   "1.0",
   "accent":    "indigo",
+  "adapter":   "comix",
 
   "requestHeaders": {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

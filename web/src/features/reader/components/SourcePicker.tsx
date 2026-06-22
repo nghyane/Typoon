@@ -3,7 +3,6 @@
 //   ┌────────────────────────────────────────────────┐
 //   │ VI                                             │
 //   │   VI · TruyenQQ                       2h trước │
-//   │   VI · NetTruyen                      1d trước │
 //   │                                                │
 //   │ Khác                                           │
 //   │   EN · Mangadex                            5h   │

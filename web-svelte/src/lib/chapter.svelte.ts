@@ -125,8 +125,6 @@ export class ChapterPages {
       if (this.#generation !== generation) throw new Error('stale page fetch');
       this.blobs[index] = blob;
       this.pageSizes[index] = size;
-      this.blobs = [...this.blobs];
-      this.pageSizes = [...this.pageSizes];
       this.#markDone(index);
       return blob;
     } catch (err) {

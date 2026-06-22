@@ -40,16 +40,7 @@ export class ReaderNavigation {
     const max = el.scrollHeight - el.clientHeight;
     this.scrollProgress = max > 0 ? Math.min(1, Math.max(0, el.scrollTop / max)) : 0;
 
-    let best = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (const node of el.querySelectorAll<HTMLElement>('[data-page-index]')) {
-      const mid = node.offsetTop + node.offsetHeight / 2;
-      const dist = Math.abs(mid - center);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = Number(node.dataset.pageIndex) || 0;
-      }
-    }
+    const best = nearestPageIndex(el, center);
     if (best !== this.pageIndex) this.pageIndex = best;
   }
 
@@ -66,4 +57,29 @@ export class ReaderNavigation {
 
 function isInteractive(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && !!target.closest('button,a,input,textarea,select,[role="button"]');
+}
+
+// Page elements stack top→bottom in DOM order, so their vertical midpoints are
+// monotonically increasing. Binary-search for the page nearest the viewport
+// center instead of scanning every node each scroll frame.
+function nearestPageIndex(el: HTMLDivElement, center: number): number {
+  const nodes = el.querySelectorAll<HTMLElement>('[data-page-index]');
+  if (!nodes.length) return 0;
+
+  const midOf = (node: HTMLElement): number => node.offsetTop + node.offsetHeight / 2;
+
+  let lo = 0;
+  let hi = nodes.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (midOf(nodes[mid]!) < center) lo = mid + 1;
+    else hi = mid;
+  }
+
+  // lo is the first node at/after center; the nearest is lo or lo-1.
+  let best = nodes[lo]!;
+  if (lo > 0 && Math.abs(midOf(nodes[lo - 1]!) - center) <= Math.abs(midOf(best) - center)) {
+    best = nodes[lo - 1]!;
+  }
+  return Number(best.dataset.pageIndex) || 0;
 }

@@ -7,17 +7,11 @@ const cdnTarget = 'https://927251094806098001.discordsays.com';
 const deeplTarget = 'https://927251094806098001.discordsays.com';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
-// Dynamic version to force PWA update check on every deploy
-const appVersion = Date.now().toString();
-
 export default defineConfig({
 	plugins: [
 		tailwindcss(),
 		sveltekit(),
 	],
-	define: {
-		'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
-	},
 	server: {
 		fs: {
 			allow: [repoRoot],

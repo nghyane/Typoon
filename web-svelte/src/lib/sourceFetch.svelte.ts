@@ -4,7 +4,10 @@
 //   useSourceFetch() — proxy URL builder for browser-loaded images
 
 let _cdnInstance: ReturnType<typeof createSourceFetch> | null = null;
-const SOURCE_CDN_BASE = 'https://927251094806098001.discordsays.com/cdn/c';
+const SOURCE_CDN_GATEWAYS = [
+	'https://927251094806098001.discordsays.com/cdn/c',
+	'https://function-bun-production-c2e1.up.railway.app/cdn/c',
+];
 
 export type SourceCachePolicy = 'auto' | 'immutable' | 'ttl' | 'reload' | 'bypass' | 'no-store' | 'only-if-cached';
 
@@ -23,12 +26,12 @@ interface SourceFetchOptions {
 /** CDN-based instance for browser image URLs (Cover component). */
 export function useSourceFetch() {
 	if (!_cdnInstance) {
-		_cdnInstance = createSourceFetch([SOURCE_CDN_BASE]);
+		_cdnInstance = createSourceFetch(SOURCE_CDN_GATEWAYS);
 	}
 	return _cdnInstance;
 }
 
-const _sourceCdn = createSourceFetch([SOURCE_CDN_BASE]);
+const _sourceCdn = createSourceFetch(SOURCE_CDN_GATEWAYS);
 export const fetchSource = _sourceCdn.fetch;
 export const toBrowserUrl = _sourceCdn.toBrowserUrl;
 
@@ -37,17 +40,19 @@ function createSourceFetch(origins: readonly string[]) {
 		.map(g => g.replace(/\/+$/u, ''))
 		.filter(g => /^https?:\/\/[^?#]+$/i.test(g));
 
-	function gatewayFor(key: string): string {
-		if (gateways.length === 0) return '/cdn/c';
-		const origin = gateways[hash(key) % gateways.length];
-		return origin;
+	if (gateways.length === 0) gateways.push('/cdn/c');
+
+	function gatewayUrl(key: string, index: number): string {
+		return `${gateways[index % gateways.length]!}/${key}`;
 	}
 
 	function _toBrowserUrl(url: string, headers?: Record<string, string>, cache?: SourceCacheOptions): string {
 		let u: URL;
 		try { u = new URL(url); } catch { return url; }
 		if (u.protocol !== 'https:' && u.protocol !== 'http:') return url;
-		const path = `${gatewayFor(`${u.host}${u.pathname}`)}/${u.host}${u.pathname}`;
+
+		const key = `${u.host}${u.pathname}`;
+		const path = gatewayUrl(key, hash(key) % gateways.length);
 		const params = new URLSearchParams(u.searchParams);
 		if (headers && Object.keys(headers).length > 0) params.set('_h', encodeHeaderBlob(headers));
 		applyCacheParams(params, cache);
@@ -55,13 +60,45 @@ function createSourceFetch(origins: readonly string[]) {
 		return qs ? `${path}?${qs}` : path;
 	}
 
-	function _fetch(url: string, opts: SourceFetchOptions = {}): Promise<Response> {
-		const headers = new Headers(opts.init?.headers);
+	async function _fetch(url: string, opts: SourceFetchOptions = {}): Promise<Response> {
+		const h = new Headers(opts.init?.headers);
 		if (opts.headers && Object.keys(opts.headers).length > 0) {
-			headers.set('X-Proxy-Headers', encodeHeaderBlob(opts.headers));
+			h.set('X-Proxy-Headers', encodeHeaderBlob(opts.headers));
 		}
-		applyCacheHeaders(headers, opts.cache);
-		return fetch(_toBrowserUrl(url), { ...opts.init, headers });
+		applyCacheHeaders(h, opts.cache);
+
+		let u: URL;
+		try { u = new URL(url); } catch { return fetch(url, { ...opts.init, headers: h }); }
+		if (u.protocol !== 'https:' && u.protocol !== 'http:') return fetch(url, { ...opts.init, headers: h });
+
+		// Forward original query params to each gateway attempt
+		const params = new URLSearchParams(u.searchParams);
+
+		const key = `${u.host}${u.pathname}`;
+		// Always try gateways in order: primary first, fallbacks on failure
+		let lastError: unknown;
+		for (let attempt = 0; attempt < gateways.length; attempt++) {
+			const gw = gateways[attempt]!;
+			const gwUrl = `${gw}/${key}?${params}`;
+
+			if (attempt > 0) {
+				// Exponential backoff: 1s, 2s, 4s...
+				await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt - 1), 8000)));
+			}
+
+			try {
+				const response = await fetch(gwUrl, { ...opts.init, headers: h, signal: opts.init?.signal });
+				if (response.status === 429 || response.status === 502 || response.status === 503) {
+					lastError = new Error(`HTTP ${response.status} via ${gw}`);
+					continue;
+				}
+				return response;
+			} catch (err) {
+				lastError = err;
+			}
+		}
+
+		throw lastError ?? new Error('all gateways exhausted');
 	}
 
 	return { toBrowserUrl: _toBrowserUrl, fetch: _fetch };
