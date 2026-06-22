@@ -6,6 +6,7 @@
 // fall outside the active viewport.
 
 import type { SourcePageSize } from '../pipeline/chapterContent'
+import { throwIfAborted } from './asyncSignal'
 
 export interface LoadedPage {
   readonly index: number
@@ -86,9 +87,4 @@ async function readImageSize(blob: Blob): Promise<SourcePageSize> {
   } finally {
     bitmap.close()
   }
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  throw signal.reason instanceof Error ? signal.reason : new Error('operation aborted')
 }

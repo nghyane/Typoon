@@ -32,6 +32,7 @@ import {
 import { detectTextRegions } from './visionRuntime'
 import type { LoadedPage } from './pageProvider'
 import type { TranslationConfig } from './translationConfig'
+import { throwIfAborted } from './asyncSignal'
 
 export interface PagePipelineDeps {
   readonly recognizer: LensTextRecognizer
@@ -237,9 +238,4 @@ function renderSourceUnitIds(placement: TextPlacement): readonly string[] {
 
 function hasTranslatableUnit(units: readonly { readonly kind: string; readonly sourceText: string }[]): boolean {
   return units.some(unit => unit.kind !== 'skip' && unit.sourceText.trim())
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  throw signal.reason instanceof Error ? signal.reason : new Error('operation aborted')
 }

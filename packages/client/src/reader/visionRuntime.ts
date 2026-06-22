@@ -13,6 +13,7 @@ import { OrtRuntime } from '../models/OrtRuntime'
 import { OrtSessionPool, type OrtProvider } from '../models/OrtSessionPool'
 import type { OrtModule } from '../models/OrtBackend'
 import { defaultTranslationConfig, preferredProviders, type TranslationConfig } from './translationConfig'
+import { errorMessage, neverAbort, throwIfAborted, whenIdle } from './asyncSignal'
 import ortWebgpuMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url'
 import ortWebgpuWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url'
 import ortWasmMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url'
@@ -78,10 +79,10 @@ export function prewarmTextRegionDetector(config: TranslationConfig = defaultTra
   if (detectorPromise) return
   whenIdle(() => {
     if (detectorPromise) return
-    // Never-aborting signal: prewarm load should outlive a cancelled translate.
-    // Errors are swallowed here (state is published via model listeners) and
-    // detectorPromise self-resets on failure so a real run retries cleanly.
-    void defaultTextRegionDetector(new AbortController().signal, config).catch(() => {})
+    // neverAbort: prewarm load should outlive a cancelled translate. Errors are
+    // swallowed here (state is published via model listeners) and detectorPromise
+    // self-resets on failure so a real run retries cleanly.
+    void defaultTextRegionDetector(neverAbort(), config).catch(() => {})
   })
 }
 
@@ -173,21 +174,4 @@ function absoluteWasmPaths(wasm: string, mjs: string): OrtBackend['wasmPaths'] {
     wasm: new URL(wasm, window.location.href).href,
     mjs: new URL(mjs, window.location.href).href,
   }
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  throw signal.reason instanceof Error ? signal.reason : new Error('operation aborted')
-}
-
-function whenIdle(run: () => void): void {
-  const win = globalThis as typeof globalThis & {
-    requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number
-  }
-  if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(run, { timeout: 2000 })
-  else setTimeout(run, 0)
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

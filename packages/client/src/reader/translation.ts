@@ -2,8 +2,8 @@
 //
 // Thin orchestrator composed of focused modules:
 //   - TranslationStore-like state held here, emitted with stable shape
-//   - ChunkScheduler   : stable chunk identity + viewport-aware ordering
-//   - ChunkPipeline    : pure capture → OCR → detect → translate
+//   - PageScheduler    : stable page identity + viewport-aware ordering
+//   - PagePipeline     : pure capture → OCR → detect → translate
 //   - OverlayManager   : attach/detach + working hide
 //   - PageProvider     : page loading + LRU memory bound
 //   - visionRuntime    : model/ORT singleton + model state
@@ -24,6 +24,7 @@ import { measureLayout, visibleContentRange } from './chunkCapture'
 import { OverlayManager } from './overlayManager'
 import { PageProvider, type LoadedPage } from './pageProvider'
 import { defaultTranslationConfig, type TranslationConfig } from './translationConfig'
+import { errorMessage, throwIfAborted, yieldToIdle } from './asyncSignal'
 import {
   prewarmTextRegionDetector,
   subscribeModelState,
@@ -442,25 +443,6 @@ async function yieldToBrowser(): Promise<void> {
   await new Promise<void>(resolve => setTimeout(resolve, 0))
 }
 
-function yieldToIdle(timeoutMs: number): Promise<void> {
-  const win = window as Window & {
-    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-  }
-  if (typeof win.requestIdleCallback === 'function') {
-    return new Promise<void>(resolve => { win.requestIdleCallback?.(() => resolve(), { timeout: timeoutMs }) })
-  }
-  return yieldToBrowser()
-}
-
 function yieldAfterPaint(): Promise<void> {
   return new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)))
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  throw signal.reason instanceof Error ? signal.reason : new Error('operation aborted')
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

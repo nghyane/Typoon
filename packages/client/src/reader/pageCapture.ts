@@ -12,6 +12,7 @@ import type { PageScanUnit } from '../domain/pageScan'
 import type { PageSize } from '../domain/source'
 import type { LoadedPage } from './pageProvider'
 import type { ScanConfig } from './translationConfig'
+import { throwIfAborted } from './asyncSignal'
 
 export interface CapturedPageScan {
   readonly encoded: EncodedOcrImage
@@ -123,9 +124,4 @@ function canvasToOcrBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/jpeg', 0.92)
   })
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (!signal.aborted) return
-  throw signal.reason instanceof Error ? signal.reason : new Error('operation aborted')
 }
