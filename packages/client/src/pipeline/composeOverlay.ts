@@ -19,6 +19,7 @@ import { clipBBox, type BBox, type Polygon } from '../domain/geometry'
 import type { SafeMarginsDebug } from '../render/backgroundFit'
 import { estimateSafeMargins } from '../render/backgroundFit'
 import { textFitRect } from '../render/fitGeometry'
+import type { TextRoleContext } from './textRole'
 import {
   textPlacementsFromRecognition,
   layoutPlacementsFromRegions,
@@ -40,14 +41,16 @@ export function buildOverlayPlacements(args: {
   readonly recognized: RecognizedTextPage
   readonly textUnits: readonly TextUnit[]
   readonly regions: readonly TextRegion[] | null
+  readonly roleContext?: TextRoleContext
 }): readonly TextPlacement[] {
   return args.regions?.length
     ? layoutPlacementsFromRegions(
         args.recognized,
         args.textUnits,
         args.regions,
+        args.roleContext,
       )
-    : textPlacementsFromRecognition(args.recognized, args.textUnits)
+    : textPlacementsFromRecognition(args.recognized, args.textUnits, args.roleContext)
 }
 
 export function composeAndProjectOverlays(args: ComposeOverlayArgs): readonly PageOverlay[] {

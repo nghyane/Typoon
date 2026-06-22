@@ -8,7 +8,7 @@ import type { TranslationUnit, TranslatedUnit } from '../domain/translation'
 import type { PreparedPageHandle } from '../domain/prepared'
 import { textUnitsFromBlocks } from './textUnits'
 import { translationUnitsFromTextUnits } from './translationUnits'
-import { classifyTextBlockRole, textRoleContext } from './textRole'
+import { classifyTextBlockRole, textRoleContext, type TextRoleContext } from './textRole'
 
 export interface PreparedTextResult {
   readonly recognized: RecognizedTextPage
@@ -31,11 +31,13 @@ export function textFromRecognition(args: {
   readonly pageIndex: number
   readonly recognized: RecognizedTextPage
   readonly regions?: readonly TextRegion[] | null
+  readonly roleContext?: TextRoleContext
 }): PreparedTextResult {
-  const recognized = groupSpeechLines(args.recognized, args.regions ?? null)
+  const recognized = groupSpeechLines(args.recognized, args.regions ?? null, args.roleContext)
   const textUnits = textUnitsFromBlocks(
     recognized.blocks,
     args.pageIndex,
+    args.roleContext,
   )
   const translationUnits = translationUnitsFromTextUnits(textUnits)
 
@@ -97,9 +99,9 @@ const GEOMETRY_TWIN_NOISE = ROBUST_INLIER_Z * OCR_BOX_NOISE_FRACTION
 const MIN_TEXT_REGION_EDGE_COST = 2.35
 const MAX_TEXT_REGION_EDGE_COST = 3.15
 
-function groupSpeechLines(recognized: RecognizedTextPage, regions: readonly TextRegion[] | null): RecognizedTextPage {
+function groupSpeechLines(recognized: RecognizedTextPage, regions: readonly TextRegion[] | null, roleContext?: TextRoleContext): RecognizedTextPage {
   if (recognized.blocks.length <= 1 && recognized.blocks.every(block => block.lines.length <= 1)) return recognized
-  const context = textRoleContext(recognized.blocks)
+  const context = roleContext ?? textRoleContext(recognized.blocks)
   const ordered = dedupeSpeechLines(
     recognized.blocks
       .flatMap(block => speechLinesFromBlock(block))

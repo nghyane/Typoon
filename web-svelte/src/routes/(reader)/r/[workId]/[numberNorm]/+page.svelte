@@ -76,9 +76,10 @@
     translationHidden = false;
   });
 
-  const pageSlots = $derived(Array.from({ length: Math.max(source.activeUrls.length, pages.blobs.length) }, (_, i) => pages.blobs[i] ?? null));
-  const fakePageSlots = $derived(source.sourceSwitching && pageSlots.length === 0 ? Array.from({ length: 6 }, (_, i) => i) : []);
-  const pageCount = $derived(Math.max(source.activeUrls.length, pages.total, pageSlots.length));
+  const slotCount = $derived(Math.max(source.activeUrls.length, pages.blobs.length));
+  const slotIndices = $derived(Array.from({ length: slotCount }, (_, i) => i));
+  const fakePageSlots = $derived(source.sourceSwitching && slotCount === 0 ? Array.from({ length: 6 }, (_, i) => i) : []);
+  const pageCount = $derived(Math.max(source.activeUrls.length, pages.total, slotCount));
 
   const nav = new ReaderNavigation(() => pageCount);
 
@@ -96,6 +97,15 @@
     const host = contentOverlayEl;
     if (!host) return;
     return translation.registerContentHost(host);
+  });
+
+  function registerPage(el: HTMLElement, index: number): { destroy: () => void } {
+    const cleanup = translation.registerPage(index, el);
+    return { destroy: cleanup };
+  }
+
+  $effect(() => {
+    translation.setHidden(translationHidden);
   });
 
   $effect(() => {
@@ -141,8 +151,17 @@
     return index >= nav.pageIndex - 1 && index <= nav.pageIndex + 3;
   }
 
+  // Estimated rendered height for content-visibility skipping. The `auto`
+  // keyword lets the browser remember the real size after first render, so this
+  // only needs to be a reasonable initial guess to avoid scroll jumps.
+  function intrinsicHeight(index: number): number {
+    const size = pages.pageSizes[index];
+    const ratio = size?.width && size.height ? size.height / size.width : 1.5;
+    return Math.round(Math.min(readerPageWidth, stripEl?.clientWidth ?? readerPageWidth) * ratio);
+  }
+
   function isTranslationBusy(phase: string): boolean {
-    return phase === 'loading' || phase === 'preparing' || phase === 'translating';
+    return phase === 'loading' || phase === 'translating';
   }
 
   function translationActionLabel(state: typeof translation.state, hidden: boolean): string {
@@ -155,7 +174,6 @@
     if (state.model.state === 'downloading') return state.model.ratio === undefined ? 'Tải OCR' : `OCR ${Math.round(clamp01(state.model.ratio) * 100)}%`;
     if (state.model.state === 'resolving' || state.model.state === 'initializing') return 'OCR';
     if (state.phase === 'loading') return 'Chuẩn bị';
-    if (state.phase === 'preparing') return `${state.prepare.done}/${state.prepare.total}`;
     if (state.phase === 'translating') return `${state.translate.done}/${state.translate.total}`;
     return '';
   }
@@ -166,7 +184,6 @@
     if (state.model.state === 'initializing') return 'Đang khởi động runtime nhận diện';
     if (state.phase === 'ready') return `${state.sourceLanguage?.toUpperCase() ?? 'AUTO'} → ${state.targetLanguage.toUpperCase()}`;
     if (state.phase === 'loading') return 'Tải font và chuẩn bị vùng đọc';
-    if (state.phase === 'preparing') return `${state.prepare.done}/${state.prepare.total} trang`;
     if (state.phase === 'translating') return `${state.translate.done}/${state.translate.total} trang`;
     if (state.phase === 'done') return hidden ? 'Bấm để hiện bản dịch' : 'Bấm để ẩn bản dịch';
     if (state.phase === 'error') return state.error || 'Bấm để thử lại';
@@ -176,7 +193,6 @@
   function translationProgress(state: typeof translation.state): number {
     if (state.model.state === 'downloading' && state.model.ratio !== undefined) return clamp01(state.model.ratio);
     if (state.phase === 'translating' && state.translate.total > 0) return clamp01(state.translate.done / state.translate.total);
-    if (state.phase === 'preparing' && state.prepare.total > 0) return clamp01(state.prepare.done / state.prepare.total) * 0.25;
     return state.phase === 'loading' ? 0.05 : 0;
   }
 
@@ -223,12 +239,14 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div bind:this={stripEl} class="w-full h-full overflow-y-auto overflow-x-hidden bg-bg overscroll-contain" onscroll={nav.handleStripScroll} onclick={nav.handleStripTap} onkeydown={() => {}} role="presentation">
         <div class="relative min-h-full" style={`width:100%;max-width:${readerPageWidth}px;margin:0 auto;`}>
-          {#each pageSlots as blob, i (i)}
+          {#each slotIndices as i (i)}
             <div
               data-page-index={i}
               class="relative w-full overflow-hidden"
+              style={`content-visibility:auto;contain-intrinsic-size:auto ${intrinsicHeight(i)}px`}
+              use:registerPage={i}
             >
-              <PageRenderer {blob} index={i} pageSize={pages.pageSizes[i] ?? null} eager={eagerPage(i)} className="w-full" />
+              <PageRenderer blob={pages.blobs[i] ?? null} index={i} pageSize={pages.pageSizes[i] ?? null} eager={eagerPage(i)} className="w-full" />
             </div>
           {/each}
           {#if fakePageSlots.length > 0}
@@ -238,7 +256,7 @@
               </div>
             {/each}
           {/if}
-          <div bind:this={contentOverlayEl} class="absolute inset-0 overflow-hidden pointer-events-none z-[1]" style={translationHidden ? 'display:none;' : ''} aria-hidden="true"></div>
+          <div bind:this={contentOverlayEl} class="absolute inset-0 overflow-hidden pointer-events-none z-[1]" aria-hidden="true"></div>
         </div>
       </div>
     </div>

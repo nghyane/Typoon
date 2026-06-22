@@ -14,5 +14,7 @@ export declare class ModelRepository {
     constructor(options: ModelRepositoryOptions);
     model(id: string): Promise<ModelLoader>;
     resolveManifest(signal?: AbortSignal): Promise<ModelManifest>;
+    private loadManifest;
+    private withResolvedUrls;
 }
 export type { ModelAssetCache, ModelDescriptor, ModelManifest, ModelRepositoryOptions, StoredModel } from './modelTypes';

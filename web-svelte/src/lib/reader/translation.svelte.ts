@@ -15,7 +15,9 @@ export class SvelteReaderTranslation {
   clear(): void { this.#rt.clear(); }
 
   registerContentHost(el: HTMLElement): () => void { return this.#rt.registerContentHost(el); }
+  registerPage(pageIndex: number, el: HTMLElement): () => void { return this.#rt.registerPage(pageIndex, el); }
   translate(): void { this.#rt.translate(); }
+  setHidden(hidden: boolean): void { this.#rt.setHidden(hidden); }
   cancel(): void { this.#rt.cancel(); }
   dispose(): void {
     this.#unsubscribe?.();
@@ -47,5 +49,5 @@ export class SvelteReaderTranslation {
 }
 
 const empty: ReaderTranslationState = {
-  phase: 'idle', prepare: { done: 0, total: 0, preparedPages: 0 }, translate: { done: 0, total: 0 }, model: { state: 'idle' }, sourceLanguage: null, targetLanguage: 'vi',
+  phase: 'idle', prepare: { done: 0, total: 0, preparedPages: 0 }, translate: { done: 0, total: 0 }, model: { state: 'idle' }, sourceLanguage: null, targetLanguage: 'vi', hidden: false, failed: 0,
 };

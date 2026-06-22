@@ -15,6 +15,7 @@ import type { RecognizedTextPage, TextUnit } from '../domain/text';
 import type { TextPlacement } from '../domain/planning';
 import type { ImagePixels } from '../domain/image';
 import type { SafeMarginsDebug } from '../render/backgroundFit';
+import type { TextRoleContext } from './textRole';
 export interface ComposeOverlayArgs {
     readonly handle: PreparedPageHandle;
     readonly recognized: RecognizedTextPage;
@@ -30,5 +31,6 @@ export declare function buildOverlayPlacements(args: {
     readonly recognized: RecognizedTextPage;
     readonly textUnits: readonly TextUnit[];
     readonly regions: readonly TextRegion[] | null;
+    readonly roleContext?: TextRoleContext;
 }): readonly TextPlacement[];
 export declare function composeAndProjectOverlays(args: ComposeOverlayArgs): readonly PageOverlay[];

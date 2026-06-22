@@ -15,5 +15,5 @@
     "noFallthroughCasesInSwitch": true,
     "erasableSyntaxOnly": false
   },
-  "include": ["src", "dev/src"]
+  "include": ["src"]
 }

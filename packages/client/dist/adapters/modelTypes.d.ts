@@ -5,6 +5,7 @@ export interface ModelRepositoryOptions {
     readonly manifest?: ModelManifest;
     readonly cacheName?: string;
     readonly cache?: ModelAssetCache;
+    readonly resolveUrl?: (url: string) => string;
 }
 export interface StoredModel {
     readonly id: string;

@@ -1,4 +1,6 @@
-export type ReaderPhase = 'idle' | 'loading' | 'preparing' | 'ready' | 'translating' | 'done' | 'error';
+import { type TranslationConfig } from './translationConfig';
+import { type ReaderModelState } from './visionRuntime';
+export type ReaderPhase = 'idle' | 'loading' | 'ready' | 'translating' | 'done' | 'error';
 export interface ReaderTranslationState {
     phase: ReaderPhase;
     prepare: {
@@ -13,15 +15,12 @@ export interface ReaderTranslationState {
     model: ReaderModelState;
     sourceLanguage: string | null;
     targetLanguage: string;
+    hidden: boolean;
+    /** Chunks skipped after exhausting retries (partial translation). */
+    failed: number;
     error?: string;
 }
-export interface ReaderModelState {
-    readonly state: 'idle' | 'resolving' | 'downloading' | 'initializing' | 'ready' | 'failed';
-    readonly receivedBytes?: number;
-    readonly totalBytes?: number;
-    readonly ratio?: number;
-    readonly error?: string;
-}
+export type { ReaderModelState };
 type Listener = (state: ReaderTranslationState) => void;
 export interface ReaderTranslationChapter {
     readonly chapterKey: string;
@@ -30,57 +29,58 @@ export interface ReaderTranslationChapter {
     readonly sourceLanguage: string | null;
     readonly targetLanguage: string;
 }
+export interface ReaderTranslationOptions {
+    readonly config?: TranslationConfig;
+}
 export declare class ReaderTranslation {
     private readonly listeners;
     private readonly recognizer;
+    private readonly overlays;
+    private readonly scheduler;
+    private readonly config;
+    private readonly pipeline;
     private translator;
-    private contentHost;
     private chapter;
+    private pages;
     private state;
-    private overlay;
-    private pageSizes;
-    private readonly pageCache;
-    private chunks;
-    private readonly processedChunks;
-    private readonly processingChunks;
+    private pageOverlays;
+    private units;
     private abort;
     private generation;
     private overlayRevision;
-    private attachedOverlayKey;
     private active;
-    private renderFrame;
-    private processingVisible;
+    private draining;
+    private latestModel;
     private readonly unsubscribeModelState;
-    constructor();
+    constructor(options?: ReaderTranslationOptions);
     subscribe(fn: Listener): () => void;
     registerContentHost(host: HTMLElement): () => void;
+    /** Register a page element (called from a Svelte action). Returns cleanup. */
+    registerPage(pageIndex: number, el: HTMLElement): () => void;
     setChapter(chapter: ReaderTranslationChapter): void;
     clear(): void;
     translate(): void;
+    /** Toggle translation visibility. Fixes the broken hide behavior. */
+    setHidden(hidden: boolean): void;
     cancel(): void;
     dispose(): void;
     private start;
-    private loadPage;
+    private drain;
+    private processPage;
+    private rebuildPlan;
+    private resolveUnit;
+    private measure;
+    private measuredPages;
+    private pageSizeFor;
+    private visibleRange;
+    private evictPages;
     private ensureTranslator;
-    private scheduleAttachOverlay;
-    private scheduleVisibleChunkProcessing;
-    private processVisibleChunks;
-    private nextVisibleChunkIndex;
-    private nextChunkIndex;
-    private nextSequentialChunkIndex;
-    private processChunk;
-    private attachVisibleOverlay;
+    private syncOverlay;
     private clearOverlay;
-    private detachOverlay;
-    private measureLayout;
-    private refreshLayout;
-    private ensurePagesForChunk;
-    private bindViewportListeners;
-    private unbindViewportListeners;
+    private clearOverlayKeepActive;
     private stopRun;
     private isSameChapter;
     private isCurrent;
     private setState;
     private emit;
 }
-export {};

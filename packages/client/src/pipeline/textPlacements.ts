@@ -15,16 +15,17 @@ interface Anchor {
 const TEXT_FREE_BUBBLE_AREA_RATIO_MIN = 0.70
 const TEXT_BUBBLE_CLUSTER_OVERLAP_MIN = 0.20
 
-export function textPlacementsFromRecognition(recognized: RecognizedTextPage, units: readonly TextUnit[]): TextPlacement[] {
-  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, [])
+export function textPlacementsFromRecognition(recognized: RecognizedTextPage, units: readonly TextUnit[], roleContext?: TextRoleContext): TextPlacement[] {
+  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, [], roleContext)
 }
 
 export function layoutPlacementsFromRegions(
   recognized: RecognizedTextPage,
   units: readonly TextUnit[],
   regions: readonly TextRegion[],
+  roleContext?: TextRoleContext,
 ): TextPlacement[] {
-  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, regions)
+  return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, regions, roleContext)
 }
 
 function blocksToTextPlacements(
@@ -33,11 +34,12 @@ function blocksToTextPlacements(
   pageIndex: number,
   pageSize: readonly [number, number],
   regions: readonly TextRegion[],
+  roleContext?: TextRoleContext,
 ): TextPlacement[] {
-  const roleContext = textRoleContext(blocks)
+  const ctx = roleContext ?? textRoleContext(blocks)
   const placements = regions.length
-    ? groupedTextPlacements(blocks, units, regions, pageIndex, pageSize, roleContext)
-    : textOnlyPlacements(blocks, units, pageIndex, pageSize, roleContext)
+    ? groupedTextPlacements(blocks, units, regions, pageIndex, pageSize, ctx)
+    : textOnlyPlacements(blocks, units, pageIndex, pageSize, ctx)
   return withTextLayoutHints(placements, pageSize)
 }
 

@@ -4,6 +4,7 @@ import type { TextRegion } from '../domain/regions';
 import type { RecognizedTextPage, TextUnit } from '../domain/text';
 import type { TranslationUnit, TranslatedUnit } from '../domain/translation';
 import type { PreparedPageHandle } from '../domain/prepared';
+import { type TextRoleContext } from './textRole';
 export interface PreparedTextResult {
     readonly recognized: RecognizedTextPage;
     readonly textUnits: readonly TextUnit[];
@@ -20,6 +21,7 @@ export declare function textFromRecognition(args: {
     readonly pageIndex: number;
     readonly recognized: RecognizedTextPage;
     readonly regions?: readonly TextRegion[] | null;
+    readonly roleContext?: TextRoleContext;
 }): PreparedTextResult;
 export declare function translatePreparedText(args: {
     readonly text: PreparedTextResult;
