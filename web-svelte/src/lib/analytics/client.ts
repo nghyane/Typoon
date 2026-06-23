@@ -76,7 +76,7 @@ function collectUrl(eventName: string, params: AnalyticsParams): string {
 	url.searchParams.set('en', normalizeParamName(eventName) || eventName);
 	url.searchParams.set('_p', pageNonce());
 	url.searchParams.set('_s', String(++eventIndex));
-	url.searchParams.set('_et', '100');
+	url.searchParams.set('_et', '1000');
 	url.searchParams.set('sid', String(currentSession.id));
 	url.searchParams.set('sct', String(currentSession.count));
 	url.searchParams.set('seg', '1');
