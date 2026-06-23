@@ -15,11 +15,17 @@ export interface FitRect {
 }
 
 export function drawableRect(placement: TextPlacement): FitRect {
-  if (placement.role !== 'sfx') return axisAlignedRect(placement.drawable)
-  if (Math.abs(placement.rotationDeg) > 0.1 && polygonAngleDeg(placement.drawable) === 0) {
+  // Honor an oriented (tilted) drawable for ANY role.  Tilted dialogue/narration
+  // — e.g. chat bubbles on a phone screen — must render along its baseline, not
+  // forced axis-aligned.  A single tilted block already carries a 4-point
+  // oriented polygon from drawableForBlock; respect its angle.
+  if (placement.drawable.length === 4 && polygonAngleDeg(placement.drawable) !== 0) {
+    return orientedRect(placement.drawable)
+  }
+  // SFX grown from an axis-aligned bbox but still carrying a rotation.
+  if (placement.role === 'sfx' && Math.abs(placement.rotationDeg) > 0.1) {
     return rotatedAabbRect(placement.bbox, placement.rotationDeg)
   }
-  if (placement.drawable.length === 4) return orientedRect(placement.drawable)
   return axisAlignedRect(placement.drawable)
 }
 

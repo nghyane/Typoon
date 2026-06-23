@@ -1,7 +1,8 @@
 /** Build translation inputs/results for one PreparedPage. */
 
 import type { Translator } from '../translators/translator'
-import type { BBox, Polygon } from '../domain/geometry'
+import type { BBox, OrientedBox, Polygon } from '../domain/geometry'
+import { orientedFromBBox, orientedPairFrame } from '../domain/geometry'
 import type { TextRegion } from '../domain/regions'
 import type { RecognizedTextPage, TextBlock, TextDirection, TextLine, TextUnit, TextWord } from '../domain/text'
 import type { TranslationUnit, TranslatedUnit } from '../domain/translation'
@@ -57,6 +58,8 @@ interface SpeechLine {
   readonly confidence: number
   readonly line: TextLine
   readonly words: readonly TextWord[]
+  /** True rotated extents when OCR provided them; else derived from bbox. */
+  readonly oriented: OrientedBox
 }
 
 interface LineGeometryStats {
@@ -131,6 +134,9 @@ function groupSpeechLines(recognized: RecognizedTextPage, regions: readonly Text
     const b = ordered[edge.b]!
     const strongContinuation = strongLineContinuation(a, b, graph.stats)
     if (differentRegionContainers(regionKeys[edge.a] ?? null, regionKeys[edge.b] ?? null) && !strongContinuation) continue
+    // Respect Lens paragraph boundaries — lines from different paragraphs
+    // must not merge unless the geometry convincingly says they belong together.
+    if (a.sourceBlock !== b.sourceBlock && !strongContinuation) continue
     if (!canMergeSpeechLine(a, context) || !canMergeSpeechLine(b, context)) continue
     if (!sameTextRegionPair(a, b, graph.stats)) continue
     if (hardNegativeLineConflict(a, b, graph.stats)) continue
@@ -187,6 +193,7 @@ function speechLinesFromBlock(block: TextBlock): SpeechLine[] {
       confidence: block.confidence,
       line,
       words: line.words.length ? line.words : wordsInsideBBox(block.words, line.bbox),
+      oriented: line.oriented ?? orientedFromBBox(line.bbox, line.rotationDeg),
     }))
   }
 
@@ -205,6 +212,7 @@ function speechLinesFromBlock(block: TextBlock): SpeechLine[] {
     confidence: block.confidence,
     line,
     words: block.words,
+    oriented: orientedFromBBox(block.bbox, block.rotationDeg),
   }]
 }
 
@@ -268,8 +276,8 @@ function speechLineScore(line: SpeechLine): number {
 
 function lineFontPx(line: SpeechLine): number {
   return line.textDirection === 'vertical'
-    ? Math.max(0, line.bbox[2] - line.bbox[0])
-    : Math.max(0, line.bbox[3] - line.bbox[1])
+    ? Math.max(0, line.oriented.w)
+    : Math.max(0, line.oriented.h)
 }
 
 function lineGeometryGraph(lines: readonly SpeechLine[]): LineGeometryGraph {
@@ -360,35 +368,22 @@ function linePairMetrics(a: SpeechLine, b: SpeechLine, fallbackFontPx: number): 
   const fontRatio = Math.max(aFont, bFont) / Math.max(1, Math.min(aFont, bFont))
   const angleSin = Math.abs(Math.sin((a.rotationDeg - b.rotationDeg) * Math.PI / 180))
 
-  if (a.textDirection === 'vertical') {
-    const maxSecondarySpan = Math.max(1, bboxHeight(a.bbox), bboxHeight(b.bbox))
-    const centerShift = Math.abs(centerY(a.bbox) - centerY(b.bbox))
-    return {
-      direction: 'vertical',
-      localFontPx: localFont,
-      primaryGapPx: xGap(a.bbox, b.bbox),
-      primaryGapFont: xGap(a.bbox, b.bbox) / localFont,
-      secondaryOverlap: yOverlap(a.bbox, b.bbox),
-      centerShiftPx: centerShift,
-      centerShiftFont: centerShift / localFont,
-      centerShiftSpan: centerShift / maxSecondarySpan,
-      fontRatio,
-      angleSin,
-      maxSecondarySpan,
-    }
-  }
-
-  const maxSecondarySpan = Math.max(1, bboxWidth(a.bbox), bboxWidth(b.bbox))
-  const centerShift = Math.abs(centerX(a.bbox) - centerX(b.bbox))
+  // Measure gap/overlap/shift in the text's own rotated frame.  On axis-aligned
+  // bboxes a tilted line inflates to `w·sinθ + h·cosθ`, which shrinks the
+  // gap/font ratio and falsely merges distant tilted blocks (e.g. stacked phone
+  // chat bubbles).  The oriented frame uses true extents, so a real vertical gap
+  // stays large and the merge guards reject it.
+  const frame = orientedPairFrame(a.oriented, b.oriented, a.textDirection)
+  const maxSecondarySpan = Math.max(1, frame.maxSecondarySpan)
   return {
-    direction: 'horizontal',
+    direction: a.textDirection,
     localFontPx: localFont,
-    primaryGapPx: yGap(a.bbox, b.bbox),
-    primaryGapFont: yGap(a.bbox, b.bbox) / localFont,
-    secondaryOverlap: xOverlap(a.bbox, b.bbox),
-    centerShiftPx: centerShift,
-    centerShiftFont: centerShift / localFont,
-    centerShiftSpan: centerShift / maxSecondarySpan,
+    primaryGapPx: frame.primaryGapPx,
+    primaryGapFont: frame.primaryGapPx / localFont,
+    secondaryOverlap: frame.secondaryOverlap,
+    centerShiftPx: frame.centerShiftPx,
+    centerShiftFont: frame.centerShiftPx / localFont,
+    centerShiftSpan: frame.centerShiftPx / maxSecondarySpan,
     fontRatio,
     angleSin,
     maxSecondarySpan,
@@ -529,24 +524,6 @@ function majorityDirection(blocks: readonly { readonly textDirection: TextDirect
 
 function normalizedCharCount(text: string): number {
   return [...text].filter(ch => !/\s/u.test(ch)).length
-}
-
-function xOverlap(a: BBox, b: BBox): number {
-  const overlap = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]))
-  return overlap / Math.max(1, Math.min(a[2] - a[0], b[2] - b[0]))
-}
-
-function yOverlap(a: BBox, b: BBox): number {
-  const overlap = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]))
-  return overlap / Math.max(1, Math.min(a[3] - a[1], b[3] - b[1]))
-}
-
-function xGap(a: BBox, b: BBox): number {
-  return Math.max(0, Math.max(a[0], b[0]) - Math.min(a[2], b[2]))
-}
-
-function yGap(a: BBox, b: BBox): number {
-  return Math.max(0, Math.max(a[1], b[1]) - Math.min(a[3], b[3]))
 }
 
 function intersectionArea(a: BBox, b: BBox): number {

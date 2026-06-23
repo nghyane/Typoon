@@ -1,7 +1,7 @@
 import type { TextPlacement } from '../domain/planning'
 import type { TranslatedUnit } from '../domain/translation'
-import { hasReliableBackgroundFill, type SafeMarginsDebug } from './backgroundFit'
-import { fitPageText, type CssFitResult } from './fit'
+import { hasReliableBackgroundFill, hasAnyBackgroundFill, type SafeMarginsDebug } from './backgroundFit'
+import { fitPageText, coordinateRoleFontSizes, type CssFitResult, type CssFitInput } from './fit'
 import { MANGA_FONT_PROFILE } from './font'
 import type { RenderLanguageContext } from './languageProfile'
 import { classifyTextScript, type TextScript } from './textScript'
@@ -35,15 +35,19 @@ export function fitTextLayerItems<T extends TextLayerItem>(
     options?.fontContextPlacements,
     options?.languageContext,
   )
-  return items
+  const fitted = items
     .map((item, index) => ({ ...item, fit: fits[index]! }))
     .filter(renderableFittedItem)
+  const coordInputs: CssFitInput[] = fitted.map(item => ({ placement: item.placement, text: item.unit.targetText, sourceText: item.unit.sourceText }))
+  const coordFits = coordinateRoleFontSizes(coordInputs, fitted.map(item => item.fit))
+  return fitted.map((item, i) => ({ ...item, fit: coordFits[i]! }))
 }
 
 function renderableFittedItem(item: FittedTextLayerItem): boolean {
   if (item.fit.overflow) return false
   if (sameNormalizedText(item.unit.sourceText, item.unit.targetText)) return false
-  if (item.placement.role !== 'sfx' && item.fit.expansion && !hasReliableBackgroundFill(item.fit.expansion)) return false
+  if (item.placement.role === 'dialogue' && item.fit.expansion && !hasReliableBackgroundFill(item.fit.expansion)) return false
+  if (item.placement.role === 'narration' && item.fit.expansion && !hasAnyBackgroundFill(item.fit.expansion)) return false
   if (item.placement.role !== 'sfx') return true
   return scriptFamily(classifyTextScript(item.unit.sourceText)) === scriptFamily(classifyTextScript(item.unit.targetText))
 }
@@ -89,7 +93,7 @@ function createTextBox(
   pageSize: readonly [number, number],
 ): HTMLElement {
   const { placement, unit } = item
-  const style = buildTextStyle(placement, fit.fontSizePx)
+  const style = buildTextStyle(placement, fit.fontSizePx, fit.expansion?.backgroundRgb)
   const layout = placement.layoutHint
   const textAlign = layout.inlineAlign
   const justifyContent = layout.inlineAlign === 'left' ? 'flex-start' : 'center'
@@ -153,6 +157,7 @@ function createTextBox(
   box.style.boxSizing = 'border-box'
   box.style.overflow = 'hidden'
   box.style.color = style.fill
+  if (style.backgroundColor) box.style.backgroundColor = style.backgroundColor
   box.style.textShadow = 'none'
   box.title = `${unit.sourceText}\n→\n${unit.targetText}\nfont=${fit.fontSizePx}px source=${fit.sourceFontPx ?? 'n/a'}px target=${fit.targetFontPx}px median=${fit.roleMedianFontPx ?? 'n/a'}px reason=${fit.fontIntentReason}/${fit.fitReason} layout=${fit.layoutCandidate} direction=${fit.direction}/${fit.directionReason} maxDom=${fit.maxDomFitPx}px cap=${fit.capReason} expand=${fit.expansion?.reasons.overall ?? 'none'} rot=${rotationDeg.toFixed(1)}°`
 

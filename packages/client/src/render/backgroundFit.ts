@@ -57,6 +57,10 @@ export function hasReliableBackgroundFill(margin: SafeMarginsDebug | null | unde
   return !!margin?.backgroundRgb && margin.componentConfidence >= 0.6
 }
 
+export function hasAnyBackgroundFill(margin: SafeMarginsDebug | null | undefined): margin is SafeMarginsDebug & { readonly backgroundRgb: Rgb } {
+  return !!margin?.backgroundRgb
+}
+
 export function estimateSafeMargins(args: {
   readonly image: ImagePixels
   readonly placement: TextPlacement
@@ -64,13 +68,18 @@ export function estimateSafeMargins(args: {
   readonly obstacles: readonly BBox[]
   readonly pageSize: readonly [number, number]
 }): SafeMarginsDebug {
-  const base = roundedRectBBox(args.baseRect, args.pageSize)
+  const rotated = Math.abs(args.baseRect.rotationDeg) > 0.1
+  // For a tilted rect the unrotated rectBBox is not its screen footprint; use
+  // the placement's axis-aligned bbox (true tilted extent) as the seed instead.
+  const base = rotated
+    ? clampBBoxToPage(args.placement.bbox, args.pageSize)
+    : roundedRectBBox(args.baseRect, args.pageSize)
 
-  if (Math.abs(args.baseRect.rotationDeg) > 0.1) {
-    return emptyDebug(base, 'rotated')
-  }
-  // Non-SFX placements are rendered axis-aligned; OCR rotation noise must not block margins.
-  if (args.placement.role === 'sfx' && Math.abs(args.placement.rotationDeg) > 1) {
+  // SFX is rendered as free oriented text with no bubble fill, so a rotated SFX
+  // box must not drive flood-fill.  Tilted dialogue/narration (e.g. chat bubbles
+  // on a phone screen) still sit on a solid background that needs filling, so
+  // background estimation must run for them using the axis-aligned seed above.
+  if (rotated && args.placement.role === 'sfx') {
     return emptyDebug(base, 'rotated')
   }
 
@@ -185,7 +194,7 @@ function detectBackgroundComponent(args: {
       const strip = growthStrip(bounds, next, direction)
       if (bboxWidth(strip) < 1 || bboxHeight(strip) < 1) continue
 
-      if (args.obstacles.some(obstacle => intersects(strip, obstacle))) continue
+      if (args.obstacles.some(obstacle => obstacleBlocks(strip, obstacle))) continue
 
       const isSelfText = args.selfBoxes.some(box => intersects(strip, box))
       if (isSelfText) {
@@ -204,7 +213,7 @@ function detectBackgroundComponent(args: {
   }
 
   const componentArea = bboxArea(bounds)
-  const coverageStats = backgroundStats(args.image, bounds, args.background)
+  const coverageStats = backgroundStats(args.image, bounds, args.background, args.selfBoxes)
   const areaRatio = componentArea / Math.max(1, seedArea)
   const confidence = computeComponentConfidence(coverageStats.coverage, areaRatio)
 
@@ -380,6 +389,7 @@ function backgroundStats(
   image: ImagePixels,
   bbox: BBox,
   background: BackgroundModel,
+  skipBoxes?: readonly BBox[],
 ): { readonly samples: number; readonly coverage: number } {
   const area = bboxWidth(bbox) * bboxHeight(bbox)
   const step = clamp(Math.floor(Math.sqrt(area / 1600)), 2, 6)
@@ -388,6 +398,7 @@ function backgroundStats(
 
   for (let y = Math.floor(bbox[1]); y < Math.ceil(bbox[3]); y += step) {
     for (let x = Math.floor(bbox[0]); x < Math.ceil(bbox[2]); x += step) {
+      if (skipBoxes?.some(box => containsPoint(box, x, y))) continue
       const rgb = pixelAt(image, x, y)
       if (!rgb) continue
       samples += 1
@@ -400,6 +411,15 @@ function backgroundStats(
 
 function roundedRectBBox(rect: FitRect, pageSize: readonly [number, number]): BBox {
   const bbox = rectBBox(rect)
+  return [
+    Math.max(0, Math.floor(bbox[0])),
+    Math.max(0, Math.floor(bbox[1])),
+    Math.min(pageSize[0], Math.ceil(bbox[2])),
+    Math.min(pageSize[1], Math.ceil(bbox[3])),
+  ]
+}
+
+function clampBBoxToPage(bbox: BBox, pageSize: readonly [number, number]): BBox {
   return [
     Math.max(0, Math.floor(bbox[0])),
     Math.max(0, Math.floor(bbox[1])),
@@ -424,6 +444,18 @@ function containsPoint(bbox: BBox, x: number, y: number): boolean {
 
 function intersects(a: BBox, b: BBox): boolean {
   return Math.max(a[0], b[0]) < Math.min(a[2], b[2]) && Math.max(a[1], b[1]) < Math.min(a[3], b[3])
+}
+
+/** Only block expansion if the obstacle covers more than 30% of the strip.
+ *  Corner-only touches from adjacent bubbles are ignored. */
+function obstacleBlocks(strip: BBox, obstacle: BBox): boolean {
+  const ix1 = Math.max(strip[0], obstacle[0])
+  const iy1 = Math.max(strip[1], obstacle[1])
+  const ix2 = Math.min(strip[2], obstacle[2])
+  const iy2 = Math.min(strip[3], obstacle[3])
+  if (ix1 >= ix2 || iy1 >= iy2) return false
+  const stripArea = bboxWidth(strip) * bboxHeight(strip)
+  return (ix2 - ix1) * (iy2 - iy1) > stripArea * 0.3
 }
 
 function sameBBox(a: BBox, b: BBox): boolean {

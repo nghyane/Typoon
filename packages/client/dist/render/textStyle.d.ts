@@ -8,5 +8,6 @@ export interface TextStylePlan {
     readonly fontWeight: string;
     readonly strokes: readonly TextStrokePlan[];
     readonly shadow: string | null;
+    readonly backgroundColor: string | null;
 }
-export declare function buildTextStyle(placement: TextPlacement, fontSizePx?: number): TextStylePlan;
+export declare function buildTextStyle(placement: TextPlacement, fontSizePx?: number, backgroundRgb?: readonly [number, number, number] | null): TextStylePlan;

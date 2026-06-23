@@ -24,7 +24,6 @@ export interface OverlayChapterMeta {
 
 interface AttachedOverlay {
   readonly el: HTMLElement
-  readonly revision: number
 }
 
 interface SeamBridge {
@@ -32,13 +31,13 @@ interface SeamBridge {
   readonly ownerPageIndex: number
   readonly side: 'below' | 'above'
   readonly seam: SeamOverlay
-  revision: number
 }
 
 export class OverlayManager {
   private host: HTMLElement | null = null
   private overlays = new Map<number, ReaderPageOverlay>()
-  private revision = -1
+  /** Overlay data that each page was last attached with (object identity check). */
+  private readonly attachedData = new Map<number, ReaderPageOverlay>()
   private meta: OverlayChapterMeta = { sourceLanguage: null, targetLanguage: null }
   private hidden = false
 
@@ -82,15 +81,15 @@ export class OverlayManager {
       if (stored) {
         stored.el.remove()
         this.attached.delete(pageIndex)
+        this.attachedData.delete(pageIndex)
       }
       this.removeSeamsOwnedBy(pageIndex)
     }
   }
 
-  /** Update overlay data; re-attaches only visible pages at the new revision. */
-  update(overlays: Map<number, ReaderPageOverlay>, revision: number, meta: OverlayChapterMeta): void {
+  /** Update overlay data; re-attaches only pages whose data changed. */
+  update(overlays: Map<number, ReaderPageOverlay>, _revision: number, meta: OverlayChapterMeta): void {
     this.overlays = overlays
-    this.revision = revision
     this.meta = meta
     this.attachVisible()
   }
@@ -104,6 +103,7 @@ export class OverlayManager {
   detach(): void {
     for (const { el } of this.attached.values()) el.remove()
     this.attached.clear()
+    this.attachedData.clear()
     for (const { el } of this.seams.values()) el.remove()
     this.seams.clear()
   }
@@ -115,6 +115,7 @@ export class OverlayManager {
     this.hostObserver?.disconnect()
     this.hostObserver = null
     this.pageEls.clear()
+    this.attachedData.clear()
     this.visible.clear()
     this.host = null
   }
@@ -151,13 +152,15 @@ export class OverlayManager {
 
   private attachPageSurface(pageIndex: number, overlay: ReaderPageOverlay): void {
     const stored = this.attached.get(pageIndex)
-    if (stored && stored.revision === this.revision) return
+    // Object identity: same overlay object = nothing changed for this page.
+    if (stored && overlay === this.attachedData.get(pageIndex)) return
     const pageEl = this.pageEls.get(pageIndex)
     if (!pageEl) return
     if (!overlay.items.length) {
       if (stored) {
         stored.el.remove()
         this.attached.delete(pageIndex)
+        this.attachedData.delete(pageIndex)
       }
       return
     }
@@ -172,7 +175,8 @@ export class OverlayManager {
       targetLanguage: this.meta.targetLanguage,
     }, { scaleMode: 'contain' })
     if (this.hidden) overlayEl.style.display = 'none'
-    this.attached.set(pageIndex, { el: overlayEl, revision: this.revision })
+    this.attached.set(pageIndex, { el: overlayEl })
+    this.attachedData.set(pageIndex, overlay)
   }
 
   private attachSeam(key: string, seam: SeamOverlay | null, ownerPageIndex: number, side: 'below' | 'above'): void {
@@ -184,7 +188,7 @@ export class OverlayManager {
       }
       return
     }
-    if (existing && existing.revision === this.revision) return
+    if (existing && existing.seam === seam) return
     if (existing) existing.el.remove()
 
     const wrapper = document.createElement('div')
@@ -205,7 +209,7 @@ export class OverlayManager {
     overlayEl.style.inset = '0'
     if (this.hidden) wrapper.style.display = 'none'
     this.host?.appendChild(wrapper)
-    const bridge: SeamBridge = { el: wrapper, ownerPageIndex, side, seam, revision: this.revision }
+    const bridge: SeamBridge = { el: wrapper, ownerPageIndex, side, seam }
     this.seams.set(key, bridge)
     this.positionBridge(bridge)
   }

@@ -74,12 +74,11 @@ function groupedTextPlacements(
       .filter(({ block, index }) => !assigned.has(index) && containsCenter(anchor.bbox, block.bbox))
       .map(({ index }) => index)
     if (!memberIds.length) continue
-    // A bubble anchor is a single semantic unit — do not sub-group OCR
-    // blocks inside it.  Subgrouping is only meaningful for free-text
-    // regions that may span multiple independent text areas.
-    const subgroups = anchor.kind === 'bubble' || anchor.kind === 'text_bubble'
-      ? [Array.from(memberIds)]
-      : subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
+    // Run sub-grouping for all anchors.  Bubbles may contain multiple
+    // independent text blocks (distant ad text) due to over-large regions.
+    // Spatial proximity checks in subgroupBlockIds keep genuine bubble
+    // text together while splitting unrelated blocks.
+    const subgroups = subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
     for (const subgroup of splitMixedRoleSubgroups(subgroups, blocks, roleContext)) {
       const members = subgroup.map(index => ({ block: blocks[index]!, index }))
       placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
@@ -119,6 +118,7 @@ function groupToTextPlacement(
     drawable,
     bbox: polygonBBox(drawable, pageSize),
     textBoxes: ordered.flatMap(block => block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox]),
+    wordBoxes: ordered.flatMap(block => block.words.length ? block.words.map(w => w.bbox) : block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox]),
     role,
     rotationDeg: maxAbsRotation(ordered),
     confidence: Math.max(...ordered.map(block => block.confidence), anchor.confidence),
@@ -138,6 +138,7 @@ function blockToTextPlacement(block: TextBlock, unitId: string, index: number, p
     drawable,
     bbox: polygonBBox(drawable, pageSize),
     textBoxes: block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox],
+    wordBoxes: block.words.length ? block.words.map(w => w.bbox) : block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox],
     role,
     rotationDeg: block.rotationDeg,
     confidence: block.confidence,
@@ -226,26 +227,78 @@ function compareAnchors(a: Anchor, b: Anchor): number {
   return area(a.bbox) - area(b.bbox)
 }
 
+const FONT_TIER_RATIO_MAX = 1.5
+// Relative tilt above this marks two blocks as different surfaces.  Coherent
+// tilted text (phone screen, chat bubbles) shares an angle so its relative tilt
+// stays small; a steeply-tilted SFX/scream over upright dialogue does not.  Set
+// well above OCR angle noise (a few degrees) so it never splits a real line.
+const HARD_SEPARATE_ROTATION_DEG = 12
+
+// Two blocks must never share a group when they differ in reading direction,
+// font tier, or sit on clearly different surfaces (large relative rotation).
+// These are semantic boundaries, not proximity.  A small relative angle is NOT
+// a separator: coherently tilted text on a shared surface keeps near-zero
+// relative rotation and must stay grouped.
+function hardSeparated(a: TextBlock, b: TextBlock): boolean {
+  if ((a.textDirection === 'vertical') !== (b.textDirection === 'vertical')) return true
+  const fontA = estimateBlockFontPx(a)
+  const fontB = estimateBlockFontPx(b)
+  if (fontA > 0 && fontB > 0 && Math.max(fontA, fontB) / Math.min(fontA, fontB) > FONT_TIER_RATIO_MAX) return true
+  if (Math.abs(a.rotationDeg - b.rotationDeg) > HARD_SEPARATE_ROTATION_DEG) return true
+  return false
+}
+
+function hasHardSeparatedPair(indices: readonly number[], blocks: readonly TextBlock[]): boolean {
+  for (let i = 0; i < indices.length; i += 1) {
+    for (let j = i + 1; j < indices.length; j += 1) {
+      if (hardSeparated(blocks[indices[i]!]!, blocks[indices[j]!]!)) return true
+    }
+  }
+  return false
+}
+
+// Count gaps along one axis using interval coverage: a gap exists only when the
+// next box starts beyond every box seen so far, not merely beyond its immediate
+// predecessor.  Avoids phantom gaps from nested/overlapping boxes.
+function countAxisGaps(boxes: readonly BBox[], lo: 0 | 1, hi: 2 | 3, threshold: number): number {
+  if (boxes.length <= 1) return 0
+  const sorted = [...boxes].sort((a, b) => a[lo] - b[lo])
+  let maxEnd = sorted[0]![hi]
+  let count = 0
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (sorted[i]![lo] - maxEnd > threshold) count += 1
+    maxEnd = Math.max(maxEnd, sorted[i]![hi])
+  }
+  return count
+}
+
 function subgroupBlockIds(indices: readonly number[], blocks: readonly TextBlock[], container: BBox): number[][] {
   if (indices.length <= 1) return [Array.from(indices)]
 
   const boxes = indices.map(index => blocks[index]!.bbox)
   const textUnion = unionBBoxes(boxes) ?? container
   const heights = boxes.map(box => Math.max(1, box[3] - box[1]))
+  const widths = boxes.map(box => Math.max(1, box[2] - box[0]))
   const medH = median(heights)
-  const sortedByY = [...boxes].sort((a, b) => a[1] - b[1])
-  const gaps = sortedByY.slice(0, -1).map((box, i) => Math.max(0, sortedByY[i + 1]![1] - box[3]))
-  const largeGaps = gaps.filter(gap => gap > medH * 1.25).length
+  const medW = median(widths)
+  const largeVGaps = countAxisGaps(boxes, 1, 3, medH * 1.25)
+  const largeHGaps = countAxisGaps(boxes, 0, 2, medW * 1.25)
+  const largeGaps = largeVGaps + largeHGaps
   const allInside = indices.every(index => containsCenter(container, blocks[index]!.bbox))
+  // Early returns are cohesion shortcuts only.  They must never override the
+  // hard separators (direction, rotation, font tier) enforced in the union-find
+  // loop below.  If any pair is hard-separated, skip the shortcut so union-find
+  // can split that pair while keeping the rest together.
+  const cohesive = !hasHardSeparatedPair(indices, blocks)
 
-  if (allInside && largeGaps === 0) return [Array.from(indices)]
+  if (cohesive && allInside && largeGaps === 0) return [Array.from(indices)]
 
   const cw = Math.max(1, container[2] - container[0])
   const ch = Math.max(1, container[3] - container[1])
   const uw = Math.max(1, textUnion[2] - textUnion[0])
   const uh = Math.max(1, textUnion[3] - textUnion[1])
-  const strict = indices.length >= 5 && (uh / ch > 0.80 || largeGaps >= 2)
-  if (!strict && indices.length <= 6 && uh / ch < 0.85 && uw / cw < 0.98 && largeGaps === 0) return [Array.from(indices)]
+  const strict = indices.length >= 3 && (uh / ch > 0.80 || uw / cw > 0.80 || largeGaps >= 2)
+  if (cohesive && !strict && indices.length <= 6 && uh / ch < 0.85 && uw / cw < 0.98 && largeGaps === 0) return [Array.from(indices)]
 
   const parent = new Map<number, number>()
   indices.forEach(index => parent.set(index, index))
@@ -276,19 +329,9 @@ function subgroupBlockIds(indices: readonly number[], blocks: readonly TextBlock
       const blockB = blocks[j]!
       const b = blockB.bbox
       const bh = Math.max(1, b[3] - b[1])
-      const bVert = blockB.textDirection === 'vertical'
 
-      // Never join blocks of different direction (vertical + horizontal)
-      if (aVert !== bVert) continue
-
-      // Don't join blocks with significantly different font sizes.
-      // Each size tier should be a separate placement to preserve hierarchy.
-      const fontA = estimateBlockFontPx(blockA)
-      const fontB = estimateBlockFontPx(blockB)
-      if (fontA > 0 && fontB > 0) {
-        const fontRatio = Math.max(fontA, fontB) / Math.min(fontA, fontB)
-        if (fontRatio > 1.5) continue
-      }
+      // Hard separators: direction, rotation, font tier.  Never join.
+      if (hardSeparated(blockA, blockB)) continue
 
       const minH = Math.max(1, Math.min(ah, bh))
       const heightRatio = Math.max(ah, bh) / minH
@@ -348,7 +391,10 @@ function drawableForGroup(
   role: TextRole,
   pageSize: readonly [number, number],
 ): Polygon {
-  if (role === 'sfx' && members.length === 1) return drawableForBlock(members[0]!, role, pageSize)
+  // Single-member groups keep the block's own oriented polygon for any role, so
+  // a lone tilted dialogue/SFX bubble renders along its baseline instead of
+  // being flattened to an axis-aligned box.
+  if (members.length === 1) return drawableForBlock(members[0]!, role, pageSize)
   return drawableForMembers(members, role, pageSize)
 }
 
@@ -357,8 +403,14 @@ function drawableForMembers(members: readonly TextBlock[], role: TextRole, pageS
   const pad = Math.max(4, Math.round(glyph * (role === 'sfx' ? 0.08 : 0.20)))
   const unionBox = wordUnion(members)
   const bbox: BBox = [unionBox[0] - pad, unionBox[1] - pad, unionBox[2] + pad, unionBox[3] + pad]
-  const rotationDeg = maxAbsRotation(members)
-  if (role === 'sfx' && Math.abs(rotationDeg) > 1) {
+  // Honor rotation for ANY role on a coherently-tilted surface (phone screen,
+  // chat bubbles): render along the shared baseline instead of flattening to an
+  // axis-aligned box.  SFX keeps its own max-rotation rule.  For dialogue/
+  // narration, require members to AGREE on the tilt — a single spurious OCR
+  // rotation on one fragment of an upright multi-block bubble must not rotate
+  // the whole union, which would throw the text box off the source entirely.
+  const rotationDeg = role === 'sfx' ? maxAbsRotation(members) : coherentRotation(members)
+  if (Math.abs(rotationDeg) > 1) {
     const cx = (bbox[0] + bbox[2]) / 2
     const cy = (bbox[1] + bbox[3]) / 2
     return orientedRect(cx, cy, bbox[2] - bbox[0], bbox[3] - bbox[1], rotationDeg)
@@ -382,6 +434,20 @@ function classifyMergedBlocks(blocks: readonly TextBlock[], roleContext: TextRol
 function maxAbsRotation(blocks: readonly TextBlock[]): number {
   if (!blocks.length) return 0
   return blocks.reduce((best, block) => Math.abs(block.rotationDeg) > Math.abs(best) ? block.rotationDeg : best, 0)
+}
+
+// Shared tilt of a multi-block group, used to render dialogue/narration along a
+// common baseline.  Returns 0 unless members AGREE on the angle: an upright
+// bubble split into several blocks where one fragment carries spurious OCR
+// rotation must stay axis-aligned, not rotate the whole union off the source.
+const COHERENT_ROTATION_SPREAD_DEG = 4
+
+function coherentRotation(blocks: readonly TextBlock[]): number {
+  const angles = blocks.map(block => block.rotationDeg)
+  if (!angles.length) return 0
+  const med = median(angles)
+  const maxDeviation = Math.max(...angles.map(angle => Math.abs(angle - med)))
+  return maxDeviation <= COHERENT_ROTATION_SPREAD_DEG ? med : 0
 }
 
 function mergedFontHint(blocks: readonly TextBlock[]): FontHint | null {

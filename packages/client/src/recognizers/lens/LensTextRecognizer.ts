@@ -1,4 +1,4 @@
-import type { BBox, Point, Polygon } from '../../domain/geometry'
+import type { BBox, OrientedBox, Point, Polygon } from '../../domain/geometry'
 import type { ImagePixels } from '../../domain/image'
 import type { TextBlock, TextLine, RecognizedTextPage, TextWord, TextDirection } from '../../domain/text'
 import type { EncodedOcrImage, TextRecognizer, TextRecognitionOptions } from '../text'
@@ -271,7 +271,7 @@ function parseLines(lines: readonly any[], pageSize: readonly [number, number]):
     const box = parseLineBox(line, geometryWords, pageSize)
     if (!box) continue
     const words = parseWords(rawWords, pageSize, box.bbox)
-    out.push({ bbox: box.bbox, text: lineText, rotationDeg: box.rotationDeg, words })
+    out.push({ bbox: box.bbox, text: lineText, rotationDeg: box.rotationDeg, words, oriented: box.oriented })
   }
   return out
 }
@@ -296,7 +296,7 @@ function parseWords(words: readonly any[], pageSize: readonly [number, number], 
       if (syntheticBBox && isMeaningfulPunctuationToken(text)) out.push({ bbox: syntheticBBox, text, textSeparator })
       continue
     }
-    out.push({ bbox: box.bbox, text, textSeparator })
+    out.push({ bbox: box.bbox, text, textSeparator, oriented: box.oriented })
   }
   return out
 }
@@ -307,7 +307,7 @@ function isMeaningfulPunctuationToken(text: string): boolean {
   return /…|⋯|\.{2,}|。{2,}|[!?！？]{2,}|[—~〜]{2,}/u.test(compact)
 }
 
-function parseLineBox(line: any, words: readonly TextWord[], pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number } | null {
+function parseLineBox(line: any, words: readonly TextWord[], pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number; oriented?: OrientedBox } | null {
   if (line.hasGeometry()) {
     const geom = line.getGeometry()
     if (geom.hasBoundingBox()) {
@@ -352,7 +352,7 @@ function isCjkLike(char: string): boolean {
     || (cp >= 0xF900 && cp <= 0xFAFF)
 }
 
-function parseParagraphBox(paragraph: any, lines: readonly TextLine[], pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number } | null {
+function parseParagraphBox(paragraph: any, lines: readonly TextLine[], pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number; oriented?: OrientedBox } | null {
   if (paragraph.hasGeometry()) {
     const geom = paragraph.getGeometry()
     if (geom.hasBoundingBox()) return parseRotatedBox(geom.getBoundingBox(), pageSize)
@@ -360,19 +360,19 @@ function parseParagraphBox(paragraph: any, lines: readonly TextLine[], pageSize:
   return boxFromLines(lines)
 }
 
-function boxFromLines(lines: readonly TextLine[]): { bbox: BBox; polygon: Polygon; rotationDeg: number } | null {
+function boxFromLines(lines: readonly TextLine[]): { bbox: BBox; polygon: Polygon; rotationDeg: number; oriented?: OrientedBox } | null {
   const bbox = unionBBoxes(lines.map(line => line.bbox))
   if (!bbox) return null
   return { bbox, polygon: bboxToPolygon(bbox), rotationDeg: maxAbsRotation(lines) }
 }
 
-function boxFromWords(words: readonly TextWord[]): { bbox: BBox; polygon: Polygon; rotationDeg: number } | null {
+function boxFromWords(words: readonly TextWord[]): { bbox: BBox; polygon: Polygon; rotationDeg: number; oriented?: OrientedBox } | null {
   const bbox = unionBBoxes(words.map(word => word.bbox))
   if (!bbox) return null
   return { bbox, polygon: bboxToPolygon(bbox), rotationDeg: 0 }
 }
 
-function parseRotatedBox(box: any, pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number } | null {
+function parseRotatedBox(box: any, pageSize: readonly [number, number]): { bbox: BBox; polygon: Polygon; rotationDeg: number; oriented: OrientedBox } | null {
   if (box.getCoordinateType() !== lens.CoordinateType.NORMALIZED) return null
   const [pageW, pageH] = pageSize
   const cx = box.getCenterX() * pageW
@@ -381,7 +381,7 @@ function parseRotatedBox(box: any, pageSize: readonly [number, number]): { bbox:
   const h = box.getHeight() * pageH
   const rotationDeg = (box.getRotationZ() || 0) * 180 / Math.PI
   const polygon = orientedRect(cx, cy, w, h, rotationDeg)
-  return { bbox: polygonBBox(polygon, pageSize), polygon, rotationDeg }
+  return { bbox: polygonBBox(polygon, pageSize), polygon, rotationDeg, oriented: { cx, cy, w, h, rotationDeg } }
 }
 
 function dedupeTextBlocks(blocks: readonly TextBlock[]): TextBlock[] {

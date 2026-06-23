@@ -38,6 +38,9 @@ export interface SafeShapeProfile {
 export declare function hasReliableBackgroundFill(margin: SafeMarginsDebug | null | undefined): margin is SafeMarginsDebug & {
     readonly backgroundRgb: Rgb;
 };
+export declare function hasAnyBackgroundFill(margin: SafeMarginsDebug | null | undefined): margin is SafeMarginsDebug & {
+    readonly backgroundRgb: Rgb;
+};
 export declare function estimateSafeMargins(args: {
     readonly image: ImagePixels;
     readonly placement: TextPlacement;

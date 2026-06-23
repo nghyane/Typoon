@@ -26,6 +26,7 @@ export interface TextPlacement {
     readonly drawable: Polygon;
     readonly bbox: BBox;
     readonly textBoxes: readonly BBox[];
+    readonly wordBoxes: readonly BBox[];
     readonly role: TextRole;
     readonly rotationDeg: number;
     readonly confidence: number;

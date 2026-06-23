@@ -14,15 +14,19 @@ export interface TextStylePlan {
   readonly fontWeight: string
   readonly strokes: readonly TextStrokePlan[]
   readonly shadow: string | null
+  readonly backgroundColor: string | null
 }
 
-export function buildTextStyle(placement: TextPlacement, fontSizePx = DEFAULT_FONT_SIZE_PX): TextStylePlan {
+export function buildTextStyle(placement: TextPlacement, fontSizePx = DEFAULT_FONT_SIZE_PX, backgroundRgb?: readonly [number, number, number] | null): TextStylePlan {
   if (placement.role !== 'sfx') {
     return {
       fill: '#111111',
       fontWeight: '700',
       strokes: [{ color: '#ffffff', widthPx: strokeWidth(fontSizePx, DIALOGUE_STROKE_RATIO, 2, 18) }],
       shadow: null,
+      backgroundColor: placement.role === 'narration' && backgroundRgb
+        ? `rgb(${backgroundRgb[0]},${backgroundRgb[1]},${backgroundRgb[2]})`
+        : null,
     }
   }
 
@@ -31,6 +35,7 @@ export function buildTextStyle(placement: TextPlacement, fontSizePx = DEFAULT_FO
     fontWeight: '800',
     strokes: [{ color: '#ffffff', widthPx: strokeWidth(fontSizePx, SFX_STROKE_RATIO, 4, 28) }],
     shadow: null,
+    backgroundColor: null,
   }
 }
 

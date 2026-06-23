@@ -29,7 +29,8 @@ export interface TextPlacement {
   readonly sourceUnitIds: readonly string[]
   readonly drawable: Polygon
   readonly bbox: BBox
-  readonly textBoxes: readonly BBox[]
+  readonly textBoxes: readonly BBox[]   // line-level (for fit, expansion)
+  readonly wordBoxes: readonly BBox[]   // word-level (for tight erase)
   readonly role: TextRole
   readonly rotationDeg: number
   readonly confidence: number

@@ -88,9 +88,7 @@ export function fitLayout(
   // Try fit in base rect at target font
   const baseComposition = composeInRect(fontWeight, cleanText, baseRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, baseRect, preMargin), font, measurer, profile)
 
-  const expansion = preMargin && !overallBlocked(preMargin)
-    ? constrainExpansionToGeometry(preMargin, baseRect, placement, profile)
-    : null
+  const expansion = preMargin && !overallBlocked(preMargin) ? preMargin : null
 
   if (!expansion || overallBlocked(expansion)) {
     return toFitResult(
@@ -122,9 +120,15 @@ export function fitLayout(
   const finalComposition = composeInRect(fontWeight, cleanText, bestRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, bestRect, expansion), font, measurer, profile)
   const expanded = !sameRect(bestRect, baseRect)
   const overExpanded = expanded && excessiveExpansionFontLift(baseComposition, finalComposition)
-  const outputRect = overExpanded ? baseRect : bestRect
   const outputComposition = overExpanded ? baseComposition : finalComposition
   const outputExpanded = expanded && !overExpanded
+  // Expansion only buys font size / line-break width — it must NOT move the
+  // text.  Anchor the render rect on the base (OCR) centre with a height tight
+  // to the composed text, so the translation stays where the source text was
+  // instead of floating to the centre of a tall expanded box.
+  const outputRect = outputExpanded
+    ? anchoredExpandedRect(bestRect, outputComposition, baseRect, expansion.safeBounds, profile, placement.role)
+    : baseRect
 
   return toFitResult(
     text, outputRect, baseRect, outputComposition, fontIntent, direction,
@@ -217,8 +221,11 @@ function bestFontFit(args: {
   readonly profile: TextRenderProfile
 }): { readonly fontSizePx: number; readonly composition: LineComposition; readonly maxDomFitPx: number } {
   // Binary search using browser-native measurement (fast, all scripts).
+  // Search up to hiBound (rect height) so expansion candidates can grow
+  // beyond the base-rect computed targetFontPx.  targetFontPx is a scoring
+  // reference, not a hard cap.
   let lo = MIN_FONT_SIZE
-  let hi = Math.min(args.targetFontPx, args.hiBound)
+  let hi = args.hiBound
   let maxFitPx = MIN_FONT_SIZE
 
   while (lo <= hi) {
@@ -235,7 +242,7 @@ function bestFontFit(args: {
     }
   }
 
-  const fontSizePx = Math.max(MIN_FONT_SIZE, Math.min(args.targetFontPx, maxFitPx))
+  const fontSizePx = Math.max(MIN_FONT_SIZE, maxFitPx)
   // Compose with DP for shape-aware line breaks. If DP disagrees with measure(),
   // fall back until DP fits (shape constraints may be tighter than rectangular).
   let composition = composeFit(args, fontSizePx)
@@ -297,13 +304,15 @@ function scoreCandidate(
   baseRect: FitRect,
 ): number {
   if (!comp.composition.fits) return 1_000_000
-  // Font preservation is primary. Tie-break with aspect ratio stability.
   const shrinkPx = Math.max(0, targetFontPx - comp.fontSizePx)
+  // Reward font growth above target so expansion candidates that
+  // deliver larger text beat base-rect candidates that merely meet
+  // target.  Growth 1 px ≈ –150; aspect drift 1 % ≈ +100.
+  const growthPx = Math.max(0, comp.fontSizePx - targetFontPx)
   const candAspect = candRect.width / Math.max(1, candRect.height)
   const aspectDrift = Math.abs(candAspect - baseAspect)
   const centerPenalty = centerDistanceRatio(candRect, baseRect)
-  // Font shrink dominates; aspect and source-center distance are tie-breakers.
-  return shrinkPx * 1000 + Math.round(aspectDrift * 100) + Math.round(centerPenalty * 30)
+  return shrinkPx * 1000 - growthPx * 150 + Math.round(aspectDrift * 100) + Math.round(centerPenalty * 30)
 }
 
 function excessiveExpansionFontLift(base: SizedComposition, expanded: SizedComposition): boolean {
@@ -313,89 +322,56 @@ function excessiveExpansionFontLift(base: SizedComposition, expanded: SizedCompo
 
 function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargins): FitRect[] {
   const results: FitRect[] = [baseRect]
-  const vGrow = Math.min(margins.top, margins.bottom)
-  const hGrow = Math.min(margins.left, margins.right)
+  const { top, bottom, left, right } = margins
+  const cx = baseRect.x + baseRect.width / 2
+  const cy = baseRect.y + baseRect.height / 2
+  const vGrow = top + bottom
+  const hGrow = left + right
 
+  // Grow symmetrically from the original centre so asymmetrical margins
+  // (e.g. more space on one side) don't push the text box off-centre.
   if (vGrow > 0) {
-    results.push(clampRect({
-      x: baseRect.x, y: baseRect.y - vGrow,
-      width: baseRect.width, height: baseRect.height + vGrow * 2,
-      rotationDeg: baseRect.rotationDeg,
-    }, safeBounds))
+    const newH = baseRect.height + vGrow
+    results.push(clampRect({ x: baseRect.x, y: cy - newH / 2, width: baseRect.width, height: newH, rotationDeg: baseRect.rotationDeg }, safeBounds))
   }
   if (hGrow > 0) {
-    results.push(clampRect({
-      x: baseRect.x - hGrow, y: baseRect.y,
-      width: baseRect.width + hGrow * 2, height: baseRect.height,
-      rotationDeg: baseRect.rotationDeg,
-    }, safeBounds))
+    const newW = baseRect.width + hGrow
+    results.push(clampRect({ x: cx - newW / 2, y: baseRect.y, width: newW, height: baseRect.height, rotationDeg: baseRect.rotationDeg }, safeBounds))
   }
   if (vGrow > 0 && hGrow > 0) {
-    results.push(clampRect({
-      x: baseRect.x - hGrow, y: baseRect.y - vGrow,
-      width: baseRect.width + hGrow * 2, height: baseRect.height + vGrow * 2,
-      rotationDeg: baseRect.rotationDeg,
-    }, safeBounds))
+    const newW = baseRect.width + hGrow
+    const newH = baseRect.height + vGrow
+    results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, safeBounds))
   }
   return results
 }
 
-function constrainExpansionToGeometry(margin: SafeMarginsDebug, baseRect: FitRect, placement: TextPlacement, profile: TextRenderProfile): SafeMarginsDebug {
-  const base = fitRectBBox(baseRect)
-  const envelope = geometryEnvelope(baseRect, placement, profile)
-  const limited = intersectBBoxes(margin.safeBounds, envelope) ?? base
-  const safeBounds = unionBBoxes([base, limited])
-  const margins = marginsFromBounds(base, safeBounds)
-  const hasGrowth = margins.top + margins.right + margins.bottom + margins.left > 0
-  return {
-    ...margin,
-    safeBounds,
-    margins,
-    reasons: hasGrowth ? margin.reasons : { ...margin.reasons, overall: 'geometry-limited' },
-  }
+// Render rect for an expanded fit.  The expanded `bestRect` is only a search
+// space for font size + line width; reusing it as the render box would
+// flex-centre the text in a tall box and float it away from the source.
+// Keep the expanded WIDTH (line-break room), but shrink HEIGHT to the composed
+// text and re-centre on the base (OCR) centre so the text stays anchored.
+function anchoredExpandedRect(
+  bestRect: FitRect,
+  comp: SizedComposition,
+  baseRect: FitRect,
+  safeBounds: BBox,
+  profile: TextRenderProfile,
+  role: TextRole,
+): FitRect {
+  const pad = visualPadding(comp.fontSizePx, profile, role)
+  const contentH = comp.composition.heightPx + pad.y * 2
+  const height = Math.min(bestRect.height, Math.max(baseRect.height, Math.ceil(contentH)))
+  const baseCy = baseRect.y + baseRect.height / 2
+  return clampRect({
+    x: bestRect.x,
+    y: baseCy - height / 2,
+    width: bestRect.width,
+    height,
+    rotationDeg: bestRect.rotationDeg,
+  }, safeBounds)
 }
 
-function geometryEnvelope(baseRect: FitRect, placement: TextPlacement, profile: TextRenderProfile): BBox {
-  const base = fitRectBBox(baseRect)
-  const sourceFont = validSourceFontPx(placement.fontHint?.sourceFontPx)
-  const fontPx = sourceFont ?? Math.max(MIN_FONT_SIZE, Math.min(baseRect.width, baseRect.height) * 0.45)
-  const sourceVertical = placement.fontHint?.sourceDirection === 'vertical'
-  const roleScale = placement.role === 'narration' ? 1.4 : placement.role === 'sfx' ? 0.4 : 1
-  const verticalBoost = sourceVertical ? 1.18 : 1
-  const growX = Math.max(baseRect.width * profile.geometryGrowWidthRatio, fontPx * profile.geometryGrowXEm * verticalBoost * roleScale)
-  const growY = Math.max(baseRect.height * profile.geometryGrowHeightRatio, fontPx * profile.geometryGrowYEm * roleScale)
-  return clipBBox([base[0] - growX, base[1] - growY, base[2] + growX, base[3] + growY], placement.pageSize)
-}
-
-function fitRectBBox(rect: FitRect): BBox {
-  return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
-}
-
-function intersectBBoxes(a: BBox, b: BBox): BBox | null {
-  const x1 = Math.max(a[0], b[0])
-  const y1 = Math.max(a[1], b[1])
-  const x2 = Math.min(a[2], b[2])
-  const y2 = Math.min(a[3], b[3])
-  if (x1 >= x2 || y1 >= y2) return null
-  return [x1, y1, x2, y2]
-}
-
-function unionBBoxes(boxes: readonly BBox[]): BBox {
-  return [Math.min(...boxes.map(box => box[0])), Math.min(...boxes.map(box => box[1])), Math.max(...boxes.map(box => box[2])), Math.max(...boxes.map(box => box[3]))]
-}
-
-function marginsFromBounds(base: BBox, bounds: BBox): SafeMargins {
-  return {
-    top: Math.max(0, base[1] - bounds[1]),
-    right: Math.max(0, bounds[2] - base[2]),
-    bottom: Math.max(0, bounds[3] - base[3]),
-    left: Math.max(0, base[0] - bounds[0]),
-  }
-}
-
-function clipBBox(bbox: BBox, pageSize: readonly [number, number]): BBox {
-  return [Math.max(0, bbox[0]), Math.max(0, bbox[1]), Math.min(pageSize[0], bbox[2]), Math.min(pageSize[1], bbox[3])]
-}
 
 function centerDistanceRatio(rect: FitRect, baseRect: FitRect): number {
   const rectCx = rect.x + rect.width / 2

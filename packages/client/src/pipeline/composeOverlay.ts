@@ -249,6 +249,9 @@ function projectPlacement(placement: TextPlacement, projection: PreparedPageHand
     textBoxes: placement.textBoxes
       .map(box => clipBBoxToPage(translateBBox(box, dx, dy), pageSize))
       .filter((box): box is BBox => box !== null),
+    wordBoxes: placement.wordBoxes
+      .map(box => clipBBoxToPage(translateBBox(box, dx, dy), pageSize))
+      .filter((box): box is BBox => box !== null),
   }
 }
 

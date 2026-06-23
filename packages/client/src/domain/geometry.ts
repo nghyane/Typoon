@@ -2,6 +2,83 @@ export type BBox = readonly [number, number, number, number]
 export type Point = readonly [number, number]
 export type Polygon = readonly Point[]
 
+/**
+ * Oriented (rotated) rectangle in page-pixel space.  Unlike BBox, `w`/`h` are
+ * the true unrotated extents, so a tilted text line keeps its real font size
+ * instead of the inflated axis-aligned height (`w·sinθ + h·cosθ`).  This is the
+ * geometry the OCR engine actually returns; keeping it avoids lossy measurement
+ * downstream.
+ */
+export interface OrientedBox {
+  readonly cx: number
+  readonly cy: number
+  readonly w: number
+  readonly h: number
+  readonly rotationDeg: number
+}
+
+export function orientedFromBBox(bbox: BBox, rotationDeg = 0): OrientedBox {
+  return {
+    cx: (bbox[0] + bbox[2]) / 2,
+    cy: (bbox[1] + bbox[3]) / 2,
+    w: Math.max(0, bbox[2] - bbox[0]),
+    h: Math.max(0, bbox[3] - bbox[1]),
+    rotationDeg,
+  }
+}
+
+/** Overlap ratio of two 1-D intervals (centers separated by `shift`), normalized by the smaller extent. */
+export function overlapRatio1D(shift: number, extentA: number, extentB: number): number {
+  const inter = Math.min(Math.min(extentA, extentB), (extentA + extentB) / 2 - Math.abs(shift))
+  return Math.max(0, inter) / Math.max(1, Math.min(extentA, extentB))
+}
+
+export interface OrientedPairFrame {
+  /** Gap between box edges along the line-stacking axis (perpendicular to reading). */
+  readonly primaryGapPx: number
+  /** Overlap ratio along the reading axis. */
+  readonly secondaryOverlap: number
+  /** Center shift along the reading axis. */
+  readonly centerShiftPx: number
+  /** Larger reading-axis extent of the pair. */
+  readonly maxSecondarySpan: number
+  /** Font size = extent perpendicular to reading. */
+  readonly fontPx: number
+}
+
+/**
+ * Measure a pair of oriented boxes in their shared rotated frame.  For
+ * horizontal text the reading axis is the box local-x (`u`) and lines stack
+ * along local-y (`v`); for vertical text the axes swap.  Measuring here instead
+ * of on axis-aligned bboxes keeps gaps/overlaps correct when text is tilted.
+ */
+export function orientedPairFrame(a: OrientedBox, b: OrientedBox, direction: 'horizontal' | 'vertical'): OrientedPairFrame {
+  const theta = ((a.rotationDeg + b.rotationDeg) / 2) * Math.PI / 180
+  const ux = Math.cos(theta)
+  const uy = Math.sin(theta)
+  const dx = b.cx - a.cx
+  const dy = b.cy - a.cy
+  const du = dx * ux + dy * uy
+  const dv = -dx * uy + dy * ux
+
+  if (direction === 'vertical') {
+    return {
+      primaryGapPx: Math.max(0, Math.abs(du) - (a.w + b.w) / 2),
+      secondaryOverlap: overlapRatio1D(dv, a.h, b.h),
+      centerShiftPx: Math.abs(dv),
+      maxSecondarySpan: Math.max(a.h, b.h),
+      fontPx: (a.w + b.w) / 2,
+    }
+  }
+  return {
+    primaryGapPx: Math.max(0, Math.abs(dv) - (a.h + b.h) / 2),
+    secondaryOverlap: overlapRatio1D(du, a.w, b.w),
+    centerShiftPx: Math.abs(du),
+    maxSecondarySpan: Math.max(a.w, b.w),
+    fontPx: (a.h + b.h) / 2,
+  }
+}
+
 export function area(b: BBox): number {
   return Math.max(1, (b[2] - b[0]) * (b[3] - b[1]))
 }

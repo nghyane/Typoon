@@ -1,4 +1,4 @@
-import type { TextPlacement } from '../domain/planning'
+import type { TextPlacement, TextRole } from '../domain/planning'
 import { type SafeMarginsDebug } from './backgroundFit'
 import { type FitRect } from './fitGeometry'
 import { type LineLayoutCandidate } from './lineComposer'
@@ -66,7 +66,8 @@ export function fitPageText(
     const placements = items.map(item => item.placement)
     const fontCtx = pageFontContext(fontContextPlacements?.length ? fontContextPlacements : placements, pageSize[0], languageContext)
     const context: PageFitContext = { pageSize, fontCtx, placementMargins, languageContext }
-    return items.map((item, index) => fitPlacementText(item, index, context, font, measurer))
+    const results = items.map((item, index) => fitPlacementText(item, index, context, font, measurer))
+    return results
   } finally {
     measurer.destroy()
   }
@@ -109,4 +110,77 @@ function fitPlacementText(
     expansion: result.expansion,
     safeShapeUsed: result.safeShapeUsed,
   }
+}
+
+// ── Cross-placement font size coordination ──────────────────────────
+// When multiple placements share the same role but some shrink more
+// than others (e.g. Vietnamese translations are longer than CJK source),
+// unify to the minimum within each visually-similar cluster.  A tiny
+// bubble must not pull down a large one — they are separate visual
+// elements and don't need matching font sizes.
+
+function clusterByMaxDomFit(indices: readonly number[], results: readonly CssFitResult[]): number[][] {
+  const sorted = [...indices].sort((a, b) => results[a]!.maxDomFitPx - results[b]!.maxDomFitPx)
+  const clusters: number[][] = []
+  let cluster: number[] = []
+  for (const i of sorted) {
+    if (!cluster.length) {
+      cluster.push(i)
+      continue
+    }
+    const prev = results[cluster[cluster.length - 1]!]!.maxDomFitPx
+    const curr = results[i]!.maxDomFitPx
+    if (curr / prev <= 1.8) {
+      cluster.push(i)
+    } else {
+      clusters.push(cluster)
+      cluster = [i]
+    }
+  }
+  if (cluster.length) clusters.push(cluster)
+  return clusters.filter(c => c.length >= 2)
+}
+
+export function coordinateRoleFontSizes(
+  items: readonly CssFitInput[],
+  results: CssFitResult[],
+): CssFitResult[] {
+  const roles = new Map<TextRole, number[]>()
+  for (let i = 0; i < results.length; i++) {
+    const role = items[i]!.placement.role
+    const list = roles.get(role)
+    if (list) list.push(i)
+    else roles.set(role, [i])
+  }
+
+  for (const [role, indices] of roles) {
+    if (role === 'sfx' || indices.length < 2) continue
+    // Only coordinate placements that SHRUNK below their target.
+    // Exclude placements where the bubble itself is too small (maxDomFitPx ≈ fontSizePx)
+    // — those are geometry-constrained, not text-length-constrained.
+    const shrunk = indices.filter(i => {
+      const r = results[i]!
+      return r.fontSizePx < r.targetFontPx && r.fontSizePx >= r.maxDomFitPx * 0.85
+    })
+    if (shrunk.length < 2) continue
+
+    // Cluster by similar available space; coordinate only within each cluster.
+    for (const cluster of clusterByMaxDomFit(shrunk, results)) {
+      const minFont = Math.min(...cluster.map(i => results[i]!.fontSizePx))
+      for (const i of cluster) {
+        const r = results[i]!
+        if (r.fontSizePx <= minFont) continue
+        const scale = minFont / r.fontSizePx
+        results[i] = {
+          ...r,
+          fontSizePx: minFont,
+          lineHeightPx: Math.round(r.lineHeightPx * scale),
+          paddingXPx: Math.round(r.paddingXPx * scale),
+          paddingYPx: Math.round(r.paddingYPx * scale),
+          fitReason: `${r.fitReason}/uniform`,
+        }
+      }
+    }
+  }
+  return results
 }

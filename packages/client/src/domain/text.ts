@@ -1,4 +1,4 @@
-import type { BBox, Polygon } from './geometry'
+import type { BBox, OrientedBox, Polygon } from './geometry'
 import type { TextRole } from './planning'
 
 export type TextDirection = 'horizontal' | 'vertical'
@@ -7,6 +7,8 @@ export interface TextWord {
   readonly bbox: BBox
   readonly text: string
   readonly textSeparator?: string
+  /** True rotated extents from OCR; absent when synthesized from a union of boxes. */
+  readonly oriented?: OrientedBox
 }
 
 export interface TextLine {
@@ -14,6 +16,8 @@ export interface TextLine {
   readonly text: string
   readonly rotationDeg: number
   readonly words: readonly TextWord[]
+  /** True rotated extents from OCR; absent when synthesized from a union of word boxes. */
+  readonly oriented?: OrientedBox
 }
 
 export interface TextBlock {

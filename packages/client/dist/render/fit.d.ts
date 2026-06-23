@@ -41,3 +41,4 @@ export interface CssFitResult {
     readonly safeShapeUsed: boolean;
 }
 export declare function fitPageText(items: readonly CssFitInput[], pageSize: readonly [number, number], font: FontProfile, placementMargins?: readonly SafeMarginsDebug[], fontContextPlacements?: readonly TextPlacement[], languageContext?: RenderLanguageContext): CssFitResult[];
+export declare function coordinateRoleFontSizes(items: readonly CssFitInput[], results: CssFitResult[]): CssFitResult[];

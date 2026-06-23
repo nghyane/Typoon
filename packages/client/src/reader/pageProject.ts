@@ -44,6 +44,7 @@ export function canvasPlacementToSource(placement: TextPlacement, unit: PageScan
     bbox: canvasToSourceBBox(placement.bbox, geo),
     drawable: canvasToSourcePolygon(placement.drawable, geo),
     textBoxes: placement.textBoxes.map(box => canvasToSourceBBox(box, geo)),
+    wordBoxes: placement.wordBoxes.map(box => canvasToSourceBBox(box, geo)),
   }
 }
 
@@ -71,6 +72,7 @@ export function shiftPlacementY(placement: TextPlacement, dy: number): TextPlace
     bbox: shiftBBoxY(placement.bbox, dy),
     drawable: placement.drawable.map(([x, y]) => [x, y + dy] as const) as unknown as Polygon,
     textBoxes: placement.textBoxes.map(box => shiftBBoxY(box, dy)),
+    wordBoxes: placement.wordBoxes.map(box => shiftBBoxY(box, dy)),
   }
 }
 
