@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import { version } from '$app/environment';
   import { Download, Globe2, LogOut, Search, Sparkles } from 'lucide-svelte';
   import { session } from '$lib/auth/session.svelte';
   import { languageName, languageSummary } from '$lib/lang';
@@ -90,6 +91,15 @@
   function updateProvider(provider: TranslationProvider): void {
     localSettings.update({ translation_provider: provider });
   }
+
+  const versionLabel = $derived.by(() => {
+    const ts = Number(version);
+    if (!Number.isFinite(ts)) return 'Hội Mê Truyện';
+    const d = new Date(ts);
+    const date = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const time = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+    return `Hội Mê Truyện · ${date} ${time}`;
+  });
 
   const inputCls = 'h-8 w-full px-3 rounded-sm bg-surface-2 border border-transparent text-sm text-text placeholder:text-text-subtle hover:bg-hover focus:border-accent focus:bg-surface-2 focus:outline-none transition-colors';
 </script>
@@ -308,5 +318,9 @@
         </div>
       </section>
     {/if}
+
+    <footer class="mt-8 border-t border-border-soft pt-4">
+      <p class="text-xs text-text-subtle tabular-nums">{versionLabel}</p>
+    </footer>
   </div>
 {/if}
