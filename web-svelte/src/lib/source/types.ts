@@ -12,6 +12,10 @@ export interface HttpRequest {
 export interface Pagination {
 	type: 'page' | 'offset' | 'cursor';
 	pageSize: number;
+	/** Optional selector on the response root; loop stops when it resolves falsy
+	 *  (empty, "0", "false", "null"). Lets sources that clamp overflow pages
+	 *  signal the last page instead of relying on a wasted clamp request. */
+	hasMore?: Selector;
 }
 
 export interface Filter {

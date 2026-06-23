@@ -101,7 +101,7 @@
       "method":     "GET",
       "url":        "https://comic.naver.com/api/article/list?titleId={titleId}&page={page}&pageSize=20&sortOrder=ASC",
       "parse":      "json",
-      "pagination": { "type": "page", "pageSize": 20 },
+      "pagination": { "type": "page", "pageSize": 20, "hasMore": "$.pageInfo.nextPage" },
       "list":       "$.articleList[*]",
       "extras":     { "no": "@no" },
       "fields": {

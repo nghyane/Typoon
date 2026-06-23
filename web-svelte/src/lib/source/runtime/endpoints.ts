@@ -123,6 +123,13 @@ function keep(row: Row, preds: Fields, g: Vars) {
 	return true;
 }
 
+function truthySel(row: Row, sel: string) {
+	const v = row.get(sel);
+	if (v == null) return false;
+	const t = v.trim();
+	return !!t && t !== '0' && t !== 'false' && t !== 'null';
+}
+
 // ── build: chapter ─────────────────────────────────────────────────
 
 function chapterLabel(num: string, t: string | null) {
@@ -278,12 +285,22 @@ async function chaptersExternal(
 		return externalChapterRows(rows(parsed, ep.list, ep.parse), url, vars, ep, norm);
 	}
 	const all: MangaChapterRef[] = [];
+	const seen = new Set<string>();
+	const hasMoreSel = ep.pagination?.hasMore;
 	let page = 1, off = 0;
 	while (true) {
 		const { url, parsed } = await fetchE(ep, { ...vars, page, offset: off }, cookies, m, 'chapters');
 		const rs = rows(parsed, ep.list, ep.parse);
-		all.push(...externalChapterRows(rs, url, vars, ep, norm));
-		if (rs.length < ps) break;
+		let added = 0;
+		for (const c of externalChapterRows(rs, url, vars, ep, norm)) {
+			if (seen.has(c.url)) continue;
+			seen.add(c.url); all.push(c); added += 1;
+		}
+		// Stop on short page, when the source signals no more pages, or when an
+		// out-of-range page yields no new chapters (some APIs clamp overflow
+		// pages to the last page instead of returning an empty list).
+		if (rs.length < ps || added === 0) break;
+		if (hasMoreSel && !truthySel(rootRow(parsed, ep.parse), hasMoreSel)) break;
 		page += 1; off += ps;
 	}
 	return all;
