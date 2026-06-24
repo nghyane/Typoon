@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { db, type Work, type WorkSource } from '$lib/db';
+import { db, type HistoryItem, type Work, type WorkSource } from '$lib/db';
 import { deriveSourceKeys, sourceKey, type LibraryStatus } from '$lib/db';
 import type { MangaDetail, MangaSummary, SourceManifest } from '$lib/source/types';
 import { workIdFromSourceRef } from './id';
@@ -99,17 +99,15 @@ export async function setWorkLibraryStatus(workId: string, status: LibraryStatus
 
 export async function createBlankWork(input: {
 	title: string;
-	source_lang?: string;
-	target_lang?: string;
 	nsfw?: boolean;
 }): Promise<Work> {
 	const now = new Date().toISOString();
 	const work: Work = {
 		id: nanoid(12),
 		title: input.title,
+		title_overridden: false,
 		cover_url: null,
-		source_lang: input.source_lang ?? 'ja',
-		target_lang: input.target_lang ?? 'vi',
+		cover_overridden: false,
 		nsfw: !!input.nsfw,
 		sources: [],
 		sourceKey: [],
@@ -163,6 +161,24 @@ export async function attachSource(workId: string, source: WorkSource): Promise<
 	return next;
 }
 
+export async function detachSource(workId: string, source: string, upstreamRef: string): Promise<Work> {
+	const current = await getWork(workId);
+	if (!current) throw new Error('Work không tồn tại.');
+	const sources = current.sources.filter(
+		(s) => !(s.source === source && s.upstream_ref === upstreamRef),
+	);
+	if (sources.length === current.sources.length) return current;
+	const next: Work = {
+		...current,
+		...syncIdentityToPrimary(current, sources),
+		sources,
+		sourceKey: deriveSourceKeys(sources),
+		updated_at: new Date().toISOString(),
+	};
+	await db().works.put(next);
+	return next;
+}
+
 export async function ensureWorkFromSource(manifest: SourceManifest, manga: MangaSummary | MangaDetail): Promise<Work> {
 	const key = sourceKey(manifest.id, manga.url);
 	const newId = workIdFromSourceRef(manifest.id, manga.url);
@@ -182,21 +198,19 @@ export async function ensureWorkFromSource(manifest: SourceManifest, manga: Mang
 		return { ...existing, last_opened_at: now, updated_at: now };
 	}
 
-	const languages = [...(('availableLanguages' in manga && manga.availableLanguages) || manifest.languages || [])];
 	const sources = [{
 		source: manifest.id,
 		upstream_ref: manga.url,
 		title: manga.title,
 		cover_url: manga.cover,
-		languages,
 		added_at: now,
 	}];
 	const work: Work = {
 		id: newId,
 		title: manga.title,
+		title_overridden: false,
 		cover_url: manga.cover,
-		source_lang: languages[0] ?? 'ja',
-		target_lang: 'vi',
+		cover_overridden: false,
 		nsfw: !!manifest.nsfw,
 		sources,
 		sourceKey: deriveSourceKeys(sources),
@@ -209,4 +223,25 @@ export async function ensureWorkFromSource(manifest: SourceManifest, manga: Mang
 	};
 	await db().works.put(work);
 	return work;
+}
+
+export async function recordHistory(workId: string, chapterRef: string): Promise<void> {
+	await db().reading_history.put({
+		id: `${workId}:${chapterRef}`,
+		work_id: workId,
+		chapter_ref: chapterRef,
+		last_read_at: new Date().toISOString(),
+	});
+}
+
+export async function getWorkHistory(workId: string): Promise<HistoryItem[]> {
+	return db().reading_history.where('work_id').equals(workId).toArray();
+}
+
+export async function renameWork(workId: string, title: string): Promise<Work | null> {
+	const current = await getWork(workId);
+	if (!current) return null;
+	const next: Work = { ...current, title: title.trim(), title_overridden: true, updated_at: new Date().toISOString() };
+	await db().works.put(next);
+	return next;
 }

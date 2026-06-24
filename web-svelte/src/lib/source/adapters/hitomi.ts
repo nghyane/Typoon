@@ -246,7 +246,7 @@ export const hitomiAdapter: SourceAdapter = {
 			description: info.type ?? null,
 			author: info.artists?.map((artist) => artist.artist).join(', ') ?? null,
 			status: info.language ?? null,
-			availableLanguages: lang ? [lang] : null,
+			
 			chapters: [{
 				id: mangaUrl,
 				url: mangaUrl,

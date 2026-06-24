@@ -66,7 +66,7 @@ export class ReaderSourceResolver {
       const routePrefKey = `${d.workId}:${d.chapterRef}:${prefKey ?? 'auto'}`;
       if (!prefKey || routePrefKey === this.#appliedPrefRouteKey) return;
       this.#appliedPrefRouteKey = routePrefKey;
-      const version = d.versions?.find((item) => item.key === prefKey);
+      const version = d.versions.find((item) => item.key === prefKey);
       if (version && version.key !== this.activeVersionKey) {
         void this.switchSource(version, { persist: false });
       }
@@ -130,6 +130,6 @@ export class ReaderSourceResolver {
 }
 
 function initialVersion(data: ReaderData): ReaderSourceVersion | null {
-  if (!data.versions?.length) return null;
+  if (!data.versions.length) return null;
   return data.versions.find((version) => version.key === data.selectedVersionKey) ?? data.versions[0] ?? null;
 }

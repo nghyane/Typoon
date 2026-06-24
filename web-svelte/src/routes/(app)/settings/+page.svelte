@@ -27,7 +27,7 @@
   let sourceVisibility = $state<'all' | 'sfw' | 'nsfw'>('all');
 
   const user = $derived(session.state.status === 'authenticated' ? session.state.user : null);
-  const targetLang = $derived(user?.preferred_target_lang ?? localSettings.state.default_target_lang ?? 'vi');
+  const targetLang = $derived(localSettings.state.default_target_lang ?? 'vi');
   const installedSourceCount = $derived(sources.filter((source) => source.enabled).length);
 
   const sourceLanguages = $derived(

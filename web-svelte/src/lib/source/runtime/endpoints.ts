@@ -171,13 +171,6 @@ function externalChapterRows(rs: Row[], baseUrl: string, g: Vars, ep: ChaptersAp
 	}).filter((c): c is MangaChapterRef => c !== null);
 }
 
-function parseLangList(raw: string | null | undefined): string[] | null {
-	if (!raw) return null;
-	if (raw.startsWith('[')) { try { const a = JSON.parse(raw) as unknown; if (Array.isArray(a)) return a.filter((x): x is string => typeof x === 'string'); } catch { /* */ } }
-	const p = raw.split(/[\s,]+/).filter(Boolean);
-	return p.length > 0 ? p : null;
-}
-
 // ── build: page list ───────────────────────────────────────────────
 
 function pageList(p: unknown, ep: { parse: 'html' | 'json'; list: string; fields: Fields }, vars: Vars, baseUrl: string) {
@@ -268,7 +261,6 @@ export async function fetchMangaDetail(
 		id: mangaUrl, url: mangaUrl,
 		title: f.title || '(không tên)', cover: absUrl(f.cover, base),
 		description: f.description ?? null, author: f.author ?? null, status: f.status ?? null,
-		availableLanguages: parseLangList(f.availableLangs),
 		chapters,
 	};
 	if (m.imageHeaders) detail.coverHeaders = m.imageHeaders;

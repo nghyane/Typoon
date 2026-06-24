@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { AlertCircle, ChevronDown, ChevronLeft, EyeOff, Languages, Loader2 } from 'lucide-svelte';
+  import { AlertCircle, ChevronDown, ChevronLeft, EyeOff, Languages, Loader2, RefreshCw } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
   import { resolvePageUrl } from '$lib/source/runtime/endpoints';
@@ -8,6 +8,7 @@
   import { localSettings, READER_PAGE_WIDTH_MAX, READER_PAGE_WIDTH_MIN } from '$lib/localSettings.svelte';
   import { session } from '$lib/auth/session.svelte';
   import { trackDiscordJoinRequired, trackTranslateClick } from '$lib/analytics/client';
+  import { recordHistory } from '$lib/works/repo';
   import type { ReaderData } from '$lib/types';
   import { ReaderNavigation } from '$lib/reader/ReaderNavigation.svelte';
   import { ReaderSourceResolver } from '$lib/reader/ReaderSourceResolver.svelte';
@@ -18,7 +19,7 @@
 
   const DISCORD_INVITE_URL = 'https://discord.gg/zuwqbbdZ';
 
-  let { data }: { data: ReaderData | null } = $props();
+  let { data }: { data: ReaderData } = $props();
 
   let chapterPickerOpen = $state(false);
   let sourcePickerOpen = $state(false);
@@ -28,6 +29,18 @@
   let sourceTriggerEl = $state<HTMLButtonElement | null>(null);
   let joinRequiredTracked = $state(false);
   let translationHidden = $state(false);
+  let sessionRefreshing = $state(false);
+  let sessionRefreshFailed = $state(false);
+
+  async function handleConfirmJoin(): Promise<void> {
+    sessionRefreshing = true;
+    sessionRefreshFailed = false;
+    await session.refresh();
+    sessionRefreshing = false;
+    if (session.state.status === 'authenticated' && session.state.user.is_guild_member === false) {
+      sessionRefreshFailed = true;
+    }
+  }
 
   const translation = new SvelteReaderTranslation();
 
@@ -52,13 +65,13 @@
     () => source.activePageHeaders,
   );
 
-  const targetLang = $derived(data?.targetLang ?? localSettings.state.default_target_lang ?? 'vi');
+  const targetLang = $derived(data.targetLang ?? localSettings.state.default_target_lang ?? 'vi');
   const canTranslateLanguage = $derived(!sameLanguage(source.activeSourceLang, targetLang));
   const translationVisible = $derived(translation.state.phase === 'done' && !translationHidden);
 
   $effect(() => {
     const pageCount = source.activeUrls.length;
-    if (!data || pageCount <= 0 || !canTranslateLanguage) { translation.clear(); return; }
+    if (pageCount <= 0 || !canTranslateLanguage) { translation.clear(); return; }
     translation.setChapter({
       chapterKey: [data.workId, data.chapterRef, source.activeVersionKey ?? '', source.activeSourceId ?? '', pageCount, source.activeSourceLang ?? '', targetLang].join(':'),
       pageCount,
@@ -69,11 +82,19 @@
   });
 
   $effect(() => {
-    data?.workId;
-    data?.chapterRef;
+    data.workId;
+    data.chapterRef;
     source.activeVersionKey;
     targetLang;
     translationHidden = false;
+  });
+
+  $effect(() => {
+    const workId = data.workId;
+    const chapterRef = data.chapterRef;
+    if (workId && chapterRef && source.activeUrls.length > 0) {
+      void recordHistory(workId, chapterRef);
+    }
   });
 
   const slotCount = $derived(Math.max(source.activeUrls.length, pages.blobs.length));
@@ -87,7 +108,7 @@
   const currentPageDisplay = $derived(pageCount > 0 ? Math.min(nav.pageIndex + 1, pageCount) : 0);
   const translationBusy = $derived(isTranslationBusy(translation.state.phase));
   const translationBlocked = $derived(session.state.status === 'authenticated' && session.state.user.is_guild_member === false);
-  const chapterDisplay = $derived(shortChapterNumber(data?.chapterNumber, data?.chapterRef));
+  const chapterDisplay = $derived(shortChapterNumber(data.chapterNumber, data.chapterRef));
   const readerPageWidth = $derived(localSettings.state.reader_page_width);
 
   onMount(() => { localSettings.load(); });
@@ -324,8 +345,8 @@
         {#if canTranslateLanguage}
           <button
             class={cn(
-              'inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter] disabled:opacity-50 disabled:cursor-not-allowed',
-              translationBusy
+              'inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter,box-shadow] disabled:opacity-50 disabled:cursor-not-allowed',
+              translationBusy || sessionRefreshing
                 ? 'bg-info-bg text-info-text hover:bg-info-bg/80'
                 : translationVisible
                   ? 'border-border-soft bg-surface-2 text-text hover:bg-hover'
@@ -334,13 +355,14 @@
                 : translation.state.phase === 'error' || translation.state.model.state === 'failed'
                     ? 'bg-error-bg text-error-text hover:bg-error-bg/80'
                 : 'border-border-soft bg-bg text-text hover:bg-hover',
+              translationBlocked && !sessionRefreshing && 'ring-1 ring-warning-text/40',
             )}
-            disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle' || translationBusy || (translationBlocked && !translationBusy)}
+            disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle' || translationBusy || (translationBlocked && !translationBusy && !sessionRefreshing)}
             aria-label={translationVisible ? 'Ẩn bản dịch' : 'Dịch chương'}
             title={translationBlocked ? 'Tham gia Discord để dùng chức năng dịch.' : translationDetail(translation.state, translationHidden)}
             onclick={handleTranslationButton}
           >
-            {#if translationBusy}<Loader2 class="shrink-0 animate-spin" size={14} />
+            {#if translationBusy || sessionRefreshing}<Loader2 class="shrink-0 animate-spin" size={14} />
             {:else if translation.state.phase === 'error' || translation.state.model.state === 'failed'}<AlertCircle class="shrink-0" size={15} />
             {:else if translationVisible}<EyeOff class="shrink-0" size={15} />
             {:else}<Languages class="shrink-0" size={15} />{/if}
@@ -356,16 +378,33 @@
     </footer>
 
     {#if canTranslateLanguage && translationBlocked}
-      <div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 flex max-w-[90vw] items-center gap-2 rounded-md border border-warning-text/20 bg-warning-bg px-3 py-2 text-xs text-warning-text shadow-lg">
-        <AlertCircle size={14} class="shrink-0" />
-        <span>Tham gia Discord để dùng chức năng dịch.</span>
-        <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" class="shrink-0 font-semibold underline underline-offset-2">Tham gia</a>
+      <div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 flex max-w-[92vw] flex-col gap-1.5 rounded-md border border-border-soft bg-surface/95 px-3 py-2.5 text-xs text-text backdrop-blur shadow-lg">
+        <div class="flex items-center gap-2">
+          <AlertCircle size={14} class="shrink-0 text-warning-text" />
+          <span class="flex-1 text-text-muted">Tham gia Discord để dùng chức năng dịch.</span>
+          <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" class="shrink-0 font-semibold text-accent-text hover:underline">Tham gia</a>
+        </div>
+        <div class="flex items-center gap-2 pl-5">
+          {#if sessionRefreshFailed}
+            <span class="flex-1 text-text-subtle">Chưa xác nhận được, thử lại sau ít giây.</span>
+          {:else}
+            <span class="flex-1 text-text-subtle">Sau khi tham gia, bấm để xác nhận:</span>
+          {/if}
+          <button
+            onclick={handleConfirmJoin}
+            disabled={sessionRefreshing}
+            class="inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-semibold bg-surface-2 text-text hover:bg-hover disabled:opacity-50 transition-colors cursor-pointer"
+          >
+            {#if sessionRefreshing}<Loader2 size={11} class="animate-spin" />{:else}<RefreshCw size={11} />{/if}
+            Đã tham gia
+          </button>
+        </div>
       </div>
     {/if}
     {#if source.sourceError}<div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 max-w-[90vw] rounded-md bg-error-bg text-error-text border border-border-soft px-3 py-2 text-xs">{source.sourceError}</div>{/if}
 
-    <ChapterPicker open={chapterPickerOpen} anchor={chapterTriggerEl} onClose={() => { chapterPickerOpen = false; }} chapters={data.chapters ?? []} workId={data.workId} currentRef={data.chapterRef} />
-    <SourcePicker open={sourcePickerOpen} anchor={sourceTriggerEl} onClose={() => { sourcePickerOpen = false; }} versions={data.versions ?? []} activeKey={source.activeVersionKey} {targetLang} busy={source.sourceSwitching} onPick={(version) => { void source.switchSource(version); }} />
+    <ChapterPicker open={chapterPickerOpen} anchor={chapterTriggerEl} onClose={() => { chapterPickerOpen = false; }} chapters={data.chapters} workId={data.workId} currentRef={data.chapterRef} />
+    <SourcePicker open={sourcePickerOpen} anchor={sourceTriggerEl} onClose={() => { sourcePickerOpen = false; }} versions={data.versions} activeKey={source.activeVersionKey} {targetLang} busy={source.sourceSwitching} onPick={(version) => { void source.switchSource(version); }} />
   </div>
 {/if}
 

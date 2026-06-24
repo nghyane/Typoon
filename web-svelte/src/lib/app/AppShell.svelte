@@ -21,7 +21,7 @@
   const currentHref = $derived(`${$page.url.pathname}${$page.url.search}${$page.url.hash}`);
   const isDevRoute = $derived(currentPath.startsWith('/dev/'));
   const user = $derived(session.state.status === 'authenticated' ? session.state.user : null);
-  const currentLang = $derived(user?.preferred_target_lang ?? localSettings.state.default_target_lang ?? 'vi');
+  const currentLang = $derived(localSettings.state.default_target_lang ?? 'vi');
 
   $effect(() => {
     if (!isDevRoute && session.state.status === 'unauthenticated') {
