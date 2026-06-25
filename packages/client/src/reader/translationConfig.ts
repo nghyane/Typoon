@@ -9,7 +9,13 @@ export interface TranslationConfig {
   readonly scan: ScanConfig
   readonly resilience: { readonly maxChunkAttempts: number; readonly backoffMs: number }
   readonly memory: { readonly maxCachedPages: number }
-  readonly translator: { readonly maxSessionsDesktop: number; readonly maxSessionsMobile: number }
+  readonly translator: {
+    readonly maxSessionsDesktop: number
+    readonly maxSessionsMobile: number
+    /** Pages processed concurrently (OCR of one overlaps DeepL of another). */
+    readonly maxPagesInFlightDesktop: number
+    readonly maxPagesInFlightMobile: number
+  }
 }
 
 export interface ScanConfig {
@@ -29,7 +35,7 @@ export const defaultTranslationConfig: TranslationConfig = {
   scan: { maxCaptureWidth: 1280, haloRatio: 0.25, haloMaxPx: 600 },
   resilience: { maxChunkAttempts: 3, backoffMs: 400 },
   memory: { maxCachedPages: 12 },
-  translator: { maxSessionsDesktop: 2, maxSessionsMobile: 1 },
+  translator: { maxSessionsDesktop: 3, maxSessionsMobile: 1, maxPagesInFlightDesktop: 3, maxPagesInFlightMobile: 1 },
 }
 
 export function preferredProviders(preferred: OrtProvider): readonly OrtProvider[] {

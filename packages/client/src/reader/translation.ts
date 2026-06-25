@@ -267,6 +267,7 @@ export class ReaderTranslation {
       await yieldToIdle(250)
       if (!this.isCurrent(generation) || abort.signal.aborted) return
 
+      this.prewarmTranslator(abort.signal)
       void this.drain(generation, abort)
     } catch (error) {
       if (!this.isCurrent(generation) || abort.signal.aborted) return
@@ -279,18 +280,35 @@ export class ReaderTranslation {
   private async drain(generation: number, abort: AbortController): Promise<void> {
     if (this.draining) return
     this.draining = true
+    const maxInFlight = this.maxPagesInFlight()
+    const inFlight = new Set<Promise<void>>()
+    const inFlightPages = new Set<number>()
     try {
       while (this.isCurrent(generation) && !abort.signal.aborted) {
+        // Fill open slots with the nearest-to-viewport pickable pages. Pages
+        // already processing are excluded by the scheduler (pending/failed only),
+        // so OCR of one page overlaps the DeepL round-trip of another.
+        while (inFlight.size < maxInFlight) {
+          const layout = this.measure()
+          if (!layout) break
+          this.rebuildPlan(layout)
+          const unit = this.scheduler.next(this.units, this.measuredPages(layout), this.visibleRange(layout), this.config.resilience.maxChunkAttempts)
+          if (!unit) break
+          this.scheduler.markProcessing(unit.pageIndex)
+          inFlightPages.add(unit.pageIndex)
+          const task = this.processPage(unit, generation, abort.signal).finally(() => {
+            inFlight.delete(task)
+            inFlightPages.delete(unit.pageIndex)
+          })
+          inFlight.add(task)
+        }
+        if (!inFlight.size) break
+        await Promise.race(inFlight)
+        // Evict from fresh viewport, pinning pages still in flight.
         const layout = this.measure()
-        if (!layout) break
-        this.rebuildPlan(layout)
-        const measured = this.measuredPages(layout)
-        const visible = this.visibleRange(layout)
-        const unit = this.scheduler.next(this.units, measured, visible, this.config.resilience.maxChunkAttempts)
-        if (!unit) break
-        await this.processPage(unit, generation, abort.signal)
-        this.evictPages(measured, visible)
+        if (layout) this.evictPages(this.measuredPages(layout), this.visibleRange(layout), inFlightPages)
       }
+      await Promise.allSettled(inFlight)
       if (this.isCurrent(generation) && this.scheduler.isComplete(this.config.resilience.maxChunkAttempts) && this.chapter) {
         const { failed } = this.scheduler.progress()
         this.setState({ phase: 'done', translate: { done: this.chapter.pageCount, total: this.chapter.pageCount }, failed })
@@ -299,6 +317,11 @@ export class ReaderTranslation {
     } finally {
       this.draining = false
     }
+  }
+
+  private maxPagesInFlight(): number {
+    const caps = detectBrowserCapabilities()
+    return caps.isMobile ? this.config.translator.maxPagesInFlightMobile : this.config.translator.maxPagesInFlightDesktop
   }
 
   private async processPage(
@@ -377,7 +400,7 @@ export class ReaderTranslation {
     return visibleContentRange(host, layout.contentSize, this.config.chunk.processMarginPx)
   }
 
-  private evictPages(measured: ReadonlyMap<number, MeasuredPage>, visible: { top: number; bottom: number }): void {
+  private evictPages(measured: ReadonlyMap<number, MeasuredPage>, visible: { top: number; bottom: number }, pin?: Iterable<number>): void {
     const pages = this.pages
     if (!pages) return
     const keep = new Set<number>()
@@ -387,6 +410,11 @@ export class ReaderTranslation {
         keep.add(page.pageIndex - 1)
         keep.add(page.pageIndex + 1)
       }
+    }
+    if (pin) for (const index of pin) {
+      keep.add(index)
+      keep.add(index - 1)
+      keep.add(index + 1)
     }
     pages.evictExcept(keep)
   }
@@ -401,6 +429,16 @@ export class ReaderTranslation {
       : new DeepLTranslateWeb({ maxSessions })
     this.translatorProvider = this.provider
     return this.translator
+  }
+
+  /** Open DeepL sessions ahead of the first page so it skips handshake latency. */
+  private prewarmTranslator(signal: AbortSignal): void {
+    const translator = this.ensureTranslator()
+    if ('prewarm' in translator && typeof translator.prewarm === 'function') {
+      void (translator as { prewarm(count: number, signal?: AbortSignal): Promise<void> })
+        .prewarm(this.maxPagesInFlight(), signal)
+        .catch(() => {})
+    }
   }
 
   private disposeTranslator(): void {

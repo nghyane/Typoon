@@ -8,6 +8,7 @@ import type { ComicDetrProvider } from './ortTypes'
 import type { OrtSessionPool } from '../../models/OrtSessionPool'
 import { createFeeds } from './preprocess'
 import { parseDetections } from './parse'
+import { AsyncLimiter } from '../../flow/AsyncLimiter'
 
 import type { OrtSessionHandle } from '../../models/OrtSessionPool'
 
@@ -23,6 +24,9 @@ export class MainThreadOrtRunner implements TextRegionRunner {
   private readonly capability = new CapabilityMachine(this.name)
   private readonly options: MainThreadOrtRunnerOptions
   private sessionPromise: Promise<OrtSessionHandle> | null = null
+  // A single ort.InferenceSession is not reentrant: concurrent session.run()
+  // calls corrupt the wasm heap and crash the tab. Serialize all inference.
+  private readonly inferenceLock = new AsyncLimiter(1)
 
   constructor(options: MainThreadOrtRunnerOptions) {
     this.options = options
@@ -43,9 +47,12 @@ export class MainThreadOrtRunner implements TextRegionRunner {
   async run(image: ImagePixels, options: ReadyOptions = {}): Promise<readonly TextRegion[]> {
     const { ort, session } = await this.getSession(options)
     throwIfAborted(options.signal)
-    const output = await session.run(createFeeds(ort, image))
-    throwIfAborted(options.signal)
-    return parseDetections(output, session.outputNames, image.width, image.height, this.options.confidenceThreshold)
+    return this.inferenceLock.run(async () => {
+      throwIfAborted(options.signal)
+      const output = await session.run(createFeeds(ort, image))
+      throwIfAborted(options.signal)
+      return parseDetections(output, session.outputNames, image.width, image.height, this.options.confidenceThreshold)
+    })
   }
 
   private async getSession(options: ReadyOptions): Promise<OrtSessionHandle> {

@@ -88,6 +88,30 @@ export class DeepLTranslateWeb implements Translator {
     return out
   }
 
+  /** Open idle sessions ahead of demand so the first pages skip handshake cost. */
+  async prewarm(count: number, signal?: AbortSignal): Promise<void> {
+    const target = Math.min(count, this.limiter.concurrency)
+    const missing = target - this.sessions.filter(s => !s.isClosed).length
+    if (missing <= 0) return
+    await Promise.allSettled(Array.from({ length: missing }, async () => {
+      const session = new DeepLSignalRSession({
+        endpoint: this.endpoint,
+        websocketOrigin: this.websocketOrigin,
+        requestTimeoutMs: this.requestTimeoutMs,
+        credentials: this.credentials,
+      })
+      this.sessions.push(session)
+      try {
+        await session.connect(signal)
+      } catch (error) {
+        const index = this.sessions.indexOf(session)
+        if (index !== -1) this.sessions.splice(index, 1)
+        session.close()
+        throw error
+      }
+    }))
+  }
+
   async close(): Promise<void> {
     const sessions = this.sessions.splice(0)
     this.busy.clear()
