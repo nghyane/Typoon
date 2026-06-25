@@ -107,18 +107,6 @@ export class PagePipeline {
       signal,
     })
     throwIfAborted(signal)
-    // eslint-disable-next-line no-console
-    console.log('[scanPage]', { page: unit.pageIndex, capture: [capture.image.width, capture.image.height], captureScale: capture.captureScale, source: [unit.source.width, unit.source.height], coarseBlocks: recognized.blocks.length, coarseTexts: recognized.blocks.map(b => b.text.slice(0, 30)) })
-    // Log blocks that hit canvas edges — these may be truncated by an insufficient halo.
-    for (const block of recognized.blocks) {
-      const edgeMarginPx = 2
-      const hitsTop = block.bbox[1] <= edgeMarginPx
-      const hitsBottom = block.bbox[3] >= capture.image.height - edgeMarginPx
-      if (hitsTop || hitsBottom) {
-        // eslint-disable-next-line no-console
-        console.warn('[scanPage] edge-hit block', { page: unit.pageIndex, text: block.text.slice(0, 40), bbox: block.bbox, canvasH: capture.image.height, hitsTop, hitsBottom })
-      }
-    }
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
     throwIfAborted(signal)
 
@@ -145,8 +133,6 @@ export class PagePipeline {
       const cy = (block.bbox[1] + block.bbox[3]) / 2
       return cy >= coreFrame.y && cy < coreFrame.y + coreFrame.height
     })
-    // eslint-disable-next-line no-console
-    console.log('[scanPage]', { afterRecovery: recovered.blocks.length, afterNoise: clean.blocks.length, coreOwned: coreOwnedBlocks.length, texts: coreOwnedBlocks.map(b => b.text.slice(0, 30)) })
     const roleContext: TextRoleContext = coreOwnedBlocks.length ? textRoleContext(coreOwnedBlocks) : {}
     return { capture, clean, regions, coreFrame, roleContext }
   }

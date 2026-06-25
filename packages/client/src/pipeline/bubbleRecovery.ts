@@ -74,14 +74,6 @@ export async function recoverBubbleText(args: {
   const blocks = recognized.blocks
   const diagnoses = anchors.map(anchor => diagnose(anchor, blocks))
   const todo = diagnoses.filter(d => d.action !== 'complete')
-  // eslint-disable-next-line no-console
-  console.log('[bubbleRecovery]', {
-    anchors: anchors.length,
-    complete: diagnoses.filter(d => d.action === 'complete').length,
-    empty: diagnoses.filter(d => d.action === 'empty').length,
-    partial: diagnoses.filter(d => d.action === 'partial').length,
-    todo: todo.length,
-  })
   if (!todo.length) return recognized
 
   // Load full-res source once; all anchor crops share the same canvas.

@@ -7,8 +7,6 @@ export type { ReaderTranslationChapter, ReaderTranslationState, TranslationProvi
 export class SvelteReaderTranslation {
   state = $state<ReaderTranslationState>(empty);
   #rt = new ReaderTranslation();
-  #frame = 0;
-  #pending: ReaderTranslationState | null = null;
   #unsubscribe: (() => void) | null = null;
 
   setChapter(chapter: ReaderTranslationChapter): void { this.#rt.setChapter(chapter); }
@@ -23,29 +21,13 @@ export class SvelteReaderTranslation {
   dispose(): void {
     this.#unsubscribe?.();
     this.#unsubscribe = null;
-    if (this.#frame) cancelAnimationFrame(this.#frame);
-    this.#frame = 0;
-    this.#pending = null;
     this.#rt.dispose();
   }
 
   constructor() {
-    this.#unsubscribe = this.#rt.subscribe(s => { this.#queueState(s); });
-  }
-
-  #queueState(state: ReaderTranslationState): void {
-    if (typeof requestAnimationFrame !== 'function') {
-      this.state = state;
-      return;
-    }
-    this.#pending = state;
-    if (this.#frame) return;
-    this.#frame = requestAnimationFrame(() => {
-      this.#frame = 0;
-      const next = this.#pending;
-      this.#pending = null;
-      if (next) this.state = next;
-    });
+    // Bind engine state straight into the rune. Svelte 5 batches DOM updates, so
+    // the previous rAF-coalescing layer was a redundant reimplementation.
+    this.#unsubscribe = this.#rt.subscribe(s => { this.state = s; });
   }
 }
 

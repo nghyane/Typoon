@@ -18,11 +18,9 @@
 
 import { attachOverlay } from '../render/overlay'
 import type { ReaderPageOverlay, SeamOverlay } from '../domain/pageScan'
+import type { OverlayChapterMeta, ReaderRenderer } from './renderer'
 
-export interface OverlayChapterMeta {
-  readonly sourceLanguage: string | null
-  readonly targetLanguage: string | null
-}
+export type { OverlayChapterMeta }
 
 interface AttachedOverlay {
   readonly el: HTMLElement
@@ -35,7 +33,7 @@ interface SeamBridge {
   readonly seam: SeamOverlay
 }
 
-export class OverlayManager {
+export class OverlayManager implements ReaderRenderer {
   private host: HTMLElement | null = null
   private overlays = new Map<number, ReaderPageOverlay>()
   /** Overlay data that each page was last attached with (object identity check). */

@@ -1,12 +1,9 @@
 import type { TranslatedUnit, TranslationUnit } from '../../domain/translation'
 
-/** Max chars per batch request. */
-const DEFAULT_MAX_BATCH_CHARS = 2_000
-
 const MARKER_REGEX = /@(\d+)@/g
 const MARKER_PREFIX_LENGTH = 4 // "@0@" = 3 chars + newline
 
-export function batchUnits(units: readonly TranslationUnit[], maxBatchChars = DEFAULT_MAX_BATCH_CHARS): TranslationUnit[][] {
+export function batchUnits(units: readonly TranslationUnit[], maxBatchChars: number): TranslationUnit[][] {
   const batches: TranslationUnit[][] = []
   let current: TranslationUnit[] = []
   let currentChars = 0

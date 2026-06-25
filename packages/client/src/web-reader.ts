@@ -17,4 +17,6 @@ export type { PreparedPageHandle } from './domain/prepared'
 export type { PreparedTextResult, PreparedTranslationResult } from './pipeline/translatePreparedPage'
 
 // ── Reader translation controller (public API) ──
-export { ReaderTranslation, type ReaderModelState, type ReaderTranslationChapter, type ReaderTranslationState, type TranslationProvider } from './reader/translation'
+export { ReaderTranslation, type ReaderModelState, type ReaderTranslationChapter, type ReaderTranslationState, type TranslationProvider, type ReaderTranslationOptions } from './reader/translation'
+export { OverlayManager } from './reader/overlayManager'
+export type { ReaderRenderer, OverlayChapterMeta } from './reader/renderer'

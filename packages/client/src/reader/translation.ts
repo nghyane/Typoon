@@ -24,6 +24,7 @@ import { PageScheduler } from './pageScheduler'
 import { planPageScans, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
 import { measureLayout, visibleContentRange } from './chunkCapture'
 import { OverlayManager } from './overlayManager'
+import type { ReaderRenderer } from './renderer'
 import { PageProvider, type LoadedPage } from './pageProvider'
 import { defaultTranslationConfig, type TranslationConfig } from './translationConfig'
 import { errorMessage, throwIfAborted, yieldToIdle } from './asyncSignal'
@@ -73,6 +74,8 @@ export interface ReaderTranslationChapter {
 export interface ReaderTranslationOptions {
   readonly config?: TranslationConfig
   readonly provider?: TranslationProvider
+  /** Inject the render surface. Defaults to the imperative DOM OverlayManager. */
+  readonly renderer?: ReaderRenderer
 }
 
 function init(pageCount: number, sourceLang: string | null, targetLang: string, model: ReaderModelState): ReaderTranslationState {
@@ -91,7 +94,7 @@ function init(pageCount: number, sourceLang: string | null, targetLang: string, 
 export class ReaderTranslation {
   private readonly listeners = new Set<Listener>()
   private readonly recognizer = new LensTextRecognizer()
-  private readonly overlays: OverlayManager
+  private readonly overlays: ReaderRenderer
   private readonly scheduler = new PageScheduler()
   private readonly config: TranslationConfig
   private readonly pipeline: PagePipeline
@@ -115,7 +118,7 @@ export class ReaderTranslation {
   constructor(options: ReaderTranslationOptions = {}) {
     this.config = options.config ?? defaultTranslationConfig
     this.provider = options.provider ?? 'deepl'
-    this.overlays = new OverlayManager(this.config.chunk.overlayMarginPx)
+    this.overlays = options.renderer ?? new OverlayManager(this.config.chunk.overlayMarginPx)
     this.pipeline = new PagePipeline({
       recognizer: this.recognizer,
       translator: () => this.ensureTranslator(),
