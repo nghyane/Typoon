@@ -23,7 +23,6 @@ import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
 import { textRoleContext, type TextRoleContext } from '../pipeline/textRole'
 import type { Translator } from '../translators/translator'
 import type { BBox } from '../domain/geometry'
-import type { PageSize } from '../domain/source'
 import { capturePageScan, type CapturedPageScan } from './pageCapture'
 import {
   routePlacement,
@@ -123,14 +122,9 @@ export class PagePipeline {
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
     throwIfAborted(signal)
 
-    const coreOffsetYPx = capture.haloTopPx * capture.captureScale
-    const coreWidth = unit.source.width * capture.captureScale
-    const coreOffsetXPx = (capture.image.width - coreWidth) / 2
     const source: BubbleSource = {
-      loadFullCanvas: () => loadSourceCanvas(args.loadPage, unit.pageIndex, unit.source, signal),
+      loadFullCanvas: () => loadStitchedSourceCanvas(args.loadPage, unit, signal),
       captureScale: capture.captureScale,
-      coreOffsetXPx,
-      coreOffsetYPx,
     }
     const recovered = await recoverBubbleText({
       recognized,
@@ -324,25 +318,63 @@ function hasTranslatableUnit(units: readonly { readonly kind: string; readonly s
 
 // ── synthetic per-placement translation units (clean, no strip deps) ──
 
-async function loadSourceCanvas(
+async function loadStitchedSourceCanvas(
   loadPage: (index: number) => Promise<LoadedPage>,
-  pageIndex: number,
-  sourceSize: PageSize,
+  unit: PageScanUnit,
   signal: AbortSignal,
 ): Promise<HTMLCanvasElement> {
   throwIfAborted(signal)
-  const page = await loadPage(pageIndex)
-  const bitmap = await createImageBitmap(page.blob)
+
+  const totalH = unit.haloTopPx + unit.source.height + unit.haloBottomPx
   const canvas = document.createElement('canvas')
-  canvas.width = sourceSize.width
-  canvas.height = sourceSize.height
+  canvas.width = unit.source.width
+  canvas.height = totalH
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('2d canvas unavailable')
-  try {
-    ctx.drawImage(bitmap, 0, 0)
-  } finally {
-    bitmap.close()
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  // Page N core at y = haloTopPx
+  {
+    const page = await loadPage(unit.pageIndex)
+    const bitmap = await createImageBitmap(page.blob)
+    try {
+      ctx.drawImage(bitmap, 0, unit.haloTopPx)
+    } finally {
+      bitmap.close()
+    }
   }
+
+  // Prev page bottom strip at y = 0
+  if (unit.prevIndex !== null && unit.haloTopPx > 0) {
+    throwIfAborted(signal)
+    const prev = await loadPage(unit.prevIndex)
+    const bitmap = await createImageBitmap(prev.blob)
+    try {
+      const stripH = Math.min(unit.haloTopPx, prev.size.height)
+      const srcY = prev.size.height - stripH
+      const dx = Math.round((unit.source.width - prev.size.width) / 2)
+      ctx.drawImage(bitmap, 0, srcY, prev.size.width, stripH, dx, 0, prev.size.width, stripH)
+    } finally {
+      bitmap.close()
+    }
+  }
+
+  // Next page top strip at y = haloTopPx + pageHeight
+  if (unit.nextIndex !== null && unit.haloBottomPx > 0) {
+    throwIfAborted(signal)
+    const next = await loadPage(unit.nextIndex)
+    const bitmap = await createImageBitmap(next.blob)
+    try {
+      const stripH = Math.min(unit.haloBottomPx, next.size.height)
+      const dx = Math.round((unit.source.width - next.size.width) / 2)
+      const destY = unit.haloTopPx + unit.source.height
+      ctx.drawImage(bitmap, 0, 0, next.size.width, stripH, dx, destY, next.size.width, stripH)
+    } finally {
+      bitmap.close()
+    }
+  }
+
   return canvas
 }
 

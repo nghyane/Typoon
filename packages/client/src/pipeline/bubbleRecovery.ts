@@ -33,14 +33,12 @@ export interface BubbleCropRecognizer {
 
 /** Coordinate mapping + source-image access for Phase B crops. */
 export interface BubbleSource {
-  /** Load the full-resolution page as a 1:1 canvas (once, shared across anchors). */
+  /** Load the full-resolution stitched canvas (page N + both halos) at 1:1,
+   *  shared across all anchor crops for this page.  Origin matches the capture
+   *  canvas, so capture-space bbox → source-space = bbox / captureScale. */
   readonly loadFullCanvas: () => Promise<HTMLCanvasElement>
   /** Scale factor: source px → capture px. */
   readonly captureScale: number
-  /** Capture-space X offset where page N starts (centering, typically ≈0). */
-  readonly coreOffsetXPx: number
-  /** Capture-space Y offset where page N starts (= haloTopPx * captureScale). */
-  readonly coreOffsetYPx: number
 }
 
 type Action = 'complete' | 'empty' | 'partial'
@@ -186,15 +184,17 @@ async function ocrAnchor(
   source: BubbleSource,
   anchor: RecoveryAnchor,
 ): Promise<TextBlock[]> {
-  const { captureScale, coreOffsetXPx, coreOffsetYPx } = source
+  const { captureScale } = source
   const sw = fullCanvas.width
   const sh = fullCanvas.height
 
-  // Convert capture-space bbox to source-space (page N origin at 0,0).
-  const sx1 = (anchor.bbox[0] - coreOffsetXPx) / captureScale
-  const sy1 = (anchor.bbox[1] - coreOffsetYPx) / captureScale
-  const sx2 = (anchor.bbox[2] - coreOffsetXPx) / captureScale
-  const sy2 = (anchor.bbox[3] - coreOffsetYPx) / captureScale
+  // Convert capture-space bbox to stitched-canvas space.
+  // Stitched canvas = capture canvas at full resolution (page N + both halos).
+  // Origin matches → sx = cx / captureScale, sy = cy / captureScale.
+  const sx1 = anchor.bbox[0] / captureScale
+  const sy1 = anchor.bbox[1] / captureScale
+  const sx2 = anchor.bbox[2] / captureScale
+  const sy2 = anchor.bbox[3] / captureScale
 
   const pad = Math.round(CROP_PAD_SOURCE_PX / captureScale)
   const csx1 = Math.max(0, Math.floor(sx1 - pad))
@@ -215,9 +215,9 @@ async function ocrAnchor(
   }
 
   // Blocks are in upscaled crop pixels. Convert: unscale → add crop origin (source
-  // space) → scale+offset back to capture space.
+  // space) → scale back to capture space.
   return recognized.blocks.map(block =>
-    transformBlock(block, csx1, csy1, upscale, captureScale, coreOffsetXPx, coreOffsetYPx),
+    transformBlock(block, csx1, csy1, upscale, captureScale),
   )
 }
 
@@ -265,10 +265,8 @@ function transformBlock(
   cropSrcY: number,
   upscale: number,
   captureScale: number,
-  coreOffsetXPx: number,
-  coreOffsetYPx: number,
 ): TextBlock {
-  const t = (b: BBox): BBox => toCapture(b, cropSrcX, cropSrcY, upscale, captureScale, coreOffsetXPx, coreOffsetYPx)
+  const t = (b: BBox): BBox => toCapture(b, cropSrcX, cropSrcY, upscale, captureScale)
   return {
     ...block,
     bbox: t(block.bbox),
@@ -291,19 +289,12 @@ function toCapture(
   cropSrcY: number,
   upscale: number,
   captureScale: number,
-  coreOffsetXPx: number,
-  coreOffsetYPx: number,
 ): BBox {
-  const vx1 = cropSrcX + bbox[0] / upscale
-  const vy1 = cropSrcY + bbox[1] / upscale
-  const vx2 = cropSrcX + bbox[2] / upscale
-  const vy2 = cropSrcY + bbox[3] / upscale
-  return [
-    vx1 * captureScale + coreOffsetXPx,
-    vy1 * captureScale + coreOffsetYPx,
-    vx2 * captureScale + coreOffsetXPx,
-    vy2 * captureScale + coreOffsetYPx,
-  ]
+  const sx = (cropSrcX + bbox[0] / upscale) * captureScale
+  const sy = (cropSrcY + bbox[1] / upscale) * captureScale
+  const ex = (cropSrcX + bbox[2] / upscale) * captureScale
+  const ey = (cropSrcY + bbox[3] / upscale) * captureScale
+  return [sx, sy, ex, ey]
 }
 
 // ── Geometry helpers ──────────────────────────────────────────────────────
