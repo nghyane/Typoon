@@ -12,7 +12,6 @@ import type { BBox } from '../domain/geometry'
 import type { ImagePixels } from '../domain/image'
 import type { RecognizedTextPage, TextBlock } from '../domain/text'
 import type { TextRegion } from '../domain/regions'
-import { AsyncLimiter } from '../flow/AsyncLimiter'
 
 // One re-OCR per spatial cluster of DETR regions. text_bubble is the tightest
 // inner rect so it wins; bubble next; text_free for captions outside balloons.
@@ -24,8 +23,6 @@ const GAP_THRESHOLD_FACTOR = 0.7
 const CROP_PAD_SOURCE_PX = 6
 // Lens recognition collapses below ~200 px short side; upscale crops up to here.
 const MIN_CROP_DIM = 200
-// Bound concurrent per-bubble Lens calls so a dense page does not flood the proxy.
-const MAX_CONCURRENT_RECOVERY = 6
 
 export interface BubbleCropRecognizer {
   recognizeCrop(image: ImagePixels): Promise<RecognizedTextPage>
@@ -79,9 +76,10 @@ export async function recoverBubbleText(args: {
   // Load full-res source once; all anchor crops share the same canvas.
   const fullCanvas = await source.loadFullCanvas()
 
-  const limiter = new AsyncLimiter(MAX_CONCURRENT_RECOVERY)
+  // Concurrency is bounded globally inside the recognizer (one semaphore across
+  // all pages), so crops can fan out freely here.
   const recovered = await Promise.all(
-    todo.map(d => limiter.run(() => ocrAnchor(recognizer, fullCanvas, source, d.anchor))),
+    todo.map(d => ocrAnchor(recognizer, fullCanvas, source, d.anchor)),
   )
   const merged = splice(blocks, todo, recovered)
   return { ...recognized, blocks: merged }

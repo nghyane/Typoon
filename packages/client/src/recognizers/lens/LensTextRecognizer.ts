@@ -2,6 +2,7 @@ import type { BBox, OrientedBox, Point, Polygon } from '../../domain/geometry'
 import type { ImagePixels } from '../../domain/image'
 import type { TextBlock, TextLine, RecognizedTextPage, TextWord, TextDirection } from '../../domain/text'
 import type { EncodedOcrImage, TextRecognizer, TextRecognitionOptions } from '../text'
+import { AsyncLimiter } from '../../flow/AsyncLimiter'
 import * as lens from 'chrome-lens-ocr/src/utils/proto_generated/lens_overlay_server_pb.cjs'
 
 const DEFAULT_ENDPOINT = 'https://927251094806098001.discordsays.com/lens/v1/crupload'
@@ -11,12 +12,18 @@ const MAX_LENS_HEIGHT = 9000
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000
 const MAX_REQUEST_ATTEMPTS = 3
 const RETRY_BASE_DELAY_MS = 600
+// Global cap on concurrent Lens round-trips. Page-pipelining fans out one
+// full-page OCR plus several bubble-recovery crops per page across several
+// pages at once; bound them at the shared resource so the proxy is not flooded
+// (429), instead of per-call limiters that don't see each other.
+const DEFAULT_MAX_CONCURRENCY = 8
 
 export interface LensTextRecognizerOptions {
   readonly endpoint?: string
   readonly requestTimeoutMs?: number
   readonly region?: string
   readonly timeZone?: string
+  readonly maxConcurrency?: number
 }
 
 export class LensTextRecognizer implements TextRecognizer {
@@ -24,11 +31,13 @@ export class LensTextRecognizer implements TextRecognizer {
   private readonly options: LensTextRecognizerOptions
   private readonly endpoint: string
   private readonly requestTimeoutMs: number
+  private readonly limiter: AsyncLimiter
 
   constructor(options: LensTextRecognizerOptions = {}) {
     this.options = options
     this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    this.limiter = new AsyncLimiter(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
   }
 
   async recognizeText(image: ImagePixels, options: TextRecognitionOptions): Promise<RecognizedTextPage> {
@@ -56,38 +65,40 @@ export class LensTextRecognizer implements TextRecognizer {
       timeZone: this.options.timeZone ?? 'America/New_York',
     })
 
-    for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
-      throwIfAborted(options.signal)
-      const abort = requestAbortSignal(options.signal, this.requestTimeoutMs)
-      try {
-        const response = await fetch(this.endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-protobuf',
-            'X-Goog-Api-Key': LENS_API_KEY,
-            'Accept': '*/*',
-          },
-          body: request,
-          signal: abort.signal,
-        })
-        if (!response.ok) throw lensHttpError(response.status)
-        const parsed = parseLensResponse(new Uint8Array(await response.arrayBuffer()), [image.originalWidth, image.originalHeight])
-        return {
-          pageIndex: options.pageIndex,
-          pageSize: [image.originalWidth, image.originalHeight],
-          detectedLanguage: parsed.detectedLanguage,
-          blocks: dedupeTextBlocks(parsed.blocks),
-          timingMs: { recognize: Math.round(performance.now() - start) },
+    return this.limiter.run(async () => {
+      for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
+        throwIfAborted(options.signal)
+        const abort = requestAbortSignal(options.signal, this.requestTimeoutMs)
+        try {
+          const response = await fetch(this.endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-protobuf',
+              'X-Goog-Api-Key': LENS_API_KEY,
+              'Accept': '*/*',
+            },
+            body: request,
+            signal: abort.signal,
+          })
+          if (!response.ok) throw lensHttpError(response.status)
+          const parsed = parseLensResponse(new Uint8Array(await response.arrayBuffer()), [image.originalWidth, image.originalHeight])
+          return {
+            pageIndex: options.pageIndex,
+            pageSize: [image.originalWidth, image.originalHeight],
+            detectedLanguage: parsed.detectedLanguage,
+            blocks: dedupeTextBlocks(parsed.blocks),
+            timingMs: { recognize: Math.round(performance.now() - start) },
+          }
+        } catch (error) {
+          if (options.signal?.aborted || attempt >= MAX_REQUEST_ATTEMPTS - 1 || !isRetryableLensError(error)) throw error
+          await sleep(lensRetryDelayMs(attempt), options.signal)
+        } finally {
+          abort.cleanup()
         }
-      } catch (error) {
-        if (options.signal?.aborted || attempt >= MAX_REQUEST_ATTEMPTS - 1 || !isRetryableLensError(error)) throw error
-        await sleep(lensRetryDelayMs(attempt), options.signal)
-      } finally {
-        abort.cleanup()
       }
-    }
 
-    throw new Error('Lens OCR failed')
+      throw new Error('Lens OCR failed')
+    })
   }
 }
 
