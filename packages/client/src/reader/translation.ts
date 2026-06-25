@@ -19,7 +19,7 @@ import type { SourcePageSize } from '../pipeline/chapterContent'
 import { DeepLTranslateWeb } from '../translators/deepl-web/DeepLTranslateWeb'
 import { GoogleTranslateWeb } from '../translators/google-web/GoogleTranslateWeb'
 import type { Translator } from '../translators/translator'
-import { PagePipeline } from './pagePipeline'
+import { PagePipeline, deduplicateSeamBlocks } from './pagePipeline'
 import { PageScheduler } from './pageScheduler'
 import { planPageScans, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
 import { measureLayout, visibleContentRange } from './chunkCapture'
@@ -429,6 +429,7 @@ export class ReaderTranslation {
   }
 
   private syncOverlay(): void {
+    deduplicateSeamBlocks(this.pageOverlays)
     this.debug && console.log('[typ:tx] syncOverlay', [...this.pageOverlays.keys()])
     this.overlays.update(
       this.pageOverlays,

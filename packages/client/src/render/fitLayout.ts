@@ -119,9 +119,11 @@ export function fitLayout(
 
   const finalComposition = composeInRect(fontWeight, cleanText, bestRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, bestRect, expansion), font, measurer, profile)
   const expanded = !sameRect(bestRect, baseRect)
-  const overExpanded = expanded && excessiveExpansionFontLift(baseComposition, finalComposition)
-  const outputComposition = overExpanded ? baseComposition : finalComposition
-  const outputExpanded = expanded && !overExpanded
+  // Font is now capped at the source-proportional target, so a larger font in
+  // the expanded rect just means the translation reached its source ratio
+  // instead of shrinking.  Accept the expansion whenever it helps.
+  const outputComposition = finalComposition
+  const outputExpanded = expanded
   // Expansion only buys font size / line-break width — it must NOT move the
   // text.  Anchor the render rect on the base (OCR) centre with a height tight
   // to the composed text, so the translation stays where the source text was
@@ -194,7 +196,11 @@ function composeInRect(
     }
   }
 
-  const hiBound = Math.max(MIN_FONT_SIZE, Math.min(Math.floor(rect.height), ABS_MAX_FONT_SIZE))
+  // Cap font at the source-proportional target (except SFX, which is
+  // dramatic by design).  Expansion may grow the rect so longer translations
+  // can REACH the source ratio instead of shrinking — never exceed it.
+  const cap = placement.role === 'sfx' ? ABS_MAX_FONT_SIZE : Math.max(MIN_FONT_SIZE, Math.ceil(targetFontPx))
+  const hiBound = Math.max(MIN_FONT_SIZE, Math.min(Math.floor(rect.height), cap))
   const { fontSizePx, composition, maxDomFitPx } = bestFontFit({
     placement, text, rect, shapeProfile, targetFontPx, direction, hiBound, font, fontWeight, measurer, profile,
   })
@@ -313,11 +319,6 @@ function scoreCandidate(
   const aspectDrift = Math.abs(candAspect - baseAspect)
   const centerPenalty = centerDistanceRatio(candRect, baseRect)
   return shrinkPx * 1000 - growthPx * 150 + Math.round(aspectDrift * 100) + Math.round(centerPenalty * 30)
-}
-
-function excessiveExpansionFontLift(base: SizedComposition, expanded: SizedComposition): boolean {
-  const liftPx = expanded.fontSizePx - base.fontSizePx
-  return liftPx > Math.max(8, base.fontSizePx * 0.30)
 }
 
 function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargins): FitRect[] {

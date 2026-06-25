@@ -110,6 +110,16 @@ export class PagePipeline {
     throwIfAborted(signal)
     // eslint-disable-next-line no-console
     console.log('[scanPage]', { page: unit.pageIndex, capture: [capture.image.width, capture.image.height], captureScale: capture.captureScale, source: [unit.source.width, unit.source.height], coarseBlocks: recognized.blocks.length, coarseTexts: recognized.blocks.map(b => b.text.slice(0, 30)) })
+    // Log blocks that hit canvas edges — these may be truncated by an insufficient halo.
+    for (const block of recognized.blocks) {
+      const edgeMarginPx = 2
+      const hitsTop = block.bbox[1] <= edgeMarginPx
+      const hitsBottom = block.bbox[3] >= capture.image.height - edgeMarginPx
+      if (hitsTop || hitsBottom) {
+        // eslint-disable-next-line no-console
+        console.warn('[scanPage] edge-hit block', { page: unit.pageIndex, text: block.text.slice(0, 40), bbox: block.bbox, canvasH: capture.image.height, hitsTop, hitsBottom })
+      }
+    }
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
     throwIfAborted(signal)
 
@@ -276,7 +286,7 @@ function placementBBoxes(placement: TextPlacement): readonly BBox[] {
   return placement.textBoxes.length ? placement.textBoxes : [placement.bbox]
 }
 
-// ── synthetic per-placement translation units (clean, no strip deps) ──
+// ── source-image loading for Phase B bubble recovery ──
 
 function translationInputFromPlacements(
   placements: readonly TextPlacement[],
@@ -312,7 +322,7 @@ function hasTranslatableUnit(units: readonly { readonly kind: string; readonly s
   return units.some(unit => unit.kind !== 'skip' && unit.sourceText.trim())
 }
 
-// ── source-image loading for Phase B bubble recovery ──
+// ── synthetic per-placement translation units (clean, no strip deps) ──
 
 async function loadSourceCanvas(
   loadPage: (index: number) => Promise<LoadedPage>,
@@ -334,4 +344,57 @@ async function loadSourceCanvas(
     bitmap.close()
   }
   return canvas
+}
+
+// ── cross-page seam deduplication ─────────────────────────────────────────
+// When a bubble spans the bottom of page N and the top of page N+1, both page
+// captures include it (via neighbor halos), so seam-below of page N and
+// seam-above of page N+1 may both contain blocks for the same bubble.
+// Deduplicate by matching source text: keep the seam-below copy, remove the
+// duplicate from seam-above so the text is never rendered twice in the gap.
+
+function normalizedSourceText(placement: TextPlacement, translations: readonly TranslatedUnit[]): string {
+  const uniq = [...new Set(placement.sourceUnitIds)]
+  return uniq
+    .map(id => translations.find(t => t.unitId === id)?.sourceText ?? '')
+    .filter(Boolean)
+    .join('\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+export function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>): void {
+  const indices = [...overlays.keys()].sort((a, b) => a - b)
+  for (const pageIndex of indices) {
+    const overlay = overlays.get(pageIndex)
+    if (!overlay?.seamBelow) continue
+
+    const nextOverlay = overlays.get(pageIndex + 1)
+    if (!nextOverlay?.seamAbove) continue
+
+    const belowTexts = new Set(
+      overlay.seamBelow.items.map(item =>
+        normalizedSourceText(item.placement, overlay.seamBelow!.translations),
+      ),
+    )
+
+    const filtered = nextOverlay.seamAbove.items.filter(item => {
+      const text = normalizedSourceText(item.placement, nextOverlay.seamAbove!.translations)
+      return text && !belowTexts.has(text)
+    })
+
+    if (filtered.length < nextOverlay.seamAbove.items.length) {
+      const newSeamAbove: SeamOverlay | null = filtered.length === 0 ? null : {
+        ...nextOverlay.seamAbove,
+        items: filtered,
+        translations: nextOverlay.seamAbove.translations.filter(t =>
+          filtered.some(item =>
+            item.placement.sourceUnitIds.includes(t.unitId),
+          ),
+        ),
+      }
+      overlays.set(pageIndex + 1, { ...nextOverlay, seamAbove: newSeamAbove })
+    }
+  }
 }
