@@ -197,7 +197,7 @@ export class PagePipeline {
     for (let i = 0; i < placements.length; i += 1) {
       const placement = placements[i]!
       const margin = margins[i]!
-      const target = routePlacement(placement.bbox, unit, geo)
+      const target = routePlacement(placement.bbox, margin, unit, geo)
       if (target === 'drop') continue
 
       const sourcePlacement = canvasPlacementToSource(placement, unit, geo)

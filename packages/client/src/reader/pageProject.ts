@@ -23,14 +23,33 @@ export interface CanvasGeometry {
   readonly haloTopPx: number   // page-N source px
 }
 
-/** Decide where a canvas-space placement renders, by centroid + bbox spill. */
-export function routePlacement(canvasBBox: BBox, unit: PageScanUnit, geo: CanvasGeometry): RenderTarget {
+// A reliable background component (a bubble/panel) must continue past the core
+// by at least this much (source px) before we treat it as crossing the seam.
+// Guards against flood-fill that merely licks the page edge.
+const SEAM_BG_SPILL_MIN_PX = 12
+
+/**
+ * Decide where a canvas-space placement renders, by centroid + spill.
+ *
+ * Ownership is by bbox centroid (must lie in the core). Render surface is the
+ * page frame (clipped) unless the content spills into a captured halo, in which
+ * case it renders on a seam bridge (not clipped). Spill is signalled by EITHER
+ * the OCR text bbox OR a reliable background component: the latter lets a long
+ * translation flow into the next page's captured strip — the bubble/panel whose
+ * background already continues there — instead of being clipped to the page.
+ */
+export function routePlacement(canvasBBox: BBox, margin: SafeMarginsDebug | null, unit: PageScanUnit, geo: CanvasGeometry): RenderTarget {
   const coreTop = geo.haloTopPx * geo.captureScale
   const coreBottom = (geo.haloTopPx + unit.source.height) * geo.captureScale
   const centroidY = (canvasBBox[1] + canvasBBox[3]) / 2
   if (centroidY < coreTop || centroidY >= coreBottom) return 'drop'
-  if (canvasBBox[3] > coreBottom && unit.nextIndex !== null) return 'seam-below'
-  if (canvasBBox[1] < coreTop && unit.prevIndex !== null) return 'seam-above'
+
+  const spillGuard = SEAM_BG_SPILL_MIN_PX * geo.captureScale
+  const bg = margin?.componentBBox && margin.componentConfidence >= 0.6 ? margin.safeBounds : null
+  const bottomSpill = canvasBBox[3] > coreBottom || (bg ? bg[3] > coreBottom + spillGuard : false)
+  const topSpill = canvasBBox[1] < coreTop || (bg ? bg[1] < coreTop - spillGuard : false)
+  if (bottomSpill && unit.nextIndex !== null) return 'seam-below'
+  if (topSpill && unit.prevIndex !== null) return 'seam-above'
   return 'page'
 }
 
