@@ -2,7 +2,6 @@ import type { PageLoad } from './$types';
 import { getWork } from '$lib/works/repo';
 import { getSource } from '$lib/source/registry';
 import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
-import { localSettings } from '$lib/localSettings.svelte';
 import type { WorkSource } from '$lib/db';
 import { queryClient } from '$lib/queryClient';
 import {
@@ -17,22 +16,16 @@ export const load: PageLoad = async ({ params }) => {
   const work = await getWork(params.workId);
 
   if (!work || work.sources.length === 0) {
-    return {
-      workId: params.workId, chapterRef: params.numberNorm, urls: [], targetLang: localSettings.state.default_target_lang,
-      workTitle: work?.title ?? null, chapterNumber: null, chapterIndex: null, chapterTotal: null,
-      sourceId: null, selectedVersionKey: null, sourceName: null, sourceLang: null,
-      pageTokens: null, pageHeaders: null,
-      prevRef: null, nextRef: null, chapters: [], versions: [],
-    };
+    return { workId: params.workId, chapterRef: params.numberNorm, urls: [], targetLang: 'vi' };
   }
 
   try {
     const sourceChapters = await fetchSourceChapters(work.sources);
-    const merged = mergeChapters(sourceChapters, localSettings.state.default_target_lang.toLowerCase());
+    const merged = mergeChapters(sourceChapters, work.target_lang.toLowerCase());
     const chapter = merged.find((item) => item.numberNorm === params.numberNorm);
     if (!chapter) throw new Error('chapter not found');
 
-    const version = pickBestVersion(chapter, localSettings.state.default_target_lang.toLowerCase());
+    const version = pickBestVersion(chapter, work.target_lang.toLowerCase());
     if (!version) throw new Error('chapter source not found');
 
     const sorted = sortMergedChaptersAsc(merged);
@@ -44,16 +37,15 @@ export const load: PageLoad = async ({ params }) => {
       chapterRef: chapter.numberNorm || params.numberNorm,
       urls: [],
       pageTokens: null,
-      targetLang: localSettings.state.default_target_lang,
+      targetLang: work.target_lang,
       workTitle: work.title,
       chapterNumber: chapter.number || chapter.numberNorm,
-      chapterIndex: index >= 0 ? index + 1 : null,
+      chapterIndex: index >= 0 ? index + 1 : undefined,
       chapterTotal: sorted.length,
       sourceId: version.source.manifest.id,
       selectedVersionKey: versionKeyOf(version),
       sourceName: version.source.manifest.name,
       sourceLang: version.lang,
-      pageHeaders: null,
       prevRef: prev?.numberNorm ?? null,
       nextRef: next?.numberNorm ?? null,
       chapters: sorted.map((item) => ({
@@ -73,11 +65,11 @@ export const load: PageLoad = async ({ params }) => {
     };
   } catch {
     return {
-      workId: params.workId, chapterRef: params.numberNorm, urls: [], targetLang: localSettings.state.default_target_lang,
-      workTitle: work.title, chapterNumber: null, chapterIndex: null, chapterTotal: null,
-      sourceId: null, selectedVersionKey: null, sourceName: null, sourceLang: null,
-      pageTokens: null, pageHeaders: null,
-      prevRef: null, nextRef: null, chapters: [], versions: [],
+      workId: params.workId,
+      chapterRef: params.numberNorm,
+      urls: [],
+      targetLang: work.target_lang,
+      workTitle: work.title,
     };
   }
 };

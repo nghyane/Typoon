@@ -2,8 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { ArrowLeft, Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
-  import { headerStore } from '$lib/header.svelte';
+  import { Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
   import { cn } from '$lib/cn';
   import { safeReturnTo } from '$lib/auth/api';
   import { session } from '$lib/auth/session.svelte';
@@ -22,7 +21,7 @@
   const currentHref = $derived(`${$page.url.pathname}${$page.url.search}${$page.url.hash}`);
   const isDevRoute = $derived(currentPath.startsWith('/dev/'));
   const user = $derived(session.state.status === 'authenticated' ? session.state.user : null);
-  const currentLang = $derived(localSettings.state.default_target_lang ?? 'vi');
+  const currentLang = $derived(user?.preferred_target_lang ?? localSettings.state.default_target_lang ?? 'vi');
 
   $effect(() => {
     if (!isDevRoute && session.state.status === 'unauthenticated') {
@@ -170,19 +169,7 @@
 
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
       <header class="flex items-center gap-2 px-3 sm:px-5 h-bar bg-bg shrink-0">
-        <div class="flex-1 min-w-0">
-          {#if headerStore.back}
-            {#if headerStore.back.href}
-              <a href={headerStore.back.href} class="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text transition-colors">
-                <ArrowLeft size={14} />{headerStore.back.label}
-              </a>
-            {:else}
-              <button type="button" onclick={() => history.back()} class="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text transition-colors cursor-pointer">
-                <ArrowLeft size={14} />{headerStore.back.label}
-              </button>
-            {/if}
-          {/if}
-        </div>
+        <div class="flex-1 min-w-0"></div>
         <div bind:this={menuEl} class="relative">
           <button type="button" onclick={() => { menuOpen = !menuOpen; }} class="flex items-center gap-2 pl-1 pr-2 h-8 rounded-sm hover:bg-hover transition-colors cursor-pointer">
             {#if user.avatar_url && !avatarFailed}

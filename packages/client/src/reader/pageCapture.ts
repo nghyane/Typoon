@@ -45,17 +45,17 @@ export async function capturePageScan(
 
   // core: page N at y = haloTopPx
   await drawWholePage(ctx, loadPage, unit.pageIndex, unit.haloTopPx, captureScale, cw, signal)
-
-  // neighbor strips
+  // top halo: bottom strip of prev page → top of canvas
   if (unit.prevIndex !== null && unit.haloTopPx > 0) {
     await drawNeighborStrip(ctx, loadPage, unit.prevIndex, 'bottom', unit.haloTopPx, 0, captureScale, cw, signal)
   }
+  // bottom halo: top strip of next page → below core
   if (unit.nextIndex !== null && unit.haloBottomPx > 0) {
-    await drawNeighborStrip(ctx, loadPage, unit.nextIndex, 'top', unit.haloBottomPx, unit.haloTopPx + unit.source.height, captureScale, cw, signal)
+    const destSrcY = unit.haloTopPx + unit.source.height
+    await drawNeighborStrip(ctx, loadPage, unit.nextIndex, 'top', unit.haloBottomPx, destSrcY, captureScale, cw, signal)
   }
 
   const pixels = ctx.getImageData(0, 0, cw, ch)
-  _lastCaptureCanvas = canvas
   const blob = await canvasToOcrBlob(canvas)
   return {
     encoded: {
@@ -69,25 +69,6 @@ export async function capturePageScan(
     captureScale,
     haloTopPx: unit.haloTopPx,
     source: unit.source,
-  }
-}
-
-let _lastCaptureCanvas: HTMLCanvasElement | null = null
-export function getLastCaptureCanvas(): HTMLCanvasElement | null { return _lastCaptureCanvas }
-
-// Expose for CDP/debug access
-if (typeof window !== 'undefined') {
-  (window as any).__captureCanvas = () => _lastCaptureCanvas
-  ;(window as any).__dlCap = async () => {
-    const c = _lastCaptureCanvas
-    if (!c) { console.log('no capture canvas yet'); return null }
-    const blob = await new Promise<Blob>(r => c.toBlob(b => b ? r(b) : r(new Blob()), 'image/png'))
-    const reader = new FileReader()
-    const dataUrl: string = await new Promise(r => { reader.onload = () => r(reader.result as string); reader.readAsDataURL(blob) })
-    console.log('capture canvas:', c.width, 'x', c.height, blob.size, 'bytes')
-    // Store as base64 for CDP access
-    ;(window as any).__captureDataUrl = dataUrl
-    return { width: c.width, height: c.height, size: blob.size }
   }
 }
 
@@ -141,6 +122,6 @@ function centerOffset(canvasWidth: number, drawWidth: number): number {
 
 function canvasToOcrBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/png')
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/jpeg', 0.92)
   })
 }

@@ -5,22 +5,21 @@
   import EmptyState from '$lib/ui/EmptyState.svelte';
   import Spinner from '$lib/ui/Spinner.svelte';
   import WorkCard from '$lib/ui/WorkCard.svelte';
-  import { createQuery } from '@tanstack/svelte-query';
 
-  const recentQuery = createQuery(() => ({
-    queryKey: ['works', 'recent', { limit: 6 }] as const,
-    queryFn: () => listRecentWorks(6),
-  }));
+  let recentWorks = $state<Work[]>([]);
+  let libraryWorks = $state<Work[]>([]);
+  let loading = $state(true);
+  let error = $state('');
 
-  const libraryQuery = createQuery(() => ({
-    queryKey: ['works', 'library'] as const,
-    queryFn: () => listLibraryWorks(),
-  }));
-
-  const recentWorks = $derived(recentQuery.data ?? []);
-  const libraryWorks = $derived(libraryQuery.data ?? []);
-  const loading = $derived(recentQuery.isPending || libraryQuery.isPending);
-  const error = $derived(recentQuery.error?.message || libraryQuery.error?.message || '');
+  $effect(() => {
+    Promise.all([listRecentWorks(6), listLibraryWorks()])
+      .then(([recent, library]) => {
+        recentWorks = recent;
+        libraryWorks = library;
+      })
+      .catch((err) => { error = err instanceof Error ? err.message : String(err); })
+      .finally(() => { loading = false; });
+  });
 </script>
 
 <svelte:head><title>Hội Mê Truyện</title></svelte:head>

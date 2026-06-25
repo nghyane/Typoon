@@ -74,7 +74,7 @@ export const comixAdapter: SourceAdapter = {
 	async fetchMangaDetail(_m: SourceManifest, url: string): Promise<MangaDetail> {
 		const hid = mangaHid(url); if (!hid) throw new Error(`Bad Comix URL: ${url}`);
 		const [manga, chapters] = await Promise.all([apiGet<ComixManga>(`/manga/${hid}`), fetchChapters(hid)]);
-		return { ...summary(manga), description: manga.synopsis ?? null, author: null, status: manga.status ?? null, genres: null, chapters };
+		return { ...summary(manga), description: manga.synopsis ?? null, author: null, status: manga.status ?? null, availableLanguages: null, chapters };
 	},
 	async fetchChapterPages(_m: SourceManifest, url: string): Promise<ChapterPages> {
 		const id = chapterId(url); if (!id) throw new Error(`Bad Comix URL: ${url}`);

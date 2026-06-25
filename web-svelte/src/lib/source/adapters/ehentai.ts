@@ -183,9 +183,8 @@ export const ehentaiAdapter: SourceAdapter = {
 			coverHeaders: manifest.imageHeaders,
 			description: (meta.category as string | undefined) ?? null,
 			author: (meta.uploader as string | undefined) ?? null,
-			status: null,
-			genres: null,
-			
+			status: lang ? `language:${lang}` : null,
+			availableLanguages: lang ? [lang] : null,
 			chapters: [{
 				id: mangaUrl,
 				url: mangaUrl,

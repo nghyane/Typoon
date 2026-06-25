@@ -29,7 +29,6 @@ export function routePlacement(canvasBBox: BBox, unit: PageScanUnit, geo: Canvas
   const coreBottom = (geo.haloTopPx + unit.source.height) * geo.captureScale
   const centroidY = (canvasBBox[1] + canvasBBox[3]) / 2
   if (centroidY < coreTop || centroidY >= coreBottom) return 'drop'
-
   if (canvasBBox[3] > coreBottom && unit.nextIndex !== null) return 'seam-below'
   if (canvasBBox[1] < coreTop && unit.prevIndex !== null) return 'seam-above'
   return 'page'

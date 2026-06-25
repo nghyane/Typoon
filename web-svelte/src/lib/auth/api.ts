@@ -33,6 +33,7 @@ export interface SessionUser {
 	is_guild_member?: boolean;
 	email?: string | null;
 	tier?: { name: string };
+	preferred_target_lang?: string | null;
 	roles?: string[];
 }
 
@@ -304,6 +305,7 @@ async function refreshDiscordSession(token: Pick<DiscordSessionCache, 'accessTok
 		is_guild_member: membership.isGuildMember,
 		email: discordUser.email ?? null,
 		tier: plan ? { name: plan.name } : undefined,
+		preferred_target_lang: null,
 		roles: membership.roles,
 	};
 	writeSession({ ...token, checkedAt: Date.now(), user });

@@ -34,7 +34,6 @@ export interface ReaderTranslationChapter {
 export interface ReaderTranslationOptions {
     readonly config?: TranslationConfig;
     readonly provider?: TranslationProvider;
-    readonly debug?: boolean;
 }
 export declare class ReaderTranslation {
     private readonly listeners;
@@ -56,8 +55,6 @@ export declare class ReaderTranslation {
     private overlayRevision;
     private active;
     private draining;
-    private lastLayoutDigest;
-    private debug;
     private latestModel;
     private readonly unsubscribeModelState;
     constructor(options?: ReaderTranslationOptions);

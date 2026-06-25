@@ -17,7 +17,6 @@ import { estimateSafeMargins } from '../render/backgroundFit'
 import { textFitRect } from '../render/fitGeometry'
 import { LensTextRecognizer } from '../recognizers/lens/LensTextRecognizer'
 import { buildOverlayPlacements } from '../pipeline/composeOverlay'
-import { recoverBubbleText, type BubbleCropRecognizer, type BubbleSource } from '../pipeline/bubbleRecovery'
 import { textFromRecognition, translatePreparedText, type PreparedTextResult } from '../pipeline/translatePreparedPage'
 import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
 import { textRoleContext, type TextRoleContext } from '../pipeline/textRole'
@@ -107,31 +106,7 @@ export class PagePipeline {
       signal,
     })
     throwIfAborted(signal)
-    // eslint-disable-next-line no-console
-    console.log('[scanPage]', { page: unit.pageIndex, capture: [capture.image.width, capture.image.height], captureScale: capture.captureScale, source: [unit.source.width, unit.source.height], coarseBlocks: recognized.blocks.length, coarseTexts: recognized.blocks.map(b => b.text.slice(0, 30)) })
-    // Log blocks that hit canvas edges — these may be truncated by an insufficient halo.
-    for (const block of recognized.blocks) {
-      const edgeMarginPx = 2
-      const hitsTop = block.bbox[1] <= edgeMarginPx
-      const hitsBottom = block.bbox[3] >= capture.image.height - edgeMarginPx
-      if (hitsTop || hitsBottom) {
-        // eslint-disable-next-line no-console
-        console.warn('[scanPage] edge-hit block', { page: unit.pageIndex, text: block.text.slice(0, 40), bbox: block.bbox, canvasH: capture.image.height, hitsTop, hitsBottom })
-      }
-    }
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
-    throwIfAborted(signal)
-
-    const source: BubbleSource = {
-      loadFullCanvas: () => loadStitchedSourceCanvas(args.loadPage, unit, signal),
-      captureScale: capture.captureScale,
-    }
-    const recovered = await recoverBubbleText({
-      recognized,
-      source,
-      regions,
-      recognizer: this.cropRecognizer(unit.pageIndex, args.sourceLanguage, signal),
-    })
     throwIfAborted(signal)
 
     const coreFrame: CoreFrame = {
@@ -140,22 +115,13 @@ export class PagePipeline {
       width: capture.image.width,
       height: unit.source.height * capture.captureScale,
     }
-    const clean = removeReaderNoiseBlocks(recovered, coreFrame)
+    const clean = removeReaderNoiseBlocks(recognized, coreFrame)
     const coreOwnedBlocks = clean.blocks.filter(block => {
       const cy = (block.bbox[1] + block.bbox[3]) / 2
       return cy >= coreFrame.y && cy < coreFrame.y + coreFrame.height
     })
-    // eslint-disable-next-line no-console
-    console.log('[scanPage]', { afterRecovery: recovered.blocks.length, afterNoise: clean.blocks.length, coreOwned: coreOwnedBlocks.length, texts: coreOwnedBlocks.map(b => b.text.slice(0, 30)) })
     const roleContext: TextRoleContext = coreOwnedBlocks.length ? textRoleContext(coreOwnedBlocks) : {}
     return { capture, clean, regions, coreFrame, roleContext }
-  }
-
-  /** Adapt the recognizer to the per-bubble crop interface Phase B needs. */
-  private cropRecognizer(pageIndex: number, sourceLanguage: string | null, signal: AbortSignal): BubbleCropRecognizer {
-    return {
-      recognizeCrop: image => this.deps.recognizer.recognizeText(image, { pageIndex, sourceLang: sourceLanguage, signal }),
-    }
   }
 
   /** Build overlay placements + synthetic translation units; null if nothing to do. */
@@ -280,7 +246,7 @@ function placementBBoxes(placement: TextPlacement): readonly BBox[] {
   return placement.textBoxes.length ? placement.textBoxes : [placement.bbox]
 }
 
-// ── source-image loading for Phase B bubble recovery ──
+// ── synthetic per-placement translation units (clean, no strip deps) ──
 
 function translationInputFromPlacements(
   placements: readonly TextPlacement[],
@@ -314,164 +280,4 @@ function renderSourceUnitIds(placement: TextPlacement): readonly string[] {
 
 function hasTranslatableUnit(units: readonly { readonly kind: string; readonly sourceText: string }[]): boolean {
   return units.some(unit => unit.kind !== 'skip' && unit.sourceText.trim())
-}
-
-// ── synthetic per-placement translation units (clean, no strip deps) ──
-
-async function loadStitchedSourceCanvas(
-  loadPage: (index: number) => Promise<LoadedPage>,
-  unit: PageScanUnit,
-  signal: AbortSignal,
-): Promise<HTMLCanvasElement> {
-  throwIfAborted(signal)
-
-  const totalH = unit.haloTopPx + unit.source.height + unit.haloBottomPx
-  const canvas = document.createElement('canvas')
-  canvas.width = unit.source.width
-  canvas.height = totalH
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('2d canvas unavailable')
-  ctx.fillStyle = '#fff'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-  // Page N core at y = haloTopPx
-  {
-    const page = await loadPage(unit.pageIndex)
-    const bitmap = await createImageBitmap(page.blob)
-    try {
-      ctx.drawImage(bitmap, 0, unit.haloTopPx)
-    } finally {
-      bitmap.close()
-    }
-  }
-
-  // Prev page bottom strip at y = 0
-  if (unit.prevIndex !== null && unit.haloTopPx > 0) {
-    throwIfAborted(signal)
-    const prev = await loadPage(unit.prevIndex)
-    const bitmap = await createImageBitmap(prev.blob)
-    try {
-      const stripH = Math.min(unit.haloTopPx, prev.size.height)
-      const srcY = prev.size.height - stripH
-      const dx = Math.round((unit.source.width - prev.size.width) / 2)
-      ctx.drawImage(bitmap, 0, srcY, prev.size.width, stripH, dx, 0, prev.size.width, stripH)
-    } finally {
-      bitmap.close()
-    }
-  }
-
-  // Next page top strip at y = haloTopPx + pageHeight
-  if (unit.nextIndex !== null && unit.haloBottomPx > 0) {
-    throwIfAborted(signal)
-    const next = await loadPage(unit.nextIndex)
-    const bitmap = await createImageBitmap(next.blob)
-    try {
-      const stripH = Math.min(unit.haloBottomPx, next.size.height)
-      const dx = Math.round((unit.source.width - next.size.width) / 2)
-      const destY = unit.haloTopPx + unit.source.height
-      ctx.drawImage(bitmap, 0, 0, next.size.width, stripH, dx, destY, next.size.width, stripH)
-    } finally {
-      bitmap.close()
-    }
-  }
-
-  return canvas
-}
-
-// ── cross-page seam deduplication ─────────────────────────────────────────
-// When a bubble spans the bottom of page N and the top of page N+1, both page
-// captures include it (via neighbor halos), so seam-below of page N and
-// seam-above of page N+1 may both contain blocks for the same bubble.
-// Deduplicate by matching source text: keep the seam-below copy, remove the
-// duplicate from seam-above so the text is never rendered twice in the gap.
-
-function normalizedSourceText(placement: TextPlacement, translations: readonly TranslatedUnit[]): string {
-  const uniq = [...new Set(placement.sourceUnitIds)]
-  return uniq
-    .map(id => translations.find(t => t.unitId === id)?.sourceText ?? '')
-    .filter(Boolean)
-    .join('\n')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase()
-}
-
-/** BBox overlap ratio: intersection area / smaller area. */
-function bboxOverlapRatio(a: BBox, b: BBox): number {
-  const ax = Math.max(a[0], b[0])
-  const ay = Math.max(a[1], b[1])
-  const bx = Math.min(a[2], b[2])
-  const by = Math.min(a[3], b[3])
-  if (ax >= bx || ay >= by) return 0
-  const inter = (bx - ax) * (by - ay)
-  const areaA = (a[2] - a[0]) * (a[3] - a[1])
-  const areaB = (b[2] - b[0]) * (b[3] - b[1])
-  return inter / Math.min(areaA, areaB)
-}
-
-/** Convert a bbox in seamAbove(N+1) space to page-N source space.
- *  seamAbove items were built as: shiftPlacementY(canvasPlacementToSource(…), haloTopN1),
- *  where haloTopN1 = unit.haloTopPx of page N+1 (= haloTop of the owning page).
- *  In page-N space, page N ends at pageN.height and page N+1 begins there.
- *  SeamAbove Y=haloTopN1 corresponds to pageN.height (bottom of page N / top of N+1). */
-function seamAboveBboxToPageNSpace(bbox: BBox, haloTopN1: number, pageNHeight: number): BBox {
-  const dy = pageNHeight - haloTopN1
-  return [
-    bbox[0],
-    bbox[1] + dy,
-    bbox[2],
-    bbox[3] + dy,
-  ]
-}
-
-export function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>): void {
-  const indices = [...overlays.keys()].sort((a, b) => a - b)
-  for (const pageIndex of indices) {
-    const overlay = overlays.get(pageIndex)
-    if (!overlay?.seamBelow) continue
-
-    const nextOverlay = overlays.get(pageIndex + 1)
-    if (!nextOverlay?.seamAbove) continue
-
-    const belowTexts = new Set(
-      overlay.seamBelow.items.map(item =>
-        normalizedSourceText(item.placement, overlay.seamBelow!.translations),
-      ),
-    )
-
-    // Also collect below bboxes (already in page-N source space)
-    const belowBboxes = overlay.seamBelow.items.map(item => item.placement.bbox)
-
-    const filtered = nextOverlay.seamAbove.items.filter(item => {
-      const text = normalizedSourceText(item.placement, nextOverlay.seamAbove!.translations)
-      // Exact text match
-      if (text && belowTexts.has(text)) return false
-
-      // Position overlap fallback: convert above bbox to page-N space and check
-      // against all below bboxes. If any overlap >50%, treat as duplicate.
-      const aboveBboxInPageN = seamAboveBboxToPageNSpace(
-        item.placement.bbox,
-        nextOverlay.seamAbove!.seamSplitY,
-        overlay.seamBelow!.seamSplitY,
-      )
-      for (const belowBbox of belowBboxes) {
-        if (bboxOverlapRatio(belowBbox, aboveBboxInPageN) > 0.5) return false
-      }
-
-      return true
-    })
-
-    if (filtered.length < nextOverlay.seamAbove.items.length) {
-      const newSeamAbove: SeamOverlay | null = filtered.length === 0 ? null : {
-        ...nextOverlay.seamAbove,
-        items: filtered,
-        translations: nextOverlay.seamAbove.translations.filter(t =>
-          filtered.some(item =>
-            item.placement.sourceUnitIds.includes(t.unitId),
-          ),
-        ),
-      }
-      overlays.set(pageIndex + 1, { ...nextOverlay, seamAbove: newSeamAbove })
-    }
-  }
 }

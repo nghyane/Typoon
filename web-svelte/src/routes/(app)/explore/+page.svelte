@@ -7,7 +7,6 @@
     assembleFilterParams,
     assembleFilterState,
     getDefaultFilterState,
-    getFilters,
     getShelves,
     hasSearch,
     searchPageSize,
@@ -43,10 +42,9 @@
   const source = $derived(sources.find((s) => s.manifest.id === sourceId) ?? null);
   const shelves = $derived(source ? getShelves(source.manifest) : []);
   const canSearch = $derived(source ? hasSearch(source.manifest) : false);
-  const sourceFilters = $derived(source ? getFilters(source.manifest) : []);
-  let filterState = $state<Record<string, string | string[]>>({});
-  const filterParams = $derived(source ? assembleFilterParams(source.manifest, filterState) : '');
-  const typedFilterState = $derived(source ? assembleFilterState(source.manifest, filterState) : {});
+  const filters = $derived(source ? getDefaultFilterState(source.manifest) : {});
+  const filterParams = $derived(source ? assembleFilterParams(source.manifest, filters) : '');
+  const typedFilterState = $derived(source ? assembleFilterState(source.manifest, filters) : {});
 
   const target = $derived(
     canSearch && debouncedQuery ? { search: true as const } : shelfId || null,
@@ -127,7 +125,6 @@
     shelfId = shelves[0]?.id ?? '';
     query = '';
     debouncedQuery = '';
-    filterState = getDefaultFilterState(source.manifest);
   });
 
   $effect(() => {
@@ -247,36 +244,6 @@
               selected ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text',
             )}
           >{shelf.label}</button>
-        {/each}
-      </div>
-    {/if}
-
-    {#if sourceFilters.length > 0 && !debouncedQuery}
-      <div class="flex flex-col gap-2">
-        {#each sourceFilters as filter (filter.id)}
-          <div class="flex flex-wrap gap-1.5 items-center">
-            <span class="text-xs text-text-subtle shrink-0 min-w-[3rem]">{filter.label}</span>
-            {#each filter.options as opt (opt.id)}
-              {@const selected = filter.type === 'multi'
-                ? (Array.isArray(filterState[filter.id]) ? (filterState[filter.id] as string[]).includes(opt.id) : false)
-                : filterState[filter.id] === opt.id}
-              <button
-                type="button"
-                onclick={() => {
-                  if (filter.type === 'select') {
-                    filterState = { ...filterState, [filter.id]: selected ? '' : opt.id };
-                  } else {
-                    const cur = Array.isArray(filterState[filter.id]) ? (filterState[filter.id] as string[]) : [];
-                    filterState = { ...filterState, [filter.id]: selected ? cur.filter((x) => x !== opt.id) : [...cur, opt.id] };
-                  }
-                }}
-                class={cn(
-                  'h-6 px-2.5 rounded-full text-xs font-medium transition-colors',
-                  selected ? 'bg-accent-bg text-accent-text' : 'bg-surface-2 text-text-muted hover:text-text hover:bg-hover',
-                )}
-              >{opt.label}</button>
-            {/each}
-          </div>
         {/each}
       </div>
     {/if}

@@ -4,7 +4,6 @@
   import { fetchBrowse, fetchMangaDetail } from '$lib/source/runtime/endpoints';
   import { hasSearch } from '$lib/source/runtime/metadata';
   import { listSources } from '$lib/source/registry';
-  import { errorFrom, hitKey, rankAndCap, type SearchHit } from '$lib/source/search';
   import type { WorkSource } from '$lib/db';
   import type { InstalledSource, MangaDetail, MangaSummary } from '$lib/source/types';
   import { cn } from '$lib/cn';
@@ -29,6 +28,12 @@
     onLinked?: () => void | Promise<void>;
   } = $props();
 
+  interface SearchHit {
+    source: InstalledSource;
+    manga: MangaSummary;
+    score: number;
+  }
+
   interface SearchFailure {
     sourceId: string;
     error: Error;
@@ -37,9 +42,15 @@
   const INITIAL_PREVIEW = 3;
   const PER_GROUP_MAX = 8;
 
-  let query = $state(workTitle);
-  let debouncedQuery = $state(workTitle.trim());
+  let query = $state('');
+  let debouncedQuery = $state('');
   let sources = $state(listSources());
+
+  // Sync query from prop on open
+  $effect(() => {
+    query = workTitle;
+    debouncedQuery = workTitle.trim();
+  });
   let hits = $state<SearchHit[]>([]);
   let failures = $state<SearchFailure[]>([]);
   let loading = $state(false);
@@ -167,7 +178,6 @@
       await attachSource(workId, source);
       pickedKeys = new Set(pickedKeys).add(key);
       await onLinked?.();
-      close();
     } catch (err) {
       error = `Liên kết thất bại: ${errorFrom(err).message}`;
     } finally {
@@ -182,12 +192,60 @@
       upstream_ref: hit.manga.url,
       title: detail?.title ?? hit.manga.title,
       cover_url: detail?.cover ?? hit.manga.cover ?? null,
+      languages: detail?.availableLanguages ?? manifest.languages ?? [],
       added_at: new Date().toISOString(),
     };
   }
 
   function expandSource(id: string): void {
     expandedBySource = { ...expandedBySource, [id]: true };
+  }
+
+  function hitKey(hit: SearchHit): string {
+    return `${hit.source.manifest.id}::${hit.manga.id}`;
+  }
+
+  function errorFrom(value: unknown): Error {
+    return value instanceof Error ? value : new Error(String(value));
+  }
+
+  function fuzzyScore(search: string, title: string): number {
+    const q = search.trim().toLowerCase();
+    const t = title.trim().toLowerCase();
+    if (!q || !t) return 0;
+    if (t === q) return 1;
+    if (t.startsWith(q)) return 0.95;
+    if (t.includes(q)) return 0.85;
+
+    const qTokens = q.split(/\s+/).filter(Boolean);
+    const tTokens = t.split(/\s+/).filter(Boolean);
+    if (qTokens.length === 0) return 0;
+
+    let matched = 0;
+    for (const token of qTokens) {
+      if (tTokens.some((item) => item.includes(token))) matched += 1;
+    }
+    const overlap = matched / qTokens.length;
+
+    const qBigrams = new Set(bigrams(q));
+    const tBigrams = bigrams(t);
+    if (qBigrams.size === 0 || tBigrams.length === 0) return overlap * 0.7;
+    let bigramHit = 0;
+    for (const bigram of tBigrams) if (qBigrams.has(bigram)) bigramHit += 1;
+    const bigramOverlap = bigramHit / Math.max(qBigrams.size, tBigrams.length);
+    return Math.max(overlap * 0.7, bigramOverlap * 0.6);
+  }
+
+  function bigrams(value: string): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < value.length - 1; i += 1) out.push(value.slice(i, i + 2));
+    return out;
+  }
+
+  function rankAndCap(search: string, source: InstalledSource, items: MangaSummary[]): SearchHit[] {
+    const scored = items.map((manga) => ({ source, manga, score: fuzzyScore(search, manga.title) }));
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, PER_GROUP_MAX);
   }
 
   const inputCls = 'h-8 w-full px-3 rounded-sm bg-surface-2 border border-transparent text-sm text-text placeholder:text-text-subtle hover:bg-hover focus:border-accent focus:bg-surface-2 focus:outline-none transition-colors';

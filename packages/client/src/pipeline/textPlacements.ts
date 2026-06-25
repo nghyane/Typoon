@@ -74,12 +74,11 @@ function groupedTextPlacements(
       .filter(({ block, index }) => !assigned.has(index) && containsCenter(anchor.bbox, block.bbox))
       .map(({ index }) => index)
     if (!memberIds.length) continue
-    // Bubble anchors are a single semantic unit — do not sub-group OCR blocks
-    // inside them.  Sub-grouping is only meaningful for text_free regions that
-    // may span multiple independent text areas.
-    const subgroups = anchor.kind === 'bubble' || anchor.kind === 'text_bubble'
-      ? [Array.from(memberIds)]
-      : subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
+    // Run sub-grouping for all anchors.  Bubbles may contain multiple
+    // independent text blocks (distant ad text) due to over-large regions.
+    // Spatial proximity checks in subgroupBlockIds keep genuine bubble
+    // text together while splitting unrelated blocks.
+    const subgroups = subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
     for (const subgroup of splitMixedRoleSubgroups(subgroups, blocks, roleContext)) {
       const members = subgroup.map(index => ({ block: blocks[index]!, index }))
       placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))

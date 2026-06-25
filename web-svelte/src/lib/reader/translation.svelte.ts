@@ -6,15 +6,10 @@ export type { ReaderTranslationChapter, ReaderTranslationState, TranslationProvi
 
 export class SvelteReaderTranslation {
   state = $state<ReaderTranslationState>(empty);
-  #rt: ReaderTranslation;
+  #rt = new ReaderTranslation();
   #frame = 0;
   #pending: ReaderTranslationState | null = null;
   #unsubscribe: (() => void) | null = null;
-
-  constructor(options?: { debug?: boolean }) {
-    this.#rt = new ReaderTranslation({ debug: options?.debug ?? false });
-    this.#unsubscribe = this.#rt.subscribe(s => { this.#queueState(s); });
-  }
 
   setChapter(chapter: ReaderTranslationChapter): void { this.#rt.setChapter(chapter); }
   clear(): void { this.#rt.clear(); }
@@ -32,6 +27,10 @@ export class SvelteReaderTranslation {
     this.#frame = 0;
     this.#pending = null;
     this.#rt.dispose();
+  }
+
+  constructor() {
+    this.#unsubscribe = this.#rt.subscribe(s => { this.#queueState(s); });
   }
 
   #queueState(state: ReaderTranslationState): void {

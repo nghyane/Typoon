@@ -3,6 +3,7 @@
 //   fetchSource   — proxy fetch for source runtime/adapters
 //   useSourceFetch() — proxy URL builder for browser-loaded images
 
+let _cdnInstance: ReturnType<typeof createSourceFetch> | null = null;
 const SOURCE_CDN_GATEWAYS = [
 	'https://927251094806098001.discordsays.com/cdn/c',
 	'https://function-bun-production-c2e1.up.railway.app/cdn/c',
@@ -24,7 +25,10 @@ interface SourceFetchOptions {
 
 /** CDN-based instance for browser image URLs (Cover component). */
 export function useSourceFetch() {
-	return _sourceCdn;
+	if (!_cdnInstance) {
+		_cdnInstance = createSourceFetch(SOURCE_CDN_GATEWAYS);
+	}
+	return _cdnInstance;
 }
 
 const _sourceCdn = createSourceFetch(SOURCE_CDN_GATEWAYS);

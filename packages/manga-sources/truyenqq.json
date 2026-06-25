@@ -85,15 +85,14 @@
         "description": "#gioithieu [itemprop=\"description\"]",
         "author":      ".book-meta .line:nth-child(1) .result",
         "status":      ".book-meta .line:nth-child(2) .result",
-        "updatedAt":   ".book-meta .line:nth-child(5) .result",
-        "genres":      ".book-meta .line:nth-child(4) .result a"
+        "updatedAt":   ".book-meta .line:nth-child(5) .result"
       },
       "chapters": {
         "list": "#chapter-list .reading-list .item",
         "fields": {
-          "url":    ".item-name a@href",
-          "number": ".item-name a",
-          "label":  ".item-name a",
+          "url":    ".chapter-name@href",
+          "number": ".chapter-name",
+          "label":  ".chapter-name",
           "date":   ".item-time"
         }
       }
