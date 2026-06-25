@@ -31,7 +31,7 @@ export function mergeChapters(
 
 	for (const sourceChapter of sourceChapters) {
 		for (const ref of sourceChapter.refs) {
-			const lang = (ref.language ?? sourceChapter.origin.languages[0] ?? target).toLowerCase();
+			const lang = (ref.language ?? sourceChapter.origin.languages?.[0] ?? target).toLowerCase();
 			const version: SourceVersion = {
 				source: sourceChapter.source,
 				origin: sourceChapter.origin,

@@ -336,7 +336,7 @@
       <Cover src={source.cover_url} headers={sourceImageHeaders(source.source)} title={source.title} class="w-full h-full" fontSize="text-[10px]" />
     </div>
     <div class="flex-1 min-w-0 text-sm truncate">
-      {#if source.languages[0]}<span class="text-xs text-text-subtle font-medium mr-1.5">{source.languages[0].toUpperCase()}</span>{/if}
+      {#if source.languages?.[0]}<span class="text-xs text-text-subtle font-medium mr-1.5">{source.languages[0].toUpperCase()}</span>{/if}
       <span class="text-text">{sourceLabel(source.source)}</span>
       {#if isPrimary}<span class="ml-1.5 text-xs text-accent">Chính</span>{/if}
     </div>

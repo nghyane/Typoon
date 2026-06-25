@@ -248,7 +248,7 @@ export async function fetchMangaDetail(
 	const cookies = args.userCookies ?? {};
 	if (m.adapter) { const a = getAdapter(m.adapter); if (a?.fetchMangaDetail) return a.fetchMangaDetail(m, mangaUrl, cookies); }
 	const ep = m.endpoints.manga;
-	const vars: Vars = { mangaUrl, language: args.language ?? m.languages[0], ...extract(mangaUrl, ep.extract) };
+	const vars: Vars = { mangaUrl, language: args.language ?? m.languages?.[0], ...extract(mangaUrl, ep.extract) };
 	const { url: base, parsed } = await fetchE(ep, vars, cookies, m, 'manga');
 	const re = rootExtras(parsed, ep.parse, ep.rootExtras, vars);
 	const rt = rootRow(parsed, ep.parse);

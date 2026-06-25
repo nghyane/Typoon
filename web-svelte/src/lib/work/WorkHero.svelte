@@ -3,7 +3,6 @@
   import { cn } from '$lib/cn';
   import type { LibraryStatus, Work } from '$lib/db';
   import type { MangaDetail } from '$lib/source/types';
-  import type { ReadTarget } from '$lib/work/chapters';
   import Cover from '$lib/ui/Cover.svelte';
 
   let {
@@ -21,7 +20,7 @@
   }: {
     work: Work;
     detail: MangaDetail | null;
-    readTarget: ReadTarget | null;
+    readTarget: { ref: string; number: string; isResume: boolean } | null;
     coverHeaders: Record<string, string> | undefined;
     statusLabel: string | null;
     libraryError?: string;

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Search } from 'lucide-svelte';
   import { cn } from '$lib/cn';
-  import { timeAgo } from '$lib/string';
   import {
     pickBestVersion,
     sortMergedChapters,
@@ -135,7 +134,7 @@
         </span>
         <div class="ml-auto sm:ml-0 inline-flex items-center gap-3 shrink-0 text-xs text-text-subtle">
           {#if row.version?.ref.title}<span class="hidden md:inline truncate max-w-[220px]">{row.version.ref.title}</span>{/if}
-          {#if row.version?.ref.date}<span class="hidden sm:inline whitespace-nowrap tabular-nums" title={row.version.ref.date.slice(0, 10)}>{timeAgo(row.version.ref.date)}</span>{/if}
+          {#if row.version?.ref.date}<span class="hidden sm:inline whitespace-nowrap tabular-nums" title={row.version.ref.date.slice(0, 10)}>{row.version.ref.date.slice(0, 10)}</span>{/if}
         </div>
       </a>
     {/each}
