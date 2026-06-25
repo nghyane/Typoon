@@ -93,9 +93,7 @@ export function createDomMeasurer(font: FontProfile): DomMeasurer {
       el.style.fontSize = `${request.fontSizePx}px`
       el.style.lineHeight = `${request.fontSizePx * font.lineHeightRatio}px`
       el.style.fontWeight = request.fontWeight
-      el.style.whiteSpace = 'pre-wrap'
-      el.style.overflowWrap = 'break-word'
-      el.style.wordBreak = 'normal'
+      el.style.whiteSpace = 'pre'
       el.textContent = request.text
 
       const rect = el.getBoundingClientRect()

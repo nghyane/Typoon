@@ -55,7 +55,15 @@ function majorityTallTextBoxes(placement: TextPlacement): boolean {
 
 function layoutKind(placement: TextPlacement, pageWidth: number): TextLayoutKind {
   if (placement.role === 'sfx') return 'decorative'
-  if (placement.textBoxes.length <= 1 && bboxW(placement.bbox) / Math.max(1, pageWidth) >= 0.20) return 'banner'
+  // Only treat as banner (single-line) if the bbox is wide AND short enough
+  // to strongly suggest a title strip rather than a dialogue bubble.
+  // A wide but not very tall box with only 1 detected text line and an
+  // aspect ratio > 5:1 suggests a banner.
+  const bw = bboxW(placement.bbox)
+  const bh = bboxH(placement.bbox)
+  const widthRatio = bw / Math.max(1, pageWidth)
+  const aspectOk = bh > 0 && bw / bh >= 5
+  if (placement.textBoxes.length <= 1 && widthRatio >= 0.20 && aspectOk) return 'banner'
   return 'paragraph'
 }
 
