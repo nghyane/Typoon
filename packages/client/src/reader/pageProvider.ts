@@ -66,6 +66,26 @@ export class PageProvider {
     }
   }
 
+  /** Preload image dimensions for all pages without keeping blobs in cache. */
+  async preloadSizes(signal: AbortSignal): Promise<void> {
+    const pending: number[] = []
+    for (let i = 0; i < this.options.pageCount; i++) {
+      if (this.sizes[i] === null) pending.push(i)
+    }
+    if (!pending.length) return
+
+    const concurrency = 6
+    for (let batch = 0; batch < pending.length; batch += concurrency) {
+      throwIfAborted(signal)
+      const slice = pending.slice(batch, batch + concurrency)
+      await Promise.all(slice.map(async i => {
+        const blob = await this.options.readPage(i, signal)
+        const size = await readImageSize(blob)
+        this.sizes[i] = size
+      }))
+    }
+  }
+
   clear(): void {
     this.cache.clear()
     this.order.length = 0

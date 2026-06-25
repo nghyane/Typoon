@@ -66,6 +66,7 @@ export interface ReaderTranslationChapter {
 export interface ReaderTranslationOptions {
   readonly config?: TranslationConfig
   readonly provider?: TranslationProvider
+  readonly debug?: boolean
 }
 
 function init(pageCount: number, sourceLang: string | null, targetLang: string, model: ReaderModelState): ReaderTranslationState {
@@ -102,12 +103,15 @@ export class ReaderTranslation {
   private overlayRevision = 0
   private active = false
   private draining = false
+  private lastLayoutDigest = ''
+  private debug: boolean
   private latestModel: ReaderModelState = { state: 'idle' }
   private readonly unsubscribeModelState: () => void
 
   constructor(options: ReaderTranslationOptions = {}) {
     this.config = options.config ?? defaultTranslationConfig
     this.provider = options.provider ?? 'deepl'
+    this.debug = options.debug ?? false
     this.overlays = new OverlayManager(this.config.chunk.overlayMarginPx)
     this.pipeline = new PagePipeline({
       recognizer: this.recognizer,
@@ -221,6 +225,7 @@ export class ReaderTranslation {
     this.stopRun()
     const abort = new AbortController()
     this.abort = abort
+    this.lastLayoutDigest = ''
 
     this.setState({
       phase: 'loading',
@@ -248,6 +253,7 @@ export class ReaderTranslation {
       await ensureMangaFontLoaded()
       if (!this.isCurrent(generation) || abort.signal.aborted) return
 
+      await this.pages.preloadSizes(abort.signal)
       const layout = this.measure()
       if (!layout) throw new Error('chapter content host is not ready')
       this.rebuildPlan(layout)
@@ -269,24 +275,40 @@ export class ReaderTranslation {
   }
 
   private async drain(generation: number, abort: AbortController): Promise<void> {
-    if (this.draining) return
+    if (this.draining) { this.debug && console.log('[typ:tx] drain skip: already draining'); return }
     this.draining = true
+    this.debug && console.log('[typ:tx] drain start', { generation, pages: this.chapter?.pageCount })
+    let iter = 0
     try {
       while (this.isCurrent(generation) && !abort.signal.aborted) {
         const layout = this.measure()
-        if (!layout) break
-        this.rebuildPlan(layout)
+        if (!layout) { this.debug && console.log('[typ:tx] drain break: layout=null'); break }
+        const digest = layoutDigest(layout)
+        if (digest !== this.lastLayoutDigest) {
+          this.lastLayoutDigest = digest
+          this.rebuildPlan(layout)
+          this.debug && console.log(`[typ:tx] drain rebuild plan [${iter}]`, digest)
+        }
         const measured = this.measuredPages(layout)
         const visible = this.visibleRange(layout)
         const unit = this.scheduler.next(this.units, measured, visible, this.config.resilience.maxChunkAttempts)
-        if (!unit) break
+        if (!unit) {
+          const { done, total } = this.scheduler.progress()
+          this.debug && console.log(`[typ:tx] drain break: no unit [${iter}]`, { done, total, visible, status: [...this.scheduler['status'].entries()].map(([k, v]) => `${k}:${v.kind}`) })
+          break
+        }
+        this.debug && console.log(`[typ:tx] drain process [${iter}]`, { pageIndex: unit.pageIndex, prev: unit.prevIndex, next: unit.nextIndex })
         await this.processPage(unit, generation, abort.signal)
         this.evictPages(measured, visible)
+        iter++
       }
       if (this.isCurrent(generation) && this.scheduler.isComplete(this.config.resilience.maxChunkAttempts) && this.chapter) {
         const { failed } = this.scheduler.progress()
+        this.debug && console.log('[typ:tx] drain done', { failed, total: this.chapter.pageCount })
         this.setState({ phase: 'done', translate: { done: this.chapter.pageCount, total: this.chapter.pageCount }, failed })
         if (this.abort === abort) this.abort = null
+      } else {
+        this.debug && console.log('[typ:tx] drain exit incomplete', { isCurrent: this.isCurrent(generation), aborted: abort.signal.aborted, complete: this.scheduler.isComplete(this.config.resilience.maxChunkAttempts) })
       }
     } finally {
       this.draining = false
@@ -324,10 +346,12 @@ export class ReaderTranslation {
       this.pageOverlays.set(unit.pageIndex, overlay)
       this.overlayRevision += 1
       this.scheduler.markDone(unit.pageIndex)
+      this.debug && console.log(`[typ:tx] page done p${unit.pageIndex}`, { items: overlay.items.length, seamBelow: !!overlay.seamBelow, seamAbove: !!overlay.seamAbove })
       this.syncOverlay()
     } catch (error) {
       if (signal.aborted || !this.isCurrent(generation)) return
       const attempts = this.scheduler.markFailed(unit.pageIndex, errorMessage(error))
+      this.debug && console.log(`[typ:tx] page failed p${unit.pageIndex}`, { attempts, error: errorMessage(error) })
       if (attempts < this.config.resilience.maxChunkAttempts) {
         await delay(this.config.resilience.backoffMs * attempts)
       }
@@ -405,6 +429,7 @@ export class ReaderTranslation {
   }
 
   private syncOverlay(): void {
+    this.debug && console.log('[typ:tx] syncOverlay', [...this.pageOverlays.keys()])
     this.overlays.update(
       this.pageOverlays,
       this.overlayRevision,
@@ -453,6 +478,10 @@ export class ReaderTranslation {
       try { listener(this.state) } catch {}
     }
   }
+}
+
+function layoutDigest(layout: ChapterContentLayout): string {
+  return layout.pages.map(p => `${p.pageIndex}:${Math.round(p.contentRect.height)}`).join(',')
 }
 
 function progressFromPages(donePages: number, totalPages: number, pageCount: number): ReaderTranslationState['translate'] {

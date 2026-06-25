@@ -328,22 +328,36 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
   const vGrow = top + bottom
   const hGrow = left + right
 
+  // Inset safeBounds so expanded rects never touch the bubble contour.
+  // visualPadding already guards text→rect, but rect→safeBounds needs its
+  // own gap so background/erase geometry has breathing room.
+  const inset = Math.ceil(Math.min(baseRect.width, baseRect.height) * 0.07)
+  const padded = withInset(safeBounds, inset)
+
   // Grow symmetrically from the original centre so asymmetrical margins
   // (e.g. more space on one side) don't push the text box off-centre.
   if (vGrow > 0) {
     const newH = baseRect.height + vGrow
-    results.push(clampRect({ x: baseRect.x, y: cy - newH / 2, width: baseRect.width, height: newH, rotationDeg: baseRect.rotationDeg }, safeBounds))
+    results.push(clampRect({ x: baseRect.x, y: cy - newH / 2, width: baseRect.width, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
   }
   if (hGrow > 0) {
     const newW = baseRect.width + hGrow
-    results.push(clampRect({ x: cx - newW / 2, y: baseRect.y, width: newW, height: baseRect.height, rotationDeg: baseRect.rotationDeg }, safeBounds))
+    results.push(clampRect({ x: cx - newW / 2, y: baseRect.y, width: newW, height: baseRect.height, rotationDeg: baseRect.rotationDeg }, padded))
   }
   if (vGrow > 0 && hGrow > 0) {
     const newW = baseRect.width + hGrow
     const newH = baseRect.height + vGrow
-    results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, safeBounds))
+    results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
   }
   return results
+}
+
+function withInset(bbox: BBox, px: number): BBox {
+  const w = Math.max(1, (bbox[2] - bbox[0]) - px * 2)
+  const h = Math.max(1, (bbox[3] - bbox[1]) - px * 2)
+  const cx = (bbox[0] + bbox[2]) / 2
+  const cy = (bbox[1] + bbox[3]) / 2
+  return [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2]
 }
 
 // Render rect for an expanded fit.  The expanded `bestRect` is only a search

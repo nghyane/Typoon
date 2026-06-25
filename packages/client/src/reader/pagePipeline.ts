@@ -17,11 +17,13 @@ import { estimateSafeMargins } from '../render/backgroundFit'
 import { textFitRect } from '../render/fitGeometry'
 import { LensTextRecognizer } from '../recognizers/lens/LensTextRecognizer'
 import { buildOverlayPlacements } from '../pipeline/composeOverlay'
+import { recoverBubbleText, type BubbleCropRecognizer, type BubbleSource } from '../pipeline/bubbleRecovery'
 import { textFromRecognition, translatePreparedText, type PreparedTextResult } from '../pipeline/translatePreparedPage'
 import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
 import { textRoleContext, type TextRoleContext } from '../pipeline/textRole'
 import type { Translator } from '../translators/translator'
 import type { BBox } from '../domain/geometry'
+import type { PageSize } from '../domain/source'
 import { capturePageScan, type CapturedPageScan } from './pageCapture'
 import {
   routePlacement,
@@ -106,7 +108,26 @@ export class PagePipeline {
       signal,
     })
     throwIfAborted(signal)
+    // eslint-disable-next-line no-console
+    console.log('[scanPage]', { page: unit.pageIndex, capture: [capture.image.width, capture.image.height], captureScale: capture.captureScale, source: [unit.source.width, unit.source.height], coarseBlocks: recognized.blocks.length, coarseTexts: recognized.blocks.map(b => b.text.slice(0, 30)) })
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
+    throwIfAborted(signal)
+
+    const coreOffsetYPx = capture.haloTopPx * capture.captureScale
+    const coreWidth = unit.source.width * capture.captureScale
+    const coreOffsetXPx = (capture.image.width - coreWidth) / 2
+    const source: BubbleSource = {
+      loadFullCanvas: () => loadSourceCanvas(args.loadPage, unit.pageIndex, unit.source, signal),
+      captureScale: capture.captureScale,
+      coreOffsetXPx,
+      coreOffsetYPx,
+    }
+    const recovered = await recoverBubbleText({
+      recognized,
+      source,
+      regions,
+      recognizer: this.cropRecognizer(unit.pageIndex, args.sourceLanguage, signal),
+    })
     throwIfAborted(signal)
 
     const coreFrame: CoreFrame = {
@@ -115,13 +136,22 @@ export class PagePipeline {
       width: capture.image.width,
       height: unit.source.height * capture.captureScale,
     }
-    const clean = removeReaderNoiseBlocks(recognized, coreFrame)
+    const clean = removeReaderNoiseBlocks(recovered, coreFrame)
     const coreOwnedBlocks = clean.blocks.filter(block => {
       const cy = (block.bbox[1] + block.bbox[3]) / 2
       return cy >= coreFrame.y && cy < coreFrame.y + coreFrame.height
     })
+    // eslint-disable-next-line no-console
+    console.log('[scanPage]', { afterRecovery: recovered.blocks.length, afterNoise: clean.blocks.length, coreOwned: coreOwnedBlocks.length, texts: coreOwnedBlocks.map(b => b.text.slice(0, 30)) })
     const roleContext: TextRoleContext = coreOwnedBlocks.length ? textRoleContext(coreOwnedBlocks) : {}
     return { capture, clean, regions, coreFrame, roleContext }
+  }
+
+  /** Adapt the recognizer to the per-bubble crop interface Phase B needs. */
+  private cropRecognizer(pageIndex: number, sourceLanguage: string | null, signal: AbortSignal): BubbleCropRecognizer {
+    return {
+      recognizeCrop: image => this.deps.recognizer.recognizeText(image, { pageIndex, sourceLang: sourceLanguage, signal }),
+    }
   }
 
   /** Build overlay placements + synthetic translation units; null if nothing to do. */
@@ -280,4 +310,28 @@ function renderSourceUnitIds(placement: TextPlacement): readonly string[] {
 
 function hasTranslatableUnit(units: readonly { readonly kind: string; readonly sourceText: string }[]): boolean {
   return units.some(unit => unit.kind !== 'skip' && unit.sourceText.trim())
+}
+
+// ── source-image loading for Phase B bubble recovery ──
+
+async function loadSourceCanvas(
+  loadPage: (index: number) => Promise<LoadedPage>,
+  pageIndex: number,
+  sourceSize: PageSize,
+  signal: AbortSignal,
+): Promise<HTMLCanvasElement> {
+  throwIfAborted(signal)
+  const page = await loadPage(pageIndex)
+  const bitmap = await createImageBitmap(page.blob)
+  const canvas = document.createElement('canvas')
+  canvas.width = sourceSize.width
+  canvas.height = sourceSize.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('2d canvas unavailable')
+  try {
+    ctx.drawImage(bitmap, 0, 0)
+  } finally {
+    bitmap.close()
+  }
+  return canvas
 }
