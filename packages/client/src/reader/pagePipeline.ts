@@ -364,6 +364,34 @@ function normalizedSourceText(placement: TextPlacement, translations: readonly T
     .toLowerCase()
 }
 
+/** BBox overlap ratio: intersection area / smaller area. */
+function bboxOverlapRatio(a: BBox, b: BBox): number {
+  const ax = Math.max(a[0], b[0])
+  const ay = Math.max(a[1], b[1])
+  const bx = Math.min(a[2], b[2])
+  const by = Math.min(a[3], b[3])
+  if (ax >= bx || ay >= by) return 0
+  const inter = (bx - ax) * (by - ay)
+  const areaA = (a[2] - a[0]) * (a[3] - a[1])
+  const areaB = (b[2] - b[0]) * (b[3] - b[1])
+  return inter / Math.min(areaA, areaB)
+}
+
+/** Convert a bbox in seamAbove(N+1) space to page-N source space.
+ *  seamAbove items were built as: shiftPlacementY(canvasPlacementToSource(…), haloTopN1),
+ *  where haloTopN1 = unit.haloTopPx of page N+1 (= haloTop of the owning page).
+ *  In page-N space, page N ends at pageN.height and page N+1 begins there.
+ *  SeamAbove Y=haloTopN1 corresponds to pageN.height (bottom of page N / top of N+1). */
+function seamAboveBboxToPageNSpace(bbox: BBox, haloTopN1: number, pageNHeight: number): BBox {
+  const dy = pageNHeight - haloTopN1
+  return [
+    bbox[0],
+    bbox[1] + dy,
+    bbox[2],
+    bbox[3] + dy,
+  ]
+}
+
 export function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>): void {
   const indices = [...overlays.keys()].sort((a, b) => a - b)
   for (const pageIndex of indices) {
@@ -379,9 +407,26 @@ export function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>):
       ),
     )
 
+    // Also collect below bboxes (already in page-N source space)
+    const belowBboxes = overlay.seamBelow.items.map(item => item.placement.bbox)
+
     const filtered = nextOverlay.seamAbove.items.filter(item => {
       const text = normalizedSourceText(item.placement, nextOverlay.seamAbove!.translations)
-      return text && !belowTexts.has(text)
+      // Exact text match
+      if (text && belowTexts.has(text)) return false
+
+      // Position overlap fallback: convert above bbox to page-N space and check
+      // against all below bboxes. If any overlap >50%, treat as duplicate.
+      const aboveBboxInPageN = seamAboveBboxToPageNSpace(
+        item.placement.bbox,
+        nextOverlay.seamAbove!.seamSplitY,
+        overlay.seamBelow!.seamSplitY,
+      )
+      for (const belowBbox of belowBboxes) {
+        if (bboxOverlapRatio(belowBbox, aboveBboxInPageN) > 0.5) return false
+      }
+
+      return true
     })
 
     if (filtered.length < nextOverlay.seamAbove.items.length) {
