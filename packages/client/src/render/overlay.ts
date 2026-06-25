@@ -16,7 +16,6 @@ type TextRenderItem = {
 export interface OverlayOptions {
   readonly eraseStrategy?: EraseStrategy
   readonly debug?: OverlayDebugOptions
-  readonly scaleMode?: 'contain' | 'width'
 }
 
 export interface OverlayRenderData {
@@ -38,7 +37,6 @@ export function attachOverlay(
   if (style.position === 'static') host.style.position = 'relative'
   const overlay = createOverlayElement(data, options)
   host.appendChild(overlay)
-  bindOverlayScale(overlay, data.pageSize, options.scaleMode ?? 'contain')
   return overlay
 }
 
@@ -52,7 +50,6 @@ export function createOverlayElement(
   root.style.inset = '0'
   root.style.pointerEvents = 'none'
   root.style.zIndex = '1'
-  root.style.setProperty('--typoon-page-scale', '1')
 
   const byUnitId = new Map(data.translations.map(unit => [unit.unitId, unit]))
   const textItems = data.placements
@@ -105,23 +102,4 @@ function translatedUnitForPlacement(placement: TextPlacement, byUnitId: Readonly
 
 function hasDebugOptions(options: OverlayDebugOptions | undefined): boolean {
   return !!options && Object.values(options).some(Boolean)
-}
-
-function bindOverlayScale(overlay: HTMLElement, pageSize: readonly [number, number], mode: NonNullable<OverlayOptions['scaleMode']>): void {
-  const update = (): void => {
-    const rect = overlay.getBoundingClientRect()
-    const sx = rect.width / pageSize[0]
-    const sy = rect.height / pageSize[1]
-    const scale = mode === 'width' ? sx : Math.min(sx, sy)
-    overlay.style.setProperty('--typoon-page-scale', Number.isFinite(scale) && scale > 0 ? String(scale) : '1')
-  }
-  update()
-  if (!('ResizeObserver' in window)) return
-  const observer = new ResizeObserver(update)
-  observer.observe(overlay)
-  const remove = overlay.remove.bind(overlay)
-  overlay.remove = () => {
-    observer.disconnect()
-    remove()
-  }
 }

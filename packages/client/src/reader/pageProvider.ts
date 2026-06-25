@@ -21,6 +21,14 @@ export interface PageProviderOptions {
   readonly maxCachedPages: number
   readonly readPage: ReadPageFn
   readonly onProgress?: (loadedPages: number) => void
+  /**
+   * Optional authoritative source size per page. When provided, it is the single
+   * source of truth for page geometry: the provider skips its own decode so that
+   * `unit.source` (the overlay's % denominator) is byte-identical to the size
+   * the renderer uses for the page frame's aspect ratio. Falls back to decoding
+   * when it returns null.
+   */
+  readonly pageSize?: (index: number) => SourcePageSize | null
 }
 
 export class PageProvider {
@@ -34,7 +42,7 @@ export class PageProvider {
   }
 
   size(index: number): SourcePageSize | null {
-    return this.sizes[index] ?? this.cache.get(index)?.size ?? null
+    return this.options.pageSize?.(index) ?? this.sizes[index] ?? this.cache.get(index)?.size ?? null
   }
 
   async read(index: number, signal: AbortSignal): Promise<LoadedPage> {
@@ -45,7 +53,7 @@ export class PageProvider {
     }
     throwIfAborted(signal)
     const blob = await this.options.readPage(index, signal)
-    const size = await readImageSize(blob)
+    const size = this.options.pageSize?.(index) ?? await readImageSize(blob)
     const page: LoadedPage = { index, blob, size }
     this.cache.set(index, page)
     this.order.push(index)
@@ -66,6 +74,27 @@ export class PageProvider {
     }
   }
 
+  /** Preload image dimensions for all pages without keeping blobs in cache. */
+  async preloadSizes(signal: AbortSignal): Promise<void> {
+    const pending: number[] = []
+    for (let i = 0; i < this.options.pageCount; i++) {
+      if (this.options.pageSize?.(i)) continue
+      if (this.sizes[i] === null) pending.push(i)
+    }
+    if (!pending.length) return
+
+    const concurrency = 6
+    for (let batch = 0; batch < pending.length; batch += concurrency) {
+      throwIfAborted(signal)
+      const slice = pending.slice(batch, batch + concurrency)
+      await Promise.all(slice.map(async i => {
+        const blob = await this.options.readPage(i, signal)
+        const size = await readImageSize(blob)
+        this.sizes[i] = size
+      }))
+    }
+  }
+
   clear(): void {
     this.cache.clear()
     this.order.length = 0
@@ -81,7 +110,10 @@ export class PageProvider {
 }
 
 async function readImageSize(blob: Blob): Promise<SourcePageSize> {
-  const bitmap = await createImageBitmap(blob)
+  // `from-image`: honor EXIF orientation so decoded W/H matches what <img>
+  // displays and the OCR canvas captures — keeping every coordinate space
+  // (display, OCR, overlay) in one orientation.
+  const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
   try {
     return { width: bitmap.width, height: bitmap.height }
   } finally {

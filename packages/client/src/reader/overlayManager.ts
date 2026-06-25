@@ -1,9 +1,11 @@
 // reader/overlayManager.ts — owns overlay DOM attach/detach and visibility.
 //
 // Two render surfaces:
-//   - Page surface: per-page overlay attached to each [data-page-index] element,
-//     self-scaling via ResizeObserver (scaleMode 'contain'). Holds page-local
-//     bubbles whose bbox stays inside the page.
+//   - Page surface: per-page overlay attached to each [data-page-index] frame.
+//     The frame is aspect-locked to the source page and declares
+//     container-type:inline-size, so overlay geometry (% of frame) coincides
+//     with the displayed image and typography scales via cqw — no JS measuring.
+//     Holds page-local bubbles whose bbox stays inside the page.
 //   - Seam bridge: a bubble that crosses the gap between two stacked pages is
 //     rendered on a bridge element positioned on the chapter-level host (which
 //     spans the whole strip), so it is not clipped by either page. The bridge is
@@ -173,7 +175,7 @@ export class OverlayManager {
       fontContextPlacements: overlay.items.map(item => item.placement),
       sourceLanguage: this.meta.sourceLanguage,
       targetLanguage: this.meta.targetLanguage,
-    }, { scaleMode: 'contain' })
+    })
     if (this.hidden) overlayEl.style.display = 'none'
     this.attached.set(pageIndex, { el: overlayEl })
     this.attachedData.set(pageIndex, overlay)
@@ -196,6 +198,11 @@ export class OverlayManager {
     wrapper.style.position = 'absolute'
     wrapper.style.pointerEvents = 'none'
     wrapper.style.zIndex = '1'
+    // The seam bridge is its own positioned element (not inside a page frame),
+    // so it must establish the container that the overlay's cqw typography
+    // resolves against. Its width is kept equal to the displayed page width by
+    // positionBridge, so 100cqw === displayed page width === seam pageW * scale.
+    wrapper.style.containerType = 'inline-size'
     const overlayEl = attachOverlay(wrapper, {
       pageSize: seam.seamSize,
       placements: seam.items.map(item => item.placement),
@@ -204,7 +211,7 @@ export class OverlayManager {
       fontContextPlacements: seam.items.map(item => item.placement),
       sourceLanguage: this.meta.sourceLanguage,
       targetLanguage: this.meta.targetLanguage,
-    }, { scaleMode: 'contain' })
+    })
     overlayEl.style.position = 'absolute'
     overlayEl.style.inset = '0'
     if (this.hidden) wrapper.style.display = 'none'

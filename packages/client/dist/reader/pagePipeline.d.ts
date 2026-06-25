@@ -21,9 +21,12 @@ export declare class PagePipeline {
     run(args: PagePipelineArgs): Promise<ReaderPageOverlay>;
     /** Capture core+halo, OCR, detect regions, drop noise, derive role context. */
     private scanPage;
+    /** Adapt the recognizer to the per-bubble crop interface Phase B needs. */
+    private cropRecognizer;
     /** Build overlay placements + synthetic translation units; null if nothing to do. */
     private composePlacements;
     /** Translate the composed units and return the translated payloads. */
     private translatePlacements;
     private route;
 }
+export declare function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>): void;

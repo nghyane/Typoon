@@ -19,7 +19,7 @@ import type { SourcePageSize } from '../pipeline/chapterContent'
 import { DeepLTranslateWeb } from '../translators/deepl-web/DeepLTranslateWeb'
 import { GoogleTranslateWeb } from '../translators/google-web/GoogleTranslateWeb'
 import type { Translator } from '../translators/translator'
-import { PagePipeline } from './pagePipeline'
+import { PagePipeline, deduplicateSeamBlocks } from './pagePipeline'
 import { PageScheduler } from './pageScheduler'
 import { planPageScans, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
 import { measureLayout, visibleContentRange } from './chunkCapture'
@@ -61,6 +61,13 @@ export interface ReaderTranslationChapter {
   readonly readPage: (index: number, signal?: AbortSignal) => Promise<Blob>
   readonly sourceLanguage: string | null
   readonly targetLanguage: string
+  /**
+   * Authoritative source size per page, when the host already decoded it (e.g.
+   * the reader's page cache). Lets the provider skip a redundant decode and, more
+   * importantly, makes `unit.source` identical to the size the host renders the
+   * page frame with — so overlay geometry and the displayed image never diverge.
+   */
+  readonly pageSize?: (index: number) => SourcePageSize | null
 }
 
 export interface ReaderTranslationOptions {
@@ -235,6 +242,7 @@ export class ReaderTranslation {
         pageCount: chapter.pageCount,
         maxCachedPages: this.config.memory.maxCachedPages,
         readPage: (index, signal) => chapter.readPage(index, signal),
+        pageSize: chapter.pageSize,
         onProgress: loaded => this.setState({
           prepare: { done: loaded, total: chapter.pageCount, preparedPages: loaded },
         }),
@@ -405,6 +413,7 @@ export class ReaderTranslation {
   }
 
   private syncOverlay(): void {
+    deduplicateSeamBlocks(this.pageOverlays)
     this.overlays.update(
       this.pageOverlays,
       this.overlayRevision,

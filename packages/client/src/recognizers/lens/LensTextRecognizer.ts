@@ -191,7 +191,8 @@ function createLensRequest(args: {
   timeZone: string
 }): Uint8Array {
   const requestId = new lens.LensOverlayRequestId()
-  requestId.setUuid(String(Date.now()) + String(Math.floor(Math.random() * 1_000_000)))
+  // uuid is uint64 — pass a number, not a string like the old code did
+  requestId.setUuid(Math.floor(Date.now() * 1000 + Math.random() * 1_000_000))
   requestId.setSequenceId(1)
   requestId.setImageSequenceId(1)
 
@@ -241,12 +242,16 @@ function parseLensResponse(bytes: Uint8Array, pageSize: readonly [number, number
   if (!text.hasTextLayout()) return { detectedLanguage: text.getContentLanguage?.() || null, blocks: [] }
 
   const blocks: TextBlock[] = []
+  let paraCount = 0
+  let emptyText = 0
+  let noBox = 0
   for (const paragraph of text.getTextLayout().getParagraphsList()) {
+    paraCount += 1
     const lines = parseLines(paragraph.getLinesList(), pageSize)
     const sourceText = lines.map(line => line.text).filter(Boolean).join('\n').trim()
-    if (!sourceText) continue
+    if (!sourceText) { emptyText += 1; continue }
     const box = parseParagraphBox(paragraph, lines, pageSize)
-    if (!box) continue
+    if (!box) { noBox += 1; continue }
     blocks.push({
       bbox: box.bbox,
       polygon: box.polygon,
@@ -258,6 +263,8 @@ function parseLensResponse(bytes: Uint8Array, pageSize: readonly [number, number
       words: lines.flatMap(line => line.words),
     })
   }
+  // eslint-disable-next-line no-console
+  console.log('[lens-parser]', { pageSize, paragraphs: paraCount, blocks: blocks.length, emptyText, noBox, texts: blocks.map(b => b.text.slice(0, 40)) })
   return { detectedLanguage: text.getContentLanguage?.() || null, blocks }
 }
 

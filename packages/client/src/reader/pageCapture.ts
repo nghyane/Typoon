@@ -83,7 +83,7 @@ async function drawWholePage(
 ): Promise<void> {
   throwIfAborted(signal)
   const page = await loadPage(index)
-  const bitmap = await createImageBitmap(page.blob)
+  const bitmap = await createImageBitmap(page.blob, { imageOrientation: 'from-image' })
   try {
     const dw = page.size.width * scale
     ctx.drawImage(bitmap, centerOffset(canvasWidth, dw), destSrcY * scale, dw, page.size.height * scale)
@@ -105,7 +105,7 @@ async function drawNeighborStrip(
 ): Promise<void> {
   throwIfAborted(signal)
   const page = await loadPage(index)
-  const bitmap = await createImageBitmap(page.blob)
+  const bitmap = await createImageBitmap(page.blob, { imageOrientation: 'from-image' })
   try {
     const sh = Math.min(stripSrcHeight, page.size.height)
     const sy = edge === 'bottom' ? page.size.height - sh : 0
@@ -122,6 +122,6 @@ function centerOffset(canvasWidth: number, drawWidth: number): number {
 
 function canvasToOcrBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/jpeg', 0.92)
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/png')
   })
 }

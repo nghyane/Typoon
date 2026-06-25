@@ -26,7 +26,7 @@ const DISCORD_CDN_PROXY_BASE = 'https://927251094806098001.discordsays.com/cdn/c
 export const defaultTranslationConfig: TranslationConfig = {
   model: { repo: 'nghyane/comic-detr', revision: 'v1', proxyBase: DISCORD_CDN_PROXY_BASE },
   chunk: { overlayMarginPx: 1400, processMarginPx: 450 },
-  scan: { maxCaptureWidth: 1280, haloRatio: 0.14, haloMaxPx: 320 },
+  scan: { maxCaptureWidth: 1280, haloRatio: 0.25, haloMaxPx: 600 },
   resilience: { maxChunkAttempts: 3, backoffMs: 400 },
   memory: { maxCachedPages: 12 },
   translator: { maxSessionsDesktop: 2, maxSessionsMobile: 1 },

@@ -153,7 +153,7 @@ function createTextBox(
   box.style.alignItems = 'center'
   box.style.justifyContent = justifyContent
   box.style.textAlign = textAlign
-  box.style.padding = `calc(${fit.paddingYPx}px * var(--typoon-page-scale, 1)) calc(${fit.paddingXPx}px * var(--typoon-page-scale, 1))`
+  box.style.padding = `${sourcePxToCqw(fit.paddingYPx, pageW)} ${sourcePxToCqw(fit.paddingXPx, pageW)}`
   box.style.boxSizing = 'border-box'
   box.style.overflow = 'hidden'
   box.style.color = style.fill
@@ -171,8 +171,8 @@ function createTextBox(
   text.style.filter = style.shadow ?? 'none'
   text.style.fontWeight = style.fontWeight
   text.style.fontFamily = MANGA_FONT_PROFILE.cssFamily
-  text.style.fontSize = `calc(${fit.fontSizePx}px * var(--typoon-page-scale, 1))`
-  text.style.lineHeight = `calc(${fit.lineHeightPx}px * var(--typoon-page-scale, 1))`
+  text.style.fontSize = sourcePxToCqw(fit.fontSizePx, pageW)
+  text.style.lineHeight = sourcePxToCqw(fit.lineHeightPx, pageW)
   text.style.whiteSpace = 'pre'
   text.style.overflowWrap = 'normal'
   text.style.wordBreak = 'normal'
@@ -180,9 +180,18 @@ function createTextBox(
     text.style.writingMode = 'vertical-rl'
     text.style.textOrientation = 'mixed'
   }
-  appendStyledText(text, fit.text, style)
+  appendStyledText(text, fit.text, style, pageW)
   box.appendChild(text)
   return box
+}
+
+// Typography is sized in source px but rendered at display resolution via
+// container-query width units: the overlay's nearest container is the page
+// frame (container-type:inline-size) whose width equals the displayed page
+// width, so `px/Sw*100cqw` resolves to `px * displayWidth/Sw` with no JS
+// measurement. This replaces the former `--typoon-page-scale` ResizeObserver.
+function sourcePxToCqw(px: number, pageW: number): string {
+  return `${(px / Math.max(1, pageW)) * 100}cqw`
 }
 
 function formatRect(rect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }): string {
@@ -193,11 +202,11 @@ function formatBBox(bbox: readonly [number, number, number, number]): string {
   return bbox.map(n => n.toFixed(1)).join(',')
 }
 
-function appendStyledText(root: HTMLElement, value: string, style: TextStylePlan): void {
+function appendStyledText(root: HTMLElement, value: string, style: TextStylePlan, pageW: number): void {
   root.style.color = style.fill
   const stroke = style.strokes[0]
   if (stroke) {
-    root.style.setProperty('-webkit-text-stroke-width', `calc(${stroke.widthPx}px * var(--typoon-page-scale, 1))`)
+    root.style.setProperty('-webkit-text-stroke-width', sourcePxToCqw(stroke.widthPx, pageW))
     root.style.setProperty('-webkit-text-stroke-color', stroke.color)
     root.style.setProperty('paint-order', 'stroke fill')
   }

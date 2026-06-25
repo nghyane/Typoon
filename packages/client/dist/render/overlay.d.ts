@@ -6,7 +6,6 @@ import { type EraseStrategy } from './erasePlan';
 export interface OverlayOptions {
     readonly eraseStrategy?: EraseStrategy;
     readonly debug?: OverlayDebugOptions;
-    readonly scaleMode?: 'contain' | 'width';
 }
 export interface OverlayRenderData {
     readonly placements: readonly TextPlacement[];

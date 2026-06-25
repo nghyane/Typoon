@@ -7,7 +7,8 @@ export declare class OverlayManager {
     private readonly marginPx;
     private host;
     private overlays;
-    private revision;
+    /** Overlay data that each page was last attached with (object identity check). */
+    private readonly attachedData;
     private meta;
     private hidden;
     private readonly pageEls;
@@ -21,8 +22,8 @@ export declare class OverlayManager {
     get currentHost(): HTMLElement | null;
     /** Register a page element (called from a Svelte action). Returns cleanup. */
     registerPage(pageIndex: number, el: HTMLElement): () => void;
-    /** Update overlay data; re-attaches only visible pages at the new revision. */
-    update(overlays: Map<number, ReaderPageOverlay>, revision: number, meta: OverlayChapterMeta): void;
+    /** Update overlay data; re-attaches only pages whose data changed. */
+    update(overlays: Map<number, ReaderPageOverlay>, _revision: number, meta: OverlayChapterMeta): void;
     setHidden(hidden: boolean): void;
     detach(): void;
     dispose(): void;

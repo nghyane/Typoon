@@ -63,6 +63,7 @@
       chapterKey: [data.workId, data.chapterRef, source.activeVersionKey ?? '', source.activeSourceId ?? '', pageCount, source.activeSourceLang ?? '', targetLang].join(':'),
       pageCount,
       readPage: (index, signal) => pages.readPage(index, signal),
+      pageSize: (index) => pages.pageSizes[index] ?? null,
       sourceLanguage: source.activeSourceLang ?? null,
       targetLanguage: targetLang,
     });
@@ -98,11 +99,6 @@
     if (!host) return;
     return translation.registerContentHost(host);
   });
-
-  function registerPage(el: HTMLElement, index: number): { destroy: () => void } {
-    const cleanup = translation.registerPage(index, el);
-    return { destroy: cleanup };
-  }
 
   $effect(() => {
     translation.setHidden(translationHidden);
@@ -245,12 +241,10 @@
         <div class="relative min-h-full" style={`width:100%;max-width:${readerPageWidth}px;margin:0 auto;`}>
           {#each slotIndices as i (i)}
             <div
-              data-page-index={i}
               class="relative w-full overflow-hidden"
               style={`content-visibility:auto;contain-intrinsic-size:auto ${intrinsicHeight(i)}px`}
-              use:registerPage={i}
             >
-              <PageRenderer blob={pages.blobs[i] ?? null} index={i} pageSize={pages.pageSizes[i] ?? null} eager={eagerPage(i)} className="w-full" />
+              <PageRenderer blob={pages.blobs[i] ?? null} index={i} pageSize={pages.pageSizes[i] ?? null} eager={eagerPage(i)} register={(el) => translation.registerPage(i, el)} />
             </div>
           {/each}
           {#if fakePageSlots.length > 0}

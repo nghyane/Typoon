@@ -150,7 +150,9 @@ function stableHeaders(headers: Record<string, string> | undefined): string {
 }
 
 async function readImageSize(blob: Blob): Promise<{ width: number; height: number }> {
-  const bitmap = await createImageBitmap(blob);
+  // `from-image`: match EXIF orientation applied by <img> and the OCR canvas so
+  // the page-frame aspect ratio agrees with the displayed pixels.
+  const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
   try {
     return { width: bitmap.width, height: bitmap.height };
   } finally {

@@ -1,3 +1,4 @@
+import type { SourcePageSize } from '../pipeline/chapterContent';
 import { type TranslationConfig } from './translationConfig';
 import { type ReaderModelState } from './visionRuntime';
 export type ReaderPhase = 'idle' | 'loading' | 'ready' | 'translating' | 'done' | 'error';
@@ -30,6 +31,13 @@ export interface ReaderTranslationChapter {
     readonly readPage: (index: number, signal?: AbortSignal) => Promise<Blob>;
     readonly sourceLanguage: string | null;
     readonly targetLanguage: string;
+    /**
+     * Authoritative source size per page, when the host already decoded it (e.g.
+     * the reader's page cache). Lets the provider skip a redundant decode and, more
+     * importantly, makes `unit.source` identical to the size the host renders the
+     * page frame with — so overlay geometry and the displayed image never diverge.
+     */
+    readonly pageSize?: (index: number) => SourcePageSize | null;
 }
 export interface ReaderTranslationOptions {
     readonly config?: TranslationConfig;
