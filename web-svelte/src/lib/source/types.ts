@@ -55,6 +55,7 @@ export interface MangaEndpoint extends HttpRequest {
 		author?: Selector;
 		status?: Selector;
 		updatedAt?: Selector;
+		genres?: Selector;
 	};
 	rootExtras?: Record<string, Selector>;
 	extras?: Record<string, Selector>;
@@ -166,6 +167,7 @@ export interface MangaDetail extends MangaSummary {
 	description: string | null;
 	author: string | null;
 	status: string | null;
+	genres: string[] | null;
 	chapters: MangaChapterRef[];
 }
 

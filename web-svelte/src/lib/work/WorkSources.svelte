@@ -50,9 +50,11 @@
         <div class="w-6 h-8 shrink-0 rounded-xs overflow-hidden">
           <Cover src={source.cover_url} headers={sourceImageHeaders(source.source)} title={source.title} class="w-full h-full" fontSize="text-[10px]" />
         </div>
-        <div class="flex-1 min-w-0 text-sm truncate">
-          <span class="text-text">{sourceLabel(source.source)}</span>
-          {#if i === 0 && work.sources.length > 1}<span class="ml-1.5 text-xs text-accent">Chính</span>{/if}
+        <div class="flex-1 min-w-0">
+          <p class="text-sm text-text truncate leading-tight">{source.title}</p>
+          <p class="text-xs text-text-subtle truncate">
+            {sourceLabel(source.source)}{#if i === 0 && work.sources.length > 1}<span class="ml-1 text-accent">Chính</span>{/if}
+          </p>
         </div>
         {#if work.sources.length > 1}
           <button type="button"

@@ -72,11 +72,12 @@
   $effect(() => {
     const pageCount = source.activeUrls.length;
     if (pageCount <= 0 || !canTranslateLanguage) { translation.clear(); return; }
+    const lang = normalizeLang(source.activeSourceLang) || null;
     translation.setChapter({
-      chapterKey: [data.workId, data.chapterRef, source.activeVersionKey ?? '', source.activeSourceId ?? '', pageCount, source.activeSourceLang ?? '', targetLang].join(':'),
+      chapterKey: [data.workId, data.chapterRef, source.activeVersionKey ?? '', source.activeSourceId ?? '', pageCount, lang ?? '', targetLang].join(':'),
       pageCount,
       readPage: (index, signal) => pages.readPage(index, signal),
-      sourceLanguage: source.activeSourceLang ?? null,
+      sourceLanguage: lang,
       targetLanguage: targetLang,
     });
   });
@@ -244,7 +245,7 @@
 
   function normalizeLang(value: string | null | undefined): string {
     const lang = value?.trim().toLowerCase() ?? '';
-    if (lang === 'multi' || lang === 'auto') return '';
+    if (!/^[a-z]{2,3}(-[a-z]{2,4})?$/.test(lang)) return '';
     return lang;
   }
 

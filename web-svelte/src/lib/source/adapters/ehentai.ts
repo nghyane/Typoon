@@ -184,6 +184,7 @@ export const ehentaiAdapter: SourceAdapter = {
 			description: (meta.category as string | undefined) ?? null,
 			author: (meta.uploader as string | undefined) ?? null,
 			status: null,
+			genres: null,
 			
 			chapters: [{
 				id: mangaUrl,

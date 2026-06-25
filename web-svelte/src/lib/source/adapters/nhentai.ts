@@ -109,6 +109,7 @@ export const nhentaiAdapter: SourceAdapter = {
 			description: categories.join(', ') || null,
 			author: names(doc, '#tags a[href^="/artist/"] .name').join(', ') || null,
 			status: categories[0] ?? null,
+			genres: null,
 			
 			chapters: [{
 				id: url,

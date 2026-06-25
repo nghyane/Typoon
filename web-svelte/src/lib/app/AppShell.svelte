@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
+  import { ArrowLeft, Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
+  import { headerStore } from '$lib/header.svelte';
   import { cn } from '$lib/cn';
   import { safeReturnTo } from '$lib/auth/api';
   import { session } from '$lib/auth/session.svelte';
@@ -169,7 +170,19 @@
 
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
       <header class="flex items-center gap-2 px-3 sm:px-5 h-bar bg-bg shrink-0">
-        <div class="flex-1 min-w-0"></div>
+        <div class="flex-1 min-w-0">
+          {#if headerStore.back}
+            {#if headerStore.back.href}
+              <a href={headerStore.back.href} class="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text transition-colors">
+                <ArrowLeft size={14} />{headerStore.back.label}
+              </a>
+            {:else}
+              <button type="button" onclick={() => history.back()} class="inline-flex items-center gap-1.5 text-sm text-text-subtle hover:text-text transition-colors cursor-pointer">
+                <ArrowLeft size={14} />{headerStore.back.label}
+              </button>
+            {/if}
+          {/if}
+        </div>
         <div bind:this={menuEl} class="relative">
           <button type="button" onclick={() => { menuOpen = !menuOpen; }} class="flex items-center gap-2 pl-1 pr-2 h-8 rounded-sm hover:bg-hover transition-colors cursor-pointer">
             {#if user.avatar_url && !avatarFailed}

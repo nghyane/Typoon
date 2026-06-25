@@ -37,15 +37,9 @@
   const INITIAL_PREVIEW = 3;
   const PER_GROUP_MAX = 8;
 
-  let query = $state('');
-  let debouncedQuery = $state('');
+  let query = $state(workTitle);
+  let debouncedQuery = $state(workTitle.trim());
   let sources = $state(listSources());
-
-  // Sync query from prop on open
-  $effect(() => {
-    query = workTitle;
-    debouncedQuery = workTitle.trim();
-  });
   let hits = $state<SearchHit[]>([]);
   let failures = $state<SearchFailure[]>([]);
   let loading = $state(false);
@@ -173,6 +167,7 @@
       await attachSource(workId, source);
       pickedKeys = new Set(pickedKeys).add(key);
       await onLinked?.();
+      close();
     } catch (err) {
       error = `Liên kết thất bại: ${errorFrom(err).message}`;
     } finally {

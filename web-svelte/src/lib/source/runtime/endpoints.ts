@@ -257,10 +257,16 @@ export async function fetchMangaDetail(
 	if (f.updatedAt && chapters.length > 0 && chapters.every((c) => !c.date)) {
 		const l = lastChapter(chapters); if (l) l.date = f.updatedAt;
 	}
+	const genresSel = ep.fields.genres;
+	const genres = genresSel
+		? queryHtmlAll(parsed as Document, genresSel).map((el) => el.textContent?.trim()).filter((g): g is string => !!g)
+		: null;
+
 	const detail: MangaDetail = {
 		id: mangaUrl, url: mangaUrl,
 		title: f.title || '(không tên)', cover: absUrl(f.cover, base),
 		description: f.description ?? null, author: f.author ?? null, status: f.status ?? null,
+		genres: genres?.length ? genres : null,
 		chapters,
 	};
 	if (m.imageHeaders) detail.coverHeaders = m.imageHeaders;

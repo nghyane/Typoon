@@ -1,5 +1,6 @@
 <script lang="ts">
   import { addWorkToLibrary, detachSource, getWork, getWorkHistory, removeWorkFromLibrary, renameWork, setWorkLibraryStatus, touchWork } from '$lib/works/repo';
+  import { headerStore } from '$lib/header.svelte';
   import { getSource } from '$lib/source/registry';
   import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
   import { normalizeStatus, stripHtml } from '$lib/string';
@@ -67,8 +68,17 @@
 
   const detailLoading = $derived(detailQueries.some((q) => q.isPending || q.isFetching));
   const detailFailures = $derived(detailQueries.filter((q) => q.error).length);
-  const detail = $derived(detailQueries.find((q) => q.data)?.data ?? null);
   const targetLang = $derived(localSettings.state.default_target_lang);
+  const detail = $derived.by(() => {
+    const target = targetLang.toLowerCase();
+    for (let i = 0; i < sourceTargets.length; i++) {
+      const d = detailQueries[i]?.data;
+      if (d && sourceTargets[i].source?.manifest.languages.some((l) => l.toLowerCase() === target)) {
+        return d;
+      }
+    }
+    return detailQueries.find((q) => q.data)?.data ?? null;
+  });
   const chapters = $derived(mergeChapters(sourceChapters, targetLang.toLowerCase()));
   const readTarget = $derived(pickReadTarget(history, chapters));
 
@@ -122,6 +132,10 @@
   }));
 
   $effect(() => { if (work) touchWork(work.id).catch(() => {}); });
+  $effect(() => {
+    headerStore.set({ label: 'Quay lại' });
+    return () => headerStore.set(null);
+  });
 
   const libraryError = $derived(
     (toggleMutation.error ?? statusMutation.error) instanceof Error

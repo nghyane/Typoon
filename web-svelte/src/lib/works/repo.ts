@@ -105,7 +105,7 @@ export async function createBlankWork(input: {
 	const work: Work = {
 		id: nanoid(12),
 		title: input.title,
-		title_overridden: false,
+		title_overridden: true,
 		cover_url: null,
 		cover_overridden: false,
 		nsfw: !!input.nsfw,
