@@ -55,6 +55,7 @@ ext/*.zip
 # Workspace packages
 packages/*/node_modules/
 packages/*/dev/assets/*.onnx
+packages/*/dist/
 
 # Workers — local dev artifacts (each worker has its own node_modules + .wrangler)
 workers/*/node_modules/
