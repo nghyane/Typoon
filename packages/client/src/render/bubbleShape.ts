@@ -27,9 +27,16 @@ export function centeredLineFraction(lineIndex: number, totalLines: number, cont
 
 const MIN_RATIO = 0.38
 
-export function bubbleShapeProfile(polygon: Polygon, rect: FitRect): BubbleShapeProfile {
+export function bubbleShapeProfile(polygon: Polygon, rect: FitRect, rounded = false): BubbleShapeProfile {
   const aspect = rect.width / Math.max(1, rect.height)
-  const kind = polygon.length === 4 ? 'rect' : aspect < 0.72 ? 'tall' : aspect > 2.2 ? 'wide' : 'polygon'
+  // A 4-point drawable carries no contour. For a rounded speech bubble (no
+  // detected shape to fall back on) treat it as an oval so lines near the top/
+  // bottom narrow instead of filling the bbox corners and spilling past the
+  // outline. Rectangular captions keep 'rect'.
+  const tallWide = aspect < 0.72 ? 'tall' : aspect > 2.2 ? 'wide' : null
+  const kind: BubbleShapeKind = polygon.length === 4
+    ? (rounded ? (tallWide ?? 'oval') : 'rect')
+    : (tallWide ?? 'polygon')
   return {
     kind,
     centerX: rect.x + rect.width / 2,

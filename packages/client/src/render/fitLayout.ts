@@ -395,9 +395,16 @@ function anchoredExpandedRect(
   const pad = visualPadding(comp.fontSizePx, profile, role)
   const contentH = comp.composition.heightPx + pad.y * 2
   const height = Math.min(bestRect.height, Math.max(baseRect.height, Math.ceil(contentH)))
+  // Re-centre on the OCR/source centre on BOTH axes. bestRect is only a search
+  // space: the scorer rewards growth over centre-keeping and clampRect can shift
+  // a candidate toward the wider side of an asymmetric bubble, so reusing
+  // bestRect.x would float the translation off the source centre horizontally
+  // (the vertical re-centre already does this for y). Keep the expanded WIDTH for
+  // line-break room, just anchor it on the source centre.
+  const baseCx = baseRect.x + baseRect.width / 2
   const baseCy = baseRect.y + baseRect.height / 2
   return clampRect({
-    x: bestRect.x,
+    x: baseCx - bestRect.width / 2,
     y: baseCy - height / 2,
     width: bestRect.width,
     height,
@@ -440,7 +447,11 @@ function shapeProfileForRect(
   margin: SafeMarginsDebug | null,
 ): BubbleShapeProfile {
   const safeShape = placement.role === 'sfx' ? null : margin?.shape ?? null
-  return safeShapeProfileForRect(safeShape, rect) ?? bubbleShapeProfile(placement.drawable, rect)
+  // With no detected contour, fall back to an oval for any non-SFX text so wide
+  // lines don't spill past a rounded outline. The cost is asymmetric: oval-on-a-
+  // rectangle only under-uses the corners slightly, but rect-on-an-oval overflows
+  // the bubble — so default to oval and let detected shapes override when present.
+  return safeShapeProfileForRect(safeShape, rect) ?? bubbleShapeProfile(placement.drawable, rect, placement.role !== 'sfx')
 }
 
 function safeShapeUsedForRect(placement: TextPlacement, rect: FitRect, margin: SafeMarginsDebug | null): boolean {
