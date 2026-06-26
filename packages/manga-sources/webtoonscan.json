@@ -4,7 +4,7 @@
   "host":      "webtoonscan.com",
   "homepage":  "https://webtoonscan.com",
   "languages": ["en"],
-  "version":   "1.0",
+  "version":   "1.1",
   "accent":    "amber",
 
   "requestHeaders": {
@@ -75,6 +75,60 @@
             "cover": ".item-thumb img@data-lazy-src || .item-thumb img@src"
           }
         }
+      },
+      {
+        "id":    "genre",
+        "label": "Thể loại",
+        "filters": [
+          {
+            "id":    "genre",
+            "label": "Thể loại",
+            "type":  "multi",
+            "options": [
+              { "id": "action",        "label": "Action",        "param": "genre[]=action" },
+              { "id": "adventure",     "label": "Adventure",     "param": "genre[]=adventure" },
+              { "id": "comedy",        "label": "Comedy",        "param": "genre[]=comedy" },
+              { "id": "drama",         "label": "Drama",         "param": "genre[]=drama" },
+              { "id": "fantasy",       "label": "Fantasy",       "param": "genre[]=fantasy" },
+              { "id": "harem",         "label": "Harem",         "param": "genre[]=harem" },
+              { "id": "historical",    "label": "Historical",    "param": "genre[]=historical" },
+              { "id": "horror",        "label": "Horror",        "param": "genre[]=horror" },
+              { "id": "josei",         "label": "Josei",         "param": "genre[]=josei" },
+              { "id": "manhua",        "label": "Manhua",        "param": "genre[]=manhua" },
+              { "id": "manhwa",        "label": "Manhwa",        "param": "genre[]=manhwa" },
+              { "id": "martial-arts",  "label": "Martial Arts",  "param": "genre[]=martial-arts" },
+              { "id": "mystery",       "label": "Mystery",       "param": "genre[]=mystery" },
+              { "id": "psychological", "label": "Psychological", "param": "genre[]=psychological" },
+              { "id": "romance",       "label": "Romance",       "param": "genre[]=romance" },
+              { "id": "school-life",   "label": "School Life",   "param": "genre[]=school-life" },
+              { "id": "sci-fi",        "label": "Sci-fi",        "param": "genre[]=sci-fi" },
+              { "id": "seinen",        "label": "Seinen",        "param": "genre[]=seinen" },
+              { "id": "shoujo",        "label": "Shoujo",        "param": "genre[]=shoujo" },
+              { "id": "shounen",       "label": "Shounen",       "param": "genre[]=shounen" },
+              { "id": "slice-of-life", "label": "Slice of Life", "param": "genre[]=slice-of-life" },
+              { "id": "supernatural",  "label": "Supernatural",  "param": "genre[]=supernatural" },
+              { "id": "thriller",      "label": "Thriller",      "param": "genre[]=thriller" },
+              { "id": "tragedy",       "label": "Tragedy",       "param": "genre[]=tragedy" },
+              { "id": "webtoon",       "label": "Webtoon",       "param": "genre[]=webtoon" },
+              { "id": "bl",            "label": "BL",            "param": "genre[]=bl" },
+              { "id": "gl",            "label": "GL",            "param": "genre[]=gl" },
+              { "id": "mature",        "label": "Mature",        "param": "genre[]=mature" },
+              { "id": "smut",          "label": "Smut",          "param": "genre[]=smut" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://webtoonscan.com/page/{page}/?s=&post_type=wp-manga{filterParams}&op=",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".c-tabs-item__content",
+          "fields": {
+            "url":   ".post-title a@href || .tab-thumb a@href",
+            "title": ".post-title a || .tab-thumb a@title",
+            "cover": ".tab-thumb img@data-lazy-src || .tab-thumb img@src"
+          }
+        }
       }
     ],
 
@@ -83,7 +137,7 @@
       "url":    "https://webtoonscan.com/page/{page}/?s={q:q}&post_type=wp-manga",
       "parse":  "html",
       "pagination": { "type": "page", "pageSize": 20 },
-      "list":   ".c-tabs-item",
+      "list":   ".c-tabs-item__content",
       "fields": {
         "url":   ".post-title a@href || .tab-thumb a@href",
         "title": ".post-title a || .tab-thumb a@title",

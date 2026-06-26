@@ -4,7 +4,7 @@
   "host":      "m.happymh.com",
   "homepage":  "https://m.happymh.com",
   "languages": ["zh"],
-  "version":   "2.1",
+  "version":   "2.2",
   "accent":    "rose",
 
   "chapterNumberNorm": {
@@ -19,24 +19,6 @@
 
   "endpoints": {
     "shelves": [
-      {
-        "id":    "latest",
-        "label": "Mới cập nhật",
-        "endpoint": {
-          "method":  "GET",
-          "url":     "https://m.happymh.com/apis/c/index?pn={page}",
-          "parse":   "json",
-          "pagination": { "type": "page", "pageSize": 24 },
-          "headers": { "Referer": "https://m.happymh.com/latest" },
-          "list":    "$.data.items[*]",
-          "extras":  { "code": "@manga_code" },
-          "fields": {
-            "title": "@name",
-            "cover": "@cover",
-            "url":   "=https://m.happymh.com/manga/{code}"
-          }
-        }
-      },
       {
         "id":    "popular-day",
         "label": "Phổ biến hôm nay",
@@ -79,6 +61,62 @@
             "url":   "a@href",
             "title": ".manga-title",
             "cover": "mip-img@src"
+          }
+        }
+      },
+      {
+        "id":    "catalog",
+        "label": "Thể loại",
+        "hint":  "Duyệt theo thể loại (không sắp theo cập nhật)",
+        "filters": [
+          {
+            "id":    "genre",
+            "label": "Thể loại",
+            "type":  "select",
+            "options": [
+              { "id": "rexue",     "label": "Nhiệt huyết",  "param": "genre=rexue" },
+              { "id": "gedou",     "label": "Đấu võ",       "param": "genre=gedou" },
+              { "id": "wuxia",     "label": "Võ hiệp",      "param": "genre=wuxia" },
+              { "id": "xianxia",   "label": "Tiên hiệp",    "param": "genre=xianxia" },
+              { "id": "mohuan",    "label": "Ma huyễn",     "param": "genre=mohuan" },
+              { "id": "xuanhuan",  "label": "Huyền huyễn",  "param": "genre=xuanhuan" },
+              { "id": "qihuan",    "label": "Kỳ huyễn",     "param": "genre=qihuan" },
+              { "id": "maoxian",   "label": "Phiêu lưu",    "param": "genre=maoxian" },
+              { "id": "lianai",    "label": "Tình cảm",     "param": "genre=lianai" },
+              { "id": "chunai",    "label": "Thuần ái",     "param": "genre=chunai" },
+              { "id": "gaoxiao",   "label": "Hài hước",     "param": "genre=gaoxiao" },
+              { "id": "xiaoyuan",  "label": "Học đường",    "param": "genre=xiaoyuan" },
+              { "id": "kehuan",    "label": "Khoa huyễn",   "param": "genre=kehuan" },
+              { "id": "hougong",   "label": "Hậu cung",     "param": "genre=hougong" },
+              { "id": "xuanyi",    "label": "Huyền nghi",   "param": "genre=xuanyi" },
+              { "id": "kongbu",    "label": "Kinh dị",      "param": "genre=kongbu" },
+              { "id": "tuili",     "label": "Suy luận",     "param": "genre=tuili" },
+              { "id": "lishi",     "label": "Lịch sử",      "param": "genre=lishi" },
+              { "id": "zhanzheng", "label": "Chiến tranh",  "param": "genre=zhanzheng" },
+              { "id": "dushi",     "label": "Đô thị",       "param": "genre=dushi" },
+              { "id": "gufeng",    "label": "Cổ phong",     "param": "genre=gufeng" },
+              { "id": "chuanyue",  "label": "Xuyên không",  "param": "genre=chuanyue" },
+              { "id": "zhongsheng","label": "Trọng sinh",   "param": "genre=zhongsheng" },
+              { "id": "tiyu",      "label": "Thể thao",     "param": "genre=tiyu" },
+              { "id": "danvzhu",   "label": "Đại nữ chủ",   "param": "genre=danvzhu" },
+              { "id": "baihe",     "label": "Bách hợp",     "param": "genre=baihe" },
+              { "id": "danmei",    "label": "Đam mỹ",       "param": "genre=danmei" },
+              { "id": "hanman",    "label": "Hàn mạn",      "param": "genre=hanman" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://m.happymh.com/apis/c/index?pn={page}{filterParams}",
+          "parse":   "json",
+          "pagination": { "type": "page", "pageSize": 24 },
+          "headers": { "Referer": "https://m.happymh.com/latest" },
+          "list":    "$.data.items[*]",
+          "extras":  { "code": "@manga_code" },
+          "fields": {
+            "title": "@name",
+            "cover": "@cover",
+            "url":   "=https://m.happymh.com/manga/{code}"
           }
         }
       }

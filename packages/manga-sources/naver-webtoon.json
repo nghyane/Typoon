@@ -66,6 +66,42 @@
             "cover": "@thumbnailUrl"
           }
         }
+      },
+      {
+        "id":    "genre",
+        "label": "Thể loại",
+        "filters": [
+          {
+            "id":    "genre",
+            "label": "Thể loại",
+            "type":  "select",
+            "options": [
+              { "id": "daily",       "label": "Đời thường",        "param": "genre=DAILY" },
+              { "id": "comic",       "label": "Hài",               "param": "genre=COMIC" },
+              { "id": "fantasy",     "label": "Giả tưởng",         "param": "genre=FANTASY" },
+              { "id": "action",      "label": "Hành động",         "param": "genre=ACTION" },
+              { "id": "drama",       "label": "Chính kịch",        "param": "genre=DRAMA" },
+              { "id": "pure",        "label": "Lãng mạn",          "param": "genre=PURE" },
+              { "id": "sensibility", "label": "Cảm xúc",           "param": "genre=SENSIBILITY" },
+              { "id": "thrill",      "label": "Giật gân",          "param": "genre=THRILL" },
+              { "id": "historical",  "label": "Cổ trang / Võ hiệp", "param": "genre=HISTORICAL" },
+              { "id": "sports",      "label": "Thể thao",          "param": "genre=SPORTS" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method":  "GET",
+          "url":     "https://comic.naver.com/api/webtoon/titlelist/genre?page={page}{filterParams}",
+          "parse":   "json",
+          "pagination": { "type": "page", "pageSize": 25, "hasMore": "$.pageInfo.nextPage" },
+          "list":    "$.titleList[*]",
+          "extras":  { "titleId": "@titleId" },
+          "fields": {
+            "title": "@titleName",
+            "url":   "=https://comic.naver.com/webtoon/list?titleId={titleId}",
+            "cover": "@thumbnailUrl"
+          }
+        }
       }
     ],
 

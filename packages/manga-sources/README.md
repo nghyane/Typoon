@@ -98,6 +98,42 @@ expression (`$.chapter.data[*]`) and attributes become dot-paths.
 | `{mangaId}`     | extracted id (regex defined in manifest)     |
 | `{chapterId}`   | extracted id                                 |
 
+## Lọc theo thể loại (`filters`)
+
+A source (or a single shelf) can expose genre/category filters. Filters live
+either at the manifest top level (apply to every shelf + search) or on one
+shelf via `shelf.filters` (apply only while that shelf is active):
+
+```jsonc
+"filters": [
+  {
+    "id":     "genre",
+    "label":  "Thể loại",
+    "type":   "select",        // "select" = one choice, "multi" = many
+    "inject": "param",         // how the choice reaches the request — see below
+    "options": [
+      { "id": "action", "label": "Action", "param": "includedTags[]=…" },
+      { "id": "18plus", "label": "18+",     "param": "rating=erotica", "nsfw": true }
+    ]
+  }
+]
+```
+
+The selected options' `param` strings are spliced into the endpoint URL
+according to `inject`:
+
+| `inject`          | What happens                                                                 | URL placeholder |
+|-------------------|------------------------------------------------------------------------------|-----------------|
+| `param` (default) | `param`s joined with `&` (e.g. `&a=1&b=2`)                                    | `{filterParams}` |
+| `path`            | the single selected `param` is dropped in as a **path segment** (select-only; always keeps one option active) | `{filterPath}` |
+| `query`           | `param`s space-joined and folded into the search query `q` (e.g. nhentai `tag:"…"`) | rides existing `{q:q}` |
+
+Notes:
+- `path` filters need a `defaults` value (e.g. `"defaults": { "genre": "action" }`)
+  so `{filterPath}` never resolves empty.
+- An option with `"nsfw": true` renders as a standalone 18+ toggle chip, separate
+  from the dropdown — use it for content-rating gates, not per-genre tagging.
+
 ## Adding a new source
 
 1. Copy an existing manifest, change `id` / `host` / `language`.

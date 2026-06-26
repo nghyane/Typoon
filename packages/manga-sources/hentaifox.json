@@ -16,6 +16,8 @@
   "authRequired": "cookie",
   "cookieNames":  ["cf_clearance"],
 
+  "defaults": { "tag": "big-breasts" },
+
   "endpoints": {
     "shelves": [
       {
@@ -43,6 +45,61 @@
           "url":    "https://hentaifox.com/popular/?page={page}",
           "parse":  "html",
           "pagination": { "type": "page", "pageSize": 30 },
+          "list":   ".thumb",
+          "extras": { "href": ".inner_thumb a@href" },
+          "fields": {
+            "title": ".g_title a",
+            "url":   "=https://hentaifox.com{href}",
+            "cover": ".inner_thumb img@data-src"
+          }
+        }
+      },
+      {
+        "id":    "tag",
+        "label": "Thể loại",
+        "filters": [
+          {
+            "id":    "tag",
+            "label": "Thể loại",
+            "type":  "select",
+            "inject": "path",
+            "options": [
+              { "id": "big-breasts",        "label": "Big Breasts",        "param": "big-breasts" },
+              { "id": "sole-female",        "label": "Sole Female",        "param": "sole-female" },
+              { "id": "sole-male",          "label": "Sole Male",          "param": "sole-male" },
+              { "id": "nakadashi",          "label": "Nakadashi",          "param": "nakadashi" },
+              { "id": "anal",               "label": "Anal",               "param": "anal" },
+              { "id": "blowjob",            "label": "Blowjob",            "param": "blowjob" },
+              { "id": "ahegao",             "label": "Ahegao",             "param": "ahegao" },
+              { "id": "stockings",          "label": "Stockings",          "param": "stockings" },
+              { "id": "glasses",            "label": "Glasses",            "param": "glasses" },
+              { "id": "schoolgirl-uniform", "label": "Schoolgirl Uniform", "param": "schoolgirl-uniform" },
+              { "id": "full-color",         "label": "Full Color",         "param": "full-color" },
+              { "id": "uncensored",         "label": "Uncensored",         "param": "uncensored" },
+              { "id": "milf",               "label": "MILF",               "param": "milf" },
+              { "id": "group",              "label": "Group",              "param": "group" },
+              { "id": "big-ass",            "label": "Big Ass",            "param": "big-ass" },
+              { "id": "dark-skin",          "label": "Dark Skin",          "param": "dark-skin" },
+              { "id": "bondage",            "label": "Bondage",            "param": "bondage" },
+              { "id": "netorare",           "label": "Netorare",           "param": "netorare" },
+              { "id": "paizuri",            "label": "Paizuri",            "param": "paizuri" },
+              { "id": "swimsuit",           "label": "Swimsuit",           "param": "swimsuit" },
+              { "id": "twintails",          "label": "Twintails",          "param": "twintails" },
+              { "id": "maid",               "label": "Maid",               "param": "maid" },
+              { "id": "yuri",               "label": "Yuri",               "param": "yuri" },
+              { "id": "futanari",           "label": "Futanari",           "param": "futanari" },
+              { "id": "x-ray",              "label": "X-ray",              "param": "x-ray" },
+              { "id": "sex-toys",           "label": "Sex Toys",           "param": "sex-toys" },
+              { "id": "cheating",           "label": "Cheating",           "param": "cheating" },
+              { "id": "incest",             "label": "Incest",             "param": "incest" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://hentaifox.com/tag/{filterPath}/pag/{page}/",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
           "list":   ".thumb",
           "extras": { "href": ".inner_thumb a@href" },
           "fields": {

@@ -18,6 +18,59 @@
     "Referer": "https://nhentai.net/"
   },
 
+  "filters": [
+    {
+      "id":    "tags",
+      "label": "Thể loại",
+      "type":  "multi",
+      "inject": "query",
+      "options": [
+        { "id": "big-breasts",        "label": "Big Breasts",        "param": "tag:\"big breasts\"" },
+        { "id": "sole-female",        "label": "Sole Female",        "param": "tag:\"sole female\"" },
+        { "id": "sole-male",          "label": "Sole Male",          "param": "tag:\"sole male\"" },
+        { "id": "nakadashi",          "label": "Nakadashi",          "param": "tag:nakadashi" },
+        { "id": "anal",               "label": "Anal",               "param": "tag:anal" },
+        { "id": "blowjob",            "label": "Blowjob",            "param": "tag:blowjob" },
+        { "id": "ahegao",             "label": "Ahegao",             "param": "tag:ahegao" },
+        { "id": "stockings",          "label": "Stockings",          "param": "tag:stockings" },
+        { "id": "glasses",            "label": "Glasses",            "param": "tag:glasses" },
+        { "id": "schoolgirl-uniform", "label": "Schoolgirl Uniform", "param": "tag:\"schoolgirl uniform\"" },
+        { "id": "full-color",         "label": "Full Color",         "param": "tag:\"full color\"" },
+        { "id": "milf",               "label": "MILF",               "param": "tag:milf" },
+        { "id": "yuri",               "label": "Yuri",               "param": "tag:yuri" },
+        { "id": "futanari",           "label": "Futanari",           "param": "tag:futanari" },
+        { "id": "netorare",           "label": "Netorare",           "param": "tag:netorare" },
+        { "id": "paizuri",            "label": "Paizuri",            "param": "tag:paizuri" },
+        { "id": "maid",               "label": "Maid",               "param": "tag:maid" },
+        { "id": "bondage",            "label": "Bondage",            "param": "tag:bondage" },
+        { "id": "swimsuit",           "label": "Swimsuit",           "param": "tag:swimsuit" }
+      ]
+    },
+    {
+      "id":    "category",
+      "label": "Định dạng",
+      "type":  "select",
+      "inject": "query",
+      "options": [
+        { "id": "doujinshi", "label": "Doujinshi", "param": "category:doujinshi" },
+        { "id": "manga",     "label": "Manga",     "param": "category:manga" },
+        { "id": "artistcg",  "label": "Artist CG", "param": "category:artistcg" },
+        { "id": "gamecg",    "label": "Game CG",   "param": "category:gamecg" }
+      ]
+    },
+    {
+      "id":    "language",
+      "label": "Ngôn ngữ",
+      "type":  "select",
+      "inject": "query",
+      "options": [
+        { "id": "english",   "label": "English",  "param": "language:english" },
+        { "id": "japanese",  "label": "日本語",    "param": "language:japanese" },
+        { "id": "chinese",   "label": "中文",      "param": "language:chinese" }
+      ]
+    }
+  ],
+
   "endpoints": {
     "shelves": [
       {

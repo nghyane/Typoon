@@ -22,9 +22,43 @@
       {
         "id":    "popular",
         "label": "Phổ biến",
+        "filters": [
+          {
+            "id":    "type",
+            "label": "Thể loại",
+            "type":  "select",
+            "options": [
+              { "id": "lianai",    "label": "Ngôn tình",   "param": "type=lianai" },
+              { "id": "chunai",    "label": "Thuần ái",    "param": "type=chunai" },
+              { "id": "gufeng",    "label": "Cổ phong",    "param": "type=gufeng" },
+              { "id": "yineng",    "label": "Dị năng",     "param": "type=yineng" },
+              { "id": "xuanyi",    "label": "Huyền nghi",  "param": "type=xuanyi" },
+              { "id": "juqing",    "label": "Kịch tình",   "param": "type=juqing" },
+              { "id": "kehuan",    "label": "Khoa huyễn",  "param": "type=kehuan" },
+              { "id": "qihuan",    "label": "Kỳ huyễn",    "param": "type=qihuan" },
+              { "id": "xuanhuan",  "label": "Huyền huyễn", "param": "type=xuanhuan" },
+              { "id": "chuanyue",  "label": "Xuyên không", "param": "type=chuanyue" },
+              { "id": "mouxian",   "label": "Phiêu lưu",   "param": "type=mouxian" },
+              { "id": "tuili",     "label": "Suy luận",    "param": "type=tuili" },
+              { "id": "wuxia",     "label": "Võ hiệp",     "param": "type=wuxia" },
+              { "id": "gedou",     "label": "Đấu võ",      "param": "type=gedou" },
+              { "id": "zhanzheng", "label": "Chiến tranh", "param": "type=zhanzheng" },
+              { "id": "rexie",     "label": "Nhiệt huyết", "param": "type=rexie" },
+              { "id": "gaoxiao",   "label": "Hài hước",    "param": "type=gaoxiao" },
+              { "id": "danuzhu",   "label": "Đại nữ chủ",  "param": "type=danuzhu" },
+              { "id": "dushi",     "label": "Đô thị",      "param": "type=dushi" },
+              { "id": "zongcai",   "label": "Tổng tài",    "param": "type=zongcai" },
+              { "id": "hougong",   "label": "Hậu cung",    "param": "type=hougong" },
+              { "id": "richang",   "label": "Đời thường",  "param": "type=richang" },
+              { "id": "hanman",    "label": "Hàn mạn",     "param": "type=hanman" },
+              { "id": "shaonian",  "label": "Thiếu niên",  "param": "type=shaonian" },
+              { "id": "qita",      "label": "Khác",        "param": "type=qita" }
+            ]
+          }
+        ],
         "endpoint": {
           "method": "GET",
-          "url":    "https://www.baozimh.com/classify?page={page}",
+          "url":    "https://www.baozimh.com/classify?page={page}{filterParams}",
           "parse":  "html",
           "headers": { "Referer": "https://www.baozimh.com/" },
           "pagination": { "type": "page", "pageSize": 36 },

@@ -4,8 +4,10 @@
   "host":      "truyenqq.com.vn",
   "homepage":  "https://truyenqq.com.vn",
   "languages": ["vi"],
-  "version":   "1.0",
+  "version":   "1.1",
   "accent":    "cyan",
+
+  "defaults": { "genre": "action" },
 
   "requestHeaders": {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -50,6 +52,68 @@
         "endpoint": {
           "method": "GET",
           "url":    "https://truyenqq.com.vn/truyen-hot?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 20 },
+          "list":   ".listing .inner > .item",
+          "fields": {
+            "url":   ".info h3 a@href || .cover a@href",
+            "title": ".info h3 a || .cover a@title",
+            "cover": ".cover img@src"
+          }
+        }
+      },
+      {
+        "id":    "genre",
+        "label": "Thể loại",
+        "filters": [
+          {
+            "id":    "genre",
+            "label": "Thể loại",
+            "type":  "select",
+            "inject": "path",
+            "options": [
+              { "id": "action",        "label": "Action",        "param": "action" },
+              { "id": "adventure",     "label": "Adventure",     "param": "adventure" },
+              { "id": "chuyen-sinh",   "label": "Chuyển Sinh",   "param": "chuyen-sinh" },
+              { "id": "co-dai",        "label": "Cổ Đại",        "param": "co-dai" },
+              { "id": "comedy",        "label": "Comedy",        "param": "comedy" },
+              { "id": "detective",     "label": "Detective",     "param": "detective" },
+              { "id": "drama",         "label": "Drama",         "param": "drama" },
+              { "id": "fantasy",       "label": "Fantasy",       "param": "fantasy" },
+              { "id": "gender-bender", "label": "Gender Bender", "param": "gender-bender" },
+              { "id": "harem",         "label": "Harem",         "param": "harem" },
+              { "id": "historical",    "label": "Historical",    "param": "historical" },
+              { "id": "horror",        "label": "Horror",        "param": "horror" },
+              { "id": "huyen-huyen",   "label": "Huyền Huyễn",   "param": "huyen-huyen" },
+              { "id": "manhua",        "label": "Manhua",        "param": "manhua" },
+              { "id": "manhwa",        "label": "Manhwa",        "param": "manhwa" },
+              { "id": "martial-arts",  "label": "Martial Arts",  "param": "martial-arts" },
+              { "id": "mystery",       "label": "Mystery",       "param": "mystery" },
+              { "id": "ngon-tinh",     "label": "Ngôn Tình",     "param": "ngon-tinh" },
+              { "id": "psychological", "label": "Psychological", "param": "psychological" },
+              { "id": "romance",       "label": "Romance",       "param": "romance" },
+              { "id": "school-life",   "label": "School Life",   "param": "school-life" },
+              { "id": "sci-fi",        "label": "Sci-fi",        "param": "sci-fi" },
+              { "id": "seinen",        "label": "Seinen",        "param": "seinen" },
+              { "id": "shoujo",        "label": "Shoujo",        "param": "shoujo" },
+              { "id": "shounen",       "label": "Shounen",       "param": "shounen" },
+              { "id": "slice-of-life", "label": "Slice of Life", "param": "slice-of-life" },
+              { "id": "supernatural",  "label": "Supernatural",  "param": "supernatural" },
+              { "id": "trinh-tham",    "label": "Trinh Thám",    "param": "trinh-tham" },
+              { "id": "trong-sinh",    "label": "Trọng Sinh",    "param": "trong-sinh" },
+              { "id": "truyen-mau",    "label": "Truyện Màu",    "param": "truyen-mau" },
+              { "id": "webtoon",       "label": "Webtoon",       "param": "webtoon" },
+              { "id": "xuyen-khong",   "label": "Xuyên Không",   "param": "xuyen-khong" },
+              { "id": "dam-my",        "label": "Đam Mỹ",        "param": "dam-my" },
+              { "id": "ecchi",         "label": "Ecchi",         "param": "ecchi" },
+              { "id": "mature",        "label": "Mature",        "param": "mature" },
+              { "id": "smut",          "label": "Smut",          "param": "smut" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://truyenqq.com.vn/the-loai/{filterPath}?page={page}",
           "parse":  "html",
           "pagination": { "type": "page", "pageSize": 20 },
           "list":   ".listing .inner > .item",
