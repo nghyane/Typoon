@@ -10,10 +10,10 @@ export interface TextRenderProfile {
   readonly sourceFamily: LanguageFamily
   readonly targetFamily: LanguageFamily
   readonly targetScript: TextScript
+  // T1 glyphScale: constant cross-script glyph-size ratio (source line box → VI
+  // glyph). Proportional, so flat at every source size. "Already-small source"
+  // is handled by minReadableFontPx (the floor), NOT by tapering this scale.
   readonly fontScale: number
-  // When true, fontScale is the FLOOR applied to large source fonts; smaller
-  // source fonts taper toward ~1.0 so already-small text is not over-shrunk.
-  readonly taperFontScale: boolean
   readonly minReadableFontPx: number
   readonly innerPadXEm: number
   readonly innerPadYEm: number
@@ -51,9 +51,8 @@ export function textRenderProfile(
   const latinSource = sourceFamily === 'latin'
   const hangulSource = sourceFamily === 'hangul'
 
-  // fontScale = glyph-shape correction only (source line box → VI glyph size).
-  // A CJK/Hangul source keeps its source-proportional size; long translations
-  // are shrunk by the shape-aware fit (composeFit), not by a blanket scale.
+  // glyphScale: flat cross-script ratio. Long translations keep size via the
+  // fit/expand stage (T4), never via a per-size taper here.
   const fontScale = role === 'sfx' ? 1
     : latinTarget && hangulSource ? 0.7
     : latinTarget && denseSource ? 0.88
@@ -68,8 +67,7 @@ export function textRenderProfile(
     targetFamily,
     targetScript,
     fontScale,
-    taperFontScale: latinTarget && hangulSource,
-    minReadableFontPx: role === 'sfx' ? 6 : latinTarget ? 7 : 6,
+    minReadableFontPx: role === 'sfx' ? 6 : latinTarget ? 10 : 8,
     innerPadXEm: role === 'sfx' ? 0.10 : latinTarget ? 0.40 : syllabicTarget ? 0.34 : 0.28,
     innerPadYEm: role === 'sfx' ? 0.10 : latinTarget ? 0.24 : syllabicTarget ? 0.22 : 0.20,
     geometryGrowXEm: latinTarget && denseSource ? 3.8 : latinTarget ? 3.1 : syllabicTarget ? 2.7 : 2.3,

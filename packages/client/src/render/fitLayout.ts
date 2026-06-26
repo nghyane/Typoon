@@ -594,34 +594,21 @@ function fontIntentFor(placement: TextPlacement, baseRect: FitRect, context: Pag
   const placementMaxPx = maxFontForPlacement(placement, baseRect, context.pageMaxPx, profile)
 
   // Preserve relative size: each bubble keeps its proportion to the page standard.
+  // glyphScale is a flat multiplier (T1); the readable floor (not MIN_FONT_SIZE)
+  // protects already-small source text.
+  const floorPx = profile.minReadableFontPx
   if (roleMedianFontPx !== null && sourceFontPx !== null) {
-    const target = clampFont(scaledTarget(sourceFontPx, profile), placementMaxPx)
+    const target = clampFont(sourceFontPx * profile.fontScale, placementMaxPx, floorPx)
     return { sourceFontPx, roleMedianFontPx, targetFontPx: target, reason: 'role-standard' }
   }
 
   if (roleMedianFontPx !== null) {
-    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(scaledTarget(roleMedianFontPx, profile), placementMaxPx), reason: 'fallback-role-median' }
+    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, placementMaxPx, floorPx), reason: 'fallback-role-median' }
   }
   if (sourceFontPx !== null) {
-    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(scaledTarget(sourceFontPx, profile), placementMaxPx), reason: 'source' }
+    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, placementMaxPx, floorPx), reason: 'source' }
   }
-  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(scaledTarget(geometryFallback(placement, baseRect), profile), placementMaxPx), reason: 'fallback-geometry' }
-}
-
-// Glyph-shape correction. For most pairs this is a flat multiplier. When
-// profile.taperFontScale is set (hangul source), fontScale is the FLOOR applied
-// to large source fonts; smaller source fonts ease toward ~0.95 so already-small
-// Korean text is not over-shrunk into illegibility.
-const TAPER_BIG_PX = 44
-const TAPER_SMALL_PX = 22
-const TAPER_SMALL_SCALE = 0.95
-function scaledTarget(sizePx: number, profile: TextRenderProfile): number {
-  if (!profile.taperFontScale) return sizePx * profile.fontScale
-  const floor = profile.fontScale
-  const scale = sizePx >= TAPER_BIG_PX ? floor
-    : sizePx <= TAPER_SMALL_PX ? TAPER_SMALL_SCALE
-    : TAPER_SMALL_SCALE + (floor - TAPER_SMALL_SCALE) * ((sizePx - TAPER_SMALL_PX) / (TAPER_BIG_PX - TAPER_SMALL_PX))
-  return sizePx * scale
+  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, placementMaxPx, floorPx), reason: 'fallback-geometry' }
 }
 
 // ── Geometry fallback ───────────────────────────────────────────────────────
@@ -663,8 +650,9 @@ function validSourceFontPx(fontPx: number | undefined, rect?: FitRect, role?: Te
   return fontPx
 }
 
-function clampFont(fontPx: number, maxPx: number): number {
-  return Math.round(clamp(fontPx, MIN_FONT_SIZE, Math.min(ABS_MAX_FONT_SIZE, maxPx)))
+function clampFont(fontPx: number, maxPx: number, floorPx = MIN_FONT_SIZE): number {
+  const lo = Math.min(Math.max(MIN_FONT_SIZE, floorPx), Math.min(ABS_MAX_FONT_SIZE, maxPx))
+  return Math.round(clamp(fontPx, lo, Math.min(ABS_MAX_FONT_SIZE, maxPx)))
 }
 
 function maxFontForPage(pageWidth: number, preserveSourceScale: boolean, profile: Pick<TextRenderProfile, 'pageMaxFraction' | 'hierarchyMaxFraction'>): number {
