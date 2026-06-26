@@ -35,7 +35,7 @@
     for (const ch of chapters) {
       const seen = new Set<string>();
       for (const v of ch.sourceVersions) {
-        if (seen.has(v.lang)) continue;
+        if (!v.lang || seen.has(v.lang)) continue; // '' = auto-detect, not a filterable language
         seen.add(v.lang);
         counts.set(v.lang, (counts.get(v.lang) ?? 0) + 1);
       }
@@ -132,7 +132,7 @@
   <span class="tabular-nums font-medium text-text-muted group-hover:text-text shrink-0 transition-colors">
     {row.chapter.number || row.chapter.numberNorm || '?'}
   </span>
-  <span class="shrink-0 text-xs uppercase tabular-nums font-medium text-text-subtle">{row.version?.lang ?? tgt}</span>
+  <span class="shrink-0 text-xs uppercase tabular-nums font-medium text-text-subtle">{row.version ? (row.version.lang || 'unknown') : tgt}</span>
   {#if row.locked}
     <span class="shrink-0 inline-flex items-center gap-0.5 h-4 px-1 rounded-xs bg-surface-2 text-[10px] font-medium uppercase text-text-subtle">
       <Lock size={10} /> Premium

@@ -264,7 +264,7 @@
         <a href="/w/{data.workId}" class="inline-flex items-center justify-center size-8 shrink-0 rounded-sm text-text-muted hover:text-text hover:bg-hover transition-colors" aria-label="Quay lại"><ChevronLeft size={17} /></a>
         <a href="/w/{data.workId}" class="min-w-0 flex-1 leading-tight hover:text-accent-text transition-colors" title={data.workTitle ?? ''}>
           <span class="block truncate text-sm font-semibold text-text">{data.workTitle ?? 'Hội Mê Truyện'}</span>
-          <span class="block truncate text-[11px] text-text-subtle">Ch.{chapterDisplay}{#if source.activeSourceName} · {source.activeSourceLang?.toUpperCase() ?? '—'} · {source.activeSourceName}{/if}</span>
+          <span class="block truncate text-[11px] text-text-subtle">Ch.{chapterDisplay}{#if source.activeSourceName} · {source.activeSourceLang ? source.activeSourceLang.toUpperCase() : '?'} · {source.activeSourceName}{/if}</span>
         </a>
         <button bind:this={chapterTriggerEl} type="button" onclick={() => { chapterPickerOpen = !chapterPickerOpen; sourcePickerOpen = false; }} class="h-7 px-3 rounded-full inline-flex items-center gap-1.5 bg-surface-2 text-xs font-medium text-text hover:bg-hover transition-colors cursor-pointer" aria-label="Danh sách chương" aria-expanded={chapterPickerOpen}>
           <span class="tabular-nums">Ch.{chapterDisplay}</span>

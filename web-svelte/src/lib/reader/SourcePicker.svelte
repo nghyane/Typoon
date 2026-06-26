@@ -77,7 +77,7 @@
             )}
           >
             {#if active}<span aria-hidden="true" class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent"></span>{/if}
-            <span class={cn('inline-flex h-5 items-center justify-center rounded-xs bg-surface-2 px-1 text-[10px] uppercase font-semibold tabular-nums', active ? 'text-accent' : 'text-text-subtle')}>{version.lang.toUpperCase()}</span>
+            <span class={cn('inline-flex h-5 items-center justify-center rounded-xs bg-surface-2 px-1 text-[10px] uppercase font-semibold tabular-nums', active ? 'text-accent' : 'text-text-subtle')}>{version.lang ? version.lang.toUpperCase() : '?'}</span>
             <span class="min-w-0 leading-tight">
               <span class={cn('block truncate text-xs font-medium', active ? 'text-text' : 'text-text-muted')}>{version.sourceName}</span>
               {#if version.scanlator}
