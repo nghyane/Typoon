@@ -100,9 +100,12 @@ export function fitLayout(
   }
 
   // Generate expansion candidates & score them.
-  // Clamp every candidate to the detected safe bounds so text never
-  // renders beyond the actual background component (bubble / text area).
-  const candidates = expansionRects(baseRect, expansion.safeBounds, expansion.margins)
+  // Clamp every candidate to the detected safe bounds — but first intersect
+  // those bounds with the known container (bubble) extent. On a white-on-white
+  // bubble the background fit bleeds to the whole page, so without this the text
+  // would grow far past the real bubble outline.
+  const expandBounds = boundsForExpansion(expansion.safeBounds, placement.containerBBox, baseRect)
+  const candidates = expansionRects(baseRect, expandBounds, expansion.margins)
   const baseAspect = baseRect.width / Math.max(1, baseRect.height)
   let bestRect = baseRect
   let bestScore = scoreCandidate(baseComposition, fontIntent.targetFontPx, baseRect, baseAspect, baseRect)
@@ -129,7 +132,7 @@ export function fitLayout(
   // to the composed text, so the translation stays where the source text was
   // instead of floating to the centre of a tall expanded box.
   const outputRect = outputExpanded
-    ? anchoredExpandedRect(bestRect, outputComposition, baseRect, expansion.safeBounds, profile, placement.role)
+    ? anchoredExpandedRect(bestRect, outputComposition, baseRect, expandBounds, profile, placement.role)
     : baseRect
 
   return toFitResult(
@@ -365,6 +368,25 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
 
 function rectToBBox(rect: FitRect): BBox {
   return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
+}
+
+// Intersect the background safe bounds with the detected container (bubble)
+// extent so expansion can never grow past the real bubble, then union back the
+// base rect so the source text area is always allowed. No container → bounds
+// unchanged; no overlap (detection mismatch) → fall back to the raw bounds.
+function boundsForExpansion(safeBounds: BBox, container: BBox | null, baseRect: FitRect): BBox {
+  if (!container) return safeBounds
+  const clamped = intersectBBox(safeBounds, container)
+  if (!clamped) return safeBounds
+  return unionBBox(clamped, rectToBBox(baseRect))
+}
+
+function intersectBBox(a: BBox, b: BBox): BBox | null {
+  const x1 = Math.max(a[0], b[0])
+  const y1 = Math.max(a[1], b[1])
+  const x2 = Math.min(a[2], b[2])
+  const y2 = Math.min(a[3], b[3])
+  return x1 < x2 && y1 < y2 ? [x1, y1, x2, y2] : null
 }
 
 function unionBBox(a: BBox, b: BBox): BBox {
