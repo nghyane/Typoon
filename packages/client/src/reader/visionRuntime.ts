@@ -4,6 +4,7 @@
 
 import { detectBrowserCapabilities, type BrowserCapabilities } from '../adapters/browserCapabilities'
 import { ModelRepository } from '../adapters/ModelRepository'
+import { proxyUrl } from '../adapters/huggingFace'
 import { MangaTextRegionDetector } from '../detectors/manga/MangaTextRegionDetector'
 import { MainThreadOrtRunner } from '../detectors/manga/MainThreadOrtRunner'
 import { WorkerOrtRunner } from '../detectors/manga/WorkerOrtRunner'
@@ -53,10 +54,9 @@ function repository(config: TranslationConfig): ModelRepository {
   // for its lifetime, so a later differing config never reaches here. If
   // per-config repositories are ever needed, key this by repo/revision instead.
   if (!modelRepository) {
-    modelRepository = ModelRepository.fromHuggingFace({
-      repo: config.model.repo,
-      revision: config.model.revision,
-      proxyBase: config.model.proxyBase,
+    modelRepository = new ModelRepository({
+      manifestUrl: proxyUrl(config.model.manifestUrl, config.model.proxyBase),
+      resolveUrl: url => proxyUrl(url, config.model.proxyBase),
     })
   }
   return modelRepository

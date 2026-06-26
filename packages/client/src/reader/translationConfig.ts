@@ -4,7 +4,7 @@
 import type { OrtProvider } from '../models/OrtSessionPool'
 
 export interface TranslationConfig {
-  readonly model: { readonly repo: string; readonly revision: string; readonly proxyBase: string }
+  readonly model: { readonly manifestUrl: string; readonly proxyBase: string }
   readonly chunk: { readonly overlayMarginPx: number; readonly processMarginPx: number }
   readonly scan: ScanConfig
   readonly resilience: { readonly maxChunkAttempts: number; readonly backoffMs: number }
@@ -30,9 +30,13 @@ export interface ScanConfig {
 }
 
 const DISCORD_CDN_PROXY_BASE = 'https://927251094806098001.discordsays.com/cdn/c'
+// Models self-hosted on Cloudflare R2 (immutable, free egress, faster than HF).
+// Absolute URL — routed through proxyBase generically, so it works in the Discord
+// Activity sandbox (discordsays gateway) and plain browsers alike.
+const MODEL_MANIFEST_URL = 'https://models.hoimetruyen.net/v3/manifest.json'
 
 export const defaultTranslationConfig: TranslationConfig = {
-  model: { repo: 'nghyane/comic-detr', revision: 'v1', proxyBase: DISCORD_CDN_PROXY_BASE },
+  model: { manifestUrl: MODEL_MANIFEST_URL, proxyBase: DISCORD_CDN_PROXY_BASE },
   chunk: { overlayMarginPx: 1400, processMarginPx: 450 },
   scan: { maxCaptureWidth: 1280, haloRatio: 0.25, haloMaxPx: 600 },
   resilience: { maxChunkAttempts: 3, backoffMs: 400 },

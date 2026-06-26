@@ -4,6 +4,10 @@ import { verifyModel } from './modelVerify'
 
 const RANGE_DOWNLOAD_THRESHOLD_BYTES = 64 * 1024 * 1024
 const RANGE_CHUNK_BYTES = 8 * 1024 * 1024
+// Fetch several range chunks at once: large-model cold-load is latency-bound
+// through the CDN, so overlapping requests saturates bandwidth. Kept modest to
+// stay under per-origin connection/rate limits.
+const RANGE_DOWNLOAD_CONCURRENCY = 4
 const PROGRESS_INTERVAL_MS = 100
 
 export async function loadModelBytes(
@@ -28,26 +32,49 @@ async function loadModelBytesInRanges(
   onProgress: (progress: CapabilityProgress) => void,
   signal: AbortSignal | undefined,
 ): Promise<ArrayBuffer> {
-  const out = new Uint8Array(descriptor.sizeBytes)
-  const progress = createProgressReporter(descriptor.sizeBytes, onProgress)
+  const total = descriptor.sizeBytes
+  const out = new Uint8Array(total)
+  const progress = createProgressReporter(total, onProgress)
 
-  for (let start = 0; start < descriptor.sizeBytes; start += RANGE_CHUNK_BYTES) {
-    throwIfAborted(signal)
-    const end = Math.min(start + RANGE_CHUNK_BYTES, descriptor.sizeBytes) - 1
-    const response = await fetch(descriptor.url, {
-      mode: 'cors',
-      signal,
-      headers: { Range: `bytes=${start}-${end}` },
-    })
-    if (response.status === 200 && start === 0) {
-      return readAndVerifyModelResponse(descriptor, response, onProgress, signal)
+  const chunks: Array<readonly [number, number]> = []
+  for (let start = 0; start < total; start += RANGE_CHUNK_BYTES) {
+    chunks.push([start, Math.min(start + RANGE_CHUNK_BYTES, total) - 1])
+  }
+
+  // Workers pull chunks off a shared cursor and fetch them concurrently. If the
+  // server ignores Range (returns 200, the whole file), we bail to a single full
+  // download rather than mixing strategies.
+  let cursor = 0
+  let rangeIgnored = false
+  async function worker(): Promise<void> {
+    while (!rangeIgnored) {
+      const index = cursor++
+      if (index >= chunks.length) return
+      const [start, end] = chunks[index]!
+      throwIfAborted(signal)
+      const response = await fetch(descriptor.url, {
+        mode: 'cors',
+        signal,
+        headers: { Range: `bytes=${start}-${end}` },
+      })
+      if (response.status === 200) { rangeIgnored = true; return }
+      if (response.status !== 206) throw new Error(`model range fetch failed: ${response.status}`)
+      assertContentRange(response, start, end, total)
+
+      const expectedBytes = end - start + 1
+      const writtenBytes = await readResponseInto(response, out, start, signal, bytes => progress.add(bytes))
+      if (writtenBytes !== expectedBytes) throw new Error(`model range fetch length mismatch: ${writtenBytes}/${expectedBytes}`)
     }
-    if (response.status !== 206) throw new Error(`model range fetch failed: ${response.status}`)
-    assertContentRange(response, start, end, descriptor.sizeBytes)
+  }
 
-    const expectedBytes = end - start + 1
-    const writtenBytes = await readResponseInto(response, out, start, signal, bytes => progress.add(bytes))
-    if (writtenBytes !== expectedBytes) throw new Error(`model range fetch length mismatch: ${writtenBytes}/${expectedBytes}`)
+  const workers = Math.min(RANGE_DOWNLOAD_CONCURRENCY, chunks.length)
+  await Promise.all(Array.from({ length: workers }, () => worker()))
+
+  if (rangeIgnored) {
+    throwIfAborted(signal)
+    const response = await fetch(descriptor.url, { mode: 'cors', signal })
+    if (!response.ok) throw new Error(`model fetch failed: ${response.status}`)
+    return readAndVerifyModelResponse(descriptor, response, onProgress, signal)
   }
 
   progress.done()
