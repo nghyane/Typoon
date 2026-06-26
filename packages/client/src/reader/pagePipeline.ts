@@ -20,6 +20,7 @@ import { buildOverlayPlacements } from '../pipeline/composeOverlay'
 import { recoverBubbleText, type BubbleCropRecognizer, type BubbleSource } from '../pipeline/bubbleRecovery'
 import { textFromRecognition, translatePreparedText, type PreparedTextResult } from '../pipeline/translatePreparedPage'
 import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
+import { removeOcrArtifactBlocks } from '../pipeline/ocrArtifacts'
 import { textRoleContext, type TextRoleContext } from '../pipeline/textRole'
 import type { Translator } from '../translators/translator'
 import type { BBox } from '../domain/geometry'
@@ -101,11 +102,11 @@ export class PagePipeline {
     const { unit, signal } = args
     const capture = await capturePageScan(unit, args.loadPage, this.deps.config.scan, signal)
     throwIfAborted(signal)
-    const recognized = await this.deps.recognizer.recognizeEncoded(capture.encoded, {
+    const recognized = removeOcrArtifactBlocks(await this.deps.recognizer.recognizeEncoded(capture.encoded, {
       pageIndex: unit.pageIndex,
       sourceLang: args.sourceLanguage,
       signal,
-    })
+    }))
     throwIfAborted(signal)
     const regions = await detectTextRegions(capture.image, signal, this.deps.config)
     throwIfAborted(signal)
