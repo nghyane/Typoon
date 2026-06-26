@@ -288,14 +288,21 @@ export class ReaderTranslation {
     const inFlightPages = new Set<number>()
     try {
       while (this.isCurrent(generation) && !abort.signal.aborted) {
-        // Fill open slots with the nearest-to-viewport pickable pages. Pages
-        // already processing are excluded by the scheduler (pending/failed only),
-        // so OCR of one page overlaps the DeepL round-trip of another.
+        // Measure the DOM once per round (not per slot) to avoid a burst of
+        // forced reflows on press, then fill open slots from that snapshot.
+        // Pages already processing are excluded by the scheduler (pending/failed
+        // only), so OCR of one page overlaps the DeepL round-trip of another.
+        const layout = this.measure()
+        if (!layout) {
+          if (!inFlight.size) break
+          await Promise.race(inFlight)
+          continue
+        }
+        this.rebuildPlan(layout)
+        const measured = this.measuredPages(layout)
+        const visible = this.visibleRange(layout)
         while (inFlight.size < maxInFlight) {
-          const layout = this.measure()
-          if (!layout) break
-          this.rebuildPlan(layout)
-          const unit = this.scheduler.next(this.units, this.measuredPages(layout), this.visibleRange(layout), this.config.resilience.maxChunkAttempts)
+          const unit = this.scheduler.next(this.units, measured, visible, this.config.resilience.maxChunkAttempts)
           if (!unit) break
           this.scheduler.markProcessing(unit.pageIndex)
           inFlightPages.add(unit.pageIndex)
@@ -307,9 +314,7 @@ export class ReaderTranslation {
         }
         if (!inFlight.size) break
         await Promise.race(inFlight)
-        // Evict from fresh viewport, pinning pages still in flight.
-        const layout = this.measure()
-        if (layout) this.evictPages(this.measuredPages(layout), this.visibleRange(layout), inFlightPages)
+        this.evictPages(measured, visible, inFlightPages)
       }
       await Promise.allSettled(inFlight)
       if (this.isCurrent(generation) && this.scheduler.isComplete(this.config.resilience.maxChunkAttempts) && this.chapter) {
