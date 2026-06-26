@@ -38,16 +38,18 @@ export function textRenderProfile(
   const syllabicTarget = targetFamily === 'hangul'
   const cjkTarget = targetFamily === 'han' || targetFamily === 'kana' || targetFamily === 'mixed-cjk'
   const denseSource = sourceFamily === 'han' || sourceFamily === 'kana' || sourceFamily === 'mixed-cjk' || sourceFamily === 'hangul'
-  // Latin source (EN/FR/…) → Latin target (VI) share glyph density: the source
-  // already sized its text to fill the bubble in a Latin script, so the
-  // translation should render at the same size, not shrink. Only dense CJK/Hangul
-  // sources (compact glyphs, few characters) justify scaling the longer Latin
-  // translation down so it fits the space the source needed less of.
+  // Latin source (EN/FR/…) → Latin target (VI): sourceFontPx is the OCR
+  // line-box height (ascender→descender). Latin manga fonts (light/italic
+  // narration, low x-height) leave the line box much taller than their visible
+  // glyphs, so rendering our bold high-x-height target 1:1 against that height
+  // overshoots ~30%. Scale down to the visible glyph size. CJK/Hangul glyphs are
+  // square — their line box already equals the glyph — so they need no such
+  // correction (only the density allowance below).
   const latinSource = sourceFamily === 'latin'
 
   const fontScale = role === 'sfx' ? 1
     : latinTarget && denseSource ? 0.88
-    : latinTarget && latinSource ? 1.0
+    : latinTarget && latinSource ? 0.8
     : latinTarget ? 0.94
     : syllabicTarget ? 0.96
     : cjkTarget ? 1.02
