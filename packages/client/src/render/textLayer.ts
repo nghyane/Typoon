@@ -122,6 +122,7 @@ function createTextBox(
   box.dataset.edgeGuardPx = String(fit.edgeGuardPx)
   box.dataset.fontShortSideRatio = fit.fontShortSideRatio.toFixed(3)
   box.dataset.safeShapeUsed = String(fit.safeShapeUsed)
+  box.dataset.container = placement.containerBBox ? formatBBox(placement.containerBBox) : ''
   box.dataset.baseRect = formatRect(fit.baseRect)
   box.dataset.desiredFontSizePx = String(fit.desiredFontSizePx)
   box.dataset.layoutDirection = layout.direction

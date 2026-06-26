@@ -246,6 +246,9 @@ function projectPlacement(placement: TextPlacement, projection: PreparedPageHand
     pageSize,
     drawable: clipPolygonToPage(translatePolygon(placement.drawable, dx, dy), pageSize),
     bbox,
+    containerBBox: placement.containerBBox
+      ? clipBBoxToPage(translateBBox(placement.containerBBox, dx, dy), pageSize)
+      : null,
     textBoxes: placement.textBoxes
       .map(box => clipBBoxToPage(translateBBox(box, dx, dy), pageSize))
       .filter((box): box is BBox => box !== null),
