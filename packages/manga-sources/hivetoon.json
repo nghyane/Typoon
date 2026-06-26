@@ -1,0 +1,77 @@
+{
+  "id":        "hivetoon",
+  "name":      "HiveToons",
+  "host":      "hivetoon.com",
+  "homepage":  "https://hivetoon.com",
+  "languages": ["en"],
+  "version":   "1.0",
+  "accent":    "amber",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://hivetoon.com/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://hivetoon.com/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Episode|Chap|Ch\\.?)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://hivetoon.com/series?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 42 },
+          "list":   ".grid > div:has(a[href^=\"/series/\"] img)",
+          "fields": {
+            "url":   "a[href^=\"/series/\"]@href",
+            "title": "a[href^=\"/series/\"]:not(:has(img))",
+            "cover": "img@src"
+          }
+        }
+      }
+    ],
+
+    "manga": {
+      "method": "GET",
+      "url":    "{mangaUrl}",
+      "parse":  "html",
+      "fields": {
+        "title":       "meta[property=\"og:title\"]@content || h1",
+        "cover":       "meta[property=\"og:image\"]@content",
+        "description": "meta[property=\"og:description\"]@content"
+      },
+      "chapters": {
+        "list": ".space-y-1 a[href*=\"/chapter-\"]",
+        "fields": {
+          "url":    "@href",
+          "number": "h3",
+          "label":  "h3",
+          "date":   "span"
+        }
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   ".comic-images-wrapper img",
+      "fields": { "url": "@src" }
+    }
+  }
+}
