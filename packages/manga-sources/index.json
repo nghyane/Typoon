@@ -13,6 +13,8 @@
     { "id": "weebcentral",   "url": "./weebcentral.json" },
     { "id": "hivetoon",      "url": "./hivetoon.json" },
     { "id": "manhuaus",      "url": "./manhuaus.json" },
+    { "id": "toonily",       "url": "./toonily.json" },
+    { "id": "mangadistrict", "url": "./mangadistrict.json" },
     { "id": "nhentai",       "url": "./nhentai.json" },
     { "id": "naver-webtoon", "url": "./naver-webtoon.json" },
     { "id": "comix",         "url": "./comix.json" }
