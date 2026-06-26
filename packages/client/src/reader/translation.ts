@@ -21,7 +21,7 @@ import { GoogleTranslateWeb } from '../translators/google-web/GoogleTranslateWeb
 import type { Translator } from '../translators/translator'
 import { PagePipeline, deduplicateSeamBlocks } from './pagePipeline'
 import { PageScheduler } from './pageScheduler'
-import { planPageScans, sourceUsesHalo, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
+import { planPageScans, sourceUsesHalo, measuredPagesFromLayout, type MeasuredPage, type PageSource } from './pageScan'
 import { measureLayout, visibleContentRange } from './chunkCapture'
 import { OverlayManager } from './overlayManager'
 import type { ReaderRenderer } from './renderer'
@@ -349,8 +349,12 @@ export class ReaderTranslation {
         if (index !== null) await pages.read(index, signal)
       }
       throwIfAborted(signal)
-      // Re-plan with real sizes so halo heights match decoded pages.
-      const resolved = this.resolveUnit(unit.pageIndex) ?? unit
+      // Re-plan from the now-decoded source sizes so the capture canvas matches
+      // the page's real pixels. Until a page's authoritative size is known the
+      // plan falls back to DOM-rect geometry (display px at the 2/3 placeholder
+      // aspect); capturing with that mismatched `source` letterboxes/crops the
+      // page, so detection misses bubbles and overlays land offset.
+      const resolved = this.replanUnit(unit)
 
       const overlay = await this.pipeline.run({
         unit: resolved,
@@ -387,8 +391,23 @@ export class ReaderTranslation {
     this.scheduler.reset(this.units)
   }
 
-  private resolveUnit(pageIndex: number): PageScanUnit | null {
-    return this.units.find(unit => unit.pageIndex === pageIndex) ?? null
+  /**
+   * Rebuild a single scan unit from decoded source sizes. Callers must have
+   * loaded the page and its halo neighbors first; if any size is still unknown
+   * we keep the existing (possibly DOM-derived) unit rather than guess.
+   */
+  private replanUnit(unit: PageScanUnit): PageScanUnit {
+    const pages = this.pages
+    if (!pages) return unit
+    const window: PageSource[] = []
+    for (const index of [unit.prevIndex, unit.pageIndex, unit.nextIndex]) {
+      if (index === null) continue
+      const source = pages.size(index)
+      if (!source) return unit
+      window.push({ pageIndex: index, source })
+    }
+    const replanned = planPageScans(window, this.config.scan, sourceUsesHalo(this.chapter?.sourceLanguage))
+    return replanned.find(u => u.pageIndex === unit.pageIndex) ?? unit
   }
 
   private measure(): ChapterContentLayout | null {
