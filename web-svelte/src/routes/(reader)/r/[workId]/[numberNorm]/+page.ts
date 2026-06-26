@@ -21,7 +21,7 @@ export const load: PageLoad = async ({ params }) => {
 
   try {
     const sourceChapters = await fetchSourceChapters(work.sources);
-    const merged = mergeChapters(sourceChapters, work.target_lang.toLowerCase());
+    const merged = mergeChapters(sourceChapters);
     const chapter = merged.find((item) => item.numberNorm === params.numberNorm);
     if (!chapter) throw new Error('chapter not found');
 
@@ -52,6 +52,7 @@ export const load: PageLoad = async ({ params }) => {
         numberNorm: item.numberNorm,
         number: item.number,
         label: item.label,
+        locked: item.sourceVersions.length > 0 && item.sourceVersions.every((v) => v.ref.locked),
       })),
       versions: chapter.sourceVersions.map((item) => ({
         key: versionKeyOf(item),

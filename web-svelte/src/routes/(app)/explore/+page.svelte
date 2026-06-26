@@ -14,6 +14,7 @@
     shelfPageSize,
   } from '$lib/source/runtime/metadata';
   import { fetchBrowse } from '$lib/source/runtime/endpoints';
+  import { dedupeBy } from '$lib/collections';
   import FilterChips from '$lib/source/FilterChips.svelte';
   import type { InstalledSource, MangaSummary } from '$lib/source/types';
   import { listWorksBySourceRefs, ensureWorkFromSource } from '$lib/works/repo';
@@ -103,7 +104,11 @@
     enabled: !!source && !!target,
   }));
 
-  const items = $derived(browseQuery.data?.pages.flat() ?? []);
+  // Dedupe across pages: "latest"-style listings can re-bump a series onto a
+  // later page, so the same item can appear twice. The keyed {#each} below uses
+  // `manga.id`, and a duplicate key throws in Svelte 5 — which silently breaks
+  // "load more" — so collapse on the same key the each block uses.
+  const items = $derived(dedupeBy(browseQuery.data?.pages.flat() ?? [], (it) => it.id || it.url));
 
   // ── Library badge lookup ──────────────────────────────────────
 

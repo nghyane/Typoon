@@ -1,15 +1,10 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { normalizeLang } from '$lib/lang';
 import { sourceCache, type SourceCacheScope } from '../runtime/cache';
 import type { ChapterPages, MangaDetail, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
 
 const GALLERY_RE = /nhentai\.net\/g\/(\d+)/;
-
-const LANG_MAP: Record<string, string> = {
-	english: 'en',
-	japanese: 'ja',
-	chinese: 'zh',
-};
 
 function cookieHeader(userCookies: Record<string, string>): string | null {
 	const entries = Object.entries(userCookies);
@@ -79,9 +74,14 @@ function pageImages(doc: Document): string[] {
 		.filter((value): value is string => !!value);
 }
 
+// nhentai tags a gallery with every language link (a translated EN doujin carries
+// both "translated" and "english"); pick the first that maps to a real code.
 function language(doc: Document): string | null {
-	const raw = text(doc.querySelector('#tags a[href^="/language/"] .name'));
-	return raw ? (LANG_MAP[raw.toLowerCase()] ?? raw.toLowerCase()) : null;
+	for (const raw of names(doc, '#tags a[href^="/language/"] .name')) {
+		const code = normalizeLang(raw);
+		if (code) return code;
+	}
+	return null;
 }
 
 export const nhentaiAdapter: SourceAdapter = {

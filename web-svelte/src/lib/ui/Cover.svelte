@@ -23,15 +23,21 @@
   } = $props();
 
   const sf = useSourceFetch();
-  let failed = $state(false);
+  // attempt indexes the gateway: 0 = primary, then fall back to the other
+  // gateways on image error (a gateway may be unreachable or CF-blocked here).
+  let attempt = $state(0);
   const safeTitle = $derived((title ?? alt ?? '').trim());
-  const url = $derived(!failed ? coverUrl(src, version, headers ?? undefined, sf.toBrowserUrl) : null);
+  const url = $derived(
+    attempt < sf.gatewayCount
+      ? coverUrl(src, version, headers ?? undefined, (u, h) => sf.toBrowserUrl(u, h, undefined, attempt))
+      : null,
+  );
 
   $effect(() => {
     src;
     version;
     headers;
-    failed = false;
+    attempt = 0;
   });
 
   function coverUrl(
@@ -52,7 +58,7 @@
 
 <div class={cn('flex items-center justify-center overflow-hidden bg-surface-2', aspect, cls)}>
   {#if url}
-    <img src={url} alt={safeTitle} class="w-full h-full object-cover" loading="lazy" onerror={() => { failed = true; }} />
+    <img src={url} alt={safeTitle} class="w-full h-full object-cover" loading="lazy" onerror={() => { attempt += 1; }} />
   {:else}
     <span class={cn('font-black text-text-subtle/60 select-none', fontSize)}>
       {safeTitle.slice(0, 2).toUpperCase() || '—'}

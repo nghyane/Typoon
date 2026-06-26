@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search } from 'lucide-svelte';
+  import { Search, Lock } from 'lucide-svelte';
   import { cn } from '$lib/cn';
   import ReaderDropdown from './ReaderDropdown.svelte';
   import type { ReaderChapterLink } from '$lib/types';
@@ -79,18 +79,30 @@
           {#each rows as chapter (chapter.numberNorm)}
             {@const active = chapter.numberNorm === currentRef}
             {@const subtitle = chapterSubtitle(chapter.number, chapter.label)}
-            <a
-              href={`/r/${workId}/${chapter.numberNorm}`}
-              onclick={onClose}
-              class={cn(
-                'relative flex items-center gap-3 min-h-9 px-3 rounded-sm text-sm transition-colors duration-150 cursor-pointer',
-                active ? 'bg-accent-bg text-accent-text font-medium' : 'text-text-muted hover:text-text hover:bg-hover',
-              )}
-            >
-              {#if active}<span aria-hidden="true" class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent"></span>{/if}
-              <span class="tabular-nums font-medium shrink-0">Ch.{chapter.number || chapter.numberNorm}</span>
-              {#if subtitle}<span class={cn('truncate text-xs', active ? 'text-accent-text' : 'text-text-subtle')}>{subtitle}</span>{/if}
-            </a>
+            {#if chapter.locked}
+              <div
+                aria-disabled="true"
+                title="Chương premium — cần mở khoá trên nguồn"
+                class="relative flex items-center gap-3 min-h-9 px-3 rounded-sm text-sm text-text-subtle opacity-55 cursor-not-allowed select-none"
+              >
+                <span class="tabular-nums font-medium shrink-0">Ch.{chapter.number || chapter.numberNorm}</span>
+                {#if subtitle}<span class="truncate text-xs">{subtitle}</span>{/if}
+                <Lock size={12} class="ml-auto shrink-0" />
+              </div>
+            {:else}
+              <a
+                href={`/r/${workId}/${chapter.numberNorm}`}
+                onclick={onClose}
+                class={cn(
+                  'relative flex items-center gap-3 min-h-9 px-3 rounded-sm text-sm transition-colors duration-150 cursor-pointer',
+                  active ? 'bg-accent-bg text-accent-text font-medium' : 'text-text-muted hover:text-text hover:bg-hover',
+                )}
+              >
+                {#if active}<span aria-hidden="true" class="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent"></span>{/if}
+                <span class="tabular-nums font-medium shrink-0">Ch.{chapter.number || chapter.numberNorm}</span>
+                {#if subtitle}<span class={cn('truncate text-xs', active ? 'text-accent-text' : 'text-text-subtle')}>{subtitle}</span>{/if}
+              </a>
+            {/if}
           {/each}
         </div>
       {/if}

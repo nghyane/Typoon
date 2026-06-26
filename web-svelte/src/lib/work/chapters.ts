@@ -1,4 +1,5 @@
 import type { WorkSource } from '$lib/db';
+import { normalizeLang } from '$lib/lang';
 import type { InstalledSource, MangaChapterRef } from '$lib/source/types';
 
 export interface SourceChapterDetail {
@@ -22,16 +23,17 @@ export interface MergedChapter {
 	sourceVersions: SourceVersion[];
 }
 
-export function mergeChapters(
-	sourceChapters: SourceChapterDetail[],
-	targetLang: string,
-): MergedChapter[] {
+export function mergeChapters(sourceChapters: SourceChapterDetail[]): MergedChapter[] {
 	const map = new Map<string, MergedChapter>();
-	const target = targetLang.toLowerCase();
 
 	for (const sourceChapter of sourceChapters) {
+		// A single-language source's lone declared language is a safe fallback for a
+		// chapter ref with no language; multi-language sources must stay '' (auto) so
+		// translation auto-detects instead of guessing the wrong source language.
+		const declared = sourceChapter.origin.languages ?? [];
+		const sourceFallback = declared.length === 1 ? declared[0]! : null;
 		for (const ref of sourceChapter.refs) {
-			const lang = (ref.language ?? sourceChapter.origin.languages?.[0] ?? target).toLowerCase();
+			const lang = normalizeLang(ref.language) ?? normalizeLang(sourceFallback) ?? '';
 			const version: SourceVersion = {
 				source: sourceChapter.source,
 				origin: sourceChapter.origin,
@@ -60,7 +62,11 @@ export function rankVersions(chapter: MergedChapter, targetLang: string): Source
 	const target = targetLang.toLowerCase();
 	const targetVersions = chapter.sourceVersions.filter((version) => version.lang === target);
 	const pool = targetVersions.length > 0 ? targetVersions : chapter.sourceVersions;
-	return [...pool].sort(byDateDesc);
+	// Readable (non-locked) versions rank above premium-locked ones, then by recency.
+	return [...pool].sort((a, b) => {
+		const lockDiff = (a.ref.locked ? 1 : 0) - (b.ref.locked ? 1 : 0);
+		return lockDiff !== 0 ? lockDiff : byDateDesc(a, b);
+	});
 }
 
 export function pickBestVersion(chapter: MergedChapter, targetLang: string): SourceVersion | null {

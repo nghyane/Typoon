@@ -79,7 +79,7 @@
   });
   const detailLoading = $derived(detailQueries.some((query) => query.isPending || query.isFetching));
   const detailFailures = $derived(detailQueries.filter((query) => query.error));
-  const chapters = $derived(mergeChapters(sourceChapters, work?.target_lang.toLowerCase() ?? 'vi'));
+  const chapters = $derived(mergeChapters(sourceChapters));
   const detail = $derived(detailQueries.find((query) => query.data)?.data ?? null);
   const coverHeaders = $derived.by(() => {
     if (!work?.cover_url) return detail?.coverHeaders;
@@ -168,8 +168,6 @@
           <div class="flex flex-wrap gap-1.5">
             {#if work.nsfw}<span class="inline-flex items-center h-6 px-2 rounded-xs bg-error-bg text-error-text text-xs font-semibold">18+</span>{/if}
             {#if detail?.status}<span class="inline-flex items-center h-6 px-2 rounded-xs bg-surface-2 text-text-muted text-xs font-semibold">{detail.status}</span>{/if}
-            <span class="inline-flex items-center h-6 px-2 rounded-xs bg-surface-2 text-text-muted text-xs font-semibold uppercase">{work.source_lang}</span>
-            <span class="inline-flex items-center h-6 px-2 rounded-xs bg-accent-bg text-accent-text text-xs font-semibold uppercase">→ {work.target_lang}</span>
           </div>
           <div class="flex items-stretch gap-2 flex-wrap">
             {#if readTarget}

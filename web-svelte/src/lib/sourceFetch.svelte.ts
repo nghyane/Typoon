@@ -2,12 +2,41 @@
 // Source transport only. Source-specific headers/cache are passed in by manifests/adapters.
 //   fetchSource   — proxy fetch for source runtime/adapters
 //   useSourceFetch() — proxy URL builder for browser-loaded images
+//
+// The gateway list lives in $lib/config (env-overridable, discordsays-first);
+// this module only normalizes it into ready-to-use proxy bases and can be
+// re-pointed at runtime via configureSourceGateways() when the server supplies
+// origins.
+
+import { sourceGateways, SOURCE_GATEWAY_PROXY_PATH } from '$lib/config';
+
+const PROXY_PATH = SOURCE_GATEWAY_PROXY_PATH.replace(/^\/+|\/+$/gu, '');
+
+/** Normalize origins (scheme+host, with or without /cdn/c) into proxy bases. */
+function normalizeGateways(origins: readonly string[]): string[] {
+	const bases = origins
+		.map(g => g.trim().replace(/\/+$/u, ''))
+		.filter(g => /^https?:\/\/[^?#]+$/i.test(g))
+		.map(g => new RegExp(`/${PROXY_PATH}$`, 'iu').test(g) ? g : `${g}/${PROXY_PATH}`);
+	// Same-origin fallback when nothing valid is configured (dev / self-hosted proxy).
+	return bases.length > 0 ? bases : [`/${PROXY_PATH}`];
+}
+
+let _gateways: string[] | null = null;
+function gateways(): string[] {
+	return (_gateways ??= normalizeGateways(sourceGateways()));
+}
+
+/**
+ * Override the gateway list at runtime — e.g. from the server's
+ * PublicSettings.sourceFetch.origins. No-op when empty so the build-time
+ * defaults stand. Affects every instance since they read the list live.
+ */
+export function configureSourceGateways(origins: readonly string[]): void {
+	if (origins.length > 0) _gateways = normalizeGateways(origins);
+}
 
 let _cdnInstance: ReturnType<typeof createSourceFetch> | null = null;
-const SOURCE_CDN_GATEWAYS = [
-	'https://927251094806098001.discordsays.com/cdn/c',
-	'https://function-bun-production-c2e1.up.railway.app/cdn/c',
-];
 
 export type SourceCachePolicy = 'auto' | 'immutable' | 'ttl' | 'reload' | 'bypass' | 'no-store' | 'only-if-cached';
 
@@ -25,34 +54,29 @@ interface SourceFetchOptions {
 
 /** CDN-based instance for browser image URLs (Cover component). */
 export function useSourceFetch() {
-	if (!_cdnInstance) {
-		_cdnInstance = createSourceFetch(SOURCE_CDN_GATEWAYS);
-	}
-	return _cdnInstance;
+	return (_cdnInstance ??= createSourceFetch());
 }
 
-const _sourceCdn = createSourceFetch(SOURCE_CDN_GATEWAYS);
+const _sourceCdn = createSourceFetch();
 export const fetchSource = _sourceCdn.fetch;
 export const toBrowserUrl = _sourceCdn.toBrowserUrl;
 
-function createSourceFetch(origins: readonly string[]) {
-	const gateways = origins
-		.map(g => g.replace(/\/+$/u, ''))
-		.filter(g => /^https?:\/\/[^?#]+$/i.test(g));
-
-	if (gateways.length === 0) gateways.push('/cdn/c');
-
+function createSourceFetch() {
 	function gatewayUrl(key: string, index: number): string {
-		return `${gateways[index % gateways.length]!}/${key}`;
+		const g = gateways();
+		return `${g[index % g.length]!}/${key}`;
 	}
 
-	function _toBrowserUrl(url: string, headers?: Record<string, string>, cache?: SourceCacheOptions): string {
+	function _toBrowserUrl(url: string, headers?: Record<string, string>, cache?: SourceCacheOptions, attempt = 0): string {
 		let u: URL;
 		try { u = new URL(url); } catch { return url; }
 		if (u.protocol !== 'https:' && u.protocol !== 'http:') return url;
 
 		const key = `${u.host}${u.pathname}`;
-		const path = gatewayUrl(key, hash(key) % gateways.length);
+		// attempt 0 = primary gateway; on image error the caller retries with
+		// attempt 1, 2… to fall back to the mirrors (a gateway can be unreachable
+		// or Cloudflare-blocked for a given host while another works).
+		const path = gatewayUrl(key, attempt % gateways().length);
 		const params = new URLSearchParams(u.searchParams);
 		if (headers && Object.keys(headers).length > 0) params.set('_h', encodeHeaderBlob(headers));
 		applyCacheParams(params, cache);
@@ -76,10 +100,10 @@ function createSourceFetch(origins: readonly string[]) {
 
 		const key = `${u.host}${u.pathname}`;
 		// Always try gateways in order: primary first, fallbacks on failure
+		const gw = gateways();
 		let lastError: unknown;
-		for (let attempt = 0; attempt < gateways.length; attempt++) {
-			const gw = gateways[attempt]!;
-			const gwUrl = `${gw}/${key}?${params}`;
+		for (let attempt = 0; attempt < gw.length; attempt++) {
+			const gwUrl = `${gw[attempt]!}/${key}?${params}`;
 
 			if (attempt > 0) {
 				// Exponential backoff: 1s, 2s, 4s...
@@ -89,7 +113,7 @@ function createSourceFetch(origins: readonly string[]) {
 			try {
 				const response = await fetch(gwUrl, { ...opts.init, headers: h, signal: opts.init?.signal });
 				if (response.status === 429 || response.status === 502 || response.status === 503) {
-					lastError = new Error(`HTTP ${response.status} via ${gw}`);
+					lastError = new Error(`HTTP ${response.status} via ${gw[attempt]}`);
 					continue;
 				}
 				return response;
@@ -101,7 +125,7 @@ function createSourceFetch(origins: readonly string[]) {
 		throw lastError ?? new Error('all gateways exhausted');
 	}
 
-	return { toBrowserUrl: _toBrowserUrl, fetch: _fetch };
+	return { toBrowserUrl: _toBrowserUrl, fetch: _fetch, get gatewayCount() { return gateways().length; } };
 }
 
 function applyCacheParams(params: URLSearchParams, cache?: SourceCacheOptions): void {
@@ -125,13 +149,4 @@ function encodeHeaderBlob(headers: Record<string, string>): string {
   let bin = '';
   for (const byte of bytes) bin += String.fromCharCode(byte);
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function hash(value: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
 }

@@ -1,4 +1,5 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { normalizeLang } from '$lib/lang';
 import { queryHtmlAll } from '../selectors';
 import type { ChapterPages, MangaDetail, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
@@ -168,8 +169,12 @@ export const ehentaiAdapter: SourceAdapter = {
 		const meta = await fetchGdata(ids.gid, ids.token, userCookies);
 		const title = (meta.title as string | undefined) ?? (meta.title_jpn as string | undefined) ?? '(không tên)';
 		const tags = (meta.tags as string[] | undefined) ?? [];
-		const langTag = tags.find((tag) => tag.startsWith('language:'));
-		const lang = langTag ? langTag.replace('language:', '') : null;
+		// e-hentai carries "language:translated"/"language:rewrite" markers next to the
+		// real "language:english" tag; normalizeLang drops the pseudo ones → null.
+		const lang = tags
+			.filter((tag) => tag.startsWith('language:'))
+			.map((tag) => normalizeLang(tag))
+			.find((code): code is string => !!code) ?? null;
 		const pageCount = parseInt(String(meta.filecount ?? '0'), 10);
 		const date = meta.posted
 			? new Date(parseInt(String(meta.posted), 10) * 1000).toISOString().slice(0, 10)

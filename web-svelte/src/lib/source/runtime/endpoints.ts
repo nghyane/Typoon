@@ -1,4 +1,6 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { dedupeBy } from '$lib/collections';
+import { normalizeLang } from '$lib/lang';
 import { getAdapter } from '../adapters';
 import { applyChapterNumberNorm, compileChapterNumberNorm } from '../normalize';
 import { sourceCache, type SourceCacheScope } from './cache';
@@ -51,16 +53,8 @@ function cookieHdr(m: SourceManifest, c: Record<string, string>) {
 
 function isInternal(m: SourceManifest) { return m.kind === 'internal'; }
 
-function dedupeMangaSummaries(items: MangaSummary[]): MangaSummary[] {
-	const seen = new Set<string>();
-	const out: MangaSummary[] = [];
-	for (const item of items) {
-		const key = item.url || item.id;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push(item);
-	}
-	return out;
+export function dedupeMangaSummaries(items: MangaSummary[]): MangaSummary[] {
+	return dedupeBy(items, (item) => item.url || item.id);
 }
 
 // ── http ───────────────────────────────────────────────────────────
@@ -148,7 +142,8 @@ function chapterRow(row: Row, fields: ChapterFields, baseUrl: string, g: Vars, n
 		id: u, url: u, number: n,
 		numberNorm: applyChapterNumberNorm(norm, { number: n, label: l }),
 		title: t ?? null, label: l,
-		date: f.date ?? null, language: f.language ?? null, scanlator: f.scanlator ?? null,
+		date: f.date ?? null, language: normalizeLang(f.language), scanlator: f.scanlator ?? null,
+		...(f.locked && f.locked.trim() ? { locked: true } : {}),
 	};
 }
 
@@ -173,9 +168,15 @@ function externalChapterRows(rs: Row[], baseUrl: string, g: Vars, ep: ChaptersAp
 
 function parseLangList(raw: string | null | undefined): string[] | null {
 	if (!raw) return null;
-	if (raw.startsWith('[')) { try { const a = JSON.parse(raw) as unknown; if (Array.isArray(a)) return a.filter((x): x is string => typeof x === 'string'); } catch { /* */ } }
-	const p = raw.split(/[\s,]+/).filter(Boolean);
-	return p.length > 0 ? p : null;
+	let parts: string[] = [];
+	if (raw.startsWith('[')) {
+		try { const a = JSON.parse(raw) as unknown; if (Array.isArray(a)) parts = a.filter((x): x is string => typeof x === 'string'); } catch { /* */ }
+	}
+	if (parts.length === 0) parts = raw.split(/[\s,]+/).filter(Boolean);
+	// Normalize names→ISO and drop badge counts / pseudo-langs ("translated") so a
+	// single-language source resolves to exactly one code (enables the merge fallback).
+	const codes = [...new Set(parts.map((p) => normalizeLang(p)).filter((c): c is string => !!c))];
+	return codes.length > 0 ? codes : null;
 }
 
 // ── build: page list ───────────────────────────────────────────────

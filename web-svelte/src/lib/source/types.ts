@@ -91,6 +91,10 @@ export interface ChapterFields {
 	language?: Selector;
 	label?: Selector;
 	scanlator?: Selector;
+	/** Marks a chapter as premium/locked. Point at a marker that only exists
+	 *  on locked rows (e.g. a lock/coin icon `i.fa-lock@class`); any non-empty
+	 *  resolved value flags the chapter as locked. */
+	locked?: Selector;
 }
 
 export interface ChapterNumberNorm {
@@ -170,6 +174,8 @@ export interface MangaChapterRef {
 	date: string | null;
 	language: string | null;
 	scanlator: string | null;
+	/** Premium/locked chapter — readable only after unlocking on the source. */
+	locked?: boolean;
 }
 
 export interface MangaDetail extends MangaSummary {

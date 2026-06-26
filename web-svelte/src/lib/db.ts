@@ -17,7 +17,6 @@ export interface Work {
 	title_overridden?: boolean;
 	cover_url: string | null;
 	cover_overridden?: boolean;
-	source_lang: string;
 	target_lang: string;
 	nsfw: boolean;
 	sources: WorkSource[];

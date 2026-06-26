@@ -67,10 +67,20 @@ A **manga detail endpoint** returns metadata + chapter list:
     "url":    "a@href",
     "number": "a@data-num",
     "title":  "a .name",
-    "date":   ".date"
+    "date":   ".date",
+    "locked": "i.fa-lock@class"
   }
 }
 ```
+
+`locked` (optional) marks a chapter as **premium/locked**. Point it at a
+marker that exists **only on locked rows** — typically a descendant lock or
+coin icon, e.g. `i.fa-lock@class` or `.premium-block .coin@class`. Any
+non-empty resolved value flags the chapter; locked chapters render greyed and
+non-clickable in the chapter list and reader picker. Avoid a marker that is a
+class on the row itself (use a descendant element instead), since the field
+engine resolves selectors against descendants. Works on `chaptersApi` fields
+and JSON sources too (e.g. `"locked": "is_premium"`).
 
 A **chapter endpoint** returns the page URLs:
 

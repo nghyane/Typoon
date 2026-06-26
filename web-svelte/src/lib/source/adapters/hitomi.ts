@@ -1,4 +1,5 @@
 import { fetchSource } from '$lib/sourceFetch.svelte';
+import { normalizeLang } from '$lib/lang';
 import { sourceCache } from '../runtime/cache';
 import type { BrowseArgs, ChapterPages, MangaDetail, MangaSummary, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
@@ -227,13 +228,7 @@ export const hitomiAdapter: SourceAdapter = {
 
 		const info = await fetchGalleryInfo(manifest.id, id);
 		const block = await fetchGalleryBlock(manifest.id, parseInt(id, 10));
-		const langMap: Record<string, string> = {
-			japanese: 'ja',
-			chinese: 'zh',
-			english: 'en',
-			korean: 'ko',
-		};
-		const lang = info.language ? (langMap[info.language] ?? info.language) : null;
+		const lang = normalizeLang(info.language);
 		const title = info.title ?? info.japanese_title ?? `Gallery #${id}`;
 		const date = info.datepublished ? info.datepublished.slice(0, 10) : null;
 

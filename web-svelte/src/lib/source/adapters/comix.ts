@@ -1,3 +1,4 @@
+import { normalizeLang } from '$lib/lang';
 import type { BrowseArgs, ChapterPages, MangaChapterRef, MangaDetail, MangaSummary, SourceManifest } from '../types';
 import type { SourceAdapter } from './types';
 
@@ -96,7 +97,7 @@ async function fetchChapters(hid: string): Promise<MangaChapterRef[]> {
 }
 
 function summary(m: ComixManga): MangaSummary { const u = absolute(m.url); return { id: u, url: u, title: m.title || '(không tên)', cover: m.poster?.medium ?? m.poster?.large ?? null, coverHeaders: { Referer: ORIGIN + '/' } }; }
-function chapterRef(c: ComixChapter): MangaChapterRef { const u = absolute(c.url); const n = String(c.number ?? ''); const t = c.name?.trim() || null; return { id: u, url: u, number: n, numberNorm: n, title: t, label: t ? `Ch ${n}: ${t}` : `Ch ${n}`, date: c.createdAtFormatted ?? null, language: c.language ?? null, scanlator: c.group?.name ?? (c.isOfficial ? 'Official' : null) }; }
+function chapterRef(c: ComixChapter): MangaChapterRef { const u = absolute(c.url); const n = String(c.number ?? ''); const t = c.name?.trim() || null; return { id: u, url: u, number: n, numberNorm: n, title: t, label: t ? `Ch ${n}: ${t}` : `Ch ${n}`, date: c.createdAtFormatted ?? null, language: normalizeLang(c.language), scanlator: c.group?.name ?? (c.isOfficial ? 'Official' : null) }; }
 function mangaHid(url: string): string | null { return /\/title\/([^/-]+)/.exec(url)?.[1] ?? null; }
 function chapterId(url: string): string | null { return /\/([0-9]+)-chapter(?:-|$)/.exec(url)?.[1] ?? null; }
 function absolute(url: string): string { return new URL(url, ORIGIN).href; }

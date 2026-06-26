@@ -99,7 +99,6 @@ export async function setWorkLibraryStatus(workId: string, status: LibraryStatus
 
 export async function createBlankWork(input: {
 	title: string;
-	source_lang?: string;
 	target_lang?: string;
 	nsfw?: boolean;
 }): Promise<Work> {
@@ -108,7 +107,6 @@ export async function createBlankWork(input: {
 		id: nanoid(12),
 		title: input.title,
 		cover_url: null,
-		source_lang: input.source_lang ?? 'ja',
 		target_lang: input.target_lang ?? 'vi',
 		nsfw: !!input.nsfw,
 		sources: [],
@@ -195,7 +193,6 @@ export async function ensureWorkFromSource(manifest: SourceManifest, manga: Mang
 		id: newId,
 		title: manga.title,
 		cover_url: manga.cover,
-		source_lang: languages[0] ?? 'ja',
 		target_lang: 'vi',
 		nsfw: !!manifest.nsfw,
 		sources,

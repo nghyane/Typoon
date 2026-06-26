@@ -7,7 +7,6 @@ export interface WorkCover {
   cover_url?: string;
   status?: string;
   latest_chapter?: string;
-  source_lang?: string;
   target_lang?: string;
 }
 
@@ -31,6 +30,7 @@ export interface ReaderChapterLink {
   numberNorm: string;
   number: string;
   label: string;
+  locked?: boolean;
 }
 
 export interface ReaderSourceVersion {

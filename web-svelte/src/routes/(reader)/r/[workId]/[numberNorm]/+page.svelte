@@ -64,7 +64,7 @@
       pageCount,
       readPage: (index, signal) => pages.readPage(index, signal),
       pageSize: (index) => pages.pageSizes[index] ?? null,
-      sourceLanguage: source.activeSourceLang ?? null,
+      sourceLanguage: source.activeSourceLang || null,
       targetLanguage: targetLang,
     });
   });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Search } from 'lucide-svelte';
+  import { Search, Lock } from 'lucide-svelte';
   import { cn } from '$lib/cn';
   import {
     pickBestVersion,
@@ -48,7 +48,7 @@
   const visibleRows = $derived.by(() => {
     const targetMode = langFilter === 'all' || langFilter === tgt;
     const term = chapterQuery.trim().toLowerCase();
-    const out: Array<{ chapter: MergedChapter; version: SourceVersion | null; key: string }> = [];
+    const out: Array<{ chapter: MergedChapter; version: SourceVersion | null; key: string; locked: boolean }> = [];
 
     for (const chapter of sortedChapters) {
       if (term) {
@@ -59,11 +59,11 @@
       if (targetMode) {
         const v = pickBestVersion(chapter, tgt);
         if (langFilter !== 'all' && (!v || v.lang !== tgt)) continue;
-        out.push({ chapter, version: v, key: chapter.numberNorm });
+        out.push({ chapter, version: v, key: chapter.numberNorm, locked: !!v?.ref.locked });
       } else {
         for (const v of chapter.sourceVersions) {
           if (v.lang !== langFilter) continue;
-          out.push({ chapter, version: v, key: `${chapter.numberNorm}:${v.source.manifest.id}:${v.ref.id}` });
+          out.push({ chapter, version: v, key: `${chapter.numberNorm}:${v.source.manifest.id}:${v.ref.id}`, locked: !!v.ref.locked });
         }
       }
     }
@@ -113,30 +113,46 @@
 {:else}
   <div class="border-t border-border-soft/60">
     {#each visibleRows as row (row.key)}
-      <a href={`/r/${workId}/${row.chapter.numberNorm}`}
-        class="flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0">
-        <span class="tabular-nums font-medium text-text-muted group-hover:text-text shrink-0 transition-colors">
-          {row.chapter.number || row.chapter.numberNorm || '?'}
-        </span>
-        <span class="shrink-0 text-xs uppercase tabular-nums font-medium text-text-subtle">{row.version?.lang ?? tgt}</span>
-        {#if !nonTargetMode && row.chapter.sourceVersions.length > 1}
-          <span class="shrink-0 inline-flex items-center h-4 px-1 rounded-xs bg-surface-2 text-[10px] tabular-nums text-text-subtle">+{row.chapter.sourceVersions.length - 1}</span>
-        {/if}
-        <span class="hidden sm:flex sm:flex-1 sm:min-w-0 truncate text-text-muted group-hover:text-text transition-colors">
-          {#if row.version?.ref.scanlator}
-            <span class="text-text">@{row.version.ref.scanlator}</span>
-            <span class="text-text-subtle"> · {row.version.source.manifest.name}</span>
-          {:else if row.version}
-            <span>{row.version.source.manifest.name}</span>
-          {:else}
-            <span>Chưa có nguồn đọc</span>
-          {/if}
-        </span>
-        <div class="ml-auto sm:ml-0 inline-flex items-center gap-3 shrink-0 text-xs text-text-subtle">
-          {#if row.version?.ref.title}<span class="hidden md:inline truncate max-w-[220px]">{row.version.ref.title}</span>{/if}
-          {#if row.version?.ref.date}<span class="hidden sm:inline whitespace-nowrap tabular-nums" title={row.version.ref.date.slice(0, 10)}>{row.version.ref.date.slice(0, 10)}</span>{/if}
+      {#if row.locked}
+        <div aria-disabled="true" title="Chương premium — cần mở khoá trên nguồn"
+          class="flex items-center gap-3 px-2 py-2.5 cursor-not-allowed select-none opacity-55 border-b border-border-soft/60 last:border-b-0">
+          {@render rowBody(row)}
         </div>
-      </a>
+      {:else}
+        <a href={`/r/${workId}/${row.chapter.numberNorm}`}
+          class="flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0">
+          {@render rowBody(row)}
+        </a>
+      {/if}
     {/each}
   </div>
 {/if}
+
+{#snippet rowBody(row: { chapter: MergedChapter; version: SourceVersion | null; locked: boolean })}
+  <span class="tabular-nums font-medium text-text-muted group-hover:text-text shrink-0 transition-colors">
+    {row.chapter.number || row.chapter.numberNorm || '?'}
+  </span>
+  <span class="shrink-0 text-xs uppercase tabular-nums font-medium text-text-subtle">{row.version?.lang ?? tgt}</span>
+  {#if row.locked}
+    <span class="shrink-0 inline-flex items-center gap-0.5 h-4 px-1 rounded-xs bg-surface-2 text-[10px] font-medium uppercase text-text-subtle">
+      <Lock size={10} /> Premium
+    </span>
+  {/if}
+  {#if !nonTargetMode && row.chapter.sourceVersions.length > 1}
+    <span class="shrink-0 inline-flex items-center h-4 px-1 rounded-xs bg-surface-2 text-[10px] tabular-nums text-text-subtle">+{row.chapter.sourceVersions.length - 1}</span>
+  {/if}
+  <span class="hidden sm:flex sm:flex-1 sm:min-w-0 truncate text-text-muted group-hover:text-text transition-colors">
+    {#if row.version?.ref.scanlator}
+      <span class="text-text">@{row.version.ref.scanlator}</span>
+      <span class="text-text-subtle"> · {row.version.source.manifest.name}</span>
+    {:else if row.version}
+      <span>{row.version.source.manifest.name}</span>
+    {:else}
+      <span>Chưa có nguồn đọc</span>
+    {/if}
+  </span>
+  <div class="ml-auto sm:ml-0 inline-flex items-center gap-3 shrink-0 text-xs text-text-subtle">
+    {#if row.version?.ref.title}<span class="hidden md:inline truncate max-w-[220px]">{row.version.ref.title}</span>{/if}
+    {#if row.version?.ref.date}<span class="hidden sm:inline whitespace-nowrap tabular-nums" title={row.version.ref.date.slice(0, 10)}>{row.version.ref.date.slice(0, 10)}</span>{/if}
+  </div>
+{/snippet}
