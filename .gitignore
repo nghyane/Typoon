@@ -8,8 +8,10 @@ __pycache__/
 config.toml
 
 # Models (binary, downloaded separately)
-models/
-data/
+# Anchored to repo root so it does NOT swallow source dirs like
+# packages/client/src/models/ (those are code, must stay tracked).
+/models/
+/data/
 
 # Cache / benchmark outputs
 cache/
