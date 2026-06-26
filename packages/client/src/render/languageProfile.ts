@@ -11,6 +11,9 @@ export interface TextRenderProfile {
   readonly targetFamily: LanguageFamily
   readonly targetScript: TextScript
   readonly fontScale: number
+  // When true, fontScale is the FLOOR applied to large source fonts; smaller
+  // source fonts taper toward ~1.0 so already-small text is not over-shrunk.
+  readonly taperFontScale: boolean
   readonly minReadableFontPx: number
   readonly innerPadXEm: number
   readonly innerPadYEm: number
@@ -65,6 +68,7 @@ export function textRenderProfile(
     targetFamily,
     targetScript,
     fontScale,
+    taperFontScale: latinTarget && hangulSource,
     minReadableFontPx: role === 'sfx' ? 6 : latinTarget ? 7 : 6,
     innerPadXEm: role === 'sfx' ? 0.10 : latinTarget ? 0.40 : syllabicTarget ? 0.34 : 0.28,
     innerPadYEm: role === 'sfx' ? 0.10 : latinTarget ? 0.24 : syllabicTarget ? 0.22 : 0.20,

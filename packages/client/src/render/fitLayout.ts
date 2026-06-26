@@ -595,17 +595,33 @@ function fontIntentFor(placement: TextPlacement, baseRect: FitRect, context: Pag
 
   // Preserve relative size: each bubble keeps its proportion to the page standard.
   if (roleMedianFontPx !== null && sourceFontPx !== null) {
-    const target = clampFont(sourceFontPx * profile.fontScale, placementMaxPx)
+    const target = clampFont(scaledTarget(sourceFontPx, profile), placementMaxPx)
     return { sourceFontPx, roleMedianFontPx, targetFontPx: target, reason: 'role-standard' }
   }
 
   if (roleMedianFontPx !== null) {
-    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, placementMaxPx), reason: 'fallback-role-median' }
+    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(scaledTarget(roleMedianFontPx, profile), placementMaxPx), reason: 'fallback-role-median' }
   }
   if (sourceFontPx !== null) {
-    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, placementMaxPx), reason: 'source' }
+    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(scaledTarget(sourceFontPx, profile), placementMaxPx), reason: 'source' }
   }
-  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, placementMaxPx), reason: 'fallback-geometry' }
+  return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(scaledTarget(geometryFallback(placement, baseRect), profile), placementMaxPx), reason: 'fallback-geometry' }
+}
+
+// Glyph-shape correction. For most pairs this is a flat multiplier. When
+// profile.taperFontScale is set (hangul source), fontScale is the FLOOR applied
+// to large source fonts; smaller source fonts ease toward ~0.95 so already-small
+// Korean text is not over-shrunk into illegibility.
+const TAPER_BIG_PX = 44
+const TAPER_SMALL_PX = 22
+const TAPER_SMALL_SCALE = 0.95
+function scaledTarget(sizePx: number, profile: TextRenderProfile): number {
+  if (!profile.taperFontScale) return sizePx * profile.fontScale
+  const floor = profile.fontScale
+  const scale = sizePx >= TAPER_BIG_PX ? floor
+    : sizePx <= TAPER_SMALL_PX ? TAPER_SMALL_SCALE
+    : TAPER_SMALL_SCALE + (floor - TAPER_SMALL_SCALE) * ((sizePx - TAPER_SMALL_PX) / (TAPER_BIG_PX - TAPER_SMALL_PX))
+  return sizePx * scale
 }
 
 // ── Geometry fallback ───────────────────────────────────────────────────────
