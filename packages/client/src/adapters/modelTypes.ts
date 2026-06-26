@@ -19,4 +19,8 @@ export interface StoredModel {
 export interface ModelAssetCache {
   match(key: string): Promise<ArrayBuffer | null>
   put(key: string, bytes: ArrayBuffer): Promise<void>
+  /** Enumerate all stored keys. Optional: enables stale-model garbage collection. */
+  keys?(): Promise<string[]>
+  /** Remove a stored entry by key. Optional: enables stale-model garbage collection. */
+  delete?(key: string): Promise<void>
 }

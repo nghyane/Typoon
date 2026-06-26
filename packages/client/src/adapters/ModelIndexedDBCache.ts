@@ -49,4 +49,32 @@ export class ModelIndexedDBCache implements ModelAssetCache {
       // IndexedDB unavailable (private browsing, quota, etc.) — silent fail
     }
   }
+
+  async keys(): Promise<string[]> {
+    try {
+      const db = await this.db()
+      return new Promise<string[]>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly')
+        const req = tx.objectStore(STORE_NAME).getAllKeys()
+        req.onsuccess = () => resolve((req.result as IDBValidKey[]).map(String))
+        req.onerror = () => reject(req.error)
+      })
+    } catch {
+      return []
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    try {
+      const db = await this.db()
+      return new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite')
+        const req = tx.objectStore(STORE_NAME).delete(key)
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+      })
+    } catch {
+      // IndexedDB unavailable — silent fail
+    }
+  }
 }
