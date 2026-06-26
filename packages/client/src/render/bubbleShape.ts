@@ -8,8 +8,21 @@ export interface BubbleShapeProfile {
   readonly centerX: number
   readonly centerY: number
   readonly rect: FitRect
-  /** Max pixel width available for line `lineIndex` of `totalLines`. */
-  widthAt(lineIndex: number, totalLines: number): number
+  /**
+   * Max pixel width available for line `lineIndex` of `totalLines`.
+   * `contentFraction` is the text block's height as a fraction of the rect
+   * (≤1): a short block is vertically CENTRED in a tall bubble, so its lines
+   * sit in the wide middle band, not at the narrow top/bottom of the contour.
+   * Defaults to 1 (block fills the rect) for callers that don't track it.
+   */
+  widthAt(lineIndex: number, totalLines: number, contentFraction?: number): number
+}
+
+/** Centre a `totalLines`-line block of relative height `contentFraction` in the rect. */
+export function centeredLineFraction(lineIndex: number, totalLines: number, contentFraction = 1): number {
+  if (totalLines <= 0) return 0.5
+  const cf = clamp(contentFraction, 0, 1)
+  return 0.5 + cf * ((lineIndex + 0.5) / totalLines - 0.5)
 }
 
 const MIN_RATIO = 0.38
@@ -22,7 +35,7 @@ export function bubbleShapeProfile(polygon: Polygon, rect: FitRect): BubbleShape
     centerX: rect.x + rect.width / 2,
     centerY: rect.y + rect.height / 2,
     rect,
-    widthAt: (lineIndex, totalLines) => widthAtLine(polygon, rect, kind, lineIndex, totalLines),
+    widthAt: (lineIndex, totalLines, contentFraction) => widthAtLine(polygon, rect, kind, lineIndex, totalLines, contentFraction),
   }
 }
 
@@ -32,23 +45,24 @@ function widthAtLine(
   kind: BubbleShapeKind,
   lineIndex: number,
   totalLines: number,
+  contentFraction = 1,
 ): number {
   if (totalLines <= 0) return rect.width
 
   const ratio = kind === 'polygon'
-    ? polygonWidthRatio(polygon, rect, lineIndex, totalLines)
-    : edgeRatio(kind, lineIndex, totalLines)
+    ? polygonWidthRatio(polygon, rect, lineIndex, totalLines, contentFraction)
+    : edgeRatio(kind, lineIndex, totalLines, contentFraction)
 
   return Math.max(1, rect.width * clamp(ratio, MIN_RATIO, 1))
 }
 
-function edgeRatio(kind: BubbleShapeKind, lineIndex: number, totalLines: number): number {
+function edgeRatio(kind: BubbleShapeKind, lineIndex: number, totalLines: number, contentFraction = 1): number {
   if (kind === 'rect') return 1
   if (totalLines <= 1) return 1
   const [edge, middle] = kind === 'wide' ? [0.72, 0.98]
     : kind === 'tall' ? [0.50, 0.86]
     : [0.48, 0.96] // oval default
-  const t = (lineIndex + 0.5) / totalLines
+  const t = centeredLineFraction(lineIndex, totalLines, contentFraction)
   return edge + (middle - edge) * Math.sin(t * Math.PI)
 }
 
@@ -57,10 +71,11 @@ function polygonWidthRatio(
   rect: FitRect,
   lineIndex: number,
   totalLines: number,
+  contentFraction = 1,
 ): number {
   const usableTop = rect.y + rect.height * 0.12
   const usableHeight = rect.height * 0.76
-  const y = usableTop + ((lineIndex + 0.5) / Math.max(1, totalLines)) * usableHeight
+  const y = usableTop + centeredLineFraction(lineIndex, totalLines, contentFraction) * usableHeight
   const xs: number[] = []
   for (let i = 0; i < polygon.length; i += 1) {
     const a = polygon[i]!

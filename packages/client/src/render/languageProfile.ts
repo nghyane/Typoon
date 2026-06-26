@@ -38,9 +38,16 @@ export function textRenderProfile(
   const syllabicTarget = targetFamily === 'hangul'
   const cjkTarget = targetFamily === 'han' || targetFamily === 'kana' || targetFamily === 'mixed-cjk'
   const denseSource = sourceFamily === 'han' || sourceFamily === 'kana' || sourceFamily === 'mixed-cjk' || sourceFamily === 'hangul'
+  // Latin source (EN/FR/…) → Latin target (VI) share glyph density: the source
+  // already sized its text to fill the bubble in a Latin script, so the
+  // translation should render at the same size, not shrink. Only dense CJK/Hangul
+  // sources (compact glyphs, few characters) justify scaling the longer Latin
+  // translation down so it fits the space the source needed less of.
+  const latinSource = sourceFamily === 'latin'
 
   const fontScale = role === 'sfx' ? 1
     : latinTarget && denseSource ? 0.88
+    : latinTarget && latinSource ? 1.0
     : latinTarget ? 0.94
     : syllabicTarget ? 0.96
     : cjkTarget ? 1.02

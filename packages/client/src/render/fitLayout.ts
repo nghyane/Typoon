@@ -3,7 +3,7 @@ import type { BBox } from '../domain/geometry'
 import { type SafeMargins, type SafeMarginsDebug, type SafeShapeProfile } from './backgroundFit'
 import { composeLines, type LineComposition, type LineLayoutCandidate } from './lineComposer'
 import { textFitRect, drawableRect, type FitRect } from './fitGeometry'
-import { bubbleShapeProfile, type BubbleShapeProfile } from './bubbleShape'
+import { bubbleShapeProfile, centeredLineFraction, type BubbleShapeProfile } from './bubbleShape'
 import type { FontProfile } from './font'
 import type { DomMeasurer } from './textMeasure'
 import { pageRenderProfile, textRenderProfile, type RenderLanguageContext, type TextRenderProfile } from './languageProfile'
@@ -197,8 +197,10 @@ function composeInRect(
   }
 
   // Cap font at the source-proportional target (except SFX, which is
-  // dramatic by design).  Expansion may grow the rect so longer translations
-  // can REACH the source ratio instead of shrinking — never exceed it.
+  // dramatic by design) so every bubble keeps the SAME proportion to its
+  // source text — never bigger in one place and smaller in another.
+  // Expansion grows the rect so longer translations REACH this ratio instead
+  // of shrinking below it; the target is a ceiling, not exceeded.
   const cap = placement.role === 'sfx' ? ABS_MAX_FONT_SIZE : Math.max(MIN_FONT_SIZE, Math.ceil(targetFontPx))
   const hiBound = Math.max(MIN_FONT_SIZE, Math.min(Math.floor(rect.height), cap))
   const { fontSizePx, composition, maxDomFitPx } = bestFontFit({
@@ -257,7 +259,12 @@ function bestFontFit(args: {
     finalPx -= 1
     composition = composeFit(args, finalPx)
   }
-  const comfortFloor = Math.max(args.profile.minReadableFontPx, Math.floor(fontSizePx * comfortShrinkFloorRatio(args.placement.role, args.profile)))
+  // Comfort trims dense text for breathing room, but must NOT pull the font
+  // below its source-proportional target — that target is the size goal, so
+  // shrinking under it for "comfort" only makes the translation smaller than
+  // the source it should match.  Floor comfort at the target (when reachable).
+  const targetFloor = Math.min(fontSizePx, Math.ceil(args.targetFontPx))
+  const comfortFloor = Math.max(args.profile.minReadableFontPx, Math.floor(fontSizePx * comfortShrinkFloorRatio(args.placement.role, args.profile)), targetFloor)
   const maxComfortFill = comfortMaxFill(args.placement.role, args.profile)
   while (finalPx > comfortFloor && composition.fits && composition.maxFill > maxComfortFill) {
     finalPx -= 1
@@ -331,9 +338,12 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
 
   // Inset safeBounds so expanded rects never touch the bubble contour.
   // visualPadding already guards text→rect, but rect→safeBounds needs its
-  // own gap so background/erase geometry has breathing room.
+  // own gap so background/erase geometry has breathing room.  The inset must
+  // NEVER pull the bound inside the base rect — expansion only adds space, it
+  // must not shrink the area the source text already occupied (doing so caps
+  // the font BELOW its source-proportional target).  Union back with the base.
   const inset = Math.ceil(Math.min(baseRect.width, baseRect.height) * 0.07)
-  const padded = withInset(safeBounds, inset)
+  const padded = unionBBox(withInset(safeBounds, inset), rectToBBox(baseRect))
 
   // Grow symmetrically from the original centre so asymmetrical margins
   // (e.g. more space on one side) don't push the text box off-centre.
@@ -351,6 +361,14 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
     results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
   }
   return results
+}
+
+function rectToBBox(rect: FitRect): BBox {
+  return [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
+}
+
+function unionBBox(a: BBox, b: BBox): BBox {
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]
 }
 
 function withInset(bbox: BBox, px: number): BBox {
@@ -438,13 +456,13 @@ function safeShapeProfileForRect(shape: SafeShapeProfile | null, rect: FitRect):
     centerX: rect.x + rect.width / 2,
     centerY: rect.y + rect.height / 2,
     rect,
-    widthAt: (lineIndex, totalLines) => safeShapeWidthAt(shape, rect, lineIndex, totalLines),
+    widthAt: (lineIndex, totalLines, contentFraction) => safeShapeWidthAt(shape, rect, lineIndex, totalLines, contentFraction),
   }
 }
 
-function safeShapeWidthAt(shape: SafeShapeProfile, rect: FitRect, lineIndex: number, totalLines: number): number {
+function safeShapeWidthAt(shape: SafeShapeProfile, rect: FitRect, lineIndex: number, totalLines: number, contentFraction = 1): number {
   if (totalLines <= 0) return rect.width
-  const y = rect.y + ((lineIndex + 0.5) / totalLines) * rect.height
+  const y = rect.y + centeredLineFraction(lineIndex, totalLines, contentFraction) * rect.height
   const band = Math.max(8, rect.height / Math.max(1, totalLines) * 0.55)
   const widths = shape.spans
     .filter(span => Math.abs(span.y - y) <= band && span.x2 > rect.x && span.x1 < rect.x + rect.width)

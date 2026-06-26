@@ -166,10 +166,16 @@ export function coordinateRoleFontSizes(
 
     // Cluster by similar available space; coordinate only within each cluster.
     for (const cluster of clusterByMaxDomFit(shrunk, results)) {
-      const minFont = Math.min(...cluster.map(i => results[i]!.fontSizePx))
+      const fonts = cluster.map(i => results[i]!.fontSizePx)
+      // Unify toward the smallest, but don't let one cramped bubble drag the
+      // rest far below their own fit: keep the unified size within 15% of the
+      // cluster's largest.  Consistency must not mean "everyone shrinks to the
+      // smallest" — that fights the source-proportional size the user expects.
+      const unifiedFont = Math.max(Math.min(...fonts), Math.round(Math.max(...fonts) * 0.85))
       for (const i of cluster) {
         const r = results[i]!
-        if (r.fontSizePx <= minFont) continue
+        if (r.fontSizePx <= unifiedFont) continue
+        const minFont = unifiedFont
         const scale = minFont / r.fontSizePx
         results[i] = {
           ...r,

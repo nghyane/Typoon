@@ -215,8 +215,9 @@ function composeForLineCount(args: {
 
   const lines = recoverLines(args.segments, prev, args.lineCount, n)
   const lineWidths = recoverWidths(args.widths, prev, args.lineCount, n)
+  const cf = contentFraction(lines.length, args.lineHeightPx, args.height)
   const overflowWidth = lineWidths.some((w, index) => {
-    const limit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, lines.length, index)
+    const limit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, lines.length, index, cf)
     return w > limit + 0.5
   })
   const heightPx = lines.length * args.lineHeightPx
@@ -224,7 +225,7 @@ function composeForLineCount(args: {
   const lineCountPenalty = Math.abs(lines.length - (args.sourceLineCount ?? lines.length)) * 4
   const score = (dp[args.lineCount]![n] ?? Number.POSITIVE_INFINITY) + lineCountPenalty
   const maxFill = lineWidths.reduce((max, w, i) => {
-    const limit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, lines.length, i)
+    const limit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, lines.length, i, cf)
     return Math.max(max, w / Math.max(1, limit))
   }, 0)
 
@@ -242,30 +243,42 @@ function composeForLineCount(args: {
   }
 }
 
+// Text block height ÷ rect height, clamped to 1. A short block centres in a
+// tall bubble, so its lines sit in the wide middle band of the contour rather
+// than spanning to the narrow top/bottom — passed to the shape so it does not
+// over-constrain the font of a few centred lines in a big balloon.
+function contentFraction(lineCount: number, lineHeightPx: number, height: number): number {
+  return Math.min(1, (lineCount * lineHeightPx) / Math.max(1, height))
+}
+
 function lineWidthLimit(
   maxWidth: number,
   shapeProfile: BubbleShapeProfile | undefined,
   requestedLineCount: number,
   actualLineCount: number,
   lineIndex: number,
+  contentFraction = 1,
 ): number {
   if (!shapeProfile) return maxWidth
   if (shapeProfile.kind === 'rect') return maxWidth
   // Map actual line index to the expected position in the requested line count
   const mappedIndex = actualLineCount <= 1 ? 0
     : Math.round((lineIndex / (actualLineCount - 1)) * (requestedLineCount - 1))
-  return Math.min(maxWidth, shapeProfile.widthAt(mappedIndex, requestedLineCount))
+  return Math.min(maxWidth, shapeProfile.widthAt(mappedIndex, requestedLineCount, contentFraction))
 }
 
 function lineCost(args: {
   readonly segments: readonly TextSegment[]
   readonly widths: readonly (readonly number[])[]
   readonly lineCount: number
+  readonly lineHeightPx: number
+  readonly height: number
   readonly width: number
   readonly shapeProfile?: BubbleShapeProfile
 }, start: number, end: number, lineIndex: number): number {
   const actualWidth = args.widths[start]?.[end] ?? Number.POSITIVE_INFINITY
-  const lineLimit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, args.lineCount, lineIndex)
+  const cf = contentFraction(args.lineCount, args.lineHeightPx, args.height)
+  const lineLimit = lineWidthLimit(args.width, args.shapeProfile, args.lineCount, args.lineCount, lineIndex, cf)
 
   // Hard constraint: overflow is never acceptable.
   if (actualWidth > lineLimit) return OVERFLOW_PENALTY
