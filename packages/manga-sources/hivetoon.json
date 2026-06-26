@@ -46,6 +46,21 @@
       }
     ],
 
+    "search": {
+      "method":  "GET",
+      "url":     "https://api.hivetoons.org/api/query?searchTerm={q:q}&perPage=24&page={page}",
+      "parse":   "json",
+      "headers": { "Referer": "https://hivetoon.com/", "Origin": "https://hivetoon.com" },
+      "pagination": { "type": "page", "pageSize": 24 },
+      "list":    "$.posts[*]",
+      "extras":  { "slug": "@slug" },
+      "fields": {
+        "title": "@postTitle",
+        "cover": "@featuredImage",
+        "url":   "=https://hivetoon.com/series/{slug}"
+      }
+    },
+
     "manga": {
       "method": "GET",
       "url":    "{mangaUrl}",
