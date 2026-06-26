@@ -117,7 +117,7 @@ function clusterRegions(regions: readonly TextRegion[], iouThreshold: number): T
   }
   for (let i = 0; i < regions.length; i += 1) {
     for (let j = i + 1; j < regions.length; j += 1) {
-      if (iou(regions[i]!.bbox, regions[j]!.bbox) > iouThreshold) union(i, j)
+      if (sameCluster(regions[i]!.bbox, regions[j]!.bbox, iouThreshold)) union(i, j)
     }
   }
   const buckets = new Map<number, TextRegion[]>()
@@ -128,6 +128,32 @@ function clusterRegions(regions: readonly TextRegion[], iouThreshold: number): T
     else buckets.set(root, [regions[i]!])
   }
   return [...buckets.values()]
+}
+
+// A DETR `bubble` and the `text_bubble`/`text_free` nested inside it describe
+// the same balloon, but their IoU is low because the inner box is much smaller,
+// so a pure-IoU link leaves them as two anchors and re-OCRs the bubble twice —
+// producing duplicate blocks that grouping then concatenates into one doubled
+// placement. Link by containment of the smaller box too: one anchor per balloon.
+const CLUSTER_CONTAINMENT = 0.7
+
+function sameCluster(a: BBox, b: BBox, iouThreshold: number): boolean {
+  if (iou(a, b) > iouThreshold) return true
+  const [inner, outer] = bboxArea(a) <= bboxArea(b) ? [a, b] : [b, a]
+  return containment(inner, outer) >= CLUSTER_CONTAINMENT
+}
+
+function containment(inner: BBox, outer: BBox): number {
+  const ix1 = Math.max(inner[0], outer[0])
+  const iy1 = Math.max(inner[1], outer[1])
+  const ix2 = Math.min(inner[2], outer[2])
+  const iy2 = Math.min(inner[3], outer[3])
+  if (ix1 >= ix2 || iy1 >= iy2) return 0
+  return ((ix2 - ix1) * (iy2 - iy1)) / bboxArea(inner)
+}
+
+function bboxArea(b: BBox): number {
+  return Math.max(1, (b[2] - b[0]) * (b[3] - b[1]))
 }
 
 function pickClusterAnchor(cluster: readonly TextRegion[]): RecoveryAnchor | null {
