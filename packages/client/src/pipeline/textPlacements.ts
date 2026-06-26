@@ -143,7 +143,7 @@ function blockToTextPlacement(block: TextBlock, unitId: string, index: number, p
     wordBoxes: block.words.length ? block.words.map(w => w.bbox) : block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox],
     containerBBox: null,
     role,
-    rotationDeg: block.rotationDeg,
+    rotationDeg: pageTiltRotation(block),
     confidence: block.confidence,
     fontHint: fontHint(block),
     layoutHint: defaultLayoutHint(),
@@ -523,7 +523,27 @@ function classifyMergedBlocks(blocks: readonly TextBlock[], roleContext: TextRol
 
 function maxAbsRotation(blocks: readonly TextBlock[]): number {
   if (!blocks.length) return 0
-  return blocks.reduce((best, block) => Math.abs(block.rotationDeg) > Math.abs(best) ? block.rotationDeg : best, 0)
+  return blocks.reduce((best, block) => {
+    const rot = pageTiltRotation(block)
+    return Math.abs(rot) > Math.abs(best) ? rot : best
+  }, 0)
+}
+
+// A vertical (tategaki) source block reports rotationDeg ≈ ±90 from the OCR to
+// encode its reading axis — not a physical page tilt. Honoring that as a box
+// rotation flips the horizontal translation 90° (unreadable, stacked sideways
+// columns). Collapse the reading axis to its residual tilt (≈0 for an upright
+// bubble). Horizontal blocks keep their real tilt so slanted chat bubbles still
+// render along their baseline.
+function pageTiltRotation(block: TextBlock): number {
+  if (block.textDirection !== 'vertical') return block.rotationDeg
+  return foldQuarterTurn(block.rotationDeg)
+}
+
+// Reduce an angle into (-45, 45] by removing quarter turns: 90 → 0, -90 → 0,
+// 92 → 2, while a true small tilt like 10 is preserved.
+function foldQuarterTurn(deg: number): number {
+  return (((deg + 45) % 90) + 90) % 90 - 45
 }
 
 // Shared tilt of a multi-block group, used to render dialogue/narration along a
@@ -533,7 +553,7 @@ function maxAbsRotation(blocks: readonly TextBlock[]): number {
 const COHERENT_ROTATION_SPREAD_DEG = 4
 
 function coherentRotation(blocks: readonly TextBlock[]): number {
-  const angles = blocks.map(block => block.rotationDeg)
+  const angles = blocks.map(pageTiltRotation)
   if (!angles.length) return 0
   const med = median(angles)
   const maxDeviation = Math.max(...angles.map(angle => Math.abs(angle - med)))
@@ -603,10 +623,11 @@ function drawableForBlock(block: TextBlock, role: TextRole, pageSize: readonly [
   const y1 = unionBox[1] - pad
   const x2 = unionBox[2] + pad
   const y2 = unionBox[3] + pad
-  if (Math.abs(block.rotationDeg) > 1) {
+  const rotationDeg = pageTiltRotation(block)
+  if (Math.abs(rotationDeg) > 1) {
     const cx = (x1 + x2) / 2
     const cy = (y1 + y2) / 2
-    return orientedRect(cx, cy, x2 - x1, y2 - y1, block.rotationDeg)
+    return orientedRect(cx, cy, x2 - x1, y2 - y1, rotationDeg)
   }
   return bboxToPolygon(clipBBox([x1, y1, x2, y2], pageSize))
 }
