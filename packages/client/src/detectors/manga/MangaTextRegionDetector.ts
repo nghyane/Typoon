@@ -4,16 +4,12 @@ import { CapabilityMachine } from '../../runtime/CapabilityMachine'
 import type { ImagePixels } from '../../domain/image'
 import type { TextRegion } from '../../domain/regions'
 import type { TextRegionDetector } from '../textRegions'
-import { MainThreadOrtRunner } from './MainThreadOrtRunner'
-import { COMIC_DETR_DEFAULT_CONFIDENCE, type ComicDetrProvider } from './ortTypes'
 import type { TextRegionRunner } from './TextRegionRunner'
-import type { OrtSessionPool } from '../../models/OrtSessionPool'
 
 export interface ComicDetrDetectorOptions {
   readonly model: ModelLoader
-  readonly confidenceThreshold?: number
-  readonly preferredProviders?: readonly ComicDetrProvider[]
-  readonly sessionPool: OrtSessionPool
+  /** Injected inference backend (main-thread ORT or worker ORT). */
+  readonly runner: TextRegionRunner
 }
 
 export class MangaTextRegionDetector implements TextRegionDetector, Capability {
@@ -22,12 +18,7 @@ export class MangaTextRegionDetector implements TextRegionDetector, Capability {
   private readonly runner: TextRegionRunner
 
   constructor(options: ComicDetrDetectorOptions) {
-    this.runner = new MainThreadOrtRunner({
-      model: options.model,
-      confidenceThreshold: options.confidenceThreshold ?? COMIC_DETR_DEFAULT_CONFIDENCE,
-      providers: options.preferredProviders,
-      sessionPool: options.sessionPool,
-    })
+    this.runner = options.runner
     options.model.subscribeStatus(status => {
       if (status.state === 'resolving' || status.state === 'downloading' || status.state === 'failed') {
         this.capability.mirror(status)

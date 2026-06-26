@@ -5,6 +5,11 @@
 import { detectBrowserCapabilities, type BrowserCapabilities } from '../adapters/browserCapabilities'
 import { ModelRepository } from '../adapters/ModelRepository'
 import { MangaTextRegionDetector } from '../detectors/manga/MangaTextRegionDetector'
+import { MainThreadOrtRunner } from '../detectors/manga/MainThreadOrtRunner'
+import { WorkerOrtRunner } from '../detectors/manga/WorkerOrtRunner'
+import type { TextRegionRunner } from '../detectors/manga/TextRegionRunner'
+import { COMIC_DETR_DEFAULT_CONFIDENCE } from '../detectors/manga/ortTypes'
+import type { ModelLoader } from '../models/ModelLoader'
 import type { TextRegionDetector } from '../detectors/textRegions'
 import type { CapabilityStatus } from '../domain/capability'
 import type { ImagePixels } from '../domain/image'
@@ -100,17 +105,53 @@ function defaultTextRegionDetector(signal: AbortSignal, config: TranslationConfi
 async function createTextRegionDetector(signal: AbortSignal, config: TranslationConfig): Promise<TextRegionDetector> {
   throwIfAborted(signal)
   const caps = detectBrowserCapabilities()
-  const ortRuntime = await configureOrtRuntime(caps)
   const model = await repository(config).model(caps.modelHint.modelId)
-  const detector = new MangaTextRegionDetector({
-    model,
-    sessionPool: ortRuntime.sessionPool,
-    preferredProviders: ortRuntime.providers,
-  })
+
+  if (config.detector.useWorker) {
+    try {
+      return await startDetector(model, workerRunner(caps, model), signal)
+    } catch (error) {
+      if (signal.aborted) throw error
+      // Worker path failed (build/runtime/provider): fall back to main thread so
+      // detection still works; the model bytes are already resolved.
+    }
+  }
+  return startDetector(model, await mainThreadRunner(caps, model), signal)
+}
+
+async function startDetector(model: ModelLoader, runner: TextRegionRunner, signal: AbortSignal): Promise<TextRegionDetector> {
+  const detector = new MangaTextRegionDetector({ model, runner })
   detector.subscribeStatus(status => publishModelState(capabilityToModelState(status)))
   publishModelState(capabilityToModelState(detector.status()))
   await detector.ensureReady({ signal })
   return detector
+}
+
+async function mainThreadRunner(caps: BrowserCapabilities, model: ModelLoader): Promise<TextRegionRunner> {
+  const ortRuntime = await configureOrtRuntime(caps)
+  return new MainThreadOrtRunner({
+    model,
+    confidenceThreshold: COMIC_DETR_DEFAULT_CONFIDENCE,
+    providers: ortRuntime.providers,
+    sessionPool: ortRuntime.sessionPool,
+  })
+}
+
+function workerRunner(caps: BrowserCapabilities, model: ModelLoader): TextRegionRunner {
+  const provider = caps.modelHint.preferredProvider
+  return new WorkerOrtRunner({
+    model,
+    confidenceThreshold: COMIC_DETR_DEFAULT_CONFIDENCE,
+    provider,
+    wasmPaths: resolveWasmPaths(provider),
+    numThreads: caps.modelHint.wasmNumThreads,
+  })
+}
+
+function resolveWasmPaths(provider: OrtProvider): { wasm: string; mjs: string } {
+  return provider === 'webgpu'
+    ? absoluteWasmPaths(ortWebgpuWasmUrl, ortWebgpuMjsUrl)
+    : absoluteWasmPaths(ortWasmUrl, ortWasmMjsUrl)
 }
 
 function publishModelState(state: ReaderModelState): void {

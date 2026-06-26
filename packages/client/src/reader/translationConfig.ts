@@ -9,6 +9,8 @@ export interface TranslationConfig {
   readonly scan: ScanConfig
   readonly resilience: { readonly maxChunkAttempts: number; readonly backoffMs: number }
   readonly memory: { readonly maxCachedPages: number }
+  /** Run Comic-DETR inference in a Web Worker to keep the main thread free. */
+  readonly detector: { readonly useWorker: boolean }
   readonly translator: {
     readonly maxSessionsDesktop: number
     readonly maxSessionsMobile: number
@@ -35,6 +37,7 @@ export const defaultTranslationConfig: TranslationConfig = {
   scan: { maxCaptureWidth: 1280, haloRatio: 0.25, haloMaxPx: 600 },
   resilience: { maxChunkAttempts: 3, backoffMs: 400 },
   memory: { maxCachedPages: 12 },
+  detector: { useWorker: false },
   translator: { maxSessionsDesktop: 3, maxSessionsMobile: 1, maxPagesInFlightDesktop: 3, maxPagesInFlightMobile: 1 },
 }
 

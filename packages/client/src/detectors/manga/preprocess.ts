@@ -10,7 +10,9 @@ export function createFeeds(ortModule: OrtModule, image: ImagePixels): Record<st
   }
 }
 
-function prepareImageTensor(image: ImagePixels): Float32Array {
+/** Canvas resize + CHW normalization, independent of the ORT module so it can
+ *  run on the main thread and ship the planar tensor to a worker. */
+export function prepareImageTensor(image: ImagePixels): Float32Array {
   const source = document.createElement('canvas')
   source.width = image.width
   source.height = image.height
