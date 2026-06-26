@@ -222,7 +222,14 @@ export async function fetchBrowse(
 	if (!ep) return [];
 	const page = args.page ?? 1;
 	const off = ep.pagination?.type === 'offset' ? (page - 1) * ep.pagination.pageSize : 0;
-	const vars: Vars = { q: args.q ?? '', page, offset: off, filterParams: args.filterParams ?? '' };
+	// `inject: 'query'` filters fold their terms into q so the existing {q:q}
+	// encoder URL-escapes them alongside any typed query (e.g. nhentai tags).
+	const q = [args.q ?? '', args.filterQuery ?? ''].filter(Boolean).join(' ');
+	const vars: Vars = {
+		q, page, offset: off,
+		filterParams: args.filterParams ?? '',
+		filterPath: args.filterPath ?? '',
+	};
 	const { url, parsed } = await fetchE(ep, vars, args.userCookies ?? {}, m, 'browse');
 	const re = rootExtras(parsed, ep.parse, ep.rootExtras, vars);
 	const g: Vars = { ...vars, ...re };

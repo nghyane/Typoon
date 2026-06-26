@@ -1,7 +1,7 @@
 // Manifest metadata — sync inspection of source capability.
 // Called by Explore UI before issuing browse/detail fetches.
 import { getAdapter } from '../adapters';
-import type { SourceManifest, Shelf } from '../types';
+import type { SourceManifest, Shelf, Filter } from '../types';
 
 export interface ShelfDescriptor {
 	id: string;
@@ -66,7 +66,16 @@ export function searchPageSize(manifest: SourceManifest): number {
 	return manifest.endpoints?.search?.pagination?.pageSize ?? Infinity;
 }
 
-export function getFilters(manifest: SourceManifest) {
+/**
+ * Active filters for the current browse target. Shelf-level filters (when the
+ * shelf declares them) take precedence over source-level `manifest.filters`;
+ * `search` and shelves without their own filters fall back to source-level.
+ */
+export function getFilters(manifest: SourceManifest, shelfId?: string): Filter[] {
+	if (shelfId) {
+		const shelf = manifest.endpoints?.shelves.find((s) => s.id === shelfId);
+		if (shelf?.filters) return shelf.filters;
+	}
 	return manifest.filters ?? [];
 }
 
@@ -74,31 +83,48 @@ export function getDefaultFilterState(manifest: SourceManifest): Record<string, 
 	return { ...(manifest.defaults ?? {}) };
 }
 
-export function assembleFilterParams(
-	manifest: SourceManifest,
+export interface AssembledFilters {
+	/** `&a&b` query fragments for `inject: 'param'` filters (`{filterParams}`). */
+	params: string;
+	/** single path segment for an `inject: 'path'` filter (`{filterPath}`). */
+	path: string;
+	/** extra `q` terms for `inject: 'query'` filters, space-joined. */
+	query: string;
+}
+
+/** Splits the selected options of `filters` into per-injection-mode request pieces. */
+export function assembleFilters(
+	filters: Filter[],
 	state: Record<string, string | string[]>,
-): string {
-	if (!manifest.filters) return '';
-	const fragments: string[] = [];
-	for (const filter of manifest.filters) {
+): AssembledFilters {
+	const params: string[] = [];
+	const queryTerms: string[] = [];
+	let path = '';
+	for (const filter of filters) {
 		const selected = state[filter.id];
 		if (selected == null) continue;
 		const ids = Array.isArray(selected) ? selected : [selected];
 		for (const id of ids) {
 			const option = filter.options.find((item) => item.id === id);
-			if (option?.param) fragments.push(option.param);
+			if (!option?.param) continue;
+			if (filter.inject === 'path') path = option.param;
+			else if (filter.inject === 'query') queryTerms.push(option.param);
+			else params.push(option.param);
 		}
 	}
-	return fragments.length > 0 ? '&' + fragments.join('&') : '';
+	return {
+		params: params.length > 0 ? '&' + params.join('&') : '',
+		path,
+		query: queryTerms.join(' '),
+	};
 }
 
 export function assembleFilterState(
-	manifest: SourceManifest,
+	filters: Filter[],
 	state: Record<string, string | string[]>,
 ): Record<string, string | string[]> {
-	if (!manifest.filters) return {};
 	const out: Record<string, string | string[]> = {};
-	for (const filter of manifest.filters) {
+	for (const filter of filters) {
 		const selected = state[filter.id];
 		if (selected == null) continue;
 		const ids = Array.isArray(selected) ? selected : [selected];

@@ -22,6 +22,12 @@ export interface Filter {
 	id: string;
 	label: string;
 	type: 'select' | 'multi';
+	/** How selected option `param`s reach the request. Default `'param'`.
+	 *  - `param`: query fragments joined with `&`, substituted at `{filterParams}`.
+	 *  - `path`:  a single value substituted at `{filterPath}` (single-select; always
+	 *             keeps one option active so the path never goes empty).
+	 *  - `query`: terms folded into the `q` value (space-joined), e.g. nhentai tags. */
+	inject?: 'param' | 'path' | 'query';
 	options: FilterOption[];
 }
 
@@ -140,6 +146,9 @@ export interface Shelf {
 	id: string;
 	label: string;
 	hint?: string;
+	/** Filters scoped to this shelf only. When present they override the
+	 *  source-level `manifest.filters` while this shelf is active. */
+	filters?: Filter[];
 	endpoint: BrowseEndpoint;
 }
 
@@ -181,7 +190,12 @@ export interface ChapterPages {
 export interface BrowseArgs {
 	q?: string;
 	page?: number;
+	/** Query fragments (`&a&b`) for `inject: 'param'` filters, spliced at `{filterParams}`. */
 	filterParams?: string;
+	/** Single path segment for an `inject: 'path'` filter, spliced at `{filterPath}`. */
+	filterPath?: string;
+	/** Extra `q` terms for `inject: 'query'` filters; folded into the search query. */
+	filterQuery?: string;
 	filterState?: Record<string, string | string[]>;
 	userCookies?: Record<string, string>;
 }

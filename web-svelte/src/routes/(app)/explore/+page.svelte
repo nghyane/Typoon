@@ -4,15 +4,17 @@
   import { Check, Compass, Plus, Search } from 'lucide-svelte';
   import { listSources } from '$lib/source/registry';
   import {
-    assembleFilterParams,
+    assembleFilters,
     assembleFilterState,
     getDefaultFilterState,
+    getFilters,
     getShelves,
     hasSearch,
     searchPageSize,
     shelfPageSize,
   } from '$lib/source/runtime/metadata';
   import { fetchBrowse } from '$lib/source/runtime/endpoints';
+  import FilterChips from '$lib/source/FilterChips.svelte';
   import type { InstalledSource, MangaSummary } from '$lib/source/types';
   import { listWorksBySourceRefs, ensureWorkFromSource } from '$lib/works/repo';
   import type { Work } from '$lib/db';
@@ -42,13 +44,32 @@
   const source = $derived(sources.find((s) => s.manifest.id === sourceId) ?? null);
   const shelves = $derived(source ? getShelves(source.manifest) : []);
   const canSearch = $derived(source ? hasSearch(source.manifest) : false);
-  const filters = $derived(source ? getDefaultFilterState(source.manifest) : {});
-  const filterParams = $derived(source ? assembleFilterParams(source.manifest, filters) : '');
-  const typedFilterState = $derived(source ? assembleFilterState(source.manifest, filters) : {});
+
+  // Interactive filter selection (resets to source defaults when the source changes).
+  let filterState = $state<Record<string, string | string[]>>({});
+
+  // A query-inject filter (e.g. nhentai tags) only works through the search
+  // endpoint, so an active one forces the search target even without typed text.
+  const sourceFilters = $derived(source ? getFilters(source.manifest) : []);
+  const queryInjectActive = $derived(
+    sourceFilters.some((f) => f.inject === 'query' && filterState[f.id] != null),
+  );
 
   const target = $derived(
-    canSearch && debouncedQuery ? { search: true as const } : shelfId || null,
+    canSearch && (debouncedQuery || queryInjectActive) ? { search: true as const } : shelfId || null,
   );
+
+  // Filters scoped to the active target: source-level for search, shelf-level
+  // (falling back to source-level) for a shelf.
+  const activeFilters = $derived(
+    !source || target == null
+      ? []
+      : typeof target === 'object'
+        ? getFilters(source.manifest)
+        : getFilters(source.manifest, target),
+  );
+  const assembled = $derived(assembleFilters(activeFilters, filterState));
+  const typedFilterState = $derived(assembleFilterState(activeFilters, filterState));
 
   const browsePageSize = $derived(
     source && target
@@ -60,14 +81,16 @@
   // ── Infinite query (replaces manual loading/pagination/$effect) ──
 
   const browseQuery = createInfiniteQuery(() => ({
-    queryKey: ['explore', source?.manifest.id, target, debouncedQuery, filterParams] as const,
+    queryKey: ['explore', source?.manifest.id, target, debouncedQuery, assembled.params, assembled.path, assembled.query] as const,
     queryFn: ({ pageParam }: { pageParam: number }) => {
       const src = source!;
       const t = target!;
       return fetchBrowse(src.manifest, t, {
         page: pageParam,
         q: debouncedQuery || undefined,
-        filterParams,
+        filterParams: assembled.params,
+        filterPath: assembled.path,
+        filterQuery: assembled.query,
         filterState: typedFilterState,
       });
     },
@@ -125,6 +148,7 @@
     shelfId = shelves[0]?.id ?? '';
     query = '';
     debouncedQuery = '';
+    filterState = getDefaultFilterState(source.manifest);
   });
 
   $effect(() => {
@@ -245,6 +269,12 @@
             )}
           >{shelf.label}</button>
         {/each}
+      </div>
+    {/if}
+
+    {#if activeFilters.length > 0}
+      <div class="flex flex-wrap items-center gap-2">
+        <FilterChips filters={activeFilters} selection={filterState} onChange={(next) => { filterState = next; }} />
       </div>
     {/if}
 
