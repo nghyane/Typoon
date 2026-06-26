@@ -82,19 +82,7 @@ function groupedTextPlacements(
       : subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
     for (const subgroup of splitMixedRoleSubgroups(subgroups, blocks, roleContext)) {
       const members = subgroup.map(index => ({ block: blocks[index]!, index }))
-      // With Lens tiling, each block is one correctly-segmented paragraph. A
-      // merge whose union box is far too sparse for its glyphs is therefore a
-      // fusion of DISTINCT paragraphs (a wide text_free region that swept up
-      // several independent monologue/dialogue blocks), not one bubble. Emit its
-      // members as individual placements instead of one over-wide box. Tight
-      // multi-block bubbles stay merged (dense union).
-      if (members.length > 1 && isFusionGroup(members.map(member => member.block))) {
-        for (const { block, index } of members) {
-          placements.push(blockToTextPlacement(block, units[index]?.id ?? blockUnitId(pageIndex, index), placements.length, pageIndex, pageSize, roleContext))
-        }
-      } else {
-        placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
-      }
+      placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
     }
     memberIds.forEach(index => assigned.add(index))
   }
@@ -287,6 +275,104 @@ function countAxisGaps(boxes: readonly BBox[], lo: 0 | 1, hi: 2 | 3, threshold: 
 
 function subgroupBlockIds(indices: readonly number[], blocks: readonly TextBlock[], container: BBox): number[][] {
   if (indices.length <= 1) return [Array.from(indices)]
+  const verticalIds = indices.filter(index => blocks[index]!.textDirection === 'vertical')
+  const otherIds = indices.filter(index => blocks[index]!.textDirection !== 'vertical')
+  const groups: number[][] = []
+  if (verticalIds.length) groups.push(...tategakiColumnClusters(verticalIds, blocks))
+  if (otherIds.length) groups.push(...subgroupHorizontalBlockIds(otherIds, blocks, container))
+  return groups
+}
+
+// Canonical _merge_tategaki_columns (lens_native.py). Vertical Lens columns are
+// chain-clustered right-to-left: each column joins the open cluster with the
+// strongest y-overlap that also fits a width-scaled x-gap budget. Merges that
+// fail the font / outsider / column-count guards fall back to singletons. This
+// replaces naive transitive union-find, which collapses every y-overlapping
+// column on a tategaki page into one page-spanning box.
+const TATEGAKI_Y_OVERLAP_MIN = 0.50
+const TATEGAKI_X_GAP_FLOOR = 80
+const TATEGAKI_X_GAP_WIDTH_MULT = 2.0
+const TATEGAKI_FONT_RATIO_MAX = 1.8
+const TATEGAKI_MAX_COLUMNS = 6
+
+function tategakiColumnClusters(ids: readonly number[], blocks: readonly TextBlock[]): number[][] {
+  const order = [...ids].sort((a, b) => xCentre(blocks[b]!.bbox) - xCentre(blocks[a]!.bbox))
+  const clusters: number[][] = []
+  for (const id of order) {
+    const box = blocks[id]!.bbox
+    let bestIdx = -1
+    let bestScore = -1
+    for (let ci = 0; ci < clusters.length; ci += 1) {
+      const members = clusters[ci]!
+      if (!columnCompatible(box, members, blocks)) continue
+      const score = Math.max(...members.map(m => yOverlap(box, blocks[m]!.bbox)))
+      if (score > bestScore) {
+        bestScore = score
+        bestIdx = ci
+      }
+    }
+    if (bestIdx >= 0) clusters[bestIdx]!.push(id)
+    else clusters.push([id])
+  }
+  const final: number[][] = []
+  for (const cluster of clusters) {
+    if (cluster.length === 1
+      || (cluster.length <= TATEGAKI_MAX_COLUMNS
+        && passesColumnFontGuard(cluster, blocks)
+        && passesColumnOutsiderGuard(cluster, ids, blocks))) {
+      final.push(cluster)
+    } else {
+      for (const id of cluster) final.push([id])
+    }
+  }
+  return final
+}
+
+function xCentre(box: BBox): number {
+  return (box[0] + box[2]) / 2
+}
+
+// y-overlap >= min with at least one existing member AND a signed x-gap to the
+// leftmost member within the width-scaled budget (the chain extends left under
+// the right-to-left sweep). -2 tolerates 1px rounding overlap.
+function columnCompatible(candidate: BBox, members: readonly number[], blocks: readonly TextBlock[]): boolean {
+  if (!members.some(m => yOverlap(candidate, blocks[m]!.bbox) >= TATEGAKI_Y_OVERLAP_MIN)) return false
+  const leftBox = members.reduce((best, m) => blocks[m]!.bbox[0] < best[0] ? blocks[m]!.bbox : best, blocks[members[0]!]!.bbox)
+  const candW = Math.max(1, candidate[2] - candidate[0])
+  const leftW = Math.max(1, leftBox[2] - leftBox[0])
+  const gapCap = Math.max(TATEGAKI_X_GAP_FLOOR, Math.min(candW, leftW) * TATEGAKI_X_GAP_WIDTH_MULT)
+  const gap = Math.max(candidate[0], leftBox[0]) - Math.min(candidate[2], leftBox[2])
+  return gap >= -2 && gap <= gapCap
+}
+
+// Same-bubble tategaki columns share a glyph size; for vertical text glyph size
+// ~= column bbox width. Reject clusters whose widest/narrowest column diverge.
+function passesColumnFontGuard(cluster: readonly number[], blocks: readonly TextBlock[]): boolean {
+  const sizes = cluster.map(id => Math.max(1, blocks[id]!.bbox[2] - blocks[id]!.bbox[0]))
+  if (sizes.length < 2) return true
+  return Math.max(...sizes) / Math.min(...sizes) <= TATEGAKI_FONT_RATIO_MAX
+}
+
+// Reject clusters whose union bbox swallows a vertical column from another
+// bubble: a non-member centre inside the union means the cluster crossed a
+// bubble boundary.
+function passesColumnOutsiderGuard(cluster: readonly number[], allVertical: readonly number[], blocks: readonly TextBlock[]): boolean {
+  const member = new Set(cluster)
+  const x1 = Math.min(...cluster.map(id => blocks[id]!.bbox[0]))
+  const y1 = Math.min(...cluster.map(id => blocks[id]!.bbox[1]))
+  const x2 = Math.max(...cluster.map(id => blocks[id]!.bbox[2]))
+  const y2 = Math.max(...cluster.map(id => blocks[id]!.bbox[3]))
+  return !allVertical.some(id => {
+    if (member.has(id)) return false
+    const box = blocks[id]!.bbox
+    const cx = (box[0] + box[2]) / 2
+    const cy = (box[1] + box[3]) / 2
+    return x1 <= cx && cx <= x2 && y1 <= cy && cy <= y2
+  })
+}
+
+function subgroupHorizontalBlockIds(indices: readonly number[], blocks: readonly TextBlock[], container: BBox): number[][] {
+  if (indices.length <= 1) return [Array.from(indices)]
 
   const boxes = indices.map(index => blocks[index]!.bbox)
   const textUnion = unionBBoxes(boxes) ?? container
@@ -337,7 +423,6 @@ function subgroupBlockIds(indices: readonly number[], blocks: readonly TextBlock
     const blockA = blocks[i]!
     const a = blockA.bbox
     const ah = Math.max(1, a[3] - a[1])
-    const aVert = blockA.textDirection === 'vertical'
     for (const j of indices.slice(aPos + 1)) {
       const blockB = blocks[j]!
       const b = blockB.bbox
@@ -349,21 +434,11 @@ function subgroupBlockIds(indices: readonly number[], blocks: readonly TextBlock
       const minH = Math.max(1, Math.min(ah, bh))
       const heightRatio = Math.max(ah, bh) / minH
 
-      // Vertical (tategaki) columns: width-scaled x-gap (ported from lens_native.py)
-      // Horizontal blocks: height-scaled gap (ported from groups.py subgroup_blocks)
-      if (aVert) {
-        const aw = Math.max(1, a[2] - a[0])
-        const bw = Math.max(1, b[2] - b[0])
-        const gapCap = Math.max(80, Math.min(aw, bw) * 2.0)
-        const yOverlapRatio = yOverlap(a, b)
-        const gapX = xGap(a, b)
-        if (yOverlapRatio >= 0.55 && gapX <= gapCap && heightRatio < 1.8) join(i, j)
-      } else {
-        const sameColumn = xOverlap(a, b) > (strict ? 0.70 : 0.55) && yGap(a, b) <= minH * (strict ? 0.65 : 1.20) && heightRatio < (strict ? 1.7 : 2.1)
-        const sameRow = yOverlap(a, b) > (strict ? 0.70 : 0.60) && xGap(a, b) <= minH * (strict ? 1.50 : 2.00) && heightRatio < (strict ? 1.7 : 2.1)
-        const overlaps = !strict && (iou(a, b) > 0.12 || containment(a, b) > 0.35 || containment(b, a) > 0.35)
-        if (sameColumn || sameRow || overlaps) join(i, j)
-      }
+      // Horizontal blocks: height-scaled gap (ported from groups.py subgroup_blocks).
+      const sameColumn = xOverlap(a, b) > (strict ? 0.70 : 0.55) && yGap(a, b) <= minH * (strict ? 0.65 : 1.20) && heightRatio < (strict ? 1.7 : 2.1)
+      const sameRow = yOverlap(a, b) > (strict ? 0.70 : 0.60) && xGap(a, b) <= minH * (strict ? 1.50 : 2.00) && heightRatio < (strict ? 1.7 : 2.1)
+      const overlaps = !strict && (iou(a, b) > 0.12 || containment(a, b) > 0.35 || containment(b, a) > 0.35)
+      if (sameColumn || sameRow || overlaps) join(i, j)
     }
   }
 
@@ -435,22 +510,6 @@ function sortForReading(blocks: readonly TextBlock[]): TextBlock[] {
   const vertical = blocks.filter(block => block.textDirection === 'vertical').length
   if (vertical * 2 >= blocks.length) return [...blocks].sort((a, b) => b.bbox[0] - a.bbox[0] || a.bbox[1] - b.bbox[1])
   return [...blocks].sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0])
-}
-
-// Packing density of a merged group's tight word union: area / (glyph² × chars).
-// Real prose packs glyphs densely; a fusion of distinct paragraphs leaves the
-// union mostly empty. Mirrors the canonical huge_bbox ratio, applied to the
-// MERGED box. Threshold 8 (vs 6 for a single block) allows for the inter-block
-// gaps inside one genuine multi-paragraph bubble.
-const MAX_GROUP_AREA_PER_GLYPH_RATIO = 8
-
-function isFusionGroup(blocks: readonly TextBlock[]): boolean {
-  const unionArea = area(wordUnion(blocks))
-  const chars = blocks.reduce((total, block) => total + [...block.text].filter(ch => !/\s/u.test(ch)).length, 0)
-  if (chars < 1) return false
-  const glyph = median(blocks.map(medianGlyphSize).filter(n => n > 0))
-  if (glyph <= 0) return false
-  return unionArea / (glyph * glyph * chars) > MAX_GROUP_AREA_PER_GLYPH_RATIO
 }
 
 function classifyMergedBlocks(blocks: readonly TextBlock[], roleContext: TextRoleContext): TextRole {

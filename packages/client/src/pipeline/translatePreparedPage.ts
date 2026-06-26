@@ -132,11 +132,15 @@ function groupSpeechLines(recognized: RecognizedTextPage, regions: readonly Text
   for (const edge of graph.edges) {
     const a = ordered[edge.a]!
     const b = ordered[edge.b]!
-    const strongContinuation = strongLineContinuation(a, b, graph.stats)
-    if (differentRegionContainers(regionKeys[edge.a] ?? null, regionKeys[edge.b] ?? null) && !strongContinuation) continue
-    // Respect Lens paragraph boundaries — lines from different paragraphs
-    // must not merge unless the geometry convincingly says they belong together.
-    if (a.sourceBlock !== b.sourceBlock && !strongContinuation) continue
+    if (differentRegionContainers(regionKeys[edge.a] ?? null, regionKeys[edge.b] ?? null)) continue
+    // Respect Lens paragraph boundaries — only lines from the SAME Lens paragraph
+    // merge here (intra-bubble columns/rows). Reassembling columns that belong to
+    // one bubble but landed in different Lens paragraphs is the job of the guarded
+    // tategaki chain-cluster in textPlacements, which has the outsider/column-count
+    // guards this line-level union-find lacks. Allowing a cross-paragraph vertical
+    // "strong continuation" here let transitive union-find collapse every
+    // y-overlapping tategaki column on a page into one giant block.
+    if (a.sourceBlock !== b.sourceBlock) continue
     if (!canMergeSpeechLine(a, context) || !canMergeSpeechLine(b, context)) continue
     if (!sameTextRegionPair(a, b, graph.stats)) continue
     if (hardNegativeLineConflict(a, b, graph.stats)) continue
@@ -353,11 +357,6 @@ function verticalColumnContinuation(metrics: LinePairMetrics): boolean {
     && metrics.secondaryOverlap >= 0.72
     && metrics.centerShiftSpan <= 0.38
     && metrics.fontRatio <= 4.75
-}
-
-function strongLineContinuation(a: SpeechLine, b: SpeechLine, stats: LineGeometryStats): boolean {
-  const metrics = linePairMetrics(a, b, stats.medianFontPx)
-  return metrics ? verticalColumnContinuation(metrics) : false
 }
 
 function linePairMetrics(a: SpeechLine, b: SpeechLine, fallbackFontPx: number): LinePairMetrics | null {
