@@ -120,7 +120,7 @@ function groupToTextPlacement(
     bbox: polygonBBox(drawable, pageSize),
     textBoxes: ordered.flatMap(block => block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox]),
     wordBoxes: ordered.flatMap(block => block.words.length ? block.words.map(w => w.bbox) : block.lines.length ? block.lines.map(line => line.bbox) : [block.bbox]),
-    containerBBox: anchor.kind === 'bubble' || anchor.kind === 'text_bubble' ? (anchor.innerBBox ?? anchor.bbox) : null,
+    containerBBox: anchor.kind === 'bubble' || anchor.kind === 'text_bubble' ? anchor.bbox : null,
     role,
     rotationDeg: maxAbsRotation(ordered),
     confidence: Math.max(...ordered.map(block => block.confidence), anchor.confidence),
