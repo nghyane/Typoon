@@ -3,7 +3,21 @@ import type { TextRegion } from '../../domain/regions'
 
 const BBOX_PAD_PX = 6
 const CLASS_NAMES = ['bubble', 'text_bubble', 'text_free'] as const
+const NUM_CLASSES = CLASS_NAMES.length
 
+/**
+ * Decode Comic-DETR's raw head outputs into text regions.
+ *
+ * The model is exported WITHOUT its postprocessor: the in-graph TopK/Gather and
+ * the int64 `orig_target_sizes` box scaling are removed because WebGPU can't run
+ * those ops, so they forced GPU→CPU→GPU copies every page. The model now emits
+ * two per-query tensors and we do the (cheap) decode here:
+ *   scores [1, Q, C]  already sigmoid-activated, row-major  → index q*C + c
+ *   boxes  [1, Q, 4]  xyxy in normalised [0,1] coords        → index q*4 + k
+ * Thresholding every (query, class) pair and scaling to page pixels is
+ * equivalent to the original postprocessor's topk-then-threshold for any
+ * realistic detection count (< Q).
+ */
 export function parseDetections(
   output: Record<string, ort.Tensor>,
   outputNames: readonly string[],
@@ -11,26 +25,26 @@ export function parseDetections(
   pageH: number,
   confidenceThreshold: number,
 ): TextRegion[] {
-  const labels = tensorByName(output, outputNames, 'labels')
-  const boxes = tensorByName(output, outputNames, 'boxes')
   const scores = tensorByName(output, outputNames, 'scores')
-  const labelData = labels.data as BigInt64Array | Int32Array | Float32Array
-  const boxData = boxes.data as Float32Array
+  const boxes = tensorByName(output, outputNames, 'boxes')
   const scoreData = scores.data as Float32Array
+  const boxData = boxes.data as Float32Array
+  const queries = Math.floor(scoreData.length / NUM_CLASSES)
   const out: TextRegion[] = []
-  for (let i = 0; i < scoreData.length; i++) {
-    const score = Number(scoreData[i] ?? 0)
-    if (score < confidenceThreshold) continue
-    const clsId = Number(labelData[i] ?? -1)
-    const className = CLASS_NAMES[clsId]
-    if (!className) continue
-    const offset = i * 4
-    const x1 = clamp(Math.floor(Number(boxData[offset] ?? 0)) - BBOX_PAD_PX, 0, pageW)
-    const y1 = clamp(Math.floor(Number(boxData[offset + 1] ?? 0)) - BBOX_PAD_PX, 0, pageH)
-    const x2 = clamp(Math.ceil(Number(boxData[offset + 2] ?? 0)) + BBOX_PAD_PX, 0, pageW)
-    const y2 = clamp(Math.ceil(Number(boxData[offset + 3] ?? 0)) + BBOX_PAD_PX, 0, pageH)
-    if (x2 <= x1 || y2 <= y1) continue
-    out.push({ kind: className, bbox: [x1, y1, x2, y2], confidence: score })
+  for (let q = 0; q < queries; q++) {
+    const offset = q * 4
+    for (let c = 0; c < NUM_CLASSES; c++) {
+      const score = scoreData[q * NUM_CLASSES + c] ?? 0
+      if (score < confidenceThreshold) continue
+      const className = CLASS_NAMES[c]
+      if (!className) continue
+      const x1 = clamp(Math.floor((boxData[offset] ?? 0) * pageW) - BBOX_PAD_PX, 0, pageW)
+      const y1 = clamp(Math.floor((boxData[offset + 1] ?? 0) * pageH) - BBOX_PAD_PX, 0, pageH)
+      const x2 = clamp(Math.ceil((boxData[offset + 2] ?? 0) * pageW) + BBOX_PAD_PX, 0, pageW)
+      const y2 = clamp(Math.ceil((boxData[offset + 3] ?? 0) * pageH) + BBOX_PAD_PX, 0, pageH)
+      if (x2 <= x1 || y2 <= y1) continue
+      out.push({ kind: className, bbox: [x1, y1, x2, y2], confidence: score })
+    }
   }
   return out
 }

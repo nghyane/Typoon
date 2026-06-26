@@ -44,16 +44,17 @@ const api: OrtWorkerApi = {
     return outputNames
   },
 
-  run({ images, width, height }: OrtRunArgs): Promise<OrtRunResult> {
-    return inferenceLock.run(async () => runInference({ images, width, height }))
+  run(args: OrtRunArgs): Promise<OrtRunResult> {
+    return inferenceLock.run(async () => runInference(args))
   },
 }
 
-async function runInference({ images, width, height }: OrtRunArgs): Promise<OrtRunResult> {
+async function runInference({ images }: OrtRunArgs): Promise<OrtRunResult> {
     if (!session || !mod) throw new Error('ort worker not initialized')
+    // Raw model takes only `images`; boxes are scaled by page size in
+    // parseDetections (on the main thread), so width/height aren't fed here.
     const feeds = {
       images: new mod.Tensor('float32', images, [1, 3, COMIC_DETR_INPUT_SIZE, COMIC_DETR_INPUT_SIZE]),
-      orig_target_sizes: new mod.Tensor('int64', new BigInt64Array([BigInt(width), BigInt(height)]), [1, 2]),
     }
     const out = await session.run(feeds)
     const outputs: Record<string, { data: ArrayBufferView; dims: readonly number[]; type: string }> = {}

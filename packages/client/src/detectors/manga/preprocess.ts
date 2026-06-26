@@ -4,9 +4,10 @@ import type { OrtModule } from '../../models/OrtBackend'
 import { COMIC_DETR_INPUT_SIZE } from './ortTypes'
 
 export function createFeeds(ortModule: OrtModule, image: ImagePixels): Record<string, ort.Tensor> {
+  // Raw model takes only `images`; box scaling (formerly the int64
+  // `orig_target_sizes` input) is now done in parseDetections from page size.
   return {
     images: new ortModule.Tensor('float32', prepareImageTensor(image), [1, 3, COMIC_DETR_INPUT_SIZE, COMIC_DETR_INPUT_SIZE]),
-    orig_target_sizes: new ortModule.Tensor('int64', new BigInt64Array([BigInt(image.width), BigInt(image.height)]), [1, 2]),
   }
 }
 
