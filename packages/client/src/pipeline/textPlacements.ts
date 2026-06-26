@@ -82,7 +82,19 @@ function groupedTextPlacements(
       : subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
     for (const subgroup of splitMixedRoleSubgroups(subgroups, blocks, roleContext)) {
       const members = subgroup.map(index => ({ block: blocks[index]!, index }))
-      placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
+      // With Lens tiling, each block is one correctly-segmented paragraph. A
+      // merge whose union box is far too sparse for its glyphs is therefore a
+      // fusion of DISTINCT paragraphs (a wide text_free region that swept up
+      // several independent monologue/dialogue blocks), not one bubble. Emit its
+      // members as individual placements instead of one over-wide box. Tight
+      // multi-block bubbles stay merged (dense union).
+      if (members.length > 1 && isFusionGroup(members.map(member => member.block))) {
+        for (const { block, index } of members) {
+          placements.push(blockToTextPlacement(block, units[index]?.id ?? blockUnitId(pageIndex, index), placements.length, pageIndex, pageSize, roleContext))
+        }
+      } else {
+        placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
+      }
     }
     memberIds.forEach(index => assigned.add(index))
   }
@@ -423,6 +435,22 @@ function sortForReading(blocks: readonly TextBlock[]): TextBlock[] {
   const vertical = blocks.filter(block => block.textDirection === 'vertical').length
   if (vertical * 2 >= blocks.length) return [...blocks].sort((a, b) => b.bbox[0] - a.bbox[0] || a.bbox[1] - b.bbox[1])
   return [...blocks].sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0])
+}
+
+// Packing density of a merged group's tight word union: area / (glyph² × chars).
+// Real prose packs glyphs densely; a fusion of distinct paragraphs leaves the
+// union mostly empty. Mirrors the canonical huge_bbox ratio, applied to the
+// MERGED box. Threshold 8 (vs 6 for a single block) allows for the inter-block
+// gaps inside one genuine multi-paragraph bubble.
+const MAX_GROUP_AREA_PER_GLYPH_RATIO = 8
+
+function isFusionGroup(blocks: readonly TextBlock[]): boolean {
+  const unionArea = area(wordUnion(blocks))
+  const chars = blocks.reduce((total, block) => total + [...block.text].filter(ch => !/\s/u.test(ch)).length, 0)
+  if (chars < 1) return false
+  const glyph = median(blocks.map(medianGlyphSize).filter(n => n > 0))
+  if (glyph <= 0) return false
+  return unionArea / (glyph * glyph * chars) > MAX_GROUP_AREA_PER_GLYPH_RATIO
 }
 
 function classifyMergedBlocks(blocks: readonly TextBlock[], roleContext: TextRoleContext): TextRole {

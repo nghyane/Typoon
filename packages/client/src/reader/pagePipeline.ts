@@ -102,7 +102,7 @@ export class PagePipeline {
     const { unit, signal } = args
     const capture = await capturePageScan(unit, args.loadPage, this.deps.config.scan, signal)
     throwIfAborted(signal)
-    const recognized = removeOcrArtifactBlocks(await this.deps.recognizer.recognizeEncoded(capture.encoded, {
+    const recognized = removeOcrArtifactBlocks(await this.deps.recognizer.recognizeText(capture.image, {
       pageIndex: unit.pageIndex,
       sourceLang: args.sourceLanguage,
       signal,

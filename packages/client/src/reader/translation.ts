@@ -21,7 +21,7 @@ import { GoogleTranslateWeb } from '../translators/google-web/GoogleTranslateWeb
 import type { Translator } from '../translators/translator'
 import { PagePipeline, deduplicateSeamBlocks } from './pagePipeline'
 import { PageScheduler } from './pageScheduler'
-import { planPageScans, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
+import { planPageScans, sourceUsesHalo, measuredPagesFromLayout, type MeasuredPage } from './pageScan'
 import { measureLayout, visibleContentRange } from './chunkCapture'
 import { OverlayManager } from './overlayManager'
 import type { ReaderRenderer } from './renderer'
@@ -382,6 +382,7 @@ export class ReaderTranslation {
     this.units = planPageScans(
       layout.pages.map(page => ({ pageIndex: page.pageIndex, source: this.pageSizeFor(page.pageIndex) ?? page.sourceSize })),
       this.config.scan,
+      sourceUsesHalo(this.chapter?.sourceLanguage),
     )
     this.scheduler.reset(this.units)
   }

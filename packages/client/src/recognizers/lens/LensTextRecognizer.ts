@@ -40,8 +40,38 @@ export class LensTextRecognizer implements TextRecognizer {
     this.limiter = new AsyncLimiter(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
   }
 
+  // Phase A localisation. Lens downsizes any input over ~1000 px on its longest
+  // axis and fuses every column of a tall tategaki page into one giant
+  // paragraph, so a straight full-page call loses small glyphs and emits a
+  // page-spanning block the column filters can't split. Mirror the canonical
+  // tile pass: slice the page into 900 px-tall tiles (200 px overlap), OCR each
+  // independently so Lens segments per column, offset each tile's blocks back to
+  // page space, then dedup across the overlaps. Short images yield one tile —
+  // identical to a single call — so bubble-recovery crops are unaffected.
   async recognizeText(image: ImagePixels, options: TextRecognitionOptions): Promise<RecognizedTextPage> {
-    return this.recognizeEncoded(await encodeImageForLens(image), options)
+    const start = performance.now()
+    const tiles = tilesFor(image)
+    const pageSize: readonly [number, number] = [image.width, image.height]
+
+    if (tiles.length <= 1) {
+      const parsed = await this.lensOcrOnce(await encodeImageForLens(image), options.sourceLang, options.signal)
+      return { pageIndex: options.pageIndex, pageSize, detectedLanguage: parsed.detectedLanguage, blocks: dedupeTextBlocks(parsed.blocks), timingMs: { recognize: Math.round(performance.now() - start) } }
+    }
+
+    const perTile = await Promise.all(tiles.map(async tile => {
+      const encoded = await encodeImageForLens(sliceImagePixels(image, tile.originY, tile.height))
+      const parsed = await this.lensOcrOnce(encoded, options.sourceLang, options.signal)
+      return { blocks: parsed.blocks.map(block => offsetBlockY(block, tile.originY)), lang: parsed.detectedLanguage }
+    }))
+
+    const blocks = dedupeTileBlocks(perTile.flatMap(t => t.blocks))
+    return {
+      pageIndex: options.pageIndex,
+      pageSize,
+      detectedLanguage: mostCommonLang(perTile.map(t => t.lang)),
+      blocks,
+      timingMs: { recognize: Math.round(performance.now() - start) },
+    }
   }
 
   async recognizeEncoded(image: EncodedOcrImage, options: TextRecognitionOptions): Promise<RecognizedTextPage> {
@@ -55,20 +85,31 @@ export class LensTextRecognizer implements TextRecognizer {
         timingMs: { recognize: Math.round(performance.now() - start) },
       }
     }
+    const parsed = await this.lensOcrOnce(image, options.sourceLang, options.signal)
+    return {
+      pageIndex: options.pageIndex,
+      pageSize: [image.originalWidth, image.originalHeight],
+      detectedLanguage: parsed.detectedLanguage,
+      blocks: dedupeTextBlocks(parsed.blocks),
+      timingMs: { recognize: Math.round(performance.now() - start) },
+    }
+  }
 
+  /** One Lens round-trip for a single (whole or tile) image; coords in image space. */
+  private lensOcrOnce(image: EncodedOcrImage, sourceLang: string | null | undefined, signal: AbortSignal | undefined): Promise<{ detectedLanguage: string | null; blocks: TextBlock[] }> {
     const request = createLensRequest({
       bytes: image.bytes,
       width: image.width,
       height: image.height,
-      language: normalizeLang(options.sourceLang) ?? '',
+      language: normalizeLang(sourceLang ?? null) ?? '',
       region: this.options.region ?? 'US',
       timeZone: this.options.timeZone ?? 'America/New_York',
     })
 
     return this.limiter.run(async () => {
       for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt += 1) {
-        throwIfAborted(options.signal)
-        const abort = requestAbortSignal(options.signal, this.requestTimeoutMs)
+        throwIfAborted(signal)
+        const abort = requestAbortSignal(signal, this.requestTimeoutMs)
         try {
           const response = await fetch(this.endpoint, {
             method: 'POST',
@@ -81,25 +122,129 @@ export class LensTextRecognizer implements TextRecognizer {
             signal: abort.signal,
           })
           if (!response.ok) throw lensHttpError(response.status)
-          const parsed = parseLensResponse(new Uint8Array(await response.arrayBuffer()), [image.originalWidth, image.originalHeight])
-          return {
-            pageIndex: options.pageIndex,
-            pageSize: [image.originalWidth, image.originalHeight],
-            detectedLanguage: parsed.detectedLanguage,
-            blocks: dedupeTextBlocks(parsed.blocks),
-            timingMs: { recognize: Math.round(performance.now() - start) },
-          }
+          return parseLensResponse(new Uint8Array(await response.arrayBuffer()), [image.originalWidth, image.originalHeight])
         } catch (error) {
-          if (options.signal?.aborted || attempt >= MAX_REQUEST_ATTEMPTS - 1 || !isRetryableLensError(error)) throw error
-          await sleep(lensRetryDelayMs(attempt), options.signal)
+          if (signal?.aborted || attempt >= MAX_REQUEST_ATTEMPTS - 1 || !isRetryableLensError(error)) throw error
+          await sleep(lensRetryDelayMs(attempt), signal)
         } finally {
           abort.cleanup()
         }
       }
-
       throw new Error('Lens OCR failed')
     })
   }
+}
+
+// ─── Tile pass (Phase A) ─────────────────────────────────────────────────────
+// Ported from typoon/vision/detectors/lens/tile_pass.py.
+
+const TILE_HEIGHT = 900
+const TILE_OVERLAP = 200
+const TILE_MIN_TAIL = 100
+const TILE_DEDUP_IOU = 0.5
+const TILE_SUBSTRING_IOU = 0.05
+
+interface Tile {
+  readonly originY: number
+  readonly height: number
+}
+
+/** Yield 900px-tall tiles with 200px overlap; drop a tail shorter than 100px. */
+function tilesFor(image: ImagePixels): Tile[] {
+  const h = image.height
+  const step = TILE_HEIGHT - TILE_OVERLAP
+  const tiles: Tile[] = []
+  let y = 0
+  while (y < h) {
+    const yEnd = Math.min(y + TILE_HEIGHT, h)
+    if (yEnd - y < TILE_MIN_TAIL) break
+    tiles.push({ originY: y, height: yEnd - y })
+    if (yEnd === h) break
+    y += step
+  }
+  return tiles.length ? tiles : [{ originY: 0, height: h }]
+}
+
+function sliceImagePixels(image: ImagePixels, originY: number, height: number): ImagePixels {
+  const stride = image.width * 4
+  return { width: image.width, height, data: image.data.subarray(originY * stride, (originY + height) * stride) }
+}
+
+function offsetBlockY(block: TextBlock, dy: number): TextBlock {
+  if (dy === 0) return block
+  return {
+    ...block,
+    bbox: offsetBBoxY(block.bbox, dy),
+    polygon: offsetPolygonY(block.polygon, dy),
+    lines: block.lines.map(line => offsetLineY(line, dy)),
+    words: block.words.map(word => offsetWordY(word, dy)),
+  }
+}
+
+function offsetLineY(line: TextLine, dy: number): TextLine {
+  return { ...line, bbox: offsetBBoxY(line.bbox, dy), oriented: offsetOrientedY(line.oriented, dy), words: line.words.map(word => offsetWordY(word, dy)) }
+}
+
+function offsetWordY(word: TextWord, dy: number): TextWord {
+  return { ...word, bbox: offsetBBoxY(word.bbox, dy), oriented: offsetOrientedY(word.oriented, dy) }
+}
+
+function offsetBBoxY(bbox: BBox, dy: number): BBox {
+  return [bbox[0], bbox[1] + dy, bbox[2], bbox[3] + dy]
+}
+
+function offsetPolygonY(polygon: Polygon, dy: number): Polygon {
+  return polygon.map(([x, y]) => [x, y + dy] as Point)
+}
+
+function offsetOrientedY(oriented: OrientedBox | undefined, dy: number): OrientedBox | undefined {
+  return oriented ? { ...oriented, cy: oriented.cy + dy } : undefined
+}
+
+/**
+ * Length-weighted bbox-containment dedup across tile overlaps. Sort by text
+ * length descending; drop a block whose bbox is mostly inside a kept block, or
+ * whose text is a substring of a kept block with non-trivial overlap.
+ */
+function dedupeTileBlocks(blocks: readonly TextBlock[]): TextBlock[] {
+  const sorted = [...blocks].sort((a, b) => b.text.length - a.text.length)
+  const kept: TextBlock[] = []
+  for (const block of sorted) {
+    let drop = false
+    for (const k of kept) {
+      const inside = iouSelf(block.bbox, k.bbox)
+      if (inside > TILE_DEDUP_IOU || (inside > TILE_SUBSTRING_IOU && k.text.includes(block.text))) {
+        drop = true
+        break
+      }
+    }
+    if (!drop) kept.push(block)
+  }
+  return kept
+}
+
+/** Intersection / area(a) — fraction of `a` inside `b`. */
+function iouSelf(a: BBox, b: BBox): number {
+  const ix1 = Math.max(a[0], b[0])
+  const iy1 = Math.max(a[1], b[1])
+  const ix2 = Math.min(a[2], b[2])
+  const iy2 = Math.min(a[3], b[3])
+  if (ix1 >= ix2 || iy1 >= iy2) return 0
+  return ((ix2 - ix1) * (iy2 - iy1)) / Math.max(1, (a[2] - a[0]) * (a[3] - a[1]))
+}
+
+function mostCommonLang(langs: readonly (string | null)[]): string | null {
+  const counts = new Map<string, number>()
+  for (const lang of langs) {
+    if (!lang) continue
+    counts.set(lang, (counts.get(lang) ?? 0) + 1)
+  }
+  let best: string | null = null
+  let bestCount = 0
+  for (const [lang, count] of counts) {
+    if (count > bestCount) { best = lang; bestCount = count }
+  }
+  return best
 }
 
 function lensHttpError(status: number): Error {

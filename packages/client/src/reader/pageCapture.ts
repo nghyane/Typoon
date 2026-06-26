@@ -6,7 +6,6 @@
 // strips are centered (their x offset is irrelevant: halo-only blocks are
 // dropped by centroid-in-core, and seam blocks are owned by page N at x=0).
 
-import type { EncodedOcrImage } from '../recognizers/text'
 import type { ImagePixels } from '../domain/image'
 import type { PageScanUnit } from '../domain/pageScan'
 import type { PageSize } from '../domain/source'
@@ -15,7 +14,6 @@ import type { ScanConfig } from './translationConfig'
 import { throwIfAborted } from './asyncSignal'
 
 export interface CapturedPageScan {
-  readonly encoded: EncodedOcrImage
   readonly image: ImagePixels
   readonly captureScale: number    // canvas px = source px * captureScale
   readonly haloTopPx: number       // page N source px
@@ -56,15 +54,7 @@ export async function capturePageScan(
   }
 
   const pixels = ctx.getImageData(0, 0, cw, ch)
-  const blob = await canvasToOcrBlob(canvas)
   return {
-    encoded: {
-      bytes: new Uint8Array(await blob.arrayBuffer()),
-      width: cw,
-      height: ch,
-      originalWidth: cw,
-      originalHeight: ch,
-    },
     image: { width: cw, height: ch, data: pixels.data },
     captureScale,
     haloTopPx: unit.haloTopPx,
@@ -118,10 +108,4 @@ async function drawNeighborStrip(
 
 function centerOffset(canvasWidth: number, drawWidth: number): number {
   return (canvasWidth - drawWidth) / 2
-}
-
-function canvasToOcrBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('failed to encode page scan')), 'image/png')
-  })
 }
