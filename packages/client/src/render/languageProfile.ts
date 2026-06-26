@@ -46,11 +46,13 @@ export function textRenderProfile(
   // square — their line box already equals the glyph — so they need no such
   // correction (only the density allowance below).
   const latinSource = sourceFamily === 'latin'
+  const hangulSource = sourceFamily === 'hangul'
 
   // fontScale = glyph-shape correction only (source line box → VI glyph size).
   // A CJK/Hangul source keeps its source-proportional size; long translations
   // are shrunk by the shape-aware fit (composeFit), not by a blanket scale.
   const fontScale = role === 'sfx' ? 1
+    : latinTarget && hangulSource ? 0.8
     : latinTarget && denseSource ? 0.88
     : latinTarget && latinSource ? 0.8
     : latinTarget ? 0.94
