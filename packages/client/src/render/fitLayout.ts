@@ -71,13 +71,16 @@ export function fitLayout(
   text: string,
   sourceText: string | undefined,
   context: PageFontContext,
-  font: FontProfile,
+  baseFont: FontProfile,
   measurer: DomMeasurer,
   preMargin: SafeMarginsDebug | null,
   languageContext?: RenderLanguageContext,
 ): FitResult {
   const cleanText = normalizeText(text)
   const profile = textRenderProfile(cleanText, languageContext, placement.role, sourceText)
+  // Apply T1 leading once: every measure/compose/output below uses this effective
+  // line-height so diacritic headroom is consistent across fit and render.
+  const font = { ...baseFont, lineHeightRatio: baseFont.lineHeightRatio * profile.leadingRatio }
   const drawableBaseRect = drawableRect(placement)
   const baseRect = textFitRect(placement, { x: profile.expansionAllowanceX, y: profile.expansionAllowanceY })
   const drawableShapeProfile = shapeProfileForRect(placement, drawableBaseRect, preMargin)

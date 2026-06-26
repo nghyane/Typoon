@@ -66,8 +66,10 @@ Forbidden: T1 knows pixels/bubble; T2 knows language; T3 fits; T5 sizes.
   growth is now language-aware via `expansionAllowanceX/Y` (T1), injected into
   `textFitRect` (T2) instead of hard-coded constants. `containerBBox` is the
   soft ceiling, applied only as a clamp in `fitLayout.boundsForExpansion`.
-- **Phase 3: VI leading.** `leadingRatio` per target language → lineComposer, so
-  tone marks are not clipped/crowded.
+- **Phase 3 (done): VI leading.** `leadingRatio` (T1, latin 1.06) multiplies the
+  font line-height once in `fitLayout` into an effective `FontProfile` used by all
+  measure/compose/output, so Vietnamese stacked diacritics get headroom without
+  touching font metrics or the composer's contract.
 
 ## Current glyphScale values (T1, tunable)
 

@@ -15,6 +15,9 @@ export interface TextRenderProfile {
   // is handled by minReadableFontPx (the floor), NOT by tapering this scale.
   readonly fontScale: number
   readonly minReadableFontPx: number
+  // T1 leading: extra line-height multiplier so stacked diacritics (Vietnamese
+  // tone + vowel marks) are not crowded/clipped between lines. 1.0 = none.
+  readonly leadingRatio: number
   readonly innerPadXEm: number
   readonly innerPadYEm: number
   // T2 anchor-region growth: how much the source-text footprint is grown to make
@@ -69,6 +72,7 @@ export function textRenderProfile(
     targetScript,
     fontScale,
     minReadableFontPx: role === 'sfx' ? 6 : latinTarget ? 10 : 8,
+    leadingRatio: latinTarget ? 1.06 : 1.0,
     innerPadXEm: role === 'sfx' ? 0.10 : latinTarget ? 0.40 : syllabicTarget ? 0.34 : 0.28,
     innerPadYEm: role === 'sfx' ? 0.10 : latinTarget ? 0.24 : syllabicTarget ? 0.22 : 0.20,
     expansionAllowanceX: latinTarget ? 1.28 : 1.20,
