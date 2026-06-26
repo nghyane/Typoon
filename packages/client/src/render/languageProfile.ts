@@ -52,7 +52,7 @@ export function textRenderProfile(
   // A CJK/Hangul source keeps its source-proportional size; long translations
   // are shrunk by the shape-aware fit (composeFit), not by a blanket scale.
   const fontScale = role === 'sfx' ? 1
-    : latinTarget && hangulSource ? 0.8
+    : latinTarget && hangulSource ? 0.7
     : latinTarget && denseSource ? 0.88
     : latinTarget && latinSource ? 0.8
     : latinTarget ? 0.94
