@@ -1,0 +1,131 @@
+{
+  "id":        "weebcentral",
+  "name":      "Weeb Central",
+  "host":      "weebcentral.com",
+  "homepage":  "https://weebcentral.com",
+  "languages": ["en"],
+  "version":   "1.0",
+  "accent":    "violet",
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://weebcentral.com/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://weebcentral.com/"
+  },
+
+  "chapterNumberNorm": {
+    "input": "label",
+    "patterns": [
+      "(?:Chapter|Episode|Chap|Ch\\.?)\\s*([0-9]+(?:\\.[0-9]+)?)",
+      "([0-9]+(?:\\.[0-9]+)?)"
+    ],
+    "default":     "slug",
+    "postprocess": ["stripLeadingZeros", "lowercase"]
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://weebcentral.com/search/data?limit=32&offset={offset}&sort=Latest+Updates&order=Descending&official=Any&display_mode=Full+Display",
+          "parse":  "html",
+          "pagination": { "type": "offset", "pageSize": 32 },
+          "list":   "article.bg-base-300",
+          "fields": {
+            "url":   "a@href",
+            "title": ".text-ellipsis || .truncate",
+            "cover": "picture source@srcset || img@src"
+          }
+        }
+      },
+      {
+        "id":    "popular",
+        "label": "Phổ biến",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://weebcentral.com/search/data?limit=32&offset={offset}&sort=Popularity&order=Descending&official=Any&display_mode=Full+Display",
+          "parse":  "html",
+          "pagination": { "type": "offset", "pageSize": 32 },
+          "list":   "article.bg-base-300",
+          "fields": {
+            "url":   "a@href",
+            "title": ".text-ellipsis || .truncate",
+            "cover": "picture source@srcset || img@src"
+          }
+        }
+      },
+      {
+        "id":    "new",
+        "label": "Mới thêm",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://weebcentral.com/search/data?limit=32&offset={offset}&sort=Recently+Added&order=Descending&official=Any&display_mode=Full+Display",
+          "parse":  "html",
+          "pagination": { "type": "offset", "pageSize": 32 },
+          "list":   "article.bg-base-300",
+          "fields": {
+            "url":   "a@href",
+            "title": ".text-ellipsis || .truncate",
+            "cover": "picture source@srcset || img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://weebcentral.com/search/data?limit=32&offset={offset}&text={q:q}&sort=Best+Match&order=Descending&official=Any&display_mode=Full+Display",
+      "parse":  "html",
+      "pagination": { "type": "offset", "pageSize": 32 },
+      "list":   "article.bg-base-300",
+      "fields": {
+        "url":   "a@href",
+        "title": ".text-ellipsis || .truncate",
+        "cover": "picture source@srcset || img@src"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "html",
+      "extract": "/series/(?<seriesId>[0-9A-Z]+)",
+      "fields": {
+        "title":       "h1",
+        "cover":       "meta[property=\"og:image\"]@content",
+        "description": "p.whitespace-pre-wrap",
+        "author":      "a[href*=\"author=\"]",
+        "status":      "a[href*=\"included_status=\"]"
+      }
+    },
+
+    "chaptersApi": {
+      "method":  "GET",
+      "url":     "https://weebcentral.com/series/{seriesId}/full-chapter-list",
+      "parse":   "html",
+      "headers": { "Referer": "https://weebcentral.com/series/{seriesId}/" },
+      "list":    "a[href*=\"/chapters/\"]",
+      "fields": {
+        "url":    "@href",
+        "number": ".grow span",
+        "label":  ".grow span",
+        "date":   "time@datetime"
+      }
+    },
+
+    "chapter": {
+      "method":  "GET",
+      "url":     "https://weebcentral.com/chapters/{chapterId}/images?reading_style=long_strip",
+      "extract": "/chapters/(?<chapterId>[0-9A-Z]+)",
+      "parse":   "html",
+      "list":    "img",
+      "fields":  { "url": "@src" }
+    }
+  }
+}
