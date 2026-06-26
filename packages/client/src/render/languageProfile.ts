@@ -17,10 +17,11 @@ export interface TextRenderProfile {
   readonly minReadableFontPx: number
   readonly innerPadXEm: number
   readonly innerPadYEm: number
-  readonly geometryGrowXEm: number
-  readonly geometryGrowYEm: number
-  readonly geometryGrowWidthRatio: number
-  readonly geometryGrowHeightRatio: number
+  // T2 anchor-region growth: how much the source-text footprint is grown to make
+  // room for the (usually longer) translation, before any bubble expansion.
+  // Latin/VI expands more than CJK targets.
+  readonly expansionAllowanceX: number
+  readonly expansionAllowanceY: number
   readonly pageMaxFraction: number
   readonly hierarchyMaxFraction: number
 }
@@ -70,10 +71,8 @@ export function textRenderProfile(
     minReadableFontPx: role === 'sfx' ? 6 : latinTarget ? 10 : 8,
     innerPadXEm: role === 'sfx' ? 0.10 : latinTarget ? 0.40 : syllabicTarget ? 0.34 : 0.28,
     innerPadYEm: role === 'sfx' ? 0.10 : latinTarget ? 0.24 : syllabicTarget ? 0.22 : 0.20,
-    geometryGrowXEm: latinTarget && denseSource ? 3.8 : latinTarget ? 3.1 : syllabicTarget ? 2.7 : 2.3,
-    geometryGrowYEm: latinTarget ? 2.0 : syllabicTarget ? 1.8 : 1.6,
-    geometryGrowWidthRatio: latinTarget && denseSource ? 0.42 : latinTarget ? 0.36 : 0.30,
-    geometryGrowHeightRatio: latinTarget ? 0.30 : 0.24,
+    expansionAllowanceX: latinTarget ? 1.28 : 1.20,
+    expansionAllowanceY: latinTarget ? 1.22 : 1.16,
     pageMaxFraction: latinTarget ? 0.045 : syllabicTarget ? 0.048 : 0.052,
     hierarchyMaxFraction: latinTarget ? 0.12 : syllabicTarget ? 0.13 : 0.14,
   }

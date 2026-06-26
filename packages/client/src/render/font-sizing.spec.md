@@ -61,9 +61,11 @@ Forbidden: T1 knows pixels/bubble; T2 knows language; T3 fits; T5 sizes.
 - **Phase 1 (this change): font-intent correctness.**
   Remove taper. `glyphScale` flat per language pair. Enforce `readableFloorPx`
   as the target floor (was `MIN_FONT_SIZE`). Verify on p2-r1/p2-r3.
-- **Phase 2: geometry unification.** Fold the two parallel sizing mechanisms
-  (`textFitRect` 1.25× grow + source-px cap) into one: `anchorRegion` =
-  footprint × `expansionAllowance`; `containerBBox` becomes `softCeiling`.
+- **Phase 2 (done): geometry unification.** Removed the dead `geometryGrow*`
+  profile fields (a defunct parallel mechanism, never read). The anchor-region
+  growth is now language-aware via `expansionAllowanceX/Y` (T1), injected into
+  `textFitRect` (T2) instead of hard-coded constants. `containerBBox` is the
+  soft ceiling, applied only as a clamp in `fitLayout.boundsForExpansion`.
 - **Phase 3: VI leading.** `leadingRatio` per target language → lineComposer, so
   tone marks are not clipped/crowded.
 

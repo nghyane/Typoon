@@ -79,7 +79,7 @@ export function fitLayout(
   const cleanText = normalizeText(text)
   const profile = textRenderProfile(cleanText, languageContext, placement.role, sourceText)
   const drawableBaseRect = drawableRect(placement)
-  const baseRect = textFitRect(placement)
+  const baseRect = textFitRect(placement, { x: profile.expansionAllowanceX, y: profile.expansionAllowanceY })
   const drawableShapeProfile = shapeProfileForRect(placement, drawableBaseRect, preMargin)
   const fontIntent = fontIntentFor(placement, baseRect, context, profile)
   const direction = pickDirection(placement, cleanText, drawableBaseRect, drawableShapeProfile, fontIntent.targetFontPx, font, measurer)

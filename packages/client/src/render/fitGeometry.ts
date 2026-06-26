@@ -3,8 +3,14 @@ import type { TextPlacement } from '../domain/planning'
 
 const DEFAULT_INSET = 2
 const ELLIPSE_FIT_SCALE = 0.85
-const TEXT_BOX_RECT_GROW_X = 1.28
-const TEXT_BOX_RECT_GROW_Y = 1.22
+const DEFAULT_GROW_X = 1.28
+const DEFAULT_GROW_Y = 1.22
+
+/** How much to grow the source-text footprint to make room for the translation. */
+export interface AnchorGrowth {
+  readonly x: number
+  readonly y: number
+}
 
 export interface FitRect {
   readonly x: number
@@ -29,8 +35,12 @@ export function drawableRect(placement: TextPlacement): FitRect {
   return axisAlignedRect(placement.drawable)
 }
 
-/** Fit rect for single-block placements: center on OCR text boxes, sized to grow room. */
-export function textFitRect(placement: TextPlacement): FitRect {
+/**
+ * T2 anchor region: centred on the OCR text footprint, grown by `growth` to make
+ * room for the translation. The reliable signal is the source text geometry, not
+ * the bubble — the bubble only acts as a soft ceiling later (fitLayout).
+ */
+export function textFitRect(placement: TextPlacement, growth: AnchorGrowth = { x: DEFAULT_GROW_X, y: DEFAULT_GROW_Y }): FitRect {
   const base = drawableRect(placement)
   if (placement.role === 'sfx' || Math.abs(base.rotationDeg) > 0.1 || placement.textBoxes.length === 0) return base
 
@@ -42,8 +52,8 @@ export function textFitRect(placement: TextPlacement): FitRect {
   const textCy = (textBox[1] + textBox[3]) / 2
   const textW = Math.max(1, textBox[2] - textBox[0])
   const textH = Math.max(1, textBox[3] - textBox[1])
-  const width = Math.min(base.width, Math.max(textW * TEXT_BOX_RECT_GROW_X, base.width * 0.58))
-  const height = Math.min(base.height, Math.max(textH * TEXT_BOX_RECT_GROW_Y, base.height * 0.58))
+  const width = Math.min(base.width, Math.max(textW * growth.x, base.width * 0.58))
+  const height = Math.min(base.height, Math.max(textH * growth.y, base.height * 0.58))
 
   return {
     x: clamp(textCx - width / 2, base.x, base.x + base.width - width),
