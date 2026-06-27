@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { AlertCircle, ChevronDown, ChevronLeft, EyeOff, Languages, Loader2 } from 'lucide-svelte';
+  import { AlertCircle, ChevronDown, ChevronLeft, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
   import { resolvePageUrl } from '$lib/source/runtime/endpoints';
@@ -54,7 +54,10 @@
 
   const targetLang = $derived(data?.targetLang ?? localSettings.state.default_target_lang ?? 'vi');
   const canTranslateLanguage = $derived(!sameLanguage(source.activeSourceLang, targetLang));
-  const translationVisible = $derived(translation.state.phase === 'done' && !translationHidden);
+  // At least one page is translated and on-screen (overlays render incrementally,
+  // so this is true mid-translation — not just at phase 'done').
+  const hasTranslation = $derived(translation.state.translate.done > 0 || translation.state.phase === 'done');
+  const translationVisible = $derived(hasTranslation && !translationHidden);
 
   $effect(() => {
     const pageCount = source.activeUrls.length;
@@ -123,13 +126,9 @@
     chapterPickerOpen = false;
     sourcePickerOpen = false;
     const p = translation.state.phase;
-    if (translationBlocked && !isTranslationBusy(p)) return;
-    if (isTranslationBusy(p)) return;
-    if (p === 'done') {
-      translationHidden = !translationHidden;
-      return;
-    }
-    else if (p === 'ready' || p === 'error') {
+    if (translationBlocked && !hasTranslation) return;
+    // Start a fresh run only from a settled, un-translated state.
+    if ((p === 'ready' || p === 'error') && !hasTranslation) {
       trackTranslateClick({
         phase: p,
         source_id: source.activeSourceId ?? '',
@@ -140,7 +139,11 @@
       });
       translationHidden = false;
       translation.translate();
+      return;
     }
+    // Once any page is translated, the button is a show/hide toggle — usable
+    // mid-translation, not gated on phase 'done'.
+    if (hasTranslation) translationHidden = !translationHidden;
   }
 
   function setPageWidth(value: number): void {
@@ -164,9 +167,9 @@
     return phase === 'loading' || phase === 'translating';
   }
 
-  function translationActionLabel(state: typeof translation.state, hidden: boolean): string {
-    if (isTranslationBusy(state.phase)) return 'Đang…';
-    if (state.phase === 'done' && !hidden) return 'Ẩn';
+  function translationActionLabel(hasContent: boolean, hidden: boolean, phase: string): string {
+    if (hasContent) return hidden ? 'Hiện' : 'Ẩn';
+    if (isTranslationBusy(phase)) return 'Đang…';
     return 'Dịch';
   }
 
@@ -259,20 +262,24 @@
       </div>
     </div>
 
-    <header class={cn('fixed top-0 inset-x-0 z-40 h-[calc(48px+var(--sait))] bg-bg/95 border-b border-border-soft/60 pt-[var(--sait)] pl-[var(--sail)] pr-[var(--sair)] backdrop-blur transition-transform duration-200 ease-out', !nav.chromeVisible && '-translate-y-[calc(100%+var(--sait))]')}>
+    <header class={cn('fixed top-0 inset-x-0 z-40 h-[calc(48px+var(--sait))] bg-bg border-b border-border-soft pt-[var(--sait)] pl-[var(--sail)] pr-[var(--sair)] transition-transform duration-200 ease-out', !nav.chromeVisible && '-translate-y-[calc(100%+var(--sait))]')}>
       <div class="mx-auto flex h-12 w-full max-w-7xl items-center gap-2 px-2 sm:px-4">
-        <a href="/w/{data.workId}" class="inline-flex items-center justify-center size-8 shrink-0 rounded-sm text-text-muted hover:text-text hover:bg-hover transition-colors" aria-label="Quay lại"><ChevronLeft size={17} /></a>
+        <a href="/w/{data.workId}" class="inline-flex items-center justify-center size-9 shrink-0 rounded-sm text-text-muted hover:text-text hover:bg-hover transition-colors" aria-label="Quay lại"><ChevronLeft size={18} /></a>
         <a href="/w/{data.workId}" class="min-w-0 flex-1 leading-tight hover:text-accent-text transition-colors" title={data.workTitle ?? ''}>
           <span class="block truncate text-sm font-semibold text-text">{data.workTitle ?? 'Hội Mê Truyện'}</span>
-          <span class="block truncate text-[11px] text-text-subtle">Ch.{chapterDisplay}{#if source.activeSourceName} · {source.activeSourceLang ? source.activeSourceLang.toUpperCase() : '?'} · {source.activeSourceName}{/if}</span>
+          <!-- Mobile only: carries source info since the source chip is desktop-only.
+               Chapter is omitted here — the chapter chip already shows it. -->
+          {#if source.activeSourceName}
+            <span class="sm:hidden block truncate text-[11px] text-text-subtle">{source.activeSourceLang ? source.activeSourceLang.toUpperCase() : '?'} · {source.activeSourceName}</span>
+          {/if}
         </a>
-        <button bind:this={chapterTriggerEl} type="button" onclick={() => { chapterPickerOpen = !chapterPickerOpen; sourcePickerOpen = false; }} class="h-7 px-3 rounded-full inline-flex items-center gap-1.5 bg-surface-2 text-xs font-medium text-text hover:bg-hover transition-colors cursor-pointer" aria-label="Danh sách chương" aria-expanded={chapterPickerOpen}>
+        <button bind:this={chapterTriggerEl} type="button" onclick={() => { chapterPickerOpen = !chapterPickerOpen; sourcePickerOpen = false; }} class="h-8 px-3 rounded-sm inline-flex items-center gap-1.5 bg-surface-2 text-xs font-medium text-text hover:bg-hover transition-colors cursor-pointer" aria-label="Danh sách chương" aria-expanded={chapterPickerOpen}>
           <span class="tabular-nums">Ch.{chapterDisplay}</span>
           {#if data.chapterTotal}<span class="hidden md:inline text-text-subtle tabular-nums font-normal">{data.chapterIndex ?? 0}/{data.chapterTotal}</span>{/if}
           <ChevronDown size={12} class="text-text-subtle" />
         </button>
         {#if source.activeSourceName}
-          <button bind:this={sourceTriggerEl} type="button" onclick={() => { sourcePickerOpen = !sourcePickerOpen; chapterPickerOpen = false; }} class="hidden sm:inline-flex h-7 px-2 rounded-full items-center gap-1 bg-surface-2 text-[11px] font-medium text-text hover:bg-hover transition-colors cursor-pointer max-w-[9rem]" aria-label="Chọn nguồn" aria-expanded={sourcePickerOpen}>
+          <button bind:this={sourceTriggerEl} type="button" onclick={() => { sourcePickerOpen = !sourcePickerOpen; chapterPickerOpen = false; }} class="hidden sm:inline-flex h-8 px-2 rounded-sm items-center gap-1 bg-surface-2 text-[11px] font-medium text-text hover:bg-hover transition-colors cursor-pointer max-w-[9rem]" aria-label="Chọn nguồn" aria-expanded={sourcePickerOpen}>
             {#if source.sourceSwitching}<Loader2 size={11} class="animate-spin text-text-subtle" />{/if}
             {#if source.activeSourceLang}<span class="uppercase tabular-nums text-text-subtle">{source.activeSourceLang}</span>{/if}
             <span class="max-w-[5.5rem] truncate">{source.activeSourceName}</span>
@@ -280,13 +287,13 @@
           </button>
         {/if}
       </div>
-      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-px overflow-hidden" aria-hidden="true">
+      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden" aria-hidden="true">
         <div class="h-full bg-accent transition-[width] duration-150 ease-out" style={`width:${readingProgress * 100}%`}></div>
       </div>
     </header>
 
-    <footer class={cn('fixed inset-x-0 bottom-0 z-30 pb-[max(0.5rem,var(--saib))] pl-[max(0.5rem,var(--sail))] pr-[max(0.5rem,var(--sair))] flex justify-center pointer-events-none transition-transform duration-200 ease-out', !nav.chromeVisible && 'translate-y-[calc(100%+var(--saib))]')}>
-      <div class="pointer-events-auto relative flex w-full max-w-2xl items-center gap-1.5 overflow-hidden rounded-md border border-border-soft bg-surface/95 px-1.5 py-1.5 backdrop-blur">
+    <footer class={cn('fixed inset-x-0 bottom-0 z-40 pb-[max(0.5rem,var(--saib))] pl-[max(0.5rem,var(--sail))] pr-[max(0.5rem,var(--sair))] flex justify-center pointer-events-none transition-transform duration-200 ease-out', !nav.chromeVisible && 'translate-y-[calc(100%+var(--saib))]')}>
+      <div class="pointer-events-auto relative flex w-full max-w-2xl items-center gap-1.5 overflow-hidden rounded-md border border-border-soft bg-surface px-1.5 py-1.5">
         <div class="inline-flex min-w-0 items-center gap-1">
           {@render NavBtn({ ref: data.prevRef, workId: data.workId, label: '‹', aria: 'Chương trước' })}
           <span class="min-w-[3.25rem] px-1 text-center text-xs tabular-nums text-text-muted select-none inline-flex items-baseline justify-center gap-1">
@@ -295,9 +302,8 @@
           {@render NavBtn({ ref: data.nextRef, workId: data.workId, label: '›', aria: 'Chương sau' })}
         </div>
         <span class="flex-1 sm:hidden" aria-hidden="true"></span>
-        <label class="hidden h-8 min-w-0 flex-1 items-center gap-2 px-2 text-xs text-text-muted sm:flex">
-          <span class="hidden sm:inline shrink-0 font-medium">Rộng</span>
-          <span class="sm:hidden shrink-0 text-sm leading-none" aria-hidden="true">↔</span>
+        <label class="hidden h-9 min-w-0 flex-1 items-center gap-2 px-2 text-xs text-text-muted sm:flex">
+          <span class="shrink-0 font-medium">Rộng</span>
           <input
             aria-label="Bề rộng tối đa"
             type="range"
@@ -310,35 +316,38 @@
           />
           <span class="hidden lg:inline shrink-0 tabular-nums text-text-subtle">{readerPageWidth}px</span>
         </label>
+        <!-- Translation progress — visible on every breakpoint so the reader can
+             see how far the run has gotten (model download, prepare, pages done). -->
         {#if canTranslateLanguage && translationStatusLabel(translation.state)}
-          <span class="hidden md:inline-flex h-8 max-w-24 shrink-0 items-center rounded-sm px-2 text-xs tabular-nums text-text-subtle" title={translationDetail(translation.state, translationHidden)}>
+          <span class="inline-flex h-9 max-w-[5.5rem] shrink-0 items-center truncate rounded-sm px-2 text-xs tabular-nums text-text-subtle" title={translationDetail(translation.state, translationHidden)}>
             {translationStatusLabel(translation.state)}
           </span>
         {/if}
         {#if canTranslateLanguage}
           <button
             class={cn(
-              'inline-flex h-8 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter] disabled:opacity-50 disabled:cursor-not-allowed',
-              translationBusy
-                ? 'bg-info-bg text-info-text hover:bg-info-bg/80'
-                : translationVisible
-                  ? 'border-border-soft bg-surface-2 text-text hover:bg-hover'
-                : translation.state.phase === 'ready' || translation.state.phase === 'done'
-                ? 'border-accent/40 bg-accent text-accent-fg hover:brightness-110'
-                : translation.state.phase === 'error' || translation.state.model.state === 'failed'
+              'inline-flex h-9 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-sm border border-transparent px-3 text-xs font-medium transition-[background-color,color,filter] disabled:opacity-50 disabled:cursor-not-allowed',
+              hasTranslation
+                ? 'border-border-soft bg-surface-2 text-text hover:bg-hover'
+                : translationBusy
+                  ? 'bg-info-bg text-info-text'
+                  : translation.state.phase === 'error' || translation.state.model.state === 'failed'
                     ? 'bg-error-bg text-error-text hover:bg-error-bg/80'
-                : 'border-border-soft bg-bg text-text hover:bg-hover',
+                    : translation.state.phase === 'ready'
+                      ? 'border-accent/40 bg-accent text-accent-fg hover:brightness-110'
+                      : 'border-border-soft bg-bg text-text hover:bg-hover',
             )}
-            disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle' || translationBusy || (translationBlocked && !translationBusy)}
-            aria-label={translationVisible ? 'Ẩn bản dịch' : 'Dịch chương'}
+            disabled={source.sourceSwitching || pageCount <= 0 || translation.state.phase === 'idle' || (translationBlocked && !hasTranslation) || (translationBusy && !hasTranslation)}
+            aria-label={hasTranslation ? (translationHidden ? 'Hiện bản dịch' : 'Ẩn bản dịch') : 'Dịch chương'}
             title={translationBlocked ? 'Tham gia Discord để dùng chức năng dịch.' : translationDetail(translation.state, translationHidden)}
             onclick={handleTranslationButton}
           >
-            {#if translationBusy}<Loader2 class="shrink-0 animate-spin" size={14} />
-            {:else if translation.state.phase === 'error' || translation.state.model.state === 'failed'}<AlertCircle class="shrink-0" size={15} />
+            {#if translationBusy && !hasTranslation}<Loader2 class="shrink-0 animate-spin" size={14} />
+            {:else if (translation.state.phase === 'error' || translation.state.model.state === 'failed') && !hasTranslation}<AlertCircle class="shrink-0" size={15} />
             {:else if translationVisible}<EyeOff class="shrink-0" size={15} />
+            {:else if hasTranslation}<Eye class="shrink-0" size={15} />
             {:else}<Languages class="shrink-0" size={15} />{/if}
-            <span>{translationActionLabel(translation.state, translationHidden)}</span>
+            <span>{translationActionLabel(hasTranslation, translationHidden, translation.state.phase)}</span>
           </button>
         {/if}
         {#if canTranslateLanguage && translationProgress(translation.state) > 0}
@@ -364,6 +373,6 @@
 {/if}
 
 {#snippet NavBtn({ ref, workId, label, aria }: { ref?: string | null; workId: string; label: string; aria: string })}
-  {#if ref}<a href={`/r/${workId}/${ref}`} class="shrink-0 inline-flex items-center justify-center size-8 rounded-sm text-lg leading-none text-text-muted hover:text-text hover:bg-hover transition-colors" aria-label={aria}>{label}</a>
-  {:else}<span class="shrink-0 inline-flex items-center justify-center size-8 rounded-sm text-lg leading-none text-text-subtle opacity-40 cursor-not-allowed" aria-disabled="true">{label}</span>{/if}
+  {#if ref}<a href={`/r/${workId}/${ref}`} class="shrink-0 inline-flex items-center justify-center size-9 rounded-sm text-lg leading-none text-text-muted hover:text-text hover:bg-hover transition-colors" aria-label={aria}>{label}</a>
+  {:else}<span class="shrink-0 inline-flex items-center justify-center size-9 rounded-sm text-lg leading-none text-text-subtle opacity-40 cursor-not-allowed" aria-disabled="true">{label}</span>{/if}
 {/snippet}
