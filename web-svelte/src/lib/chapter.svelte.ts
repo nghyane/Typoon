@@ -7,6 +7,10 @@ import type { PageBlob } from './types';
 type ResolvePageUrl = (index: number, rawUrl: string) => Promise<string>;
 type PageHeaders = () => Record<string, string> | null | undefined;
 
+// Abandon a slow/stalled gateway and fail over to the next mirror. Generous
+// enough that a normal large page on a slow connection still completes.
+const GATEWAY_TIMEOUT_MS = 12_000;
+
 export class ChapterPages {
   blobs = $state<PageBlob[]>([]);
   pageSizes = $state<Array<{ width: number; height: number } | null>>([]);
@@ -117,9 +121,7 @@ export class ChapterPages {
       const rawUrl = await this.#resolveUrl(index, this.#urls[index] ?? '');
       if (!rawUrl) throw new Error(`missing page url ${index + 1}`);
       throwIfAborted(signal);
-      const res = await fetch(this.#sf.toBrowserUrl(rawUrl, this.#headers), { signal });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const blob = await res.blob();
+      const blob = await this.#fetchBlob(rawUrl, signal);
       const size = await readImageSize(blob);
       throwIfAborted(signal);
       if (this.#generation !== generation) throw new Error('stale page fetch');
@@ -134,6 +136,38 @@ export class ChapterPages {
       }
       throw err;
     }
+  }
+
+  // Page images must honor the same gateway fallback as covers and source
+  // metadata: the primary gateway (discordsays) leads but gets rate-limited on
+  // non-Activity deploys (observed: HTTP 503, and concurrent loads stalling for
+  // 10s+), so a single-gateway fetch leaves the reader blank while covers (which
+  // retry) still render. Walk every gateway, failing a slow/stalled one over to
+  // the next via a per-attempt timeout. The last gateway runs untimed so a
+  // genuinely slow network on the final mirror still completes.
+  async #fetchBlob(rawUrl: string, signal: AbortSignal): Promise<Blob> {
+    const count = Math.max(1, this.#sf.gatewayCount);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < count; attempt += 1) {
+      throwIfAborted(signal);
+      const isLast = attempt === count - 1;
+      const ac = new AbortController();
+      const onAbort = () => ac.abort(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      const timer = isLast ? null : setTimeout(() => ac.abort(new Error('gateway timeout')), GATEWAY_TIMEOUT_MS);
+      try {
+        const res = await fetch(this.#sf.toBrowserUrl(rawUrl, this.#headers, undefined, attempt), { signal: ac.signal });
+        if (res.ok) return await res.blob();
+        lastError = new Error(`${res.status}`);
+      } catch (err) {
+        if (signal.aborted) throw err;
+        lastError = err;
+      } finally {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+      }
+    }
+    throw lastError ?? new Error('all gateways failed');
   }
 
   #markDone(index: number): void {
