@@ -74,12 +74,15 @@ function groupedTextPlacements(
       .filter(({ block, index }) => !assigned.has(index) && containsCenter(anchor.bbox, block.bbox))
       .map(({ index }) => index)
     if (!memberIds.length) continue
-    // Bubble anchors are a single semantic unit — do not sub-group OCR blocks
-    // inside them.  Sub-grouping is only meaningful for text_free regions that
-    // may span multiple independent text areas.
-    const subgroups = anchor.kind === 'bubble' || anchor.kind === 'text_bubble'
-      ? [Array.from(memberIds)]
-      : subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
+    // Sub-group OCR blocks inside EVERY anchor, bubbles included. A double/peanut
+    // bubble (two lobes sharing one detector region) must split at the large
+    // vertical gap between its text clusters instead of fusing into one placement
+    // with a concatenated translation. subgroupBlockIds keeps a single-utterance
+    // bubble whole (its largeGaps === 0 shortcut returns the group intact), so this
+    // is a no-op for normal bubbles and only separates genuinely distinct clusters.
+    // Restores the canonical Python `subgroup_blocks`, which ran on every scope
+    // including bubbles; the earlier bubble exemption was the cross-bubble-fusion bug.
+    const subgroups = subgroupBlockIds(memberIds, blocks, anchor.innerBBox ?? anchor.bbox)
     for (const subgroup of splitMixedRoleSubgroups(subgroups, blocks, roleContext)) {
       const members = subgroup.map(index => ({ block: blocks[index]!, index }))
       placements.push(groupToTextPlacement(members, units, anchor, placements.length, pageIndex, pageSize, roleContext))
@@ -382,7 +385,16 @@ function subgroupHorizontalBlockIds(indices: readonly number[], blocks: readonly
   const widths = boxes.map(box => Math.max(1, box[2] - box[0]))
   const medH = median(heights)
   const medW = median(widths)
-  const largeVGaps = countAxisGaps(boxes, 1, 3, medH * 1.25)
+  // Vertical separation between blocks is paragraph/bubble spacing, which scales
+  // with LINE height (font size), not block height. A multi-line block is several
+  // lines tall, so a block-height gap budget makes the "large gap" threshold
+  // unreachable and lets two vertically-stacked bubbles merge into one placement
+  // (trusting an over-merged region over the real geometry). Use the median line
+  // height so the threshold means "> ~1.25 lines of leading = a real break",
+  // identical to single-line behaviour but correct for multi-line blocks too.
+  const lineHeights = indices.map(index => estimateBlockFontPx(blocks[index]!)).filter(n => n > 0)
+  const medLineH = lineHeights.length ? median(lineHeights) : medH
+  const largeVGaps = countAxisGaps(boxes, 1, 3, medLineH * 1.25)
   const largeHGaps = countAxisGaps(boxes, 0, 2, medW * 1.25)
   const largeGaps = largeVGaps + largeHGaps
   const allInside = indices.every(index => containsCenter(container, blocks[index]!.bbox))
@@ -436,8 +448,11 @@ function subgroupHorizontalBlockIds(indices: readonly number[], blocks: readonly
       const minH = Math.max(1, Math.min(ah, bh))
       const heightRatio = Math.max(ah, bh) / minH
 
-      // Horizontal blocks: height-scaled gap (ported from groups.py subgroup_blocks).
-      const sameColumn = xOverlap(a, b) > (strict ? 0.70 : 0.55) && yGap(a, b) <= minH * (strict ? 0.65 : 1.20) && heightRatio < (strict ? 1.7 : 2.1)
+      // Horizontal blocks: stacked blocks join only within paragraph leading.
+      // The vertical gap budget scales with LINE height (medLineH), not block
+      // height — otherwise two multi-line bubbles stacked a normal bubble-gap
+      // apart fall within one block-height and wrongly merge.
+      const sameColumn = xOverlap(a, b) > (strict ? 0.70 : 0.55) && yGap(a, b) <= medLineH * (strict ? 0.65 : 1.20) && heightRatio < (strict ? 1.7 : 2.1)
       const sameRow = yOverlap(a, b) > (strict ? 0.70 : 0.60) && xGap(a, b) <= minH * (strict ? 1.50 : 2.00) && heightRatio < (strict ? 1.7 : 2.1)
       const overlaps = !strict && (iou(a, b) > 0.12 || containment(a, b) > 0.35 || containment(b, a) > 0.35)
       if (sameColumn || sameRow || overlaps) join(i, j)
