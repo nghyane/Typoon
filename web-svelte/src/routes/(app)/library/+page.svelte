@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { Plus, Search } from 'lucide-svelte';
   import { listLibraryWorks } from '$lib/works/repo';
   import type { LibraryStatus, Work } from '$lib/db';
@@ -19,8 +20,18 @@
     { value: 'dropped', label: 'Bỏ' },
   ];
 
+  // Remember the reader's last status tab across navigations, reloads, and sessions
+  // so coming back to the library lands on the shelf they were on, not always 'all'.
+  const TAB_STORAGE_KEY = 'typoon.library.tab.v1';
+  const isStatusFilter = (v: unknown): v is StatusFilter => statusTabs.some((tab) => tab.value === v);
+  function loadSavedTab(): StatusFilter {
+    if (!browser) return 'all';
+    const saved = localStorage.getItem(TAB_STORAGE_KEY);
+    return isStatusFilter(saved) ? saved : 'all';
+  }
+
   let works = $state<Work[]>([]);
-  let status = $state<StatusFilter>('all');
+  let status = $state<StatusFilter>(loadSavedTab());
   let query = $state('');
   let loading = $state(true);
   let error = $state('');
@@ -46,6 +57,11 @@
       .then((items) => { works = items; })
       .catch((err) => { error = err instanceof Error ? err.message : String(err); })
       .finally(() => { loading = false; });
+  });
+
+  // Persist the active tab whenever it changes.
+  $effect(() => {
+    if (browser) localStorage.setItem(TAB_STORAGE_KEY, status);
   });
 </script>
 
