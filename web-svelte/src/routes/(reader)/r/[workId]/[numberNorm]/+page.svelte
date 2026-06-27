@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { afterNavigate } from '$app/navigation';
-  import { AlertCircle, ChevronDown, ChevronLeft, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
+  import { AlertCircle, ChevronDown, ChevronLeft, Download, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
   import { resolvePageUrl } from '$lib/source/runtime/endpoints';
@@ -142,6 +142,15 @@
   const currentPageDisplay = $derived(pageCount > 0 ? Math.min(nav.pageIndex + 1, pageCount) : 0);
   const translationBusy = $derived(isTranslationBusy(translation.state.phase));
   const translationBlocked = $derived(session.state.status === 'authenticated' && session.state.user.is_guild_member === false);
+  // First-run model prep — the heavy one-time download + runtime startup. Surfaced
+  // as a dedicated slide-up panel (not the tiny toolbar chip) so the user reads it
+  // like a game's "loading resources" screen instead of a cryptic "OCR 32%".
+  // Only the download raises the panel. `resolving` (cache check) and `initializing`
+  // (runtime startup) both finish in a blink — on a machine that already cached the
+  // model they'd make the panel pop in and vanish, a jarring flash. Those fast states
+  // keep the compact "Chuẩn bị" chip; the panel is reserved for the one thing the user
+  // genuinely waits on, the multi-second first-run download.
+  const modelPrepActive = $derived(canTranslateLanguage && translation.state.model.state === 'downloading');
   const chapterDisplay = $derived(shortChapterNumber(data?.chapterNumber, data?.chapterRef));
   const readerPageWidth = $derived(localSettings.state.reader_page_width);
 
@@ -225,8 +234,8 @@
   }
 
   function translationStatusLabel(state: typeof translation.state): string {
-    if (state.model.state === 'downloading') return state.model.ratio === undefined ? 'Tải OCR' : `OCR ${Math.round(clamp01(state.model.ratio) * 100)}%`;
-    if (state.model.state === 'resolving' || state.model.state === 'initializing') return 'OCR';
+    if (state.model.state === 'downloading') return state.model.ratio === undefined ? 'Tải model' : `Tải ${Math.round(clamp01(state.model.ratio) * 100)}%`;
+    if (state.model.state === 'resolving' || state.model.state === 'initializing') return 'Chuẩn bị';
     if (state.phase === 'loading') return 'Chuẩn bị';
     if (state.phase === 'translating') return `${state.translate.done}/${state.translate.total}`;
     return '';
@@ -248,6 +257,15 @@
     if (state.model.state === 'downloading' && state.model.ratio !== undefined) return clamp01(state.model.ratio);
     if (state.phase === 'translating' && state.translate.total > 0) return clamp01(state.translate.done / state.translate.total);
     return state.phase === 'loading' ? 0.05 : 0;
+  }
+
+  // Human stage names for the first-run loader panel — no jargon, names the actual
+  // step the way a game names "Downloading assets…" / "Compiling shaders…".
+  function modelStageTitle(model: typeof translation.state.model): string {
+    if (model.state === 'downloading') return 'Đang tải gói nhận diện';
+    if (model.state === 'initializing') return 'Khởi động bộ xử lý ảnh';
+    if (model.state === 'resolving') return 'Kiểm tra dữ liệu đã tải';
+    return 'Chuẩn bị công cụ dịch';
   }
 
   function formatModelBytes(received: number | undefined, total: number | undefined): string {
@@ -349,6 +367,47 @@
       </div>
     </header>
 
+    <!-- First-run model loader — slides up just above the toolbar, game-style:
+         names the current step, shows the download size + %, and reassures it's a
+         one-time fetch. Non-modal: the raw pages stay visible behind it. Only the
+         heavy states (download + runtime startup) raise it; routine per-chapter
+         translating keeps the compact toolbar chip. -->
+    {#if modelPrepActive}
+      <div
+        class={cn(
+          'fixed inset-x-0 z-40 flex justify-center px-2 bottom-[calc(3.5rem+max(0.5rem,var(--saib)))] pointer-events-none transition-transform duration-200 ease-out',
+          !nav.chromeVisible && 'translate-y-[calc(100%+4rem+var(--saib))]',
+        )}
+      >
+        <div class="pointer-events-auto w-full max-w-2xl rounded-md border border-border-soft bg-surface px-3 py-2.5 shadow-lg">
+          <div class="flex items-center gap-2.5">
+            <span class="grid size-7 shrink-0 place-items-center rounded-sm bg-info-bg text-info-text">
+              {#if translation.state.model.state === 'downloading'}<Download size={15} />{:else}<Loader2 size={15} class="animate-spin" />{/if}
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-xs font-semibold text-text">{modelStageTitle(translation.state.model)}</p>
+              {#if translation.state.model.state === 'downloading'}
+                <p class="truncate text-[11px] tabular-nums text-text-subtle">{formatModelBytes(translation.state.model.receivedBytes, translation.state.model.totalBytes)}</p>
+              {/if}
+            </div>
+            {#if translation.state.model.state === 'downloading' && translation.state.model.ratio !== undefined}
+              <span class="shrink-0 text-xs font-bold tabular-nums text-info-text">{Math.round(clamp01(translation.state.model.ratio) * 100)}%</span>
+            {/if}
+          </div>
+          <div class="mt-2 h-1 overflow-hidden rounded-full bg-surface-2">
+            {#if translation.state.model.state === 'downloading' && translation.state.model.ratio !== undefined}
+              <div class="h-full rounded-full bg-info transition-[width] duration-200 ease-out" style={`width:${clamp01(translation.state.model.ratio) * 100}%`}></div>
+            {:else}
+              <div class="reader-indeterminate h-full w-2/5 rounded-full bg-info/70"></div>
+            {/if}
+          </div>
+          {#if translation.state.model.state === 'downloading'}
+            <p class="mt-1.5 text-[11px] leading-snug text-text-subtle">Chỉ tải một lần — lần sau mở là dùng được ngay.</p>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
     <footer class={cn('fixed inset-x-0 bottom-0 z-40 pb-[max(0.5rem,var(--saib))] pl-[max(0.5rem,var(--sail))] pr-[max(0.5rem,var(--sair))] flex justify-center pointer-events-none transition-transform duration-200 ease-out', !nav.chromeVisible && 'translate-y-[calc(100%+var(--saib))]')}>
       <div class="pointer-events-auto relative flex w-full max-w-2xl items-center gap-1.5 overflow-hidden rounded-md border border-border-soft bg-surface px-1.5 py-1.5">
         <div class="inline-flex min-w-0 items-center gap-1">
@@ -375,7 +434,7 @@
         </label>
         <!-- Translation progress — visible on every breakpoint so the reader can
              see how far the run has gotten (model download, prepare, pages done). -->
-        {#if canTranslateLanguage && translationStatusLabel(translation.state)}
+        {#if canTranslateLanguage && !modelPrepActive && translationStatusLabel(translation.state)}
           <span class="inline-flex h-9 max-w-[5.5rem] shrink-0 items-center truncate rounded-sm px-2 text-xs tabular-nums text-text-subtle" title={translationDetail(translation.state, translationHidden)}>
             {translationStatusLabel(translation.state)}
           </span>
@@ -407,7 +466,7 @@
             <span>{translationActionLabel(hasTranslation, translationHidden, translation.state.phase)}</span>
           </button>
         {/if}
-        {#if canTranslateLanguage && translationProgress(translation.state) > 0}
+        {#if canTranslateLanguage && !modelPrepActive && translationProgress(translation.state) > 0}
           <span class="absolute inset-x-0 bottom-0 h-0.5 bg-bg" aria-hidden="true">
             <span class="block h-full bg-accent transition-[width] duration-200" style={`width:${translationProgress(translation.state) * 100}%`}></span>
           </span>
