@@ -66,7 +66,16 @@ function nearestPageIndex(el: HTMLDivElement, center: number): number {
   const nodes = el.querySelectorAll<HTMLElement>('[data-page-index]');
   if (!nodes.length) return 0;
 
-  const midOf = (node: HTMLElement): number => node.offsetTop + node.offsetHeight / 2;
+  // Page midpoint in the strip's scroll-content space. Don't use offsetTop here:
+  // each page sits in its own positioned wrapper, so offsetTop is measured
+  // against that wrapper (≈0) instead of accumulating down the strip — which
+  // collapses every page's midpoint to ~pageHeight/2 and makes the binary search
+  // jump straight to the last page. getBoundingClientRect is positioning-agnostic.
+  const stripTop = el.getBoundingClientRect().top;
+  const midOf = (node: HTMLElement): number => {
+    const rect = node.getBoundingClientRect();
+    return rect.top - stripTop + el.scrollTop + rect.height / 2;
+  };
 
   let lo = 0;
   let hi = nodes.length - 1;
