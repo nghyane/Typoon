@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { afterNavigate } from '$app/navigation';
   import { AlertCircle, ChevronDown, ChevronLeft, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
@@ -98,12 +99,43 @@
     restore: (v: { scrollTop: number }): void => { pendingRestoreTop = v.scrollTop; },
   };
 
+  // The reader scrolls inside `stripEl`, not the window. A new chapter must open
+  // on the first image; a back/forward move must return to where the reader left
+  // off. snapshot.capture/restore (above) is SvelteKit's per-history-entry scroll
+  // memory — it only sets `pendingRestoreTop` on a back/forward restore, so a
+  // fresh forward move falls through to the top.
+  //
+  // afterNavigate runs once the navigation settles; it records the target for the
+  // chapter we just landed on. The strip itself is briefly unmounted while `data`
+  // reloads, so we can't position it here — an effect applies the target once the
+  // strip and its first slots exist. overflow-anchor:none on the strip then keeps
+  // it put as the remaining images stream in (a single assignment holds).
+  let chapterTarget = $state<number | null>(null);
+
+  // afterNavigate fires once the navigation settles; default the new chapter to
+  // the first image. A back/forward restore arrives separately via
+  // snapshot.restore → `pendingRestoreTop` (whose ordering vs afterNavigate isn't
+  // guaranteed) and takes precedence in the effect below.
+  afterNavigate(() => {
+    chapterTarget = 0;
+    nav.pageIndex = 0; nav.scrollProgress = 0; nav.chromeVisible = true;
+  });
+
+  // Position the strip once it (re)mounts and its first slots have height. Done
+  // synchronously — not via rAF, which is throttled in background tabs — so the
+  // jump lands reliably. overflow-anchor:none then holds it as images stream in.
+  // A pending back/forward restore wins over the default top, whichever arrives
+  // first.
   $effect(() => {
-    if (pendingRestoreTop == null || !stripEl || slotCount === 0) return;
-    const el = stripEl;
-    const top = pendingRestoreTop;
-    pendingRestoreTop = null;
-    requestAnimationFrame(() => { el.scrollTop = top; });
+    if (!stripEl || slotCount === 0) return;
+    if (pendingRestoreTop != null) {
+      stripEl.scrollTop = pendingRestoreTop;
+      pendingRestoreTop = null;
+      chapterTarget = null;
+    } else if (chapterTarget != null) {
+      stripEl.scrollTop = chapterTarget;
+      chapterTarget = null;
+    }
   });
 
   const readingProgress = $derived(pageCount > 0 ? Math.max(0, Math.min(1, nav.scrollProgress)) : 0);
@@ -259,7 +291,13 @@
   <div class="fixed inset-0 bg-bg overflow-hidden text-text">
     <div class="absolute inset-0 overflow-hidden">
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div bind:this={stripEl} class="w-full h-full overflow-y-auto overflow-x-hidden bg-bg overscroll-contain" onscroll={nav.handleStripScroll} onclick={nav.handleStripTap} onkeydown={() => {}} role="presentation">
+      <!-- overflow-anchor:none — the reader sets scroll position deliberately (top
+           of the first image on a new chapter, the saved offset on back/forward).
+           With anchoring on, the browser fights that: as content-visibility slots
+           resolve their real size against the intrinsic estimate it nudges
+           scrollTop to keep some mid-list anchor fixed, drifting us off the top
+           and causing jumps while pages stream in. -->
+      <div bind:this={stripEl} class="w-full h-full overflow-y-auto overflow-x-hidden bg-bg overscroll-contain [overflow-anchor:none]" onscroll={nav.handleStripScroll} onclick={nav.handleStripTap} onkeydown={() => {}} role="presentation">
         <div class="relative min-h-full" style={`width:100%;max-width:${readerPageWidth}px;margin:0 auto;`}>
           {#each slotIndices as i (i)}
             <div
