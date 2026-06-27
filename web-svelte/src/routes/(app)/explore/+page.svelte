@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { Check, Compass, Plus, Search } from 'lucide-svelte';
+  import { Compass, Plus, Search } from 'lucide-svelte';
   import { listSources } from '$lib/source/registry';
   import {
     assembleFilters,
@@ -16,17 +16,19 @@
   import { fetchBrowse } from '$lib/source/runtime/endpoints';
   import { dedupeBy } from '$lib/collections';
   import FilterChips from '$lib/source/FilterChips.svelte';
-  import type { InstalledSource, MangaSummary } from '$lib/source/types';
+  import FilterGroup from '$lib/source/FilterGroup.svelte';
+  import type { Filter, InstalledSource, MangaSummary } from '$lib/source/types';
   import { listWorksBySourceRefs, ensureWorkFromSource } from '$lib/works/repo';
   import type { Work } from '$lib/db';
-  import Cover from '$lib/ui/Cover.svelte';
+  import WorkCard from '$lib/ui/WorkCard.svelte';
   import AddMangaModal from '$lib/library/AddMangaModal.svelte';
   import Button from '$lib/ui/Button.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
+  import CardSkeleton from '$lib/ui/CardSkeleton.svelte';
   import Spinner from '$lib/ui/Spinner.svelte';
   import { cn } from '$lib/cn';
   import { trackSourceOpen, trackSourceSelect } from '$lib/analytics/client';
-  import { createInfiniteQuery, createMutation } from '@tanstack/svelte-query';
+  import { createInfiniteQuery, createMutation, keepPreviousData } from '@tanstack/svelte-query';
 
   let allSources = $state<InstalledSource[]>([]);
   let sourceId = $state('');
@@ -39,6 +41,9 @@
 
   let existingByUrl = $state<Record<string, Pick<Work, 'id' | 'in_library'>>>({});
   let loadMoreSentinel = $state<HTMLDivElement | null>(null);
+  let rootEl = $state<HTMLDivElement | null>(null);
+  let scrollEl: HTMLElement | null = null;
+  let pendingScrollTop = $state<number | null>(null);
 
   const sources = $derived(allSources.filter((s) => s.enabled));
   const disabledSourceCount = $derived(allSources.filter((s) => !s.enabled).length);
@@ -72,6 +77,36 @@
   const assembled = $derived(assembleFilters(activeFilters, filterState));
   const typedFilterState = $derived(assembleFilterState(activeFilters, filterState));
 
+  // Root cause (all providers): a filter declared on a *shelf* (rather than
+  // source-level) is only visible once that shelf is the active one — so
+  // "browse by genre / tag / catalog" gets buried behind first selecting its
+  // shelf (TruyenQQ/Naver/otruyen/webtoonscan/happymh/hentaifox all hit this).
+  // Fix uniformly, regardless of the filter's type or inject mode: any shelf
+  // that owns filters is surfaced as an always-visible picker, and choosing a
+  // value both jumps into that shelf and applies the filter. Plain content
+  // shelves stay tabs; source-level filters (e-hentai, mangadex, nhentai…) stay
+  // inline exactly as before.
+  function shelfOwnFilters(shelfId: string): Filter[] {
+    return source?.manifest.endpoints?.shelves?.find((s) => s.id === shelfId)?.filters ?? [];
+  }
+  // A shelf with its own filters becomes a picker when it's a dedicated
+  // "browse-by" view: either not the default shelf (genre/tag/catalog listed
+  // after the content shelves) or driven by a required path filter. The default
+  // shelf stays a content tab even if it carries an optional filter (e.g.
+  // baozimh "popular" + genre), which then shows inline while that tab is active.
+  const pickerShelves = $derived(
+    shelves.flatMap((s, i) => {
+      const filters = shelfOwnFilters(s.id);
+      const isPicker = filters.length > 0 && (i > 0 || filters.some((f) => f.inject === 'path'));
+      return isPicker ? [{ shelf: s, filters }] : [];
+    }),
+  );
+  const tabShelves = $derived(shelves.filter((s) => !pickerShelves.some((p) => p.shelf.id === s.id)));
+  const pickerFilterIds = $derived(new Set(pickerShelves.flatMap((p) => p.filters.map((f) => f.id))));
+  // Inline filters = the active target's filters minus any surfaced as a picker
+  // (so they aren't shown twice). The query still assembles from `activeFilters`.
+  const inlineFilters = $derived(activeFilters.filter((f) => !pickerFilterIds.has(f.id)));
+
   const browsePageSize = $derived(
     source && target
       ? (typeof target === 'object' ? searchPageSize(source.manifest) : shelfPageSize(source.manifest, target))
@@ -102,6 +137,12 @@
       return (lastPageParam as number) + 1;
     },
     enabled: !!source && !!target,
+    // Keep the current grid on screen while switching source/shelf/filter so the
+    // list dims-and-swaps instead of blanking out. (#3)
+    placeholderData: keepPreviousData,
+    // Browse listings change slowly and the gateway caches them for ~1h; a 5min
+    // TanStack staleTime forced needless refetches on every back/tab-return. (#4)
+    staleTime: 30 * 60_000,
   }));
 
   // Dedupe across pages: "latest"-style listings can re-bump a series onto a
@@ -135,7 +176,7 @@
     if (!node || !browseQuery.hasNextPage || browseQuery.isFetchingNextPage) return;
     const observer = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) browseQuery.fetchNextPage();
-    }, { rootMargin: '800px 0px' });
+    }, { rootMargin: '1200px 0px' });
     observer.observe(node);
     return () => observer.disconnect();
   });
@@ -145,15 +186,27 @@
   onMount(() => {
     const nextSources = listSources();
     allSources = nextSources;
-    sourceId = nextSources.find((s) => s.enabled)?.manifest.id ?? '';
+    scrollEl = rootEl?.closest('main') ?? null;
+    // A snapshot restore (back/forward) sets sourceId before this runs; only seed
+    // defaults on a genuine fresh open or when the remembered source is gone.
+    const restored = sourceId && nextSources.some((s) => s.enabled && s.manifest.id === sourceId);
+    if (!restored) {
+      const first = nextSources.find((s) => s.enabled) ?? null;
+      sourceId = first?.manifest.id ?? '';
+      if (first) {
+        shelfId = getShelves(first.manifest)[0]?.id ?? '';
+        filterState = getDefaultFilterState(first.manifest);
+      }
+    }
   });
 
+  // Safety net for the old reset-on-source-change effect: if the remembered source
+  // was disabled/removed while away, fall back to the first available one (which
+  // also resets the view to that source's defaults).
   $effect(() => {
-    if (!source) return;
-    shelfId = shelves[0]?.id ?? '';
-    query = '';
-    debouncedQuery = '';
-    filterState = getDefaultFilterState(source.manifest);
+    if (sources.length && sourceId && !sources.some((s) => s.manifest.id === sourceId)) {
+      selectSource(sources[0]!);
+    }
   });
 
   $effect(() => {
@@ -174,13 +227,62 @@
   }
 
   function selectSource(next: InstalledSource): void {
-    sourceId = next.manifest.id;
+    if (next.manifest.id !== sourceId) {
+      sourceId = next.manifest.id;
+      // Switching to a different source resets the view to that source's defaults.
+      shelfId = getShelves(next.manifest)[0]?.id ?? '';
+      query = '';
+      debouncedQuery = '';
+      filterState = getDefaultFilterState(next.manifest);
+    }
     trackSourceSelect({
       context: 'explore',
       source_id: next.manifest.id,
       source_name: next.manifest.name,
     });
   }
+
+  // Preserve the browse view across navigation (open a manga → back): SvelteKit
+  // calls capture before leaving and restore on back/forward. TanStack Query keeps
+  // the loaded pages cached under the same query key, so restoring source/shelf/
+  // query/filters re-shows the full list instantly; we then re-apply the scroll.
+  export const snapshot = {
+    capture: () => ({
+      sourceId,
+      shelfId,
+      query,
+      filterState: $state.snapshot(filterState),
+      scrollTop: scrollEl?.scrollTop ?? 0,
+    }),
+    restore: (v: {
+      sourceId: string;
+      shelfId: string;
+      query: string;
+      filterState: Record<string, string | string[]>;
+      scrollTop: number;
+    }): void => {
+      sourceId = v.sourceId;
+      shelfId = v.shelfId;
+      query = v.query;
+      debouncedQuery = v.query.trim();
+      filterState = v.filterState ?? {};
+      pendingScrollTop = v.scrollTop;
+    },
+  };
+
+  // Re-apply the restored scroll once the (cached) list has rendered its height.
+  // Waiting on isPending + items keeps us from scrolling before the rows exist,
+  // which would clamp to the short placeholder height.
+  $effect(() => {
+    if (pendingScrollTop == null || !scrollEl || browseQuery.isPending) return;
+    void items.length;
+    const el = scrollEl;
+    const top = pendingScrollTop;
+    pendingScrollTop = null;
+    requestAnimationFrame(() => {
+      el.scrollTop = top;
+    });
+  });
 
   async function openSourceSettings(): Promise<void> {
     await goto('/settings?tab=sources');
@@ -211,7 +313,7 @@
 
 <svelte:head><title>Khám phá — Hội Mê Truyện</title></svelte:head>
 
-<div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+<div bind:this={rootEl} class="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-5">
   {#if sources.length === 0}
     <div class="max-w-3xl mx-auto px-4 sm:px-6 py-10">
       <EmptyState title="Chưa có nguồn nào" hint="Mở Cài đặt → Nguồn để bật ít nhất một nguồn." />
@@ -240,14 +342,14 @@
           {@const selected = s.manifest.id === sourceId}
           <button type="button" aria-pressed={selected}
             onclick={() => { selectSource(s); }}
-            class={cn('inline-flex items-center gap-2 h-7 px-3 rounded-full text-xs font-medium transition-colors',
+            class={cn('inline-flex items-center gap-2 h-7 px-3 rounded-full chrome-label font-medium transition-colors',
               selected ? 'bg-accent-bg text-accent-text' : 'bg-surface-2 text-text-muted hover:bg-hover hover:text-text',
             )}
           >{s.manifest.name}</button>
         {/each}
         {#if disabledSourceCount > 0}
           <button type="button" onclick={openSourceSettings}
-            class="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-dashed border-border-soft bg-surface text-xs font-medium text-text-muted transition-colors hover:bg-hover hover:text-text cursor-pointer"
+            class="inline-flex items-center gap-1.5 h-7 px-3 rounded-full border border-dashed border-border-soft bg-surface chrome-label font-medium text-text-muted transition-colors hover:bg-hover hover:text-text cursor-pointer"
           >
             <Plus size={12} /> Thêm nguồn
           </button>
@@ -264,27 +366,43 @@
       {/if}
     </header>
 
-    {#if !debouncedQuery && shelves.length > 1}
-      <div class="flex flex-wrap gap-2">
-        {#each shelves as shelf (shelf.id)}
-          {@const selected = shelf.id === shelfId}
-          <button type="button" onclick={() => { shelfId = shelf.id; }}
-            class={cn('h-7 px-3 rounded-full text-xs font-medium transition-colors',
-              selected ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text',
-            )}
-          >{shelf.label}</button>
-        {/each}
-      </div>
-    {/if}
-
-    {#if activeFilters.length > 0}
+    {#if (!debouncedQuery && shelves.length > 1) || inlineFilters.length > 0}
+      <!-- One controls row: view tabs, then any "browse-by" pickers (genre / tag
+           / catalog — always visible, pick one and it jumps into that view),
+           then a divider and the remaining inline filters. -->
       <div class="flex flex-wrap items-center gap-2">
-        <FilterChips filters={activeFilters} selection={filterState} onChange={(next) => { filterState = next; }} />
+        {#if !debouncedQuery && shelves.length > 1}
+          {#each tabShelves as shelf (shelf.id)}
+            {@const selected = shelf.id === shelfId}
+            <button type="button" onclick={() => { shelfId = shelf.id; }}
+              class={cn('inline-flex items-center h-7 px-3 rounded-full chrome-label font-medium transition-colors',
+                selected ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text',
+              )}
+            >{shelf.label}</button>
+          {/each}
+          {#each pickerShelves as p (p.shelf.id)}
+            {#each p.filters as filter (filter.id)}
+              <FilterGroup
+                {filter}
+                selection={filterState}
+                onChange={(next) => { filterState = next; shelfId = p.shelf.id; }}
+              />
+            {/each}
+          {/each}
+        {/if}
+        {#if inlineFilters.length > 0}
+          {#if !debouncedQuery && shelves.length > 1}
+            <span class="h-5 w-px shrink-0 bg-divider" aria-hidden="true"></span>
+          {/if}
+          <FilterChips filters={inlineFilters} selection={filterState} onChange={(next) => { filterState = next; }} />
+        {/if}
       </div>
     {/if}
 
     {#if browseQuery.isPending}
-      <div class="flex justify-center py-12"><Spinner size={20} /></div>
+      <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
+        <CardSkeleton count={18} />
+      </div>
     {:else if browseQuery.error && items.length === 0}
       <div class="py-12 text-center">
         <p class="text-sm font-medium text-error-text">Không tải được</p>
@@ -296,39 +414,26 @@
         {#if debouncedQuery}<p class="text-xs text-text-subtle mt-1">Thử từ khoá khác.</p>{/if}
       </div>
     {:else}
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+      <div class={cn('grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5 transition-opacity', browseQuery.isPlaceholderData && 'opacity-50 pointer-events-none')}>
         {#each items as manga (manga.id)}
           {@const existing = existingByUrl[manga.url]}
           {@const key = mangaKey(manga)}
           {@const pending = pendingMangaKey === key}
-          <button type="button" onclick={() => openManga(manga)}
+          <WorkCard
+            class="cv-card"
+            work={{
+              title: manga.title,
+              cover_url: manga.cover,
+              coverHeaders: manga.coverHeaders,
+              chapter: manga.latestChapter,
+              nsfw: source?.manifest.nsfw,
+              inLibrary: existing?.in_library,
+            }}
+            onclick={() => openManga(manga)}
+            {pending}
             disabled={pendingMangaKey !== null}
-            aria-busy={pending}
-            class={cn(
-              'group flex flex-col gap-2 rounded-sm overflow-hidden text-left cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed',
-              pendingMangaKey !== null && !pending && 'opacity-50',
-              pending && 'cursor-wait',
-            )}
-          >
-            <div class="relative aspect-[3/4] rounded-sm overflow-hidden bg-surface-2">
-              <Cover src={manga.cover} headers={manga.coverHeaders} title={manga.title} class="absolute inset-0 transition-transform group-hover:scale-[1.02]" />
-              {#if pending}
-                <span class="absolute inset-0 grid place-items-center bg-bg/45"><Spinner size={20} /></span>
-              {/if}
-              {#if source?.manifest.nsfw}
-                <span class="absolute top-1.5 right-1.5 inline-flex items-center h-5 px-1.5 rounded-xs bg-error-bg text-error-text text-xs font-semibold">18+</span>
-              {/if}
-            </div>
-            <div class="px-0.5 space-y-0.5 min-w-0">
-              <div class="text-xs font-medium text-text line-clamp-2 leading-tight">{manga.title}</div>
-              <div class="flex items-center gap-1.5 text-xs uppercase tracking-wider text-text-subtle">
-                <span class="truncate">{source?.manifest.name}</span>
-                {#if existing?.in_library}
-                  <Check size={12} class="shrink-0 text-success" aria-label="Trong thư viện" />
-                {/if}
-              </div>
-            </div>
-          </button>
+            dimmed={pendingMangaKey !== null && !pending}
+          />
         {/each}
       </div>
 

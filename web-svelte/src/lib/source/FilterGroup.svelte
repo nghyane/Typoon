@@ -65,7 +65,7 @@
     bind:this={anchor}
     onclick={() => (open = !open)}
     class={cn(
-      'inline-flex items-center gap-1 h-8 px-3 rounded-full text-sm font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors',
+      'inline-flex items-center gap-1 h-7 px-3 rounded-full chrome-label font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors',
       activeNormal.length > 0 || open ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text',
     )}
   >
@@ -109,7 +109,7 @@
     type="button"
     onclick={() => toggle(opt.id)}
     class={cn(
-      'inline-flex items-center h-8 px-3 rounded-full text-sm font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors',
+      'inline-flex items-center h-7 px-3 rounded-full chrome-label font-medium whitespace-nowrap shrink-0 cursor-pointer transition-colors',
       on ? 'bg-error-bg text-error-text' : 'text-text-muted hover:text-text',
     )}
   >{opt.label}</button>
