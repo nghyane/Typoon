@@ -32,6 +32,12 @@ function writeEnabled(enabled: Record<string, boolean>): void {
 }
 
 let enabledCache: Record<string, boolean> | null = null;
+// The assembled InstalledSource[] is derived purely from the (large) bundled
+// manifests + the enabled snapshot, so it's stable until toggled. Cache it:
+// listSources()/getSource() are called per WorkCard, and rebuilding 20 manifest
+// objects on each call showed up as avoidable churn in the browse grids.
+let sourcesCache: InstalledSource[] | null = null;
+let sourceById: Map<string, InstalledSource> | null = null;
 
 function getEnabledSnapshot(): Record<string, boolean> {
 	if (!enabledCache) enabledCache = readEnabled();
@@ -40,16 +46,20 @@ function getEnabledSnapshot(): Record<string, boolean> {
 
 function invalidateCache(): void {
 	enabledCache = null;
+	sourcesCache = null;
+	sourceById = null;
 }
 
 export function listSources(): InstalledSource[] {
+	if (sourcesCache) return sourcesCache;
 	const enabled = getEnabledSnapshot();
-	return bundledManifests.map((manifest) => ({
+	sourcesCache = bundledManifests.map((manifest) => ({
 		manifest,
 		origin: 'bundled' as const,
 		installedAt: 0,
 		enabled: enabled[manifest.id] ?? defaultEnabledSourceIds.has(manifest.id),
 	}));
+	return sourcesCache;
 }
 
 export function listEnabledSources(): InstalledSource[] {
@@ -71,5 +81,7 @@ export function enableDefaultSources(): void {
 }
 
 export function getSource(id: string): InstalledSource | null {
-	return listEnabledSources().find((source) => source.manifest.id === id) ?? null;
+	if (!sourceById) sourceById = new Map(listSources().map((source) => [source.manifest.id, source]));
+	const source = sourceById.get(id);
+	return source?.enabled ? source : null;
 }
