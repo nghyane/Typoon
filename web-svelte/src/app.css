@@ -12,6 +12,21 @@
   font-display: block;
 }
 
+/* CLS guard: @fontsource/inter ships `font-display: swap`, so the page first
+   paints in a system font and then swaps to Inter — reflowing the large hero
+   headline (layout shift). This synthetic fallback adopts Inter's vertical
+   metrics over a local system face, so the pre-swap text already occupies the
+   exact line box Inter will. Listed right after "Inter" in --font-sans below.
+   Metrics from the Inter ↔ Arial mapping (next/font / Fontaine). */
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial");
+  ascent-override: 90.20%;
+  descent-override: 22.48%;
+  line-gap-override: 0.00%;
+  size-adjust: 107.40%;
+}
+
 /* =========================================================
    Typoon design tokens — Discord-native dark, Coral accent
    Tailwind v4: tokens go through @theme so they emit utilities
@@ -21,7 +36,7 @@
    ========================================================= */
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", "Inter Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   --radius-xs: 4px;
