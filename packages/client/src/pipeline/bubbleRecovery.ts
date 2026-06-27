@@ -186,7 +186,19 @@ function diagnose(anchor: RecoveryAnchor, blocks: readonly TextBlock[]): Diagnos
   const gapLeft = wu[0] - anchor.bbox[0]
   const gapRight = anchor.bbox[2] - wu[2]
   const threshold = GAP_THRESHOLD_FACTOR * lineHeight
-  if (Math.max(gapTop, gapBottom, gapLeft, gapRight) > threshold) {
+
+  // Missing text shows up as an ASYMMETRIC gap along the axis lines stack on:
+  // the OCR text hugs one edge (small near-gap) and leaves room for more lines on
+  // the opposite, reading-continuation edge (large far-gap). Horizontal text
+  // stacks top→bottom, so check the vertical gaps; vertical (tategaki) text
+  // stacks columns right→left, so check the horizontal gaps. Symmetric margins
+  // (text centred with room on BOTH sides) are just a short line in a big bubble,
+  // not missing text — keeping them out of recovery avoids a full-canvas decode
+  // plus crop re-OCR on every short-dialogue-in-large-bubble.
+  const vertical = members.filter(member => member.textDirection === 'vertical').length * 2 >= members.length
+  const nearGap = vertical ? Math.min(gapLeft, gapRight) : Math.min(gapTop, gapBottom)
+  const farGap = vertical ? Math.max(gapLeft, gapRight) : Math.max(gapTop, gapBottom)
+  if (nearGap <= threshold && farGap > threshold) {
     return { anchor, action: 'partial', memberIndices }
   }
   return { anchor, action: 'complete', memberIndices }

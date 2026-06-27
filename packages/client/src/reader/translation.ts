@@ -241,6 +241,16 @@ export class ReaderTranslation {
     })
 
     try {
+      // Start the cold-start work NOW so it warms up concurrently with the font
+      // load, layout measure and idle settle below — instead of serializing onto
+      // page 1's critical path. Both are idempotent + fire-and-forget: the
+      // translator sessions (web round-trip warmup) and the region-detector model
+      // (download + backend import + session compile). prewarmTextRegionDetector
+      // also runs on setChapter, but re-asserting here covers a translate fired
+      // before that finished.
+      this.prewarmTranslator(abort.signal)
+      prewarmTextRegionDetector(this.config)
+
       this.pages = new PageProvider({
         pageCount: chapter.pageCount,
         maxCachedPages: this.config.memory.maxCachedPages,
@@ -267,10 +277,12 @@ export class ReaderTranslation {
       this.setState({ phase: 'translating', translate: { done: 0, total: chapter.pageCount } })
       await yieldAfterPaint()
       if (!this.isCurrent(generation) || abort.signal.aborted) return
-      await yieldToIdle(250)
+      // Short settle so the 'translating' paint lands before drain seizes the
+      // main thread. Warmups (above) already overlap this, so it no longer needs
+      // the old 250ms — just one idle tick, capped low, to avoid a jank spike.
+      await yieldToIdle(50)
       if (!this.isCurrent(generation) || abort.signal.aborted) return
 
-      this.prewarmTranslator(abort.signal)
       void this.drain(generation, abort)
     } catch (error) {
       if (!this.isCurrent(generation) || abort.signal.aborted) return
@@ -392,18 +404,25 @@ export class ReaderTranslation {
   }
 
   /**
-   * Rebuild a single scan unit from decoded source sizes. Callers must have
-   * loaded the page and its halo neighbors first; if any size is still unknown
-   * we keep the existing (possibly DOM-derived) unit rather than guess.
+   * Rebuild a single scan unit from decoded source sizes. The CORE page's real
+   * size is mandatory — it is the overlay's % denominator (unit.source) and the
+   * basis for haloTopPx, so capturing with a DOM-derived fallback there bakes a
+   * vertically-offset overlay that only a re-translate (sizes now known) clears.
+   * A neighbor whose size is still unknown is simply dropped from the window:
+   * its halo is omitted this round (any seam bubble to it just waits) rather than
+   * forcing the whole unit back to the stale DOM geometry. Callers should still
+   * load the page + neighbors first; this only hardens the partial-knowledge race.
    */
   private replanUnit(unit: PageScanUnit): PageScanUnit {
     const pages = this.pages
     if (!pages) return unit
+    const coreSource = pages.size(unit.pageIndex)
+    if (!coreSource) return unit
     const window: PageSource[] = []
     for (const index of [unit.prevIndex, unit.pageIndex, unit.nextIndex]) {
       if (index === null) continue
-      const source = pages.size(index)
-      if (!source) return unit
+      const source = index === unit.pageIndex ? coreSource : pages.size(index)
+      if (!source) continue
       window.push({ pageIndex: index, source })
     }
     const replanned = planPageScans(window, this.config.scan, sourceUsesHalo(this.chapter?.sourceLanguage))

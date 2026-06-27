@@ -106,6 +106,11 @@ export class OverlayManager implements ReaderRenderer {
     this.attachedData.clear()
     for (const { el } of this.seams.values()) el.remove()
     this.seams.clear()
+    // Drop the data source too. Otherwise a later attachVisible() — fired by the
+    // IntersectionObserver while scrolling the next chapter, or by page
+    // re-registration — would resurrect these overlays onto the new pages, since
+    // detach() only removed the DOM, not the map it re-renders from.
+    this.overlays = new Map()
   }
 
   dispose(): void {

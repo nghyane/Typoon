@@ -596,20 +596,30 @@ function fontIntentFor(placement: TextPlacement, baseRect: FitRect, context: Pag
   const roleMedianFontPx = context.roleMedians.get(placement.role) ?? context.allMedianPx
   const placementMaxPx = maxFontForPlacement(placement, baseRect, context.pageMaxPx, profile)
 
-  // Preserve relative size: each bubble keeps its proportion to the page standard.
-  // glyphScale is a flat multiplier (T1); the readable floor (not MIN_FONT_SIZE)
-  // protects already-small source text.
+  // Source-proportional size derives from LOGIC, not a hardcoded px ceiling:
+  //   target = normalized source measurement (sourceFontPx × cross-script ratio)
+  // The only upper bound is the real bubble geometry, enforced downstream by the
+  // DOM fit in composeInRect (capped at rect height, shrunk only if the text
+  // physically overflows) with expansion as the backstop. The previous per-
+  // placement / page-fraction caps (placementMaxPx = height×0.42, pageMaxPx =
+  // pageWidth×0.045) were hardcoded fractions that crushed the proportion: a 1–2
+  // line bubble's tight footprint clamped the font to ~half source size, while
+  // multi-line bubbles escaped — the "some bubbles fine, some tiny" inconsistency.
+  // ABS_MAX_FONT_SIZE here is only a NaN / runaway guard, never reached by real
+  // dialogue. placementMaxPx is kept ONLY for the geometry fallback below, where
+  // there is no trusted source size and the box itself must set the scale.
+  const proportionalMaxPx = ABS_MAX_FONT_SIZE
   const floorPx = profile.minReadableFontPx
   if (roleMedianFontPx !== null && sourceFontPx !== null) {
-    const target = clampFont(sourceFontPx * profile.fontScale, placementMaxPx, floorPx)
+    const target = clampFont(sourceFontPx * profile.fontScale, proportionalMaxPx, floorPx)
     return { sourceFontPx, roleMedianFontPx, targetFontPx: target, reason: 'role-standard' }
   }
 
   if (roleMedianFontPx !== null) {
-    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, placementMaxPx, floorPx), reason: 'fallback-role-median' }
+    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, proportionalMaxPx, floorPx), reason: 'fallback-role-median' }
   }
   if (sourceFontPx !== null) {
-    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, placementMaxPx, floorPx), reason: 'source' }
+    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, proportionalMaxPx, floorPx), reason: 'source' }
   }
   return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, placementMaxPx, floorPx), reason: 'fallback-geometry' }
 }

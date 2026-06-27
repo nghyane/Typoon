@@ -102,14 +102,19 @@ export class PagePipeline {
     const { unit, signal } = args
     const capture = await capturePageScan(unit, args.loadPage, this.deps.config.scan, signal)
     throwIfAborted(signal)
-    const recognized = removeOcrArtifactBlocks(await this.deps.recognizer.recognizeText(capture.image, {
-      pageIndex: unit.pageIndex,
-      sourceLang: args.sourceLanguage,
-      signal,
-    }))
+    // OCR (Lens, network) and region detection (ONNX, inference) both consume the
+    // same capture image and are independent — run them concurrently so the page
+    // critical path is max(OCR, detect) instead of OCR + detect.
+    const [recognizedRaw, regions] = await Promise.all([
+      this.deps.recognizer.recognizeText(capture.image, {
+        pageIndex: unit.pageIndex,
+        sourceLang: args.sourceLanguage,
+        signal,
+      }),
+      detectTextRegions(capture.image, signal, this.deps.config),
+    ])
     throwIfAborted(signal)
-    const regions = await detectTextRegions(capture.image, signal, this.deps.config)
-    throwIfAborted(signal)
+    const recognized = removeOcrArtifactBlocks(recognizedRaw)
 
     const source: BubbleSource = {
       loadFullCanvas: () => loadStitchedSourceCanvas(args.loadPage, unit, signal),
