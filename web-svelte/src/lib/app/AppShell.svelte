@@ -237,12 +237,17 @@
         </div>
       </header>
       <main class="flex-1 overflow-auto sm:pb-[var(--saib)]">{@render children()}</main>
-      <nav class="sm:hidden flex items-stretch bg-surface border-t border-border-soft shrink-0 h-[calc(3.5rem+var(--saib))] pb-[var(--saib)]">
+      <!-- Bottom tab bar. Chrome must stay proportional to the layout, not balloon
+           with the user's system text size: like a native iOS/Android tab bar, the
+           label scales a little for accessibility but is capped so it never wraps or
+           overflows its cell. min-h (not fixed h) lets the bar grow rather than clip
+           if the platform still pushes the content taller. -->
+      <nav class="sm:hidden flex items-stretch bg-surface border-t border-border-soft shrink-0 min-h-[calc(3.5rem+var(--saib))] pb-[var(--saib)]">
         {#each bottom as item}
           {@const isActive = active(item.to)}
-          <a href={item.to} class={cn('flex-1 flex flex-col items-center justify-center gap-0.5 text-xs transition-colors', isActive ? 'text-accent-text' : 'text-text-subtle hover:text-text')}>
-            <span class={cn('h-6 min-w-9 px-2 rounded-full inline-flex items-center justify-center', isActive && 'bg-accent-bg')}><item.icon size={17} /></span>
-            <span>{item.label}</span>
+          <a href={item.to} class={cn('flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-1.5 transition-colors', isActive ? 'text-accent-text' : 'text-text-subtle hover:text-text')}>
+            <span class={cn('h-6 min-w-9 px-2 rounded-full inline-flex items-center justify-center shrink-0', isActive && 'bg-accent-bg')}><item.icon size={17} /></span>
+            <span class="max-w-full whitespace-nowrap chrome-label">{item.label}</span>
           </a>
         {/each}
       </nav>

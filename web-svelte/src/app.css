@@ -155,6 +155,20 @@ label:focus-visible { outline: none; }
 /* mono numbers */
 .tabular { font-variant-numeric: tabular-nums; }
 
+/* Off-screen cards in a long infinite-scroll grid skip layout/paint until they
+   near the viewport. `auto` in contain-intrinsic-size remembers each card's real
+   size after its first render, so the scrollbar stays stable. Used by the Explore
+   grid where hundreds of image cards otherwise stay live in the DOM. */
+.cv-card { content-visibility: auto; contain-intrinsic-size: auto 320px; }
+
+/* Chrome typography — fixed UI furniture (tab bar, badges, chips) that must stay
+   proportional to the layout, not balloon with the user's system text-size.
+   Like a native iOS/Android tab bar the label still grows a little for
+   accessibility but is capped so it never wraps or overflows its cell. Reading
+   content (titles, descriptions, reader text) intentionally keeps the normal rem
+   scale so it remains fully accessible. */
+.chrome-label { font-size: clamp(10px, 0.75rem, 13px); line-height: 1; }
+
 /* scrollbars — overlay style, match dark theme */
 * {
   scrollbar-width: thin;
