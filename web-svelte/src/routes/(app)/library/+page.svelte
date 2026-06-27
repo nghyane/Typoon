@@ -6,7 +6,7 @@
   import AddMangaModal from '$lib/library/AddMangaModal.svelte';
   import Button from '$lib/ui/Button.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
-  import Spinner from '$lib/ui/Spinner.svelte';
+  import CardSkeleton from '$lib/ui/CardSkeleton.svelte';
   import WorkCard from '$lib/ui/WorkCard.svelte';
 
   type StatusFilter = 'all' | LibraryStatus;
@@ -52,7 +52,11 @@
 <svelte:head><title>Thư viện — Hội Mê Truyện</title></svelte:head>
 
 {#if loading}
-  <div class="flex justify-center py-16"><Spinner size={20} /></div>
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+    <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
+      <CardSkeleton count={18} />
+    </div>
+  </div>
 {:else if error}
   <p class="text-error-text text-center py-20">{error}</p>
 {:else if works.length === 0}
@@ -115,7 +119,7 @@
     {#if filtered.length === 0}
       <EmptyState title={query ? 'Không tìm thấy' : 'Trống ở mục này'} hint={query ? 'Thử từ khoá khác.' : 'Chuyển sang mục khác hoặc thêm truyện.'} />
     {:else}
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
+      <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
         {#each filtered as work (work.id)}
           <WorkCard work={{
             id: work.id,

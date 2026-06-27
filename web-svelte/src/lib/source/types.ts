@@ -162,6 +162,10 @@ export interface MangaSummary {
 	title: string;
 	cover: string | null;
 	coverHeaders?: Record<string, string>;
+	/** Latest chapter shown on the listing (e.g. "1234" or "Chapter 1234"),
+	 *  when the source exposes it. Surfaced on browse cards in place of the
+	 *  (repeated) source name. */
+	latestChapter?: string;
 }
 
 export interface MangaChapterRef {

@@ -242,6 +242,7 @@ export async function fetchBrowse(
 			const u = absUrl(f.url, url); if (!u) return null;
 			const summary: MangaSummary = { id: u, url: u, title: f.title || '(không tên)', cover: absUrl(f.cover, url) };
 			if (m.imageHeaders) summary.coverHeaders = m.imageHeaders;
+			if (f.latestChapter) summary.latestChapter = String(f.latestChapter).trim();
 			return summary;
 		})
 		.filter((s): s is MangaSummary => s !== null);
