@@ -1,9 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
   import { ArrowRight, Check, ChevronRight, Smartphone, Globe, Puzzle, Heart, Zap, BadgeCheck, Palette, Sparkles } from 'lucide-svelte';
   import { BRAND } from '$lib/brand';
-  import { session } from '$lib/auth/session.svelte';
 
   // Canonical production origin — used for SEO tags. Keep in sync with the deploy.
   const ORIGIN = 'https://hoimetruyen.net';
@@ -15,15 +12,8 @@
   // TODO: trỏ tới trang ủng hộ thật (Ko-fi / MoMo / kênh Discord) khi sẵn sàng.
   const SUPPORT_HREF = '#';
 
-  // Logged-out visitors (and crawlers, via SSR) see this page. A returning,
-  // authenticated reader who lands on `/` is sent to their home shelves; the
-  // redirect runs only on the client after the session resolves, so the static
-  // marketing HTML is still what gets indexed.
-  onMount(() => {
-    void session.load().then(() => {
-      if (session.state.status === 'authenticated') goto('/home', { replaceState: true });
-    });
-  });
+  // `/` always shows this marketing page — including for logged-in users — so the
+  // landing stays viewable instead of bouncing authenticated visitors to /home.
 
   // Where it runs. Ext is on the roadmap — `ready: false` renders a "Sắp có" badge
   // so the slot exists now and lights up when the extension ships.
