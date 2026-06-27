@@ -31,6 +31,8 @@
 		"chrome-lens-ocr": "^4.1.1",
 		"comlink": "^4.4.2",
 		"dexie": "^4.4.3",
+		"embla-carousel": "^8.6.0",
+		"embla-carousel-svelte": "^8.6.0",
 		"lucide-svelte": "^1.0.1",
 		"nanoid": "^5.1.11",
 		"onnxruntime-web": "^1.26.0",
