@@ -28,6 +28,7 @@
   let sourceTriggerEl = $state<HTMLButtonElement | null>(null);
   let joinRequiredTracked = $state(false);
   let translationHidden = $state(false);
+  let pendingRestoreTop = $state<number | null>(null);
 
   const translation = new SvelteReaderTranslation();
 
@@ -86,6 +87,24 @@
   const pageCount = $derived(Math.max(source.activeUrls.length, pages.total, slotCount));
 
   const nav = new ReaderNavigation(() => pageCount);
+
+  // Preserve reading position across back/forward to the same chapter. The
+  // page slots establish their height immediately via contain-intrinsic-size,
+  // so restoring scrollTop once any slot exists lands close to where the reader
+  // left off, even before the image blobs finish streaming in. A fresh forward
+  // navigation never calls restore, so a new chapter still opens at the top.
+  export const snapshot = {
+    capture: () => ({ scrollTop: stripEl?.scrollTop ?? 0 }),
+    restore: (v: { scrollTop: number }): void => { pendingRestoreTop = v.scrollTop; },
+  };
+
+  $effect(() => {
+    if (pendingRestoreTop == null || !stripEl || slotCount === 0) return;
+    const el = stripEl;
+    const top = pendingRestoreTop;
+    pendingRestoreTop = null;
+    requestAnimationFrame(() => { el.scrollTop = top; });
+  });
 
   const readingProgress = $derived(pageCount > 0 ? Math.max(0, Math.min(1, nav.scrollProgress)) : 0);
   const currentPageDisplay = $derived(pageCount > 0 ? Math.min(nav.pageIndex + 1, pageCount) : 0);

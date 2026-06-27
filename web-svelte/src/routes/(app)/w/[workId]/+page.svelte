@@ -4,9 +4,10 @@
   import { getSource } from '$lib/source/registry';
   import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
   import { stripHtml } from '$lib/string';
-  import type { LibraryStatus, WorkSource } from '$lib/db';
+  import type { LibraryStatus, Work, WorkSource } from '$lib/db';
   import type { MangaDetail } from '$lib/source/types';
   import Cover from '$lib/ui/Cover.svelte';
+  import ChapterRowSkeleton from '$lib/ui/ChapterRowSkeleton.svelte';
   import LinkSearchModal from '$lib/work/LinkSearchModal.svelte';
   import {
     mergeChapters,
@@ -106,17 +107,37 @@
 
   // ── Library toggle (mutation → invalidate work query) ──────────
 
+  // Optimistic library mutations (#2): flip the cached work immediately so the
+  // button reflects the new state on tap, then reconcile with the DB on settle
+  // and roll back if the write fails.
+  const workKey = $derived(['work', data.workId] as const);
+
+  async function optimisticPatch(patch: Partial<Work>): Promise<{ prev: Work | undefined }> {
+    await qc.cancelQueries({ queryKey: workKey });
+    const prev = qc.getQueryData<Work>(workKey);
+    if (prev) qc.setQueryData<Work>(workKey, { ...prev, ...patch });
+    return { prev };
+  }
+
+  function rollback(ctx: { prev: Work | undefined } | undefined): void {
+    if (ctx?.prev) qc.setQueryData<Work>(workKey, ctx.prev);
+  }
+
   const toggleMutation = createMutation(() => ({
     mutationFn: () =>
       work!.in_library
         ? removeWorkFromLibrary(work!.id)
         : addWorkToLibrary(work!.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['work', data.workId] }),
+    onMutate: () => optimisticPatch({ in_library: !work!.in_library }),
+    onError: (_err, _vars, ctx) => rollback(ctx),
+    onSettled: () => qc.invalidateQueries({ queryKey: workKey }),
   }));
 
   const statusMutation = createMutation(() => ({
     mutationFn: (next: LibraryStatus) => setWorkLibraryStatus(work!.id, next),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['work', data.workId] }),
+    onMutate: (next: LibraryStatus) => optimisticPatch({ library_status: next }),
+    onError: (_err, _vars, ctx) => rollback(ctx),
+    onSettled: () => qc.invalidateQueries({ queryKey: workKey }),
   }));
 
   $effect(() => {
@@ -285,7 +306,9 @@
       </div>
 
       {#if detailLoading && chapters.length === 0}
-        <p class="text-text-subtle text-sm py-8 text-center">Đang tải chương…</p>
+        <div class="border-t border-border-soft/60">
+          <ChapterRowSkeleton count={8} />
+        </div>
       {:else if detailFailures.length > 0 && chapters.length === 0}
         <p class="text-error-text text-sm py-8 text-center">Không tải được chương từ các nguồn đã liên kết.</p>
       {:else if chapters.length === 0}
