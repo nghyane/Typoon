@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { BookOpen, BookmarkPlus, ChevronDown, Plus, Search } from 'lucide-svelte';
+  import { BookOpen, BookmarkPlus, Check, ChevronDown, Plus, Search } from 'lucide-svelte';
   import { addWorkToLibrary, getWork, removeWorkFromLibrary, setWorkLibraryStatus, touchWork } from '$lib/works/repo';
+  import { getProgress } from '$lib/works/progress';
+  import { cn } from '$lib/cn';
   import { getSource } from '$lib/source/registry';
   import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
   import { stripHtml } from '$lib/string';
@@ -29,6 +31,16 @@
   }));
 
   const work = $derived(workQuery.data);
+
+  // Reading progress (refetched on mount, so returning from the reader reflects
+  // the chapter just opened). Drives the resume button and the read markers.
+  const progressQuery = createQuery(() => ({
+    queryKey: ['progress', data.workId] as const,
+    queryFn: () => getProgress(data.workId),
+  }));
+  const readSet = $derived(new Set(progressQuery.data?.read ?? []));
+  const lastReadNorm = $derived(progressQuery.data?.last_chapter ?? null);
+
   let chapterQuery = $state('');
   let newestFirst = $state(true);
   let descOpen = $state(false);
@@ -91,6 +103,11 @@
   const descOverflows = $derived(strippedDescription.length > 240);
 
   const readTarget = $derived(sortMergedChapters(chapters, false)[0] ?? null);
+  // Resume from the last-opened chapter when we have one and it still exists in
+  // the merged list; otherwise fall back to the first chapter.
+  const resumeTarget = $derived(
+    lastReadNorm ? chapters.find((chapter) => chapter.numberNorm === lastReadNorm) ?? null : null,
+  );
   const visibleRows = $derived(
     sortMergedChapters(chapters, newestFirst)
       .filter((chapter) => {
@@ -123,12 +140,15 @@
     if (ctx?.prev) qc.setQueryData<Work>(workKey, ctx.prev);
   }
 
+  // `wasInLibrary` is captured at click time and threaded through as the mutation
+  // variable. onMutate runs before mutationFn and optimistically flips the cached
+  // `work.in_library`, so mutationFn must NOT re-read `work` to pick the action —
+  // by then it's already inverted, and it would call the opposite repo function,
+  // leaving the toggle a permanent no-op.
   const toggleMutation = createMutation(() => ({
-    mutationFn: () =>
-      work!.in_library
-        ? removeWorkFromLibrary(work!.id)
-        : addWorkToLibrary(work!.id),
-    onMutate: () => optimisticPatch({ in_library: !work!.in_library }),
+    mutationFn: (wasInLibrary: boolean) =>
+      wasInLibrary ? removeWorkFromLibrary(work!.id) : addWorkToLibrary(work!.id),
+    onMutate: (wasInLibrary: boolean) => optimisticPatch({ in_library: !wasInLibrary }),
     onError: (_err, _vars, ctx) => rollback(ctx),
     onSettled: () => qc.invalidateQueries({ queryKey: workKey }),
   }));
@@ -191,7 +211,11 @@
             {#if detail?.status}<span class="inline-flex items-center h-6 px-2 rounded-xs bg-surface-2 text-text-muted text-xs font-semibold">{detail.status}</span>{/if}
           </div>
           <div class="flex items-stretch gap-2 flex-wrap">
-            {#if readTarget}
+            {#if resumeTarget}
+              <a href={`/r/${work.id}/${resumeTarget.numberNorm}`} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
+                <BookOpen size={14} /> Đọc tiếp {resumeTarget.number || resumeTarget.numberNorm}
+              </a>
+            {:else if readTarget}
               <a href={`/r/${work.id}/${readTarget.numberNorm}`} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
                 <BookOpen size={14} /> Bắt đầu đọc
               </a>
@@ -222,14 +246,14 @@
                       </button>
                     {/each}
                     <div class="my-1 border-t border-border-soft"></div>
-                    <button type="button" role="menuitem" onclick={() => { toggleMutation.mutate(); libraryMenuOpen = false; }} class="w-full px-3 py-1.5 text-sm text-left text-error-text hover:bg-hover transition-colors cursor-pointer">
+                    <button type="button" role="menuitem" onclick={() => { toggleMutation.mutate(true); libraryMenuOpen = false; }} class="w-full px-3 py-1.5 text-sm text-left text-error-text hover:bg-hover transition-colors cursor-pointer">
                       Xoá khỏi thư viện
                     </button>
                   </div>
                 {/if}
               </div>
             {:else}
-              <button type="button" onclick={() => toggleMutation.mutate()}
+              <button type="button" onclick={() => toggleMutation.mutate(false)}
                 class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-surface-2 text-text text-sm font-medium hover:bg-interactive-hover transition-colors cursor-pointer"
                 disabled={toggleMutation.isPending}
               >
@@ -318,7 +342,7 @@
       {:else}
         <div class="border-t border-border-soft/60">
           {#each visibleRows as row (row.chapter.numberNorm)}
-            {@render ChapterRow({ workId: work.id, chapter: row.chapter, version: row.version, targetLang: work.target_lang })}
+            {@render ChapterRow({ workId: work.id, chapter: row.chapter, version: row.version, targetLang: work.target_lang, isRead: readSet.has(row.chapter.numberNorm), isCurrent: row.chapter.numberNorm === lastReadNorm })}
           {/each}
         </div>
       {/if}
@@ -326,9 +350,9 @@
   {/if}
 </div>
 
-{#snippet ChapterRow({ workId, chapter, version, targetLang }: { workId: string; chapter: MergedChapter; version: SourceVersion | null; targetLang: string })}
-  <a href={`/r/${workId}/${chapter.numberNorm}`} class="flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0">
-    <span class="tabular-nums font-medium text-text-muted group-hover:text-text shrink-0 transition-colors">
+{#snippet ChapterRow({ workId, chapter, version, targetLang, isRead, isCurrent }: { workId: string; chapter: MergedChapter; version: SourceVersion | null; targetLang: string; isRead: boolean; isCurrent: boolean })}
+  <a href={`/r/${workId}/${chapter.numberNorm}`} class={cn('flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0', isCurrent && 'bg-accent-bg/40')}>
+    <span class={cn('tabular-nums font-medium shrink-0 transition-colors', isCurrent ? 'text-accent-text' : isRead ? 'text-text-subtle group-hover:text-text-muted' : 'text-text-muted group-hover:text-text')}>
       {chapter.number || chapter.numberNorm || '?'}
     </span>
     <span class="shrink-0 text-xs uppercase tabular-nums font-medium text-text-subtle">{version?.lang ?? targetLang}</span>
@@ -345,6 +369,11 @@
     <div class="ml-auto sm:ml-0 inline-flex items-center gap-3 shrink-0 text-xs text-text-subtle">
       {#if version?.ref.title}<span class="hidden md:inline truncate max-w-[220px]">{version.ref.title}</span>{/if}
       {#if version?.ref.date}<span class="hidden sm:inline whitespace-nowrap tabular-nums">{version.ref.date.slice(0, 10)}</span>{/if}
+      {#if isCurrent}
+        <span class="text-accent-text whitespace-nowrap font-medium">Đang đọc</span>
+      {:else if isRead}
+        <Check size={14} class="text-text-subtle" />
+      {/if}
     </div>
   </a>
 {/snippet}

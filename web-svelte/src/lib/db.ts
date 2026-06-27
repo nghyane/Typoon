@@ -30,13 +30,28 @@ export interface Work {
 	deleted?: boolean;
 }
 
+// Per-work reading progress. Kept in its own table (not on Work) so the frequent
+// "mark chapter read" writes never race with the full-object puts that update the
+// library state of a Work.
+export interface ReadProgress {
+	work_id: string;
+	last_chapter: string; // numberNorm of the most recently opened chapter
+	last_read_at: string;
+	read: string[]; // numberNorms the reader has opened
+}
+
 export class TypoonDb extends Dexie {
 	works!: EntityTable<Work, 'id'>;
+	progress!: EntityTable<ReadProgress, 'work_id'>;
 
 	constructor() {
 		super('typoon-v3-svelte');
 		this.version(1).stores({
 			works: '&id, in_library, last_opened_at, updated_at, *sourceKey',
+		});
+		this.version(2).stores({
+			works: '&id, in_library, last_opened_at, updated_at, *sourceKey',
+			progress: '&work_id',
 		});
 	}
 }

@@ -10,6 +10,7 @@
   import { session } from '$lib/auth/session.svelte';
   import { trackDiscordJoinRequired, trackTranslateClick } from '$lib/analytics/client';
   import type { ReaderData } from '$lib/types';
+  import { recordRead } from '$lib/works/progress';
   import { ReaderNavigation } from '$lib/reader/ReaderNavigation.svelte';
   import { ReaderSourceResolver } from '$lib/reader/ReaderSourceResolver.svelte';
   import { SvelteReaderTranslation } from '$lib/reader/translation.svelte';
@@ -20,6 +21,15 @@
   const DISCORD_INVITE_URL = 'https://discord.gg/zuwqbbdZ';
 
   let { data }: { data: ReaderData | null } = $props();
+
+  // Persist reading history: opening a chapter makes it the work's resume point
+  // and marks it read. Keyed on workId+chapterRef so it fires once per chapter,
+  // not on every page scroll or translation tick.
+  $effect(() => {
+    const workId = data?.workId;
+    const chapterRef = data?.chapterRef;
+    if (workId && chapterRef) void recordRead(workId, chapterRef);
+  });
 
   let chapterPickerOpen = $state(false);
   let sourcePickerOpen = $state(false);
