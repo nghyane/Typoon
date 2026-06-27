@@ -1,3 +1,16 @@
-# allow crawling everything by default
+# Public landing (/) is server-rendered and indexable. The rest of the app is a
+# client-only SPA behind Discord login — there is no useful HTML there for crawlers,
+# so keep them out and focus crawl budget on the landing.
 User-agent: *
-Disallow:
+Disallow: /library
+Disallow: /explore
+Disallow: /settings
+Disallow: /home
+Disallow: /w/
+Disallow: /r/
+Disallow: /login
+Disallow: /auth/
+Disallow: /discord/
+Disallow: /source-proxy/
+
+Sitemap: https://hoimetruyen.net/sitemap.xml

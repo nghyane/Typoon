@@ -5,7 +5,7 @@
 	"description": "Đọc truyện và dịch realtime trong một ứng dụng cài đặt được.",
 	"lang": "vi",
 	"dir": "ltr",
-	"start_url": "/?source=pwa",
+	"start_url": "/home?source=pwa",
 	"scope": "/",
 	"display": "standalone",
 	"display_override": ["window-controls-overlay", "standalone", "minimal-ui"],

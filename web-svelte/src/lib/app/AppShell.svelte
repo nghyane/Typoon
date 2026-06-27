@@ -81,13 +81,13 @@
   }
 
   const primary = [
-    { to: '/', label: 'Trang chủ', icon: Home },
+    { to: '/home', label: 'Trang chủ', icon: Home },
     { to: '/library', label: 'Thư viện', icon: Library },
     { to: '/explore', label: 'Khám phá', icon: Compass },
   ];
 
   const bottom = [
-    { to: '/', label: 'Nhà', icon: Home },
+    { to: '/home', label: 'Nhà', icon: Home },
     { to: '/library', label: 'Thư viện', icon: Library },
     { to: '/explore', label: 'Khám phá', icon: Compass },
     { to: '/settings', label: 'Cài đặt', icon: Settings },
