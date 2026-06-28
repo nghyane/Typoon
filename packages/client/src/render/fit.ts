@@ -9,7 +9,7 @@ import type { RenderLanguageContext } from './languageProfile'
 
 export type { TypesetDirection }
 
-type FontIntentReason = 'role-standard' | 'source' | 'fallback-role-median' | 'fallback-geometry'
+type FontIntentReason = 'role-standard' | 'source' | 'fallback-role-median' | 'fallback-bubble' | 'fallback-geometry'
 
 export interface CssFitInput {
   readonly placement: TextPlacement

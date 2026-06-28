@@ -22,7 +22,7 @@ const HIERARCHY_MIN_SAMPLE_COUNT = 3
 const HIERARCHY_SPREAD_RATIO = 4
 const HIERARCHY_HIGH_RATIO = 2.4
 
-type FontIntentReason = 'role-standard' | 'source' | 'fallback-role-median' | 'fallback-geometry'
+type FontIntentReason = 'role-standard' | 'source' | 'fallback-role-median' | 'fallback-bubble' | 'fallback-geometry'
 
 export interface FitResult {
   readonly text: string
@@ -606,35 +606,53 @@ function directionReason(placement: TextPlacement, rect: FitRect, text: string):
 
 // ── Font intent ─────────────────────────────────────────────────────────────
 
+// Bubble-aware sizing: a dialogue must respect the BALLOON it sits in, not only
+// the source text box. Floor the source-proportional size at this fraction of the
+// bubble's short side so a short line never renders tiny in a large balloon...
+const CONTAINER_FLOOR_FRACTION = 0.085
+// ...and, when there is NO trusted source size, size from the bubble at this
+// fraction (the fit/expand stage then fills it) instead of the tiny OCR box.
+const CONTAINER_FALLBACK_FRACTION = 0.13
+
+/** Short side of the detected bubble (container), or null when none is known. */
+function containerShortSide(placement: TextPlacement): number | null {
+  const c = placement.containerBBox
+  if (!c) return null
+  return Math.max(1, Math.min(c[2] - c[0], c[3] - c[1]))
+}
+
 function fontIntentFor(placement: TextPlacement, baseRect: FitRect, context: PageFontContext, profile: TextRenderProfile): FontIntent {
   const sourceFontPx = validSourceFontPx(placement.fontHint?.sourceFontPx, baseRect, placement.role)
   const roleMedianFontPx = context.roleMedians.get(placement.role) ?? context.allMedianPx
   const placementMaxPx = maxFontForPlacement(placement, baseRect, context.pageMaxPx, profile)
 
   // Source-proportional size derives from LOGIC, not a hardcoded px ceiling:
-  //   target = normalized source measurement (sourceFontPx × cross-script ratio)
-  // The only upper bound is the real bubble geometry, enforced downstream by the
-  // DOM fit in composeInRect (capped at rect height, shrunk only if the text
-  // physically overflows) with expansion as the backstop. The previous per-
-  // placement / page-fraction caps (placementMaxPx = height×0.42, pageMaxPx =
-  // pageWidth×0.045) were hardcoded fractions that crushed the proportion: a 1–2
-  // line bubble's tight footprint clamped the font to ~half source size, while
-  // multi-line bubbles escaped — the "some bubbles fine, some tiny" inconsistency.
-  // ABS_MAX_FONT_SIZE here is only a NaN / runaway guard, never reached by real
-  // dialogue. placementMaxPx is kept ONLY for the geometry fallback below, where
-  // there is no trusted source size and the box itself must set the scale.
+  //   target = normalized source measurement (sourceFontPx × cross-script ratio),
+  // floored by the bubble so it is never tiny in a large balloon. The only upper
+  // bound is the real bubble geometry, enforced downstream by the DOM fit in
+  // composeInRect (capped at rect height, shrunk only on real overflow) with
+  // expansion as the backstop. ABS_MAX_FONT_SIZE here is only a NaN / runaway
+  // guard. placementMaxPx is kept ONLY for the last-resort geometry fallback.
   const proportionalMaxPx = ABS_MAX_FONT_SIZE
   const floorPx = profile.minReadableFontPx
-  if (roleMedianFontPx !== null && sourceFontPx !== null) {
-    const target = clampFont(sourceFontPx * profile.fontScale, proportionalMaxPx, floorPx)
-    return { sourceFontPx, roleMedianFontPx, targetFontPx: target, reason: 'role-standard' }
-  }
+  // SFX is dramatic by design — never floor it up to the balloon.
+  const cShort = placement.role === 'sfx' ? null : containerShortSide(placement)
+  const bubbleFloorPx = cShort ? cShort * CONTAINER_FLOOR_FRACTION : 0
+  const sized = (px: number): number => clampFont(Math.max(px * profile.fontScale, bubbleFloorPx), proportionalMaxPx, floorPx)
 
+  if (roleMedianFontPx !== null && sourceFontPx !== null) {
+    return { sourceFontPx, roleMedianFontPx, targetFontPx: sized(sourceFontPx), reason: 'role-standard' }
+  }
   if (roleMedianFontPx !== null) {
-    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: clampFont(roleMedianFontPx * profile.fontScale, proportionalMaxPx, floorPx), reason: 'fallback-role-median' }
+    return { sourceFontPx: null, roleMedianFontPx, targetFontPx: sized(roleMedianFontPx), reason: 'fallback-role-median' }
   }
   if (sourceFontPx !== null) {
-    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: clampFont(sourceFontPx * profile.fontScale, proportionalMaxPx, floorPx), reason: 'source' }
+    return { sourceFontPx, roleMedianFontPx: null, targetFontPx: sized(sourceFontPx), reason: 'source' }
+  }
+  // No trusted source size: size from the BUBBLE (the fit/expand stage fills it),
+  // not the tiny OCR box that left short lines microscopic in large balloons.
+  if (cShort) {
+    return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(cShort * CONTAINER_FALLBACK_FRACTION, proportionalMaxPx, floorPx), reason: 'fallback-bubble' }
   }
   return { sourceFontPx: null, roleMedianFontPx: null, targetFontPx: clampFont(geometryFallback(placement, baseRect) * profile.fontScale, placementMaxPx, floorPx), reason: 'fallback-geometry' }
 }
