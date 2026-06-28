@@ -46,10 +46,45 @@ export function cleanUrl(raw: string): string {
 	return parsed.href;
 }
 
-function hostMatches(urlHost: string, manifestHost: string): boolean {
-	const host = urlHost.toLowerCase();
-	const target = manifestHost.toLowerCase();
-	return host === target || host.endsWith(`.${target}`);
+/** Lowercase a host and drop the common `www.` / `m.` (mobile) prefix so the
+ *  bare apex, the `www.` form and the mobile form all compare equal. */
+function normalizeHost(host: string): string {
+	return host.toLowerCase().replace(/^(?:www|m)\./u, '');
+}
+
+/** Pull the host out of an absolute URL, or null when it isn't one. */
+function hostOf(url: string | undefined): string | null {
+	if (!url) return null;
+	try {
+		return new URL(url).host;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Every host a source can be recognised at, normalized and de-duplicated.
+ *
+ * Combines the manifest `host` (often the API/canonical origin) with the
+ * user-facing `homepage` host, because for API-backed sources they differ and
+ * users paste the homepage one: MangaDex `api.mangadex.org` ↔ `mangadex.org`,
+ * OTruyen `otruyenapi.com` ↔ `otruyen.cc`.
+ */
+function sourceHosts(source: InstalledSource): string[] {
+	const hosts = [source.manifest.host, hostOf(source.manifest.homepage)]
+		.filter((host): host is string => !!host)
+		.map(normalizeHost);
+	return [...new Set(hosts)];
+}
+
+/** Does the pasted host belong to a source? Matches the apex and any subdomain
+ *  in either direction so `mangadex.org` ↔ `api.mangadex.org` both resolve. */
+function hostMatchesSource(pastedHost: string, source: InstalledSource): boolean {
+	const host = normalizeHost(pastedHost);
+	return sourceHosts(source).some(
+		(candidate) =>
+			host === candidate || host.endsWith(`.${candidate}`) || candidate.endsWith(`.${host}`),
+	);
 }
 
 /**
@@ -67,9 +102,10 @@ export function matchSourceUrl(raw: string, allSources: InstalledSource[]): Sour
 		return null;
 	}
 	const host = parsed.host;
-	// Prefer exact host match, fall back to subdomain match.
+	// Prefer an exact host hit (precise wins over fuzzy), then fall back to the
+	// normalized homepage/subdomain match that covers www./m. and API origins.
 	const source = allSources.find((item) => item.manifest.host.toLowerCase() === host.toLowerCase())
-		?? allSources.find((item) => hostMatches(host, item.manifest.host));
+		?? allSources.find((item) => hostMatchesSource(host, item));
 	if (!source) return null;
 	return { source, upstreamRef: cleanUrl(raw), disabled: !source.enabled };
 }

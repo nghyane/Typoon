@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { AlertTriangle, Check, CheckCircle2, ChevronDown, Link as LinkIcon, Search, Wand2 } from 'lucide-svelte';
   import { addWorkToLibrary, createBlankWork, ensureWorkFromSource } from '$lib/works/repo';
   import { fetchBrowse, fetchMangaDetail } from '$lib/source/runtime/endpoints';
   import { hasSearch } from '$lib/source/runtime/metadata';
   import { listSources, setSourceEnabled } from '$lib/source/registry';
+  import { isUrlLike, matchSourceUrl } from '$lib/source/urlMatch';
   import type { InstalledSource, MangaDetail, MangaSummary } from '$lib/source/types';
   import { cn } from '$lib/cn';
   import Button from '$lib/ui/Button.svelte';
@@ -42,12 +44,15 @@
   let urlImportKey = $state('');
   let urlError = $state('');
   let urlBusy = $state(false);
+  let urlPreview = $state<MangaDetail | null>(null);
 
   const enabledSources = $derived(sources.filter((source) => source.enabled));
   const searchableSources = $derived(enabledSources.filter((source) => hasSearch(source.manifest)));
   const trimmed = $derived(query.trim());
   const isUrl = $derived(isUrlLike(trimmed));
-  const urlMatch = $derived(isUrl ? matchSource(trimmed, enabledSources) : null);
+  // Match against ALL installed sources (not just enabled) so a pasted link to a
+  // source the user toggled off still resolves and imports.
+  const urlMatch = $derived(isUrl ? matchSourceUrl(trimmed, sources) : null);
   const busy = $derived(pendingKey !== null);
   const scopedHits = $derived(scopeId === null ? hits : hits.filter((hit) => hit.source.manifest.id === scopeId));
   const visibleSources = $derived(scopeId === null
@@ -146,25 +151,27 @@
       urlImportKey = '';
       urlError = '';
       urlBusy = false;
+      urlPreview = null;
       return;
     }
 
     const key = hitKey({ source: match.source, manga: { id: match.upstreamRef, url: match.upstreamRef, title: match.upstreamRef, cover: null }, score: 1 });
-    if (urlImportKey === key) return;
+    // untrack the dedup read: this effect WRITES urlImportKey below, so reading it
+    // reactively would re-trigger the effect, whose cleanup cancels the in-flight
+    // fetch — leaving the spinner stuck forever ("Đang tải…" that never resolves).
+    if (untrack(() => urlImportKey) === key) return;
 
     let cancelled = false;
     urlImportKey = key;
     urlError = '';
+    urlPreview = null;
     urlBusy = true;
 
+    // Only LOAD a preview here — never auto-import. The user confirms with the
+    // "Thêm vào thư viện" button so pasting a link doesn't silently add + close.
     fetchMangaDetail(match.source.manifest, match.upstreamRef)
       .then((detail) => {
-        if (cancelled) return;
-        void importHit({
-          source: match.source,
-          manga: { id: match.upstreamRef, url: match.upstreamRef, title: detail.title, cover: detail.cover },
-          score: 1,
-        }, detail, key);
+        if (!cancelled) urlPreview = detail;
       })
       .catch((err) => {
         if (!cancelled) urlError = errorFrom(err).message;
@@ -183,6 +190,17 @@
     error = '';
     urlError = '';
     urlImportKey = '';
+    urlPreview = null;
+  }
+
+  async function importUrl(): Promise<void> {
+    const match = urlMatch;
+    if (!match || !urlPreview) return;
+    await importHit({
+      source: match.source,
+      manga: { id: match.upstreamRef, url: match.upstreamRef, title: urlPreview.title, cover: urlPreview.cover },
+      score: 1,
+    }, urlPreview, `url::${match.upstreamRef}`);
   }
 
   function refreshSources(): void {
@@ -241,19 +259,6 @@
 
   function errorFrom(value: unknown): Error {
     return value instanceof Error ? value : new Error(String(value));
-  }
-
-  function isUrlLike(input: string): boolean {
-    return /^https?:\/\//i.test(input.trim());
-  }
-
-  function matchSource(raw: string, list: InstalledSource[]): { source: InstalledSource; upstreamRef: string } | null {
-    let parsed: URL;
-    try { parsed = new URL(raw.trim()); } catch { return null; }
-    const host = parsed.host.toLowerCase();
-    const source = list.find((item) => item.manifest.host.toLowerCase() === host)
-      ?? list.find((item) => host.endsWith(`.${item.manifest.host.toLowerCase()}`));
-    return source ? { source, upstreamRef: raw.trim() } : null;
   }
 
   function fuzzyScore(search: string, title: string): number {
@@ -333,11 +338,32 @@
               </div>
             </div>
           </div>
+        {:else if pendingKey}
+          <div class="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-3">
+            <Spinner size={14} class="text-info-text shrink-0" />
+            <div class="flex-1 min-w-0">
+              <p class="text-sm text-text">Đang thêm vào thư viện…</p>
+              <p class="text-xs text-text-subtle truncate mt-1">{urlMatch.upstreamRef}</p>
+            </div>
+          </div>
+        {:else if urlPreview}
+          <div class="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-3">
+            <Cover src={urlPreview.cover} headers={urlPreview.coverHeaders} title={urlPreview.title} class="w-12 aspect-[2/3] rounded-xs shrink-0" fontSize="text-xs" />
+            <div class="flex-1 min-w-0">
+              <p class="text-sm text-text font-medium truncate leading-tight">{urlPreview.title}</p>
+              <p class="text-xs text-text-subtle truncate mt-1">
+                {urlMatch.source.manifest.name}{#if urlPreview.chapters?.length} · {urlPreview.chapters.length} chương{/if}
+              </p>
+            </div>
+            <Button size="sm" onclick={importUrl} disabled={busy} class="shrink-0">
+              <Check size={14} /> Thêm
+            </Button>
+          </div>
         {:else}
           <div class="rounded-md bg-surface-2 px-4 py-3 flex items-center gap-3">
             <Spinner size={14} class="text-info-text shrink-0" />
             <div class="flex-1 min-w-0">
-              <p class="text-sm text-text">{pendingKey ? 'Đang thêm vào thư viện…' : `Đang tải từ ${urlMatch.source.manifest.name}…`}</p>
+              <p class="text-sm text-text">Đang tải từ {urlMatch.source.manifest.name}…</p>
               <p class="text-xs text-text-subtle truncate mt-1">{urlMatch.upstreamRef}</p>
             </div>
           </div>

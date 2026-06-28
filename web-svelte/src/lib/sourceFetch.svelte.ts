@@ -8,7 +8,7 @@
 // re-pointed at runtime via configureSourceGateways() when the server supplies
 // origins.
 
-import { sourceGateways, SOURCE_GATEWAY_PROXY_PATH } from '$lib/config';
+import { sourceGateways, SOURCE_GATEWAY_PROXY_PATH, FETCH_TIMEOUT_MS } from '$lib/config';
 
 const PROXY_PATH = SOURCE_GATEWAY_PROXY_PATH.replace(/^\/+|\/+$/gu, '');
 
@@ -34,6 +34,12 @@ function gateways(): string[] {
  */
 export function configureSourceGateways(origins: readonly string[]): void {
 	if (origins.length > 0) _gateways = normalizeGateways(origins);
+}
+
+/** Combine the caller's abort signal (if any) with a per-request timeout. */
+function withTimeout(signal: AbortSignal | null | undefined): AbortSignal {
+	const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 let _cdnInstance: ReturnType<typeof createSourceFetch> | null = null;
@@ -102,23 +108,39 @@ function createSourceFetch() {
 		// Always try gateways in order: primary first, fallbacks on failure
 		const gw = gateways();
 		let lastError: unknown;
+		// Back off only when the previous gateway was rate-limited (429/503) —
+		// waiting helps there. A Cloudflare challenge (403) or bad gateway (502)
+		// won't clear by waiting, so fail straight over to the next gateway.
+		let backoff = false;
 		for (let attempt = 0; attempt < gw.length; attempt++) {
 			const gwUrl = `${gw[attempt]!}/${key}?${params}`;
 
-			if (attempt > 0) {
+			if (attempt > 0 && backoff) {
 				// Exponential backoff: 1s, 2s, 4s...
 				await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt - 1), 8000)));
 			}
 
 			try {
-				const response = await fetch(gwUrl, { ...opts.init, headers: h, signal: opts.init?.signal });
-				if (response.status === 429 || response.status === 502 || response.status === 503) {
+				// Per-gateway timeout: a gateway that opens the connection but never
+				// responds (e.g. the discordsays proxy reached from a plain browser
+				// instead of inside the Discord Activity) would otherwise hang the
+				// request forever. Abort after FETCH_TIMEOUT_MS so we fail over.
+				const response = await fetch(gwUrl, { ...opts.init, headers: h, signal: withTimeout(opts.init?.signal) });
+				// 403 included: Cloudflare's "Just a moment" managed challenge 403s a
+				// gateway whose egress it distrusts while another gateway (different
+				// IP/fingerprint) sails through — so fail over instead of surfacing it.
+				if ([403, 429, 502, 503].includes(response.status)) {
 					lastError = new Error(`HTTP ${response.status} via ${gw[attempt]}`);
+					backoff = response.status === 429 || response.status === 503;
 					continue;
 				}
 				return response;
 			} catch (err) {
+				// Caller cancelled (modal closed, navigation away) — stop, don't churn
+				// through the remaining gateways with an already-aborted signal.
+				if (opts.init?.signal?.aborted) throw err;
 				lastError = err;
+				backoff = false;
 			}
 		}
 
