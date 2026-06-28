@@ -36,7 +36,7 @@ export function removeOcrArtifactBlocks(recognized: RecognizedTextPage): Recogni
   return { ...recognized, blocks: final }
 }
 
-function isArtifactBlock(block: TextBlock): boolean {
+export function isArtifactBlock(block: TextBlock): boolean {
   return bboxTooSmall(block.bbox)
     || isDecorationOnly(block.text)
     || bboxTooLargeForText(block.bbox, block.text, block.lines)

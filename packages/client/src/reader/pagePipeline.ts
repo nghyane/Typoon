@@ -17,7 +17,7 @@ import { estimateSafeMargins } from '../render/backgroundFit'
 import { textFitRect } from '../render/fitGeometry'
 import { LensTextRecognizer } from '../recognizers/lens/LensTextRecognizer'
 import { buildOverlayPlacements } from '../pipeline/composeOverlay'
-import { recoverBubbleText, type BubbleCropRecognizer, type BubbleSource } from '../pipeline/bubbleRecovery'
+import { recoverBubbleText, removeInBubbleGhostBlocks, type BubbleCropRecognizer, type BubbleSource } from '../pipeline/bubbleRecovery'
 import { textFromRecognition, translatePreparedText, type PreparedTextResult } from '../pipeline/translatePreparedPage'
 import { removeReaderNoiseBlocks } from '../pipeline/readerNoise'
 import { removeOcrArtifactBlocks } from '../pipeline/ocrArtifacts'
@@ -134,7 +134,8 @@ export class PagePipeline {
       width: capture.image.width,
       height: unit.source.height * capture.captureScale,
     }
-    const clean = removeReaderNoiseBlocks(recovered, coreFrame)
+    const deghosted = removeInBubbleGhostBlocks(recovered, regions)
+    const clean = removeReaderNoiseBlocks(deghosted, coreFrame)
     const coreOwnedBlocks = clean.blocks.filter(block => {
       const cy = (block.bbox[1] + block.bbox[3]) / 2
       return cy >= coreFrame.y && cy < coreFrame.y + coreFrame.height

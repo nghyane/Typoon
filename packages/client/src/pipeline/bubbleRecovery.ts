@@ -12,6 +12,7 @@ import type { BBox } from '../domain/geometry'
 import type { ImagePixels } from '../domain/image'
 import type { RecognizedTextPage, TextBlock } from '../domain/text'
 import type { TextRegion } from '../domain/regions'
+import { isArtifactBlock } from './ocrArtifacts'
 
 // One re-OCR per spatial cluster of DETR regions. text_bubble is the tightest
 // inner rect so it wins; bubble next; text_free for captions outside balloons.
@@ -23,6 +24,16 @@ const GAP_THRESHOLD_FACTOR = 0.7
 const CROP_PAD_SOURCE_PX = 6
 // Lens recognition collapses below ~200 px short side; upscale crops up to here.
 const MIN_CROP_DIM = 200
+// A pre-existing block this much inside a recovered anchor is superseded by the
+// authoritative crop re-OCR and must be dropped — otherwise a coarse block that
+// overlaps the balloon but whose *centre* fell outside the anchor (so it was not
+// a diagnosed member) survives next to the recovered text and renders as a
+// duplicate (e.g. a top line OCR'd separately).
+const ANCHOR_REPLACE_CONTAINMENT = 0.5
+// Within one balloon's re-OCR, a smaller block this much inside a larger sibling
+// is a spurious fragment (upscaled crops let Lens read faint edge/strokes as a
+// stray rotated line). One balloon ⇒ one coherent text block; drop the rest.
+const RECOVERED_SUBBLOCK_CONTAINMENT = 0.5
 
 export interface BubbleCropRecognizer {
   recognizeCrop(image: ImagePixels): Promise<RecognizedTextPage>
@@ -83,6 +94,46 @@ export async function recoverBubbleText(args: {
   )
   const merged = splice(blocks, todo, recovered)
   return { ...recognized, blocks: merged }
+}
+
+// ── In-bubble ghost hygiene (runs for complete AND recovered balloons) ─────
+// One balloon holds one coherent text cluster. A block whose centre sits inside
+// a DETR balloon but which is mostly contained inside a richer sibling there is
+// a ghost — a duplicate copy, or a stray (often rotated) fragment the OCR
+// invented over the real dialogue. Drop it before grouping so it never becomes
+// its own placement rendered on top of the bubble. Stacked real lines do not
+// contain one another, so genuine text is untouched.
+
+const GHOST_CONTAINMENT = 0.5
+
+export function removeInBubbleGhostBlocks(
+  recognized: RecognizedTextPage,
+  regions: readonly TextRegion[],
+): RecognizedTextPage {
+  const balloons = regions.filter(region => region.kind === 'text_bubble' || region.kind === 'bubble')
+  if (!balloons.length) return recognized
+
+  const blocks = recognized.blocks
+  const drop = new Set<number>()
+  for (const balloon of balloons) {
+    const members = blocks
+      .map((block, index) => ({ block, index }))
+      .filter(({ block, index }) => !drop.has(index) && centerInside(block.bbox, balloon.bbox))
+    if (members.length < 2) continue
+    // Richest text first, then larger area, so the real dialogue is the survivor.
+    members.sort((a, b) => textWeight(b.block) - textWeight(a.block) || bboxArea(b.block.bbox) - bboxArea(a.block.bbox))
+    const kept: TextBlock[] = []
+    for (const { block, index } of members) {
+      if (kept.some(k => containment(block.bbox, k.bbox) >= GHOST_CONTAINMENT)) drop.add(index)
+      else kept.push(block)
+    }
+  }
+  if (!drop.size) return recognized
+  return { ...recognized, blocks: blocks.filter((_, index) => !drop.has(index)) }
+}
+
+function textWeight(block: TextBlock): number {
+  return [...block.text].filter(ch => !/\s/u.test(ch)).length
 }
 
 // ── Anchor selection: one anchor per spatial cluster ──────────────────────
@@ -244,9 +295,27 @@ async function ocrAnchor(
 
   // Blocks are in upscaled crop pixels. Convert: unscale → add crop origin (source
   // space) → scale back to capture space.
-  return recognized.blocks.map(block =>
+  const transformed = recognized.blocks.map(block =>
     transformBlock(block, csx1, csy1, upscale, captureScale),
   )
+  return cleanRecoveredBlocks(transformed)
+}
+
+/**
+ * One balloon's crop should yield one coherent text block. Drop artefact blocks
+ * (tiny / decoration / hallucinated-huge) the coarse-pass filter never saw, then
+ * drop any smaller block that sits inside a larger sibling — a faint stray line
+ * the upscaled re-OCR invented over the real text.
+ */
+function cleanRecoveredBlocks(blocks: readonly TextBlock[]): TextBlock[] {
+  const real = blocks.filter(block => !isArtifactBlock(block))
+  const byAreaDesc = [...real].sort((a, b) => bboxArea(b.bbox) - bboxArea(a.bbox))
+  const kept: TextBlock[] = []
+  for (const block of byAreaDesc) {
+    if (kept.some(k => containment(block.bbox, k.bbox) >= RECOVERED_SUBBLOCK_CONTAINMENT)) continue
+    kept.push(block)
+  }
+  return kept
 }
 
 function cropCanvasRegion(
@@ -269,7 +338,7 @@ function cropCanvasRegion(
   return { width: out.width, height: out.height, data: pixels.data }
 }
 
-// ── Splice: drop replaced members, append recovered ──────────────────────
+// ── Splice: drop everything the recovered crop supersedes, append recovered ──
 
 function splice(
   blocks: readonly TextBlock[],
@@ -279,7 +348,14 @@ function splice(
   const drop = new Set<number>()
   for (let i = 0; i < diagnoses.length; i += 1) {
     // Lens returned nothing — keep the originals as-is.
-    if (recovered[i]!.length) for (const index of diagnoses[i]!.memberIndices) drop.add(index)
+    if (!recovered[i]!.length) continue
+    // The crop re-OCR is authoritative for its whole anchor region, so drop every
+    // pre-existing block mostly inside it — not just the centre-inside members —
+    // to avoid leaving an overlapping coarse block beside the recovered text.
+    const anchorBox = diagnoses[i]!.anchor.bbox
+    for (let index = 0; index < blocks.length; index += 1) {
+      if (containment(blocks[index]!.bbox, anchorBox) >= ANCHOR_REPLACE_CONTAINMENT) drop.add(index)
+    }
   }
   const kept = blocks.filter((_, index) => !drop.has(index))
   return [...kept, ...recovered.flat()]
