@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { ArrowRight, Check, ChevronRight, Smartphone, Globe, Puzzle, Heart, Zap, BadgeCheck, Palette, Sparkles } from 'lucide-svelte';
   import { BRAND } from '$lib/brand';
+  import { session } from '$lib/auth/session.svelte';
 
   // Canonical production origin — used for SEO tags. Keep in sync with the deploy.
   const ORIGIN = 'https://hoimetruyen.net';
@@ -8,12 +10,21 @@
   const DESCRIPTION =
     'Mở truyện tranh tiếng Nhật, Hàn, Trung và đọc ngay bằng tiếng Việt. Bản dịch hiện thẳng lên trang — miễn phí, không phải chờ ai, mở là đọc được.';
   const OG_IMAGE = `${ORIGIN}/pwa/icon-512.png`;
-  const CTA_HREF = '/login?redirect=%2Fhome';
   // TODO: trỏ tới trang ủng hộ thật (Ko-fi / MoMo / kênh Discord) khi sẵn sàng.
   const SUPPORT_HREF = '#';
 
   // `/` always shows this marketing page — including for logged-in users — so the
   // landing stays viewable instead of bouncing authenticated visitors to /home.
+  //
+  // The CTAs, however, should skip the login screen once we already have a
+  // session: logged-out visitors (and crawlers, who get the prerendered HTML)
+  // go to /login?redirect=/home; logged-in visitors go straight to /home. The
+  // session check is client-only, so the indexable HTML keeps the login href.
+  let ctaHref = $state('/login?redirect=%2Fhome');
+  onMount(() => { void session.load(); });
+  $effect(() => {
+    if (session.state.status === 'authenticated') ctaHref = '/home';
+  });
 
   // Where it runs. Ext is on the roadmap — `ready: false` renders a "Sắp có" badge
   // so the slot exists now and lights up when the extension ships.
@@ -137,7 +148,7 @@
       </a>
       <nav class="flex items-center gap-1">
         <a href="#ung-ho" class="hidden rounded-sm px-3 py-1.5 text-sm font-medium text-text-muted transition-colors hover:text-text sm:inline-flex">Ủng hộ</a>
-        <a href={CTA_HREF} class="ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3.5 text-sm font-medium text-accent-fg transition-[filter] hover:brightness-110">
+        <a href={ctaHref} class="ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm bg-accent px-3.5 text-sm font-medium text-accent-fg transition-[filter] hover:brightness-110">
           Dùng ngay<ArrowRight size={14} />
         </a>
       </nav>
@@ -165,7 +176,7 @@
             Công cụ đọc &amp; dịch của bạn: mở trang truyện tiếng nước ngoài và đọc ngay bằng tiếng Việt — bản dịch hiện thẳng lên trang, miễn phí, không phải chờ ai.
           </p>
           <div class="mt-7 flex justify-center lg:justify-start">
-            <a href={CTA_HREF} class="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-sm bg-accent px-6 text-sm font-semibold text-accent-fg transition-[filter] hover:brightness-110 sm:w-auto">
+            <a href={ctaHref} class="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-sm bg-accent px-6 text-sm font-semibold text-accent-fg transition-[filter] hover:brightness-110 sm:w-auto">
               Dùng ngay, miễn phí<ArrowRight size={16} />
             </a>
           </div>
@@ -295,7 +306,7 @@
           <h2 class="text-lg font-semibold text-text">Sẵn sàng đọc bằng tiếng Việt?</h2>
           <p class="mt-1 text-sm text-text-muted">Đăng nhập bằng Discord để bắt đầu — chỉ mất vài giây.</p>
         </div>
-        <a href={CTA_HREF} class="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm bg-accent px-7 text-sm font-semibold text-accent-fg transition-[filter] hover:brightness-110">
+        <a href={ctaHref} class="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-sm bg-accent px-7 text-sm font-semibold text-accent-fg transition-[filter] hover:brightness-110">
           Dùng ngay<ArrowRight size={16} />
         </a>
       </div>
@@ -309,7 +320,7 @@
       </p>
       <div class="mt-3 flex items-center justify-center gap-4 text-xs sm:justify-start">
         <span class="text-text-subtle">© {BRAND.name}</span>
-        <a href={CTA_HREF} class="text-text-muted hover:text-text">Đăng nhập</a>
+        <a href={ctaHref} class="text-text-muted hover:text-text">Đăng nhập</a>
       </div>
     </div>
   </footer>
