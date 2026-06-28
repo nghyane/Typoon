@@ -93,7 +93,13 @@ export function fitLayout(
 
   const expansion = preMargin && !overallBlocked(preMargin) ? preMargin : null
 
-  if (!expansion || overallBlocked(expansion)) {
+  // The font follows the source-proportional target f(source). If the source
+  // footprint already holds the translation at that size, render it in place —
+  // no expansion. Only when the footprint FORCED the font below the target do we
+  // grow the box, and then only as much as it takes to reach the target again
+  // (scoreCandidate picks the smallest sufficient rect) — expansion follows
+  // f(source), it never inflates text to fill the bubble's whitespace.
+  if (!expansion || overallBlocked(expansion) || baseComposition.fontSizePx >= fontIntent.targetFontPx) {
     return toFitResult(
       text, baseRect, baseRect, baseComposition, fontIntent, direction,
       baseComposition.fontSizePx < fontIntent.targetFontPx ? 'shrink' : 'target',
@@ -117,7 +123,7 @@ export function fitLayout(
     if (sameRect(candidateRect, baseRect)) continue
     const comp = composeInRect(fontWeight, cleanText, candidateRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, candidateRect, expansion), font, measurer, profile)
     const s = scoreCandidate(comp, fontIntent.targetFontPx, candidateRect, baseAspect, baseRect)
-    if (s < bestScore || (s === bestScore && candidateRect.width > bestRect.width)) {
+    if (s < bestScore) {
       bestScore = s
       bestRect = candidateRect
     }
@@ -125,9 +131,10 @@ export function fitLayout(
 
   const finalComposition = composeInRect(fontWeight, cleanText, bestRect, fontIntent.targetFontPx, placement, direction, shapeProfileForRect(placement, bestRect, expansion), font, measurer, profile)
   const expanded = !sameRect(bestRect, baseRect)
-  // Font is now capped at the source-proportional target, so a larger font in
-  // the expanded rect just means the translation reached its source ratio
-  // instead of shrinking.  Accept the expansion whenever it helps.
+  // bestRect is the smallest candidate that lets the font reach f(source) (or, if
+  // unreachable, the least-shrunk one). The font stays capped at the target, so
+  // expansion only restores the source-proportional size — it never enlarges past
+  // it.
   const outputComposition = finalComposition
   const outputExpanded = expanded
   // Expansion only buys font size / line-break width — it must NOT move the
@@ -324,14 +331,15 @@ function scoreCandidate(
 ): number {
   if (!comp.composition.fits) return 1_000_000
   const shrinkPx = Math.max(0, targetFontPx - comp.fontSizePx)
-  // Reward font growth above target so expansion candidates that
-  // deliver larger text beat base-rect candidates that merely meet
-  // target.  Growth 1 px ≈ –150; aspect drift 1 % ≈ +100.
-  const growthPx = Math.max(0, comp.fontSizePx - targetFontPx)
+  // Reaching f(source) dominates (1 px short of target ≈ 1000). Among candidates
+  // that DO reach it (shrink 0), the SMALLEST area wins, so expansion grows just
+  // enough to honour the source size instead of sprawling into the bubble; aspect
+  // drift and off-centre drift are minor tie-breakers.
+  const areaRatio = (candRect.width * candRect.height) / Math.max(1, baseRect.width * baseRect.height)
   const candAspect = candRect.width / Math.max(1, candRect.height)
   const aspectDrift = Math.abs(candAspect - baseAspect)
   const centerPenalty = centerDistanceRatio(candRect, baseRect)
-  return shrinkPx * 1000 - growthPx * 150 + Math.round(aspectDrift * 100) + Math.round(centerPenalty * 30)
+  return shrinkPx * 1000 + Math.round(areaRatio * 120) + Math.round(aspectDrift * 40) + Math.round(centerPenalty * 30)
 }
 
 function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargins): FitRect[] {
@@ -351,20 +359,27 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
   const inset = Math.ceil(Math.min(baseRect.width, baseRect.height) * 0.07)
   const padded = unionBBox(withInset(safeBounds, inset), rectToBBox(baseRect))
 
-  // Grow symmetrically from the original centre so asymmetrical margins
-  // (e.g. more space on one side) don't push the text box off-centre.
-  if (vGrow > 0) {
-    const newH = baseRect.height + vGrow
-    results.push(clampRect({ x: baseRect.x, y: cy - newH / 2, width: baseRect.width, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
-  }
-  if (hGrow > 0) {
-    const newW = baseRect.width + hGrow
-    results.push(clampRect({ x: cx - newW / 2, y: baseRect.y, width: newW, height: baseRect.height, rotationDeg: baseRect.rotationDeg }, padded))
-  }
-  if (vGrow > 0 && hGrow > 0) {
-    const newW = baseRect.width + hGrow
-    const newH = baseRect.height + vGrow
-    results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
+  // Offer GRADUATED growth steps (not just the full available margin) so the
+  // scorer can pick the smallest rect that reaches f(source) instead of always
+  // grabbing all the whitespace. Grow symmetrically from the original centre so
+  // asymmetrical margins don't push the text box off-centre.
+  const fractions = [0.34, 0.67, 1] as const
+  for (const f of fractions) {
+    const vg = vGrow * f
+    const hg = hGrow * f
+    if (vg > 0) {
+      const newH = baseRect.height + vg
+      results.push(clampRect({ x: baseRect.x, y: cy - newH / 2, width: baseRect.width, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
+    }
+    if (hg > 0) {
+      const newW = baseRect.width + hg
+      results.push(clampRect({ x: cx - newW / 2, y: baseRect.y, width: newW, height: baseRect.height, rotationDeg: baseRect.rotationDeg }, padded))
+    }
+    if (vg > 0 && hg > 0) {
+      const newW = baseRect.width + hg
+      const newH = baseRect.height + vg
+      results.push(clampRect({ x: cx - newW / 2, y: cy - newH / 2, width: newW, height: newH, rotationDeg: baseRect.rotationDeg }, padded))
+    }
   }
   return results
 }

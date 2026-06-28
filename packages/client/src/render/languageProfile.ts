@@ -1,6 +1,17 @@
 import type { TextRole } from '../domain/planning'
 import { classifyTextScript, type TextScript } from './textScript'
 
+// Global size knob applied to every dialogue scale below (1 = as tuned). Raise
+// for bolder/larger translations across the board, lower for smaller.
+const VISUAL_GLYPH_MATCH = 1
+// Dense sources (Hangul/CJK) pack a whole syllable/word into ONE square glyph,
+// so the Latin (Vietnamese) translation of it is many more glyphs. Rendering at
+// the full source glyph height then reads oversized and overflows the bubble —
+// dense sources take a density scale-DOWN. Latin→Latin (EN→VI) is similar in
+// length, so it stays near 1:1.
+const DENSE_SOURCE_SCALE = 0.85
+const LATIN_SOURCE_SCALE = 0.95
+
 export interface RenderLanguageContext {
   readonly sourceLanguage?: string | null
   readonly targetLanguage?: string | null
@@ -44,24 +55,15 @@ export function textRenderProfile(
   const latinTarget = targetFamily === 'latin'
   const syllabicTarget = targetFamily === 'hangul'
   const cjkTarget = targetFamily === 'han' || targetFamily === 'kana' || targetFamily === 'mixed-cjk'
-  const denseSource = sourceFamily === 'han' || sourceFamily === 'kana' || sourceFamily === 'mixed-cjk' || sourceFamily === 'hangul'
-  // Latin source (EN/FR/…) → Latin target (VI): sourceFontPx is the OCR
-  // line-box height (ascender→descender). Latin manga fonts (light/italic
-  // narration, low x-height) leave the line box much taller than their visible
-  // glyphs, so rendering our bold high-x-height target 1:1 against that height
-  // overshoots ~30%. Scale down to the visible glyph size. CJK/Hangul glyphs are
-  // square — their line box already equals the glyph — so they need no such
-  // correction (only the density allowance below).
-  const latinSource = sourceFamily === 'latin'
-  const hangulSource = sourceFamily === 'hangul'
-
-  // glyphScale: flat cross-script ratio. Long translations keep size via the
-  // fit/expand stage (T4), never via a per-size taper here.
+  // glyphScale: target font-size = measured source glyph height × a density-aware
+  // ratio. Dense sources (Hangul/CJK) render SMALLER (their one square glyph
+  // becomes several Latin letters); Latin source stays near 1:1. The fit/expand
+  // stage (T4) then grows the box just enough to hold this size, shrinking only
+  // when the bubble truly can't.
+  const denseSource = sourceFamily === 'hangul' || sourceFamily === 'han' || sourceFamily === 'kana' || sourceFamily === 'mixed-cjk'
   const fontScale = role === 'sfx' ? 1
-    : latinTarget && hangulSource ? 0.7
-    : latinTarget && denseSource ? 0.88
-    : latinTarget && latinSource ? 0.8
-    : latinTarget ? 0.94
+    : latinTarget && denseSource ? DENSE_SOURCE_SCALE * VISUAL_GLYPH_MATCH
+    : latinTarget ? LATIN_SOURCE_SCALE * VISUAL_GLYPH_MATCH
     : syllabicTarget ? 0.96
     : cjkTarget ? 1.02
     : 0.94
