@@ -1,0 +1,190 @@
+{
+  "id":        "zettruyen",
+  "name":      "ZetTruyen",
+  "host":      "www.zettruyen.fit",
+  "homepage":  "https://www.zettruyen.fit",
+  "languages": ["vi"],
+  "version":   "1.0",
+  "accent":    "amber",
+
+  "defaults": { "genre": "action" },
+
+  "requestHeaders": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.zettruyen.fit/"
+  },
+
+  "imageHeaders": {
+    "Referer": "https://www.zettruyen.fit/"
+  },
+
+  "endpoints": {
+    "shelves": [
+      {
+        "id":    "latest",
+        "label": "Mới cập nhật",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.zettruyen.fit/tim-kiem-nang-cao?sort=latest&page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   "a[href^=\"https://www.zettruyen.fit/truyen-tranh/\"]:not([href*=\"/chuong-\"])",
+          "fields": {
+            "url":   "@href",
+            "title": "img@alt || img@title",
+            "cover": "img@src"
+          }
+        }
+      },
+      {
+        "id":    "rating",
+        "label": "Đánh giá cao",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.zettruyen.fit/tim-kiem-nang-cao?sort=rating&page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   "a[href^=\"https://www.zettruyen.fit/truyen-tranh/\"]:not([href*=\"/chuong-\"])",
+          "fields": {
+            "url":   "@href",
+            "title": "img@alt || img@title",
+            "cover": "img@src"
+          }
+        }
+      },
+      {
+        "id":    "bookmark",
+        "label": "Theo dõi nhiều",
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.zettruyen.fit/tim-kiem-nang-cao?sort=bookmark&page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   "a[href^=\"https://www.zettruyen.fit/truyen-tranh/\"]:not([href*=\"/chuong-\"])",
+          "fields": {
+            "url":   "@href",
+            "title": "img@alt || img@title",
+            "cover": "img@src"
+          }
+        }
+      },
+      {
+        "id":    "genre",
+        "label": "Thể loại",
+        "filters": [
+          {
+            "id":    "genre",
+            "label": "Thể loại",
+            "type":  "select",
+            "inject": "path",
+            "options": [
+              { "id": "action",        "label": "Action",        "param": "action" },
+              { "id": "adventure",     "label": "Adventure",     "param": "adventure" },
+              { "id": "anime",         "label": "Anime",         "param": "anime" },
+              { "id": "chuyen-sinh",   "label": "Chuyển Sinh",   "param": "chuyen-sinh" },
+              { "id": "co-dai",        "label": "Cổ Đại",        "param": "co-dai" },
+              { "id": "comedy",        "label": "Comedy",        "param": "comedy" },
+              { "id": "comic",         "label": "Comic",         "param": "comic" },
+              { "id": "cooking",       "label": "Cooking",       "param": "cooking" },
+              { "id": "doujinshi",     "label": "Doujinshi",     "param": "doujinshi" },
+              { "id": "drama",         "label": "Drama",         "param": "drama" },
+              { "id": "fantasy",       "label": "Fantasy",       "param": "fantasy" },
+              { "id": "gender-bender", "label": "Gender Bender", "param": "gender-bender" },
+              { "id": "historical",    "label": "Historical",    "param": "historical" },
+              { "id": "horror",        "label": "Horror",        "param": "horror" },
+              { "id": "live-action",   "label": "Live Action",   "param": "live-action" },
+              { "id": "manga",         "label": "Manga",         "param": "manga" },
+              { "id": "manhua",        "label": "Manhua",        "param": "manhua" },
+              { "id": "manhwa",        "label": "Manhwa",        "param": "manhwa" },
+              { "id": "martial-arts",  "label": "Martial Arts",  "param": "martial-arts" },
+              { "id": "mecha",         "label": "Mecha",         "param": "mecha" },
+              { "id": "mystery",       "label": "Mystery",       "param": "mystery" },
+              { "id": "ngon-tinh",     "label": "Ngôn Tình",     "param": "ngon-tinh" },
+              { "id": "psychological", "label": "Psychological", "param": "psychological" },
+              { "id": "romance",       "label": "Romance",       "param": "romance" },
+              { "id": "school-life",   "label": "School Life",   "param": "school-life" },
+              { "id": "sci-fi",        "label": "Sci-fi",        "param": "sci-fi" },
+              { "id": "shoujo",        "label": "Shoujo",        "param": "shoujo" },
+              { "id": "shoujo-ai",     "label": "Shoujo Ai",     "param": "shoujo-ai" },
+              { "id": "shounen",       "label": "Shounen",       "param": "shounen" },
+              { "id": "shounen-ai",    "label": "Shounen Ai",    "param": "shounen-ai" },
+              { "id": "slice-of-life", "label": "Slice of Life", "param": "slice-of-life" },
+              { "id": "sports",        "label": "Sports",        "param": "sports" },
+              { "id": "supernatural",  "label": "Supernatural",  "param": "supernatural" },
+              { "id": "thieu-nhi",     "label": "Thiếu Nhi",     "param": "thieu-nhi" },
+              { "id": "tragedy",       "label": "Tragedy",       "param": "tragedy" },
+              { "id": "trinh-tham",    "label": "Trinh Thám",    "param": "trinh-tham" },
+              { "id": "truyen-mau",    "label": "Truyện Màu",    "param": "truyen-mau" },
+              { "id": "truyen-scan",   "label": "Truyện Scan",   "param": "truyen-scan" },
+              { "id": "tu-tien",       "label": "Tu Tiên",       "param": "tu-tien" },
+              { "id": "webtoon",       "label": "Webtoon",       "param": "webtoon" },
+              { "id": "xuyen-khong",   "label": "Xuyên Không",   "param": "xuyen-khong" },
+              { "id": "dam-my",        "label": "Đam Mỹ",        "param": "dam-my" }
+            ]
+          }
+        ],
+        "endpoint": {
+          "method": "GET",
+          "url":    "https://www.zettruyen.fit/the-loai/{filterPath}?page={page}",
+          "parse":  "html",
+          "pagination": { "type": "page", "pageSize": 30 },
+          "list":   "a[href^=\"https://www.zettruyen.fit/truyen-tranh/\"]:not([href*=\"/chuong-\"])",
+          "fields": {
+            "url":   "@href",
+            "title": "img@alt || img@title",
+            "cover": "img@src"
+          }
+        }
+      }
+    ],
+
+    "search": {
+      "method": "GET",
+      "url":    "https://www.zettruyen.fit/tim-kiem-nang-cao?name={q:q}&page={page}",
+      "parse":  "html",
+      "pagination": { "type": "page", "pageSize": 30 },
+      "list":   "a[href^=\"https://www.zettruyen.fit/truyen-tranh/\"]:not([href*=\"/chuong-\"])",
+      "fields": {
+        "url":   "@href",
+        "title": "img@alt || img@title",
+        "cover": "img@src"
+      }
+    },
+
+    "manga": {
+      "method":  "GET",
+      "url":     "{mangaUrl}",
+      "parse":   "html",
+      "extract": "/truyen-tranh/(?<slug>[^/?#]+)",
+      "fields": {
+        "title":       "h1.comic-title-content",
+        "cover":       "meta[property=\"og:image\"]@content",
+        "description": "meta[property=\"og:description\"]@content"
+      }
+    },
+
+    "chaptersApi": {
+      "method": "GET",
+      "url":    "https://www.zettruyen.fit/api/comics/{slug}/chapters?page={page}",
+      "parse":  "json",
+      "headers": { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      "pagination": { "type": "page", "pageSize": 10 },
+      "list":   "$.data.chapters[*]",
+      "extras": { "num": "@chapter_num" },
+      "fields": {
+        "url":    "=https://www.zettruyen.fit/truyen-tranh/{slug}/chuong-{num}",
+        "number": "@chapter_num",
+        "title":  "@chapter_name",
+        "date":   "@updated_at"
+      }
+    },
+
+    "chapter": {
+      "method": "GET",
+      "url":    "{chapterUrl}",
+      "parse":  "html",
+      "list":   "img[src*=\"zetimage.com\"]:not([src*=\"/thumb/\"])",
+      "fields": { "url": "@src" }
+    }
+  }
+}
