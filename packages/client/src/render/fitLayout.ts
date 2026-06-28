@@ -350,13 +350,14 @@ function expansionRects(baseRect: FitRect, safeBounds: BBox, margins: SafeMargin
   const vGrow = top + bottom
   const hGrow = left + right
 
-  // Inset safeBounds so expanded rects never touch the bubble contour.
-  // visualPadding already guards text→rect, but rect→safeBounds needs its
-  // own gap so background/erase geometry has breathing room.  The inset must
-  // NEVER pull the bound inside the base rect — expansion only adds space, it
-  // must not shrink the area the source text already occupied (doing so caps
-  // the font BELOW its source-proportional target).  Union back with the base.
-  const inset = Math.ceil(Math.min(baseRect.width, baseRect.height) * 0.07)
+  // Inset safeBounds so expanded rects keep a clear margin from the bubble
+  // contour. Scale the inset to the BALLOON (the expansion bound), not the OCR
+  // footprint: a long thin footprint gave a tiny ~9px inset, so long (e.g.
+  // Korean) translations grew right up to the outline. The inset must NEVER pull
+  // the bound inside the base rect — expansion only adds space, it must not
+  // shrink the source area — so union back with the base.
+  const boundShort = Math.min(safeBounds[2] - safeBounds[0], safeBounds[3] - safeBounds[1])
+  const inset = Math.ceil(boundShort * 0.09)
   const padded = unionBBox(withInset(safeBounds, inset), rectToBBox(baseRect))
 
   // Offer GRADUATED growth steps (not just the full available margin) so the
