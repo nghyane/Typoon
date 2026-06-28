@@ -401,6 +401,27 @@ function bboxOverlapRatio(a: BBox, b: BBox): number {
   return inter / Math.min(areaA, areaB)
 }
 
+/**
+ * Are these two seam copies (compared in page-N source space) the same straddling
+ * bubble? The two captures OCR the bubble independently, so they wrap/place it at
+ * slightly different heights and the area overlap alone can dip well below a strict
+ * threshold even though it is plainly the same bubble. We therefore match on EITHER
+ * a lenient area overlap OR a same-column signal: at most one bubble can straddle a
+ * given seam in a given x-column, so equal width + strong x-overlap + centers within
+ * a box height is a safe duplicate test (distinct side-by-side bubbles share little
+ * x-overlap; distinct stacked bubbles cannot both cross the same seam line).
+ */
+function seamBboxDuplicate(below: BBox, above: BBox): boolean {
+  if (bboxOverlapRatio(below, above) > 0.3) return true
+  const wBelow = below[2] - below[0]
+  const wAbove = above[2] - above[0]
+  const widthRatio = Math.min(wBelow, wAbove) / Math.max(1, wBelow, wAbove)
+  const xOverlap = (Math.min(below[2], above[2]) - Math.max(below[0], above[0])) / Math.max(1, Math.min(wBelow, wAbove))
+  const centerGap = Math.abs((below[1] + below[3]) / 2 - (above[1] + above[3]) / 2)
+  const avgHeight = ((below[3] - below[1]) + (above[3] - above[1])) / 2
+  return widthRatio >= 0.6 && xOverlap >= 0.6 && centerGap <= avgHeight
+}
+
 /** Convert a bbox in seamAbove(N+1) space to page-N source space. */
 function seamAboveBboxToPageNSpace(bbox: BBox, haloTopN1: number, pageNHeight: number): BBox {
   const dy = pageNHeight - haloTopN1
@@ -434,7 +455,7 @@ export function deduplicateSeamBlocks(overlays: Map<number, ReaderPageOverlay>):
         overlay.seamBelow!.seamSplitY,
       )
       for (const belowBbox of belowBboxes) {
-        if (bboxOverlapRatio(belowBbox, aboveBboxInPageN) > 0.5) return false
+        if (seamBboxDuplicate(belowBbox, aboveBboxInPageN)) return false
       }
 
       return true
