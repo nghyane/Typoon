@@ -14,6 +14,15 @@ interface Anchor {
 
 const TEXT_FREE_BUBBLE_AREA_RATIO_MIN = 0.70
 const TEXT_BUBBLE_CLUSTER_OVERLAP_MIN = 0.20
+// One irregular balloon (jagged shout, peanut, spiky bubble) is frequently
+// detected as TWO overlapping `bubble` boxes that each cover a different part of
+// the shape. Their IoU is low (the boxes are offset), so the IoU-only cluster
+// test leaves them as two anchors and a single utterance gets cut across them by
+// centroid assignment. Cluster two bubbles when the SMALLER box is substantially
+// covered by the other. Erring toward merging is safe: subgroupBlockIds re-splits
+// genuinely distinct stacked bubbles on the large vertical gap between them, but a
+// split anchor permanently severs one utterance into two placements.
+const BUBBLE_CLUSTER_OVERLAP_MIN = 0.35
 
 export function textPlacementsFromRecognition(recognized: RecognizedTextPage, units: readonly TextUnit[], roleContext?: TextRoleContext): TextPlacement[] {
   return blocksToTextPlacements(recognized.blocks, units, recognized.pageIndex, recognized.pageSize, [], roleContext)
@@ -178,6 +187,7 @@ function clusterRegions(regions: readonly TextRegion[], iouThreshold: number): T
 function sameAnchorCluster(a: TextRegion, b: TextRegion, iouThreshold: number): boolean {
   if (iou(a.bbox, b.bbox) > iouThreshold) return true
   if (a.kind === 'text_bubble' && b.kind === 'text_bubble') return overlapFraction(a.bbox, b.bbox) >= TEXT_BUBBLE_CLUSTER_OVERLAP_MIN
+  if (a.kind === 'bubble' && b.kind === 'bubble') return overlapFraction(a.bbox, b.bbox) >= BUBBLE_CLUSTER_OVERLAP_MIN
   if (!isBubblePair(a, b)) return false
   const inner = a.kind === 'bubble' ? b : a
   const outer = a.kind === 'bubble' ? a : b
@@ -201,7 +211,15 @@ function overlapFraction(a: BBox, b: BBox): number {
 function pickAnchor(cluster: readonly TextRegion[], textBubbles: readonly TextRegion[]): Anchor | null {
   const winner = pickAnchorRegion(cluster)
   if (!winner) return null
-  if (winner.kind === 'bubble') return { ...winner, innerBBox: bestInnerBBox(winner.bbox, textBubbles) }
+  if (winner.kind === 'bubble') {
+    // Cover EVERY clustered bubble box, not just the winner's: two overlapping
+    // detections of one balloon each capture a different part, so the union is
+    // the real balloon extent. Without this, a block centred in the loser box
+    // falls outside the anchor and is orphaned into its own placement (the
+    // split-utterance bug). Single-bubble clusters union to themselves (no-op).
+    const bbox = unionBBoxes(cluster.filter(region => region.kind === 'bubble').map(region => region.bbox)) ?? winner.bbox
+    return { ...winner, bbox, innerBBox: bestInnerBBox(bbox, textBubbles) }
+  }
   if (winner.kind === 'text_bubble') {
     const bbox = unionBBoxes(cluster.filter(region => region.kind === 'text_bubble').map(region => region.bbox)) ?? winner.bbox
     return { ...winner, bbox, innerBBox: bbox }
@@ -550,9 +568,21 @@ function maxAbsRotation(blocks: readonly TextBlock[]): number {
 // columns). Collapse the reading axis to its residual tilt (≈0 for an upright
 // bubble). Horizontal blocks keep their real tilt so slanted chat bubbles still
 // render along their baseline.
+//
+// Some blocks arrive at ≈ ±90 with textDirection still 'horizontal' — a
+// stylistic sideways lead-in word, or a Lens/bubble-recovery line whose glyphs
+// read in order but whose baseline is turned a quarter-turn. That is a vertical
+// PRESENTATION, not a surface tilt, so it must fold too — otherwise the
+// (horizontal) translation renders sideways. A real surface tilt (slanted chat
+// bubble / phone screen) stays well under this; the gap between plausible tilts
+// (≲ 30°) and a quarter-turn (≈ 90°) is wide, so 60° is a safe divider.
+const VERTICAL_AXIS_ROTATION_DEG = 60
+
 function pageTiltRotation(block: TextBlock): number {
-  if (block.textDirection !== 'vertical') return block.rotationDeg
-  return foldQuarterTurn(block.rotationDeg)
+  if (block.textDirection === 'vertical' || Math.abs(block.rotationDeg) >= VERTICAL_AXIS_ROTATION_DEG) {
+    return foldQuarterTurn(block.rotationDeg)
+  }
+  return block.rotationDeg
 }
 
 // Reduce an angle into (-45, 45] by removing quarter turns: 90 → 0, -90 → 0,
