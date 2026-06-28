@@ -17,15 +17,43 @@ interface GgData {
 }
 
 let ggCache: GgData | null = null;
-const GG_TTL = 60 * 60 * 1000;
+// gg.js carries the image subdomain map (`m`) and the path prefix (`b`, a
+// rotating timestamp). Hitomi cycles `b` frequently, so a stale gg yields the
+// wrong host/prefix and the image 404s. Keep it short-lived and force-refresh
+// on a page miss (see resolvePageUrl) rather than baking URLs ahead of time.
+const GG_TTL = 10 * 60 * 1000;
+// A page miss makes every stale page force-refresh at once; once one refresh has
+// just landed, the rest of that storm reuse it instead of each re-hitting origin.
+const GG_FORCE_DEDUP = 5 * 1000;
 
-async function fetchGg(sourceId: string): Promise<GgData> {
+let ggInflight: { force: boolean; promise: Promise<GgData> } | null = null;
+
+async function fetchGg(sourceId: string, force = false): Promise<GgData> {
 	const now = Date.now();
-	if (ggCache && now - ggCache.fetchedAt < GG_TTL) return ggCache;
+	if (!force && ggCache && now - ggCache.fetchedAt < GG_TTL) return ggCache;
+	// A refresh that just landed satisfies a forced caller too — collapses the
+	// whole-chapter 404 storm into a single origin reload.
+	if (force && ggCache && now - ggCache.fetchedAt < GG_FORCE_DEDUP) return ggCache;
+	// Coalesce concurrent fetches (reader open, prewarm, retries). A forced
+	// caller can only ride an in-flight fetch that is itself forced.
+	if (ggInflight && (!force || ggInflight.force)) return ggInflight.promise;
 
+	const promise = loadGg(sourceId, force);
+	ggInflight = { force, promise };
+	try {
+		return await promise;
+	} finally {
+		if (ggInflight?.promise === promise) ggInflight = null;
+	}
+}
+
+async function loadGg(sourceId: string, force: boolean): Promise<GgData> {
+	const cache = sourceCache(sourceId, 'metadata', ['gg.js'], {}, GG_TTL / 1000);
 	const res = await fetchSource(`${LTN}/gg.js`, {
 		headers: { ...HITOMI_HEADERS, Origin: 'https://hitomi.la' },
-		cache: sourceCache(sourceId, 'metadata', ['gg.js'], {}, GG_TTL / 1000),
+		// force → revalidate past the gateway cache too, otherwise a forced
+		// refresh would just re-read the same stale gg the gateway holds.
+		cache: force ? { ...cache, policy: 'reload' } : cache,
 	});
 	if (!res.ok) throw new Error(`hitomi gg.js: HTTP ${res.status}`);
 	const text = await res.text();
@@ -50,7 +78,7 @@ async function fetchGg(sourceId: string): Promise<GgData> {
 			return match ? parseInt(match[2]! + match[1]!, 16).toString(10) : '0';
 		},
 		b,
-		fetchedAt: now,
+		fetchedAt: Date.now(),
 	};
 	return ggCache;
 }
@@ -66,6 +94,18 @@ function subdomainFromHash(hash: string, ext: 'webp' | 'avif', gg: GgData): stri
 function imageUrl(hash: string, ext: 'webp' | 'avif', gg: GgData): string {
 	const subdomain = subdomainFromHash(hash, ext, gg);
 	return `https://${subdomain}.${DOMAIN2}/${gg.b}${gg.s(hash)}/${hash}.${ext}`;
+}
+
+// Pages are emitted as `<ext>:<hash>` tokens and turned into a concrete URL only
+// at read time (resolvePageUrl), so each page is signed with the freshest gg.
+function encodePageToken(hash: string, ext: 'webp' | 'avif'): string {
+	return `${ext}:${hash}`;
+}
+
+function decodePageToken(token: string): { hash: string; ext: 'webp' | 'avif' } {
+	const sep = token.indexOf(':');
+	const ext = token.slice(0, sep) === 'avif' ? 'avif' : 'webp';
+	return { hash: token.slice(sep + 1), ext };
 }
 
 function imageHeaders(manifest: SourceManifest): Record<string, string> {
@@ -264,8 +304,23 @@ export const hitomiAdapter: SourceAdapter = {
 		const id = extractGalleryId(chapterUrl);
 		if (!id) throw new Error(`hitomi: cannot extract gallery ID from: ${chapterUrl}`);
 
-		const [info, gg] = await Promise.all([fetchGalleryInfo(manifest.id, id), fetchGg(manifest.id)]);
-		const pages = info.files.map((file) => imageUrl(file.hash, file.hasavif ? 'avif' : 'webp', gg));
-		return { url: chapterUrl, pages, pageHeaders: imageHeaders(manifest) };
+		const info = await fetchGalleryInfo(manifest.id, id);
+		// Warm gg so the first page resolves without a serial round-trip; the
+		// actual URLs are built lazily in resolvePageUrl with the freshest gg.
+		void fetchGg(manifest.id).catch(() => {});
+		const pages = new Array<string>(info.files.length).fill('');
+		const tokens = info.files.map((file) => encodePageToken(file.hash, file.hasavif ? 'avif' : 'webp'));
+		return { url: chapterUrl, pages, tokens, pageHeaders: imageHeaders(manifest) };
+	},
+
+	async resolvePageUrl(
+		manifest: SourceManifest,
+		token: string,
+		_userCookies: Record<string, string>,
+		opts?: { refresh?: boolean },
+	): Promise<string> {
+		const { hash, ext } = decodePageToken(token);
+		const gg = await fetchGg(manifest.id, opts?.refresh);
+		return imageUrl(hash, ext, gg);
 	},
 };

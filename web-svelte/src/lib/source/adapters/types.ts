@@ -11,6 +11,8 @@ export interface SourceAdapter {
 		manifest: SourceManifest,
 		token: string,
 		userCookies: Record<string, string>,
+		/** `refresh` forces signing data (e.g. Hitomi gg.js) past its cache after a page miss. */
+		opts?: { refresh?: boolean },
 	): Promise<string>;
 
 	fetchMangaDetail?(

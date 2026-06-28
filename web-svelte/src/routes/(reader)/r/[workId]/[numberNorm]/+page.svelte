@@ -54,12 +54,12 @@
 
   const pages = new ChapterPages(
     () => source.activeUrls,
-    async (index, rawUrl) => {
-      if (rawUrl) return rawUrl;
+    async (index, rawUrl, opts) => {
+      if (rawUrl && !opts?.refresh) return rawUrl;
       const token = source.activeTokens?.[index];
       const src = source.activeSourceId ? getSource(source.activeSourceId) : null;
       if (!token || !src) return rawUrl;
-      return resolvePageUrl(src.manifest, token);
+      return resolvePageUrl(src.manifest, token, {}, opts);
     },
     () => source.activePageHeaders,
   );

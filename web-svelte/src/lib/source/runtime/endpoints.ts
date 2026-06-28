@@ -336,8 +336,8 @@ export async function fetchChapterPages(
 }
 
 export async function resolvePageUrl(
-	m: SourceManifest, token: string, cookies: Record<string, string> = {},
+	m: SourceManifest, token: string, cookies: Record<string, string> = {}, opts?: { refresh?: boolean },
 ): Promise<string> {
-	if (m.adapter) { const a = getAdapter(m.adapter); if (a?.resolvePageUrl) return a.resolvePageUrl(m, token, cookies); }
+	if (m.adapter) { const a = getAdapter(m.adapter); if (a?.resolvePageUrl) return a.resolvePageUrl(m, token, cookies, opts); }
 	throw new Error(`resolvePageUrl called on source "${m.id}" which has no adapter.resolvePageUrl`);
 }

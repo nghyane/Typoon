@@ -4,7 +4,7 @@ import { untrack } from 'svelte';
 import { useSourceFetch } from './sourceFetch.svelte';
 import type { PageBlob } from './types';
 
-type ResolvePageUrl = (index: number, rawUrl: string) => Promise<string>;
+type ResolvePageUrl = (index: number, rawUrl: string, opts?: { refresh?: boolean }) => Promise<string>;
 type PageHeaders = () => Record<string, string> | null | undefined;
 
 // Abandon a slow/stalled gateway and fail over to the next mirror. Generous
@@ -118,10 +118,11 @@ export class ChapterPages {
 
   async #fetchPage(index: number, generation: number, signal: AbortSignal): Promise<Blob> {
     try {
-      const rawUrl = await this.#resolveUrl(index, this.#urls[index] ?? '');
+      const original = this.#urls[index] ?? '';
+      const rawUrl = await this.#resolveUrl(index, original);
       if (!rawUrl) throw new Error(`missing page url ${index + 1}`);
       throwIfAborted(signal);
-      const blob = await this.#fetchBlob(rawUrl, signal);
+      const blob = await this.#fetchBlobWithRepair(index, original, rawUrl, signal);
       const size = await readImageSize(blob);
       throwIfAborted(signal);
       if (this.#generation !== generation) throw new Error('stale page fetch');
@@ -135,6 +136,23 @@ export class ChapterPages {
         this.#markDone(index);
       }
       throw err;
+    }
+  }
+
+  // Token-backed pages (Hitomi et al.) sign their URL from rotating data, so an
+  // all-gateways miss usually means that signature went stale, not that the
+  // image is gone. Re-resolve once with a forced refresh and retry before
+  // giving up. Pages with a baked URL (`original` set) can't be repaired, so
+  // their failure propagates immediately.
+  async #fetchBlobWithRepair(index: number, original: string, rawUrl: string, signal: AbortSignal): Promise<Blob> {
+    try {
+      return await this.#fetchBlob(rawUrl, signal);
+    } catch (err) {
+      if (original || signal.aborted) throw err;
+      const fresh = await this.#resolveUrl(index, original, { refresh: true });
+      throwIfAborted(signal);
+      if (!fresh || fresh === rawUrl) throw err;
+      return this.#fetchBlob(fresh, signal);
     }
   }
 
@@ -159,6 +177,10 @@ export class ChapterPages {
         const res = await fetch(this.#sf.toBrowserUrl(rawUrl, this.#headers, undefined, attempt), { signal: ac.signal });
         if (res.ok) return await res.blob();
         lastError = new Error(`${res.status}`);
+        // 404/410 is the upstream's verdict, identical across every gateway
+        // (they proxy the same dead URL) — stop walking mirrors and let the
+        // caller re-resolve (e.g. refresh a rotated signature) instead.
+        if (res.status === 404 || res.status === 410) break;
       } catch (err) {
         if (signal.aborted) throw err;
         lastError = err;
