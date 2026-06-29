@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { Compass, Plus, Search } from 'lucide-svelte';
+  import { Compass, Plus, RotateCw, Search } from 'lucide-svelte';
   import { listSources } from '$lib/source/registry';
   import {
     assembleFilters,
@@ -404,9 +404,16 @@
         <CardSkeleton count={18} />
       </div>
     {:else if browseQuery.error && items.length === 0}
-      <div class="py-12 text-center">
-        <p class="text-sm font-medium text-error-text">Không tải được</p>
-        <p class="text-xs text-text-subtle mt-1">{browseQuery.error.message}</p>
+      <div class="py-12 flex flex-col items-center gap-3 text-center">
+        <div>
+          <p class="text-sm font-medium text-error-text">Không tải được</p>
+          <p class="text-xs text-text-subtle mt-1">{browseQuery.error.message}</p>
+        </div>
+        <button type="button" onclick={() => browseQuery.refetch()}
+          class="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-surface-2 text-text text-sm font-medium hover:bg-interactive-hover transition-colors cursor-pointer"
+        >
+          <RotateCw size={14} /> Thử lại
+        </button>
       </div>
     {:else if items.length === 0}
       <div class="py-12 text-center">

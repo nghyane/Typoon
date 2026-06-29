@@ -1,5 +1,6 @@
 import type { PageLoad } from './$types';
 import { getWork } from '$lib/works/repo';
+import { getProgress } from '$lib/works/progress';
 import { getSource } from '$lib/source/registry';
 import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
 import type { WorkSource } from '$lib/db';
@@ -32,9 +33,15 @@ export const load: PageLoad = async ({ params }) => {
     const index = sorted.findIndex((item) => item.numberNorm === chapter.numberNorm);
     const prev = index > 0 ? sorted[index - 1] : null;
     const next = index >= 0 && index < sorted.length - 1 ? sorted[index + 1] : null;
+    // Resume offset: only when this chapter is still the work's resume point, so a
+    // fresh open of a *different* chapter starts at the top.
+    const progress = await getProgress(params.workId);
+    const chapterRef = chapter.numberNorm || params.numberNorm;
+    const resumeScrollTop = progress?.last_chapter === chapterRef ? progress?.last_scroll_top : undefined;
     return {
       workId: params.workId,
-      chapterRef: chapter.numberNorm || params.numberNorm,
+      chapterRef,
+      resumeScrollTop,
       urls: [],
       pageTokens: null,
       targetLang: work.target_lang,

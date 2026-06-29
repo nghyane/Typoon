@@ -38,6 +38,7 @@ export interface ReadProgress {
 	last_chapter: string; // numberNorm of the most recently opened chapter
 	last_read_at: string;
 	read: string[]; // numberNorms the reader has opened
+	last_scroll_top?: number; // scroll offset within last_chapter, for resume
 }
 
 export class TypoonDb extends Dexie {

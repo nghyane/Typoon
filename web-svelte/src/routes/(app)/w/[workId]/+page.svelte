@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { BookOpen, BookmarkPlus, Check, ChevronDown, Plus, Search } from 'lucide-svelte';
+  import { BookOpen, BookmarkPlus, Check, ChevronDown, Plus, RotateCw, Search } from 'lucide-svelte';
   import { addWorkToLibrary, getWork, removeWorkFromLibrary, setWorkLibraryStatus, touchWork } from '$lib/works/repo';
+  import { toast } from '$lib/ui/toast.svelte';
   import { getProgress } from '$lib/works/progress';
+  import { prefetchChapterPages } from '$lib/reader/chapterPages';
   import { cn } from '$lib/cn';
   import { getSource } from '$lib/source/registry';
   import { fetchMangaDetail } from '$lib/source/runtime/endpoints';
@@ -145,11 +147,28 @@
   // `work.in_library`, so mutationFn must NOT re-read `work` to pick the action —
   // by then it's already inverted, and it would call the opposite repo function,
   // leaving the toggle a permanent no-op.
+  // Re-add after an accidental removal (toast "Hoàn tác").
+  async function undoRemove(): Promise<void> {
+    await addWorkToLibrary(data.workId);
+    qc.invalidateQueries({ queryKey: workKey });
+    toast.show({ title: 'Đã khôi phục vào thư viện', variant: 'success', duration: 2500 });
+  }
+
   const toggleMutation = createMutation(() => ({
     mutationFn: (wasInLibrary: boolean) =>
       wasInLibrary ? removeWorkFromLibrary(work!.id) : addWorkToLibrary(work!.id),
     onMutate: (wasInLibrary: boolean) => optimisticPatch({ in_library: !wasInLibrary }),
-    onError: (_err, _vars, ctx) => rollback(ctx),
+    onError: (_err, _vars, ctx) => {
+      rollback(ctx);
+      toast.show({ title: 'Không lưu được thay đổi', variant: 'error' });
+    },
+    onSuccess: (_data, wasInLibrary) => {
+      if (wasInLibrary) {
+        toast.show({ title: 'Đã xoá khỏi thư viện', variant: 'success', duration: 6000, action: { label: 'Hoàn tác', onClick: () => void undoRemove() } });
+      } else {
+        toast.show({ title: 'Đã thêm vào thư viện', variant: 'success', duration: 2500 });
+      }
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: workKey }),
   }));
 
@@ -175,6 +194,20 @@
       document.removeEventListener('keydown', onKeydown);
     };
   });
+
+  function retrySources(): void {
+    qc.invalidateQueries({ queryKey: ['manga-detail'] });
+  }
+
+  // Warm the chapter's page list on intent (hover/tap) so the reader's biggest
+  // wait — the gateway page-list fetch — is already resolved by the time the user
+  // clicks. `version` carries the source manifest + chapter URL.
+  function warmChapter(version: SourceVersion | null): void {
+    if (version) prefetchChapterPages(version.source.manifest, version.ref.url);
+  }
+  function warmMergedChapter(chapter: MergedChapter | null): void {
+    if (chapter) warmChapter(pickBestVersion(chapter, work?.target_lang.toLowerCase() ?? 'vi'));
+  }
 
   function sourceLabel(id: string): string {
     return getSource(id)?.manifest.name ?? id;
@@ -212,11 +245,11 @@
           </div>
           <div class="flex items-stretch gap-2 flex-wrap">
             {#if resumeTarget}
-              <a href={`/r/${work.id}/${resumeTarget.numberNorm}`} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
+              <a href={`/r/${work.id}/${resumeTarget.numberNorm}`} onpointerenter={() => warmMergedChapter(resumeTarget)} onfocus={() => warmMergedChapter(resumeTarget)} ontouchstart={() => warmMergedChapter(resumeTarget)} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
                 <BookOpen size={14} /> Đọc tiếp {resumeTarget.number || resumeTarget.numberNorm}
               </a>
             {:else if readTarget}
-              <a href={`/r/${work.id}/${readTarget.numberNorm}`} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
+              <a href={`/r/${work.id}/${readTarget.numberNorm}`} onpointerenter={() => warmMergedChapter(readTarget)} onfocus={() => warmMergedChapter(readTarget)} ontouchstart={() => warmMergedChapter(readTarget)} class="inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-sm bg-accent text-accent-fg text-sm font-medium hover:brightness-110 transition-[background-color,color,filter] duration-150">
                 <BookOpen size={14} /> Bắt đầu đọc
               </a>
             {/if}
@@ -270,7 +303,11 @@
         <h2 class="text-xs uppercase tracking-wider text-text-subtle font-medium">Nguồn</h2>
         <span class="text-xs text-text-subtle tabular-nums">{work.sources.length}</span>
         {#if detailLoading}<span class="ts-spinner-circle size-3 text-text-subtle" aria-label="Đang tải"></span>{/if}
-        {#if detailFailures.length > 0}<span class="text-xs text-warning-text">{detailFailures.length} nguồn lỗi</span>{/if}
+        {#if detailFailures.length > 0}
+          <button type="button" onclick={retrySources} class="inline-flex items-center gap-1 text-xs text-warning-text hover:text-text transition-colors cursor-pointer">
+            <RotateCw size={11} /> {detailFailures.length} nguồn lỗi · thử lại
+          </button>
+        {/if}
       </div>
       <div class="flex flex-wrap gap-2">
         {#each work.sources as item, i (`${item.source}:${item.upstream_ref}`)}
@@ -290,7 +327,7 @@
         workId={work.id}
         workTitle={work.title}
         ownSources={work.sources}
-        onLinked={() => qc.invalidateQueries({ queryKey: ['work', data.workId] })}
+        onLinked={() => { qc.invalidateQueries({ queryKey: ['work', data.workId] }); toast.show({ title: 'Đã thêm nguồn', variant: 'success', duration: 2500 }); }}
       />
     {/if}
 
@@ -334,7 +371,12 @@
           <ChapterRowSkeleton count={8} />
         </div>
       {:else if detailFailures.length > 0 && chapters.length === 0}
-        <p class="text-error-text text-sm py-8 text-center">Không tải được chương từ các nguồn đã liên kết.</p>
+        <div class="py-8 flex flex-col items-center gap-3 text-center">
+          <p class="text-error-text text-sm">Không tải được chương từ các nguồn đã liên kết.</p>
+          <button type="button" onclick={retrySources} class="inline-flex items-center gap-1.5 h-8 px-3 rounded-sm bg-surface-2 text-text text-sm font-medium hover:bg-hover transition-colors cursor-pointer">
+            <RotateCw size={14} /> Thử lại
+          </button>
+        </div>
       {:else if chapters.length === 0}
         <p class="text-text-subtle text-sm py-8 text-center">Chưa có chương nào.</p>
       {:else if visibleRows.length === 0}
@@ -351,7 +393,7 @@
 </div>
 
 {#snippet ChapterRow({ workId, chapter, version, targetLang, isRead, isCurrent }: { workId: string; chapter: MergedChapter; version: SourceVersion | null; targetLang: string; isRead: boolean; isCurrent: boolean })}
-  <a href={`/r/${workId}/${chapter.numberNorm}`} class={cn('flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0', isCurrent && 'bg-accent-bg/40')}>
+  <a href={`/r/${workId}/${chapter.numberNorm}`} onpointerenter={() => warmChapter(version)} onfocus={() => warmChapter(version)} ontouchstart={() => warmChapter(version)} class={cn('flex items-center gap-3 px-2 py-2.5 cursor-pointer group hover:bg-surface-2/70 focus-visible:outline-none focus-visible:bg-hover border-b border-border-soft/60 last:border-b-0', isCurrent && 'bg-accent-bg/40')}>
     <span class={cn('tabular-nums font-medium shrink-0 transition-colors', isCurrent ? 'text-accent-text' : isRead ? 'text-text-subtle group-hover:text-text-muted' : 'text-text-muted group-hover:text-text')}>
       {chapter.number || chapter.numberNorm || '?'}
     </span>

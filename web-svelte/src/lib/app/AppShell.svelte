@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
+  import { ArrowUp, Check, ChevronLeft, ChevronRight, Compass, Globe, Home, Library, LogOut, Settings, Shield } from 'lucide-svelte';
   import { cn } from '$lib/cn';
   import { safeReturnTo } from '$lib/auth/api';
   import { session } from '$lib/auth/session.svelte';
@@ -16,6 +16,17 @@
   let pane = $state<'root' | 'lang'>('root');
   let menuEl = $state<HTMLDivElement | null>(null);
   let avatarFailed = $state(false);
+
+  // Scroll-to-top for the (window-less) main scroll area. Appears once the user is
+  // a screenful or two down; hidden again near the top.
+  let mainEl = $state<HTMLElement | null>(null);
+  let showScrollTop = $state(false);
+  function onMainScroll(): void {
+    showScrollTop = !!mainEl && mainEl.scrollTop > 800;
+  }
+  function scrollToTop(): void {
+    mainEl?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   const currentPath = $derived($page.url.pathname);
   const currentHref = $derived(`${$page.url.pathname}${$page.url.search}${$page.url.hash}`);
@@ -236,7 +247,17 @@
           {/if}
         </div>
       </header>
-      <main class="flex-1 overflow-auto sm:pb-[var(--saib)]">{@render children()}</main>
+      <main bind:this={mainEl} onscroll={onMainScroll} class="flex-1 overflow-auto sm:pb-[var(--saib)]">{@render children()}</main>
+      {#if showScrollTop}
+        <button
+          type="button"
+          onclick={scrollToTop}
+          aria-label="Lên đầu trang"
+          class="fixed right-4 z-40 inline-flex size-10 items-center justify-center rounded-full border border-border-soft bg-surface/95 text-text shadow-lg backdrop-blur transition hover:bg-hover active:scale-95 cursor-pointer bottom-[calc(3.5rem+var(--saib)+0.75rem)] sm:bottom-[max(1rem,var(--saib))]"
+        >
+          <ArrowUp size={18} />
+        </button>
+      {/if}
       <!-- Bottom tab bar. Chrome must stay proportional to the layout, not balloon
            with the user's system text size: like a native iOS/Android tab bar, the
            label scales a little for accessibility but is capped so it never wraps or

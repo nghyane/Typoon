@@ -46,6 +46,8 @@ export interface ReaderSourceVersion {
 export interface ReaderData {
   workId: string;
   chapterRef: string;
+  /** Scroll offset to resume at within this chapter (set only when it's the resume point). */
+  resumeScrollTop?: number;
   urls: string[];
   pageTokens?: string[] | null;
   pageHeaders?: Record<string, string> | null;

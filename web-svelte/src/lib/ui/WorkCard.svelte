@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { browser } from '$app/environment';
   import { cn } from '$lib/cn';
-  import { Check } from 'lucide-svelte';
+  import { Check, Eye } from 'lucide-svelte';
   import { queryClient } from '$lib/queryClient';
   import { getWork } from '$lib/works/repo';
   import { getSource } from '$lib/source/registry';
@@ -49,6 +50,17 @@
 
   const targetHref = $derived(href ?? (work.id ? `/w/${work.id}` : undefined));
 
+  // Touch devices can't hover to un-blur an 18+ cover, so the first tap reveals it
+  // and the next opens the work. Desktop keeps the hover-reveal (no extra tap).
+  const coarsePointer = browser && window.matchMedia('(hover: none)').matches;
+  let revealed = $state(false);
+  const blurred = $derived(!!work.nsfw && blurNsfw && !revealed);
+  const tapToReveal = $derived(blurred && coarsePointer);
+  function handleRevealClick(event: MouseEvent): boolean {
+    if (tapToReveal) { event.preventDefault(); revealed = true; return true; }
+    return false;
+  }
+
   // `work.source` is a source id for saved works, or already a display name for
   // browse cards. Resolve the manifest so both render the same label + headers.
   const sourceObj = $derived(work.source ? getSource(work.source) : null);
@@ -76,11 +88,17 @@
       title={work.title}
       class={cn(
         'absolute inset-0 transition duration-300 ease-out',
-        work.nsfw && blurNsfw
+        blurred
           ? 'scale-105 blur-xl group-hover:blur-0 group-focus-visible:blur-0'
           : 'group-hover:scale-105',
       )}
     />
+    {#if tapToReveal}
+      <span class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-text-subtle">
+        <Eye size={18} />
+        <span class="text-[10px] font-medium">Chạm để hiện</span>
+      </span>
+    {/if}
     {#if pending}
       <span class="absolute inset-0 grid place-items-center bg-bg/45"><Spinner size={20} /></span>
     {/if}
@@ -109,7 +127,7 @@
 {#if onclick}
   <button
     type="button"
-    {onclick}
+    onclick={(e) => { if (handleRevealClick(e)) return; onclick?.(); }}
     {disabled}
     aria-busy={pending}
     onpointerenter={warm}
@@ -127,6 +145,7 @@
 {:else}
   <a
     href={targetHref}
+    onclick={handleRevealClick}
     onpointerenter={warm}
     onfocus={warm}
     ontouchstart={warm}

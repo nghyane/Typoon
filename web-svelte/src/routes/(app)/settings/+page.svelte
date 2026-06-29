@@ -14,6 +14,7 @@
   import Button from '$lib/ui/Button.svelte';
   import Field from '$lib/ui/Field.svelte';
   import Spinner from '$lib/ui/Spinner.svelte';
+  import { toast } from '$lib/ui/toast.svelte';
   import { pwaInstall } from '$lib/pwa/installPrompt.svelte';
 
   type Tab = 'account' | 'read' | 'sources';
@@ -69,17 +70,21 @@
   }
 
   function toggleSource(source: InstalledSource): void {
-    setSourceEnabled(source.manifest.id, !source.enabled);
+    const next = !source.enabled;
+    setSourceEnabled(source.manifest.id, next);
     refreshSources();
+    toast.show({ title: next ? `Đã bật ${source.manifest.name}` : `Đã tắt ${source.manifest.name}`, variant: 'success', duration: 2000 });
   }
 
   function installDefaults(): void {
     enableDefaultSources();
     refreshSources();
+    toast.show({ title: 'Đã cài bộ nguồn mặc định', variant: 'success', duration: 2000 });
   }
 
   function updateTargetLang(lang: string): void {
     localSettings.update({ default_target_lang: lang });
+    toast.show({ title: `Ngôn ngữ dịch: ${languageName(lang)}`, variant: 'success', duration: 2000 });
   }
 
   type ProviderOption = { id: TranslationProvider; label: string; hint: string };
@@ -90,6 +95,8 @@
 
   function updateProvider(provider: TranslationProvider): void {
     localSettings.update({ translation_provider: provider });
+    const label = providerOptions.find((option) => option.id === provider)?.label ?? provider;
+    toast.show({ title: `Dịch bằng ${label}`, variant: 'success', duration: 2000 });
   }
 
   const versionLabel = $derived.by(() => {

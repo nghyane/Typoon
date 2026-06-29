@@ -7,8 +7,8 @@
 
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { afterNavigate, beforeNavigate } from '$app/navigation';
-  import { AlertCircle, ChevronDown, ChevronLeft, Download, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
+  import { afterNavigate, beforeNavigate, goto, invalidateAll } from '$app/navigation';
+  import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Languages, Loader2, RotateCw } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
   import { resolvePageUrl } from '$lib/source/runtime/endpoints';
@@ -17,7 +17,7 @@
   import { session } from '$lib/auth/session.svelte';
   import { trackDiscordJoinRequired, trackTranslateClick } from '$lib/analytics/client';
   import type { ReaderData } from '$lib/types';
-  import { recordRead } from '$lib/works/progress';
+  import { recordRead, recordScroll } from '$lib/works/progress';
   import { getWork } from '$lib/works/repo';
   import { toast } from '$lib/ui/toast.svelte';
   import { ReaderNavigation } from '$lib/reader/ReaderNavigation.svelte';
@@ -171,9 +171,26 @@
   // snapshot.restore → `pendingRestoreTop` (whose ordering vs afterNavigate isn't
   // guaranteed) and takes precedence in the effect below.
   afterNavigate(() => {
-    chapterTarget = 0;
+    // Resume where the reader left off within this chapter (persisted), else top.
+    chapterTarget = data?.resumeScrollTop ?? 0;
     nav.pageIndex = 0; nav.scrollProgress = 0; nav.chromeVisible = true;
   });
+
+  // Persist the scroll offset within the current chapter (debounced) so "đọc tiếp"
+  // resumes mid-chapter across reloads/fresh navigations, not only back/forward.
+  let scrollSaveTimer = 0;
+  function saveScrollSoon(): void {
+    if (!stripEl || !data?.workId || !data?.chapterRef) return;
+    const workId = data.workId;
+    const chapterRef = data.chapterRef;
+    const top = stripEl.scrollTop;
+    clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = window.setTimeout(() => { void recordScroll(workId, chapterRef, top); }, 400);
+  }
+  function handleStripScroll(event: Event): void {
+    nav.handleStripScroll(event);
+    saveScrollSoon();
+  }
 
   // Position the strip once it (re)mounts and its first slots have height. Done
   // synchronously — not via rAF, which is throttled in background tabs — so the
@@ -212,6 +229,11 @@
   onDestroy(() => {
     pages.destroy();
     translation.dispose();
+    // Flush the latest scroll offset immediately (the debounce may not have fired).
+    clearTimeout(scrollSaveTimer);
+    if (stripEl && data?.workId && data?.chapterRef) {
+      void recordScroll(data.workId, data.chapterRef, stripEl.scrollTop);
+    }
     if (resumePoint) {
       const { workId, href, title, chapter, coverSrc, coverHeaders } = resumePoint;
       // Only nudge when the visit was a real read (turned a page or scrolled in),
@@ -286,6 +308,32 @@
 
   function setPageWidth(value: number): void {
     localSettings.update({ reader_page_width: value });
+  }
+
+  // The chapter couldn't be resolved at load (no source/version) — show an error
+  // with retry instead of a silent blank strip. The success path always sets both.
+  const chapterUnavailable = $derived(!!data && !data.sourceId && (!data.versions || data.versions.length === 0));
+
+  // Keyboard reading: arrows/space scroll the strip, [ ] or ←/→ change chapter.
+  // Ignored while a picker or a text field has focus.
+  function handleKeydown(event: KeyboardEvent): void {
+    if (!data || chapterPickerOpen || sourcePickerOpen) return;
+    const t = event.target as HTMLElement | null;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/u.test(t.tagName))) return;
+    const el = stripEl;
+    const page = el ? el.clientHeight * 0.9 : 0;
+    switch (event.key) {
+      case 'ArrowDown': case 'PageDown':
+        if (el) { el.scrollBy({ top: page, behavior: 'smooth' }); event.preventDefault(); } break;
+      case 'ArrowUp': case 'PageUp':
+        if (el) { el.scrollBy({ top: -page, behavior: 'smooth' }); event.preventDefault(); } break;
+      case ' ':
+        if (el) { el.scrollBy({ top: event.shiftKey ? -page : page, behavior: 'smooth' }); event.preventDefault(); } break;
+      case 'ArrowLeft': case '[':
+        if (data.prevRef) void goto(`/r/${data.workId}/${data.prevRef}`); break;
+      case 'ArrowRight': case ']':
+        if (data.nextRef) void goto(`/r/${data.workId}/${data.nextRef}`); break;
+    }
   }
 
   function eagerPage(index: number): boolean {
@@ -380,9 +428,24 @@
 </script>
 
 <svelte:head><title>Đọc — Hội Mê Truyện</title></svelte:head>
+<svelte:window onkeydown={handleKeydown} />
 
 {#if !data}
   <div class="fixed inset-0 flex items-center justify-center bg-bg"><Loader2 class="animate-spin text-text" size={24} /></div>
+{:else if chapterUnavailable}
+  <div class="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-bg px-6 text-center text-text">
+    <span class="grid size-12 place-items-center rounded-full bg-error-bg text-error-text"><AlertCircle size={22} /></span>
+    <div class="space-y-1">
+      <p class="text-base font-semibold">Không tải được chương</p>
+      <p class="max-w-xs text-sm text-text-muted">Nguồn có thể tạm lỗi hoặc chương chưa khả dụng. Thử lại hoặc quay về trang truyện.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" onclick={() => void invalidateAll()} class="inline-flex h-9 items-center gap-1.5 rounded-sm bg-accent px-4 text-sm font-semibold text-accent-fg transition hover:brightness-110 cursor-pointer">
+        <RotateCw size={15} /> Thử lại
+      </button>
+      <a href="/w/{data.workId}" class="inline-flex h-9 items-center rounded-sm bg-surface-2 px-4 text-sm font-medium text-text transition-colors hover:bg-hover">Về trang truyện</a>
+    </div>
+  </div>
 {:else}
   <div class="fixed inset-0 bg-bg overflow-hidden text-text">
     <div class="absolute inset-0 overflow-hidden">
@@ -393,7 +456,7 @@
            resolve their real size against the intrinsic estimate it nudges
            scrollTop to keep some mid-list anchor fixed, drifting us off the top
            and causing jumps while pages stream in. -->
-      <div bind:this={stripEl} class="w-full h-full overflow-y-auto overflow-x-hidden bg-bg overscroll-contain [overflow-anchor:none]" onscroll={nav.handleStripScroll} onclick={nav.handleStripTap} onkeydown={() => {}} role="presentation">
+      <div bind:this={stripEl} class="w-full h-full overflow-y-auto overflow-x-hidden bg-bg overscroll-contain [overflow-anchor:none]" onscroll={handleStripScroll} onclick={nav.handleStripTap} onkeydown={() => {}} role="presentation">
         <div class="relative min-h-full" style={`width:100%;max-width:${readerPageWidth}px;margin:0 auto;`}>
           {#each slotIndices as i (i)}
             <div
@@ -412,6 +475,22 @@
           {/if}
           <div bind:this={contentOverlayEl} class="absolute inset-0 overflow-hidden pointer-events-none z-[1]" aria-hidden="true"></div>
         </div>
+        <!-- End-of-chapter: a prominent next-chapter affordance once pages are in,
+             since the footer arrow is small and hidden when chrome is toggled off. -->
+        {#if pageCount > 0 && !source.sourceSwitching}
+          <div class="relative z-[2] mx-auto flex w-full max-w-md flex-col items-center gap-3 px-4 py-10 text-center">
+            {#if data.nextRef}
+              <p class="text-sm text-text-muted">Hết chương {chapterDisplay}</p>
+              <a href={`/r/${data.workId}/${data.nextRef}`} class="inline-flex h-11 items-center gap-1.5 rounded-md bg-accent px-6 text-sm font-semibold text-accent-fg transition hover:brightness-110">
+                Chương sau <ChevronRight size={16} />
+              </a>
+              <a href="/w/{data.workId}" class="text-xs text-text-subtle transition-colors hover:text-text">Về trang truyện</a>
+            {:else}
+              <p class="text-sm font-medium text-text">Đã đọc hết chương mới nhất</p>
+              <a href="/w/{data.workId}" class="inline-flex h-10 items-center rounded-md bg-surface-2 px-5 text-sm font-medium text-text transition-colors hover:bg-hover">Về trang truyện</a>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
 
@@ -552,14 +631,22 @@
       </div>
     </footer>
 
-    {#if canTranslateLanguage && translationBlocked}
-      <div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 flex max-w-[90vw] items-center gap-2 rounded-md border border-warning-text/20 bg-warning-bg px-3 py-2 text-xs text-warning-text shadow-lg">
-        <AlertCircle size={14} class="shrink-0" />
-        <span>Tham gia Discord để dùng chức năng dịch.</span>
-        <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" class="shrink-0 font-semibold underline underline-offset-2">Tham gia</a>
+    <!-- Stacked bottom alerts — one column so the Discord gate and a source error
+         can't land on the same anchor and overlap. -->
+    {#if (canTranslateLanguage && translationBlocked) || source.sourceError}
+      <div class="fixed left-1/2 bottom-16 z-40 flex w-max max-w-[90vw] -translate-x-1/2 flex-col items-center gap-2">
+        {#if canTranslateLanguage && translationBlocked}
+          <div class="flex items-center gap-2 rounded-md border border-warning-text/20 bg-warning-bg px-3 py-2 text-xs text-warning-text shadow-lg">
+            <AlertCircle size={14} class="shrink-0" />
+            <span>Tham gia Discord để dùng chức năng dịch.</span>
+            <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" class="shrink-0 font-semibold underline underline-offset-2">Tham gia</a>
+          </div>
+        {/if}
+        {#if source.sourceError}
+          <div class="rounded-md border border-border-soft bg-error-bg px-3 py-2 text-xs text-error-text shadow-lg">{source.sourceError}</div>
+        {/if}
       </div>
     {/if}
-    {#if source.sourceError}<div class="fixed left-1/2 -translate-x-1/2 bottom-16 z-40 max-w-[90vw] rounded-md bg-error-bg text-error-text border border-border-soft px-3 py-2 text-xs">{source.sourceError}</div>{/if}
 
     <ChapterPicker open={chapterPickerOpen} anchor={chapterTriggerEl} onClose={() => { chapterPickerOpen = false; }} chapters={data.chapters ?? []} workId={data.workId} currentRef={data.chapterRef} />
     <SourcePicker open={sourcePickerOpen} anchor={sourceTriggerEl} onClose={() => { sourcePickerOpen = false; }} versions={data.versions ?? []} activeKey={source.activeVersionKey} {targetLang} busy={source.sourceSwitching} onPick={(version) => { void source.switchSource(version); }} />

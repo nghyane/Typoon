@@ -7,6 +7,7 @@
   import AddMangaModal from '$lib/library/AddMangaModal.svelte';
   import Button from '$lib/ui/Button.svelte';
   import EmptyState from '$lib/ui/EmptyState.svelte';
+  import ErrorState from '$lib/ui/ErrorState.svelte';
   import CardSkeleton from '$lib/ui/CardSkeleton.svelte';
   import WorkCard from '$lib/ui/WorkCard.svelte';
 
@@ -30,12 +31,32 @@
     return isStatusFilter(saved) ? saved : 'all';
   }
 
+  type SortKey = 'recent' | 'title' | 'updated';
+  const sortOptions: Array<{ value: SortKey; label: string }> = [
+    { value: 'recent', label: 'Mở gần đây' },
+    { value: 'updated', label: 'Mới cập nhật' },
+    { value: 'title', label: 'Tên A→Z' },
+  ];
+
   let works = $state<Work[]>([]);
   let status = $state<StatusFilter>(loadSavedTab());
   let query = $state('');
+  let sort = $state<SortKey>('recent');
   let loading = $state(true);
   let error = $state('');
   let addOpen = $state(false);
+
+  async function load(): Promise<void> {
+    loading = true;
+    error = '';
+    try {
+      works = await listLibraryWorks();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      loading = false;
+    }
+  }
 
   const counts = $derived({
     all: works.length,
@@ -44,20 +65,25 @@
     done: works.filter((work) => work.library_status === 'done').length,
     dropped: works.filter((work) => work.library_status === 'dropped').length,
   });
+  function sortWorks(list: Work[], key: SortKey): Work[] {
+    const by = [...list];
+    if (key === 'title') return by.sort((a, b) => a.title.localeCompare(b.title));
+    const field = key === 'updated' ? 'updated_at' : 'last_opened_at';
+    return by.sort((a, b) => String(b[field] ?? '').localeCompare(String(a[field] ?? '')));
+  }
+
   const filtered = $derived(
-    works.filter((work) => {
-      if (status !== 'all' && work.library_status !== status) return false;
-      const term = query.trim().toLowerCase();
-      return !term || work.title.toLowerCase().includes(term);
-    }),
+    sortWorks(
+      works.filter((work) => {
+        if (status !== 'all' && work.library_status !== status) return false;
+        const term = query.trim().toLowerCase();
+        return !term || work.title.toLowerCase().includes(term);
+      }),
+      sort,
+    ),
   );
 
-  $effect(() => {
-    listLibraryWorks()
-      .then((items) => { works = items; })
-      .catch((err) => { error = err instanceof Error ? err.message : String(err); })
-      .finally(() => { loading = false; });
-  });
+  $effect(() => { void load(); });
 
   // Persist the active tab whenever it changes.
   $effect(() => {
@@ -74,7 +100,7 @@
     </div>
   </div>
 {:else if error}
-  <p class="text-error-text text-center py-20">{error}</p>
+  <ErrorState title="Không tải được thư viện" message={error} onRetry={load} retrying={loading} />
 {:else if works.length === 0}
   <div class="max-w-3xl mx-auto px-4 sm:px-6 py-10">
     <EmptyState title="Thư viện trống" hint="Tìm truyện hoặc dán URL để thêm vào.">
@@ -121,14 +147,27 @@
         {/each}
       </div>
 
-      <div class="relative max-w-xl">
-        <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
-        <input
-          type="search"
-          bind:value={query}
-          placeholder="Tìm trong thư viện…"
-          class="h-8 w-full pl-8 pr-3 rounded-sm bg-surface-2 border border-transparent text-sm text-text placeholder:text-text-subtle hover:bg-hover focus:border-accent focus:bg-surface-2 focus:outline-none transition-colors"
-        />
+      <div class="flex items-center gap-2">
+        <div class="relative flex-1 max-w-xl">
+          <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
+          <input
+            type="search"
+            bind:value={query}
+            placeholder="Tìm trong thư viện…"
+            class="h-8 w-full pl-8 pr-3 rounded-sm bg-surface-2 border border-transparent text-sm text-text placeholder:text-text-subtle hover:bg-hover focus:border-accent focus:bg-surface-2 focus:outline-none transition-colors"
+          />
+        </div>
+        <label class="shrink-0">
+          <span class="sr-only">Sắp xếp</span>
+          <select
+            bind:value={sort}
+            class="h-8 rounded-sm bg-surface-2 border border-transparent px-2 text-sm text-text-muted hover:bg-hover focus:border-accent focus:outline-none transition-colors cursor-pointer"
+          >
+            {#each sortOptions as option (option.value)}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
       </div>
     </header>
 

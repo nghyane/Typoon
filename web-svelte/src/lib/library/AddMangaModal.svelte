@@ -13,6 +13,7 @@
   import Cover from '$lib/ui/Cover.svelte';
   import Modal from '$lib/ui/Modal.svelte';
   import Spinner from '$lib/ui/Spinner.svelte';
+  import { toast } from '$lib/ui/toast.svelte';
 
   let { open, onClose }: { open: boolean; onClose: () => void } = $props();
 
@@ -223,6 +224,7 @@
       const work = await ensureWorkFromSource(hit.source.manifest, resolved ?? hit.manga);
       if (!work.in_library) await addWorkToLibrary(work.id);
       onClose();
+      toast.show({ title: 'Đã thêm vào thư viện', description: work.title, variant: 'success', duration: 2500 });
     } catch (err) {
       error = errorFrom(err).message;
     } finally {
