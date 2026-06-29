@@ -166,7 +166,11 @@ export class ReaderTranslation {
     this.emit()
     if (this.active) {
       void ensureMangaFontLoaded()
-      prewarmTextRegionDetector(this.config)
+      // Eager prewarm warms the ~23MB detector so the first translate is instant,
+      // but a read-only visit shouldn't pay it — and on a cold first visit it
+      // competes for gateway bandwidth with the page images. Skip the speculative
+      // warm on Data-Saver / slow links; translate() still warms on demand.
+      if (shouldEagerPrewarm()) prewarmTextRegionDetector(this.config)
     }
   }
 
@@ -547,6 +551,18 @@ export class ReaderTranslation {
       try { listener(this.state) } catch {}
     }
   }
+}
+
+// Whether to speculatively warm the detector on chapter open. Skip on Data-Saver
+// or 2g/3g links, where the ~23MB download would steal bandwidth from the pages a
+// read-only visitor actually wants. translate() warms unconditionally on demand.
+function shouldEagerPrewarm(): boolean {
+  if (typeof navigator === 'undefined') return true
+  const conn = (navigator as { connection?: { saveData?: boolean; effectiveType?: string } }).connection
+  if (!conn) return true
+  if (conn.saveData) return false
+  const et = conn.effectiveType
+  return et !== 'slow-2g' && et !== '2g' && et !== '3g'
 }
 
 function progressFromPages(donePages: number, totalPages: number, pageCount: number): ReaderTranslationState['translate'] {

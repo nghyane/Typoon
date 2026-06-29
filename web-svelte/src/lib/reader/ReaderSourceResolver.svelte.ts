@@ -1,7 +1,7 @@
 // reader/ReaderSourceResolver.svelte.ts — source state, switching, and preference persistence.
 
 import { getSource } from '$lib/source/registry';
-import { fetchChapterPages } from '$lib/source/runtime/endpoints';
+import { fetchChapterPagesCached } from '$lib/reader/chapterPages';
 import { localSettings } from '$lib/localSettings.svelte';
 import type { ReaderData, ReaderSourceVersion } from '$lib/types';
 
@@ -102,7 +102,7 @@ export class ReaderSourceResolver {
       const source = getSource(version.sourceId);
       if (!source) throw new Error(`Nguồn ${version.sourceName} không khả dụng.`);
 
-      const nextPages = await fetchChapterPages(source.manifest, version.url);
+      const nextPages = await fetchChapterPagesCached(source.manifest, version.url);
       if (nextPages.pages.length === 0) throw new Error('Nguồn này không có trang đọc.');
       if (generation !== this.#loadGeneration) return;
 

@@ -12,6 +12,9 @@
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 		<meta name="mobile-web-app-capable" content="yes" />
 		<link rel="manifest" href="/manifest.webmanifest" />
+		<!-- Warm the source proxy gateway connection (chapter page lists + images
+		     route through it) so the first reader fetch skips cold DNS/TLS. -->
+		<link rel="preconnect" href="https://927251094806098001.discordsays.com" crossorigin />
 		<link rel="icon" type="image/png" sizes="32x32" href="/pwa/favicon-32.png" />
 		<link rel="apple-touch-icon" sizes="180x180" href="/pwa/apple-touch-icon.png" />
 		%sveltekit.head%
