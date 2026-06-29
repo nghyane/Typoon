@@ -399,7 +399,11 @@
       </div>
     {/if}
 
-    {#if browseQuery.isPending}
+    {#if browseQuery.isPending || browseQuery.isPlaceholderData}
+      <!-- isPlaceholderData = switched shelf/source/search; the kept-previous
+           items belong to a different query, so show skeletons (clear loading)
+           instead of graying them out. Cached targets skip this and render
+           instantly. -->
       <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
         <CardSkeleton count={18} />
       </div>
@@ -421,7 +425,7 @@
         {#if debouncedQuery}<p class="text-xs text-text-subtle mt-1">Thử từ khoá khác.</p>{/if}
       </div>
     {:else}
-      <div class={cn('grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5 transition-opacity', browseQuery.isPlaceholderData && 'opacity-50 pointer-events-none')}>
+      <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
         {#each items as manga (manga.id)}
           {@const existing = existingByUrl[manga.url]}
           {@const key = mangaKey(manga)}
