@@ -41,9 +41,23 @@ export interface ReadProgress {
 	last_scroll_top?: number; // scroll offset within last_chapter, for resume
 }
 
+// Chapter-update fingerprint per work, refreshed by the update checker. Separate
+// table so the frequent background re-checks never race with Work's library puts.
+// `updated_at` (publish time of the newest chapter) is the library "new chapter"
+// sort key; `checked_at` drives the TTL so we don't re-poll a source too often.
+export interface WorkUpdate {
+	work_id: string;
+	latest_norm: string; // numberNorm of the newest chapter seen at the source
+	latest_label: string; // display number/label of that chapter
+	chapter_count: number;
+	updated_at: string; // when the newest chapter appeared (source date, else first-detected)
+	checked_at: string; // last time we fetched + compared
+}
+
 export class TypoonDb extends Dexie {
 	works!: EntityTable<Work, 'id'>;
 	progress!: EntityTable<ReadProgress, 'work_id'>;
+	workUpdates!: EntityTable<WorkUpdate, 'work_id'>;
 
 	constructor() {
 		super('typoon-v3-svelte');
@@ -53,6 +67,11 @@ export class TypoonDb extends Dexie {
 		this.version(2).stores({
 			works: '&id, in_library, last_opened_at, updated_at, *sourceKey',
 			progress: '&work_id',
+		});
+		this.version(3).stores({
+			works: '&id, in_library, last_opened_at, updated_at, *sourceKey',
+			progress: '&work_id',
+			workUpdates: '&work_id, updated_at',
 		});
 	}
 }

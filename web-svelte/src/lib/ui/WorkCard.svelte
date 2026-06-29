@@ -33,6 +33,7 @@
     disabled = false,
     dimmed = false,
     blurNsfw = false,
+    hasUpdate = false,
     class: cls = '',
   }: {
     work: WorkCardData;
@@ -42,6 +43,8 @@
     pending?: boolean;
     disabled?: boolean;
     dimmed?: boolean;
+    /** Show a "new chapter" marker (library update detection). */
+    hasUpdate?: boolean;
     /** Blur 18+ covers (revealed on hover/focus). Opt-in per surface: on for the
      *  home shelves, off on Explore where users are browsing to discover. */
     blurNsfw?: boolean;
@@ -104,6 +107,9 @@
     {/if}
     {#if work.nsfw}
       <span class="absolute top-1.5 right-1.5 inline-flex items-center h-5 px-1.5 rounded-xs bg-error-bg/90 text-error-text chrome-label font-semibold backdrop-blur-sm">18+</span>
+    {/if}
+    {#if hasUpdate}
+      <span class="absolute top-1.5 left-1.5 inline-flex items-center h-5 px-1.5 rounded-xs bg-accent/90 text-accent-fg chrome-label font-semibold backdrop-blur-sm">Mới</span>
     {/if}
     {#if work.badge}
       <div class="absolute bottom-0 inset-x-0 px-2 pb-1 pt-5 text-xs text-white bg-gradient-to-t from-black/85 to-transparent line-clamp-1">{work.badge}</div>

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { browser } from '$app/environment';
-  import { Plus, Search } from 'lucide-svelte';
+  import { Plus, RotateCw, Search } from 'lucide-svelte';
   import { listLibraryWorks } from '$lib/works/repo';
-  import type { LibraryStatus, Work } from '$lib/db';
+  import { getWorkUpdatesMap, checkLibraryUpdates } from '$lib/works/updates';
+  import type { LibraryStatus, Work, WorkUpdate } from '$lib/db';
   import { cn } from '$lib/cn';
   import AddMangaModal from '$lib/library/AddMangaModal.svelte';
   import Button from '$lib/ui/Button.svelte';
@@ -10,6 +11,7 @@
   import ErrorState from '$lib/ui/ErrorState.svelte';
   import CardSkeleton from '$lib/ui/CardSkeleton.svelte';
   import WorkCard from '$lib/ui/WorkCard.svelte';
+  import { toast } from '$lib/ui/toast.svelte';
 
   type StatusFilter = 'all' | LibraryStatus;
 
@@ -33,16 +35,18 @@
 
   type SortKey = 'recent' | 'title' | 'updated';
   const sortOptions: Array<{ value: SortKey; label: string }> = [
+    { value: 'updated', label: 'Chương mới' },
     { value: 'recent', label: 'Mở gần đây' },
-    { value: 'updated', label: 'Mới cập nhật' },
     { value: 'title', label: 'Tên A→Z' },
   ];
 
   let works = $state<Work[]>([]);
+  let updates = $state<Record<string, WorkUpdate>>({});
   let status = $state<StatusFilter>(loadSavedTab());
   let query = $state('');
-  let sort = $state<SortKey>('recent');
+  let sort = $state<SortKey>('updated');
   let loading = $state(true);
+  let checking = $state(false);
   let error = $state('');
   let addOpen = $state(false);
 
@@ -51,11 +55,50 @@
     error = '';
     try {
       works = await listLibraryWorks();
+      updates = await getWorkUpdatesMap(works.map((w) => w.id));
+      void backgroundCheck();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
     }
+  }
+
+  // Stale-only check on visit (TTL-gated, throttled in updates.ts) — keeps data
+  // fresh without blocking render or hammering the gateway every open.
+  async function backgroundCheck(): Promise<void> {
+    try {
+      const { withNew } = await checkLibraryUpdates();
+      if (withNew > 0) updates = await getWorkUpdatesMap(works.map((w) => w.id));
+    } catch {
+      /* silent: a flaky source shouldn't surface here */
+    }
+  }
+
+  // Manual full refresh — forces every followed title, with feedback.
+  async function refreshUpdates(): Promise<void> {
+    if (checking) return;
+    checking = true;
+    try {
+      const { withNew } = await checkLibraryUpdates({ force: true });
+      updates = await getWorkUpdatesMap(works.map((w) => w.id));
+      toast.show({
+        title: withNew > 0 ? `${withNew} bộ có chương mới` : 'Đã là mới nhất',
+        variant: 'success',
+        duration: 2500,
+      });
+    } catch (err) {
+      toast.show({ title: 'Không kiểm tra được cập nhật', description: err instanceof Error ? err.message : undefined, variant: 'error' });
+    } finally {
+      checking = false;
+    }
+  }
+
+  // A new chapter the user hasn't seen: the newest chapter appeared after they
+  // last opened the work.
+  function hasUpdate(work: Work): boolean {
+    const u = updates[work.id];
+    return !!u && !!work.last_opened_at && u.updated_at > work.last_opened_at;
   }
 
   const counts = $derived({
@@ -68,8 +111,13 @@
   function sortWorks(list: Work[], key: SortKey): Work[] {
     const by = [...list];
     if (key === 'title') return by.sort((a, b) => a.title.localeCompare(b.title));
-    const field = key === 'updated' ? 'updated_at' : 'last_opened_at';
-    return by.sort((a, b) => String(b[field] ?? '').localeCompare(String(a[field] ?? '')));
+    if (key === 'updated') {
+      // Newest chapter first: the detected chapter publish time, falling back to
+      // the work's own updated_at until the feed has been checked.
+      const stamp = (w: Work) => updates[w.id]?.updated_at ?? w.updated_at ?? '';
+      return by.sort((a, b) => stamp(b).localeCompare(stamp(a)));
+    }
+    return by.sort((a, b) => String(b.last_opened_at ?? '').localeCompare(String(a.last_opened_at ?? '')));
   }
 
   const filtered = $derived(
@@ -121,6 +169,15 @@
           <p class="text-xs text-text-muted">{works.length} truyện</p>
         </div>
         <div class="flex items-center gap-2">
+          <button
+            type="button"
+            onclick={refreshUpdates}
+            disabled={checking}
+            aria-label="Kiểm tra chương mới"
+            class="inline-flex items-center justify-center gap-1.5 h-7 px-2.5 rounded-sm bg-transparent text-text-muted hover:text-text hover:bg-hover text-xs font-medium transition-colors disabled:opacity-60 disabled:cursor-wait cursor-pointer"
+          >
+            <RotateCw size={13} class={checking ? 'animate-spin' : ''} /> {checking ? 'Đang kiểm tra…' : 'Cập nhật'}
+          </button>
           <Button variant="secondary" size="sm" onclick={() => { addOpen = true; }}>
             <Plus size={14} /> Thêm
           </Button>
@@ -176,13 +233,17 @@
     {:else}
       <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-x-3 gap-y-4 sm:gap-x-4 sm:gap-y-5">
         {#each filtered as work (work.id)}
-          <WorkCard work={{
-            id: work.id,
-            title: work.title,
-            cover_url: work.cover_url,
-            source: work.sources[0]?.source ?? null,
-            nsfw: work.nsfw,
-          }} />
+          <WorkCard
+            work={{
+              id: work.id,
+              title: work.title,
+              cover_url: work.cover_url,
+              source: work.sources[0]?.source ?? null,
+              chapter: updates[work.id]?.latest_label ?? null,
+              nsfw: work.nsfw,
+            }}
+            hasUpdate={hasUpdate(work)}
+          />
         {/each}
       </div>
     {/if}
