@@ -46,6 +46,7 @@
       works={recentWorks}
       emptyTitle="Chưa mở truyện nào"
       emptyHint="Khám phá truyện để bắt đầu."
+      blurNsfw
     />
 
     <WorkShelf
@@ -55,6 +56,7 @@
       href="/library"
       emptyTitle="Thư viện trống"
       emptyHint="Lưu truyện để quay lại nhanh hơn."
+      blurNsfw
     />
   {/if}
 </div>

@@ -1,6 +1,13 @@
+<script module lang="ts">
+  // Per-session cooldown so leaving the same work over and over doesn't re-nag
+  // with the "continue reading" toast. Module scope survives reader unmounts.
+  const RESUME_TOAST_COOLDOWN_MS = 5 * 60_000;
+  const lastResumeToastAt = new Map<string, number>();
+</script>
+
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { afterNavigate } from '$app/navigation';
+  import { afterNavigate, beforeNavigate } from '$app/navigation';
   import { AlertCircle, ChevronDown, ChevronLeft, Download, Eye, EyeOff, Languages, Loader2 } from 'lucide-svelte';
   import { ChapterPages } from '$lib/chapter.svelte';
   import { getSource } from '$lib/source/registry';
@@ -11,6 +18,8 @@
   import { trackDiscordJoinRequired, trackTranslateClick } from '$lib/analytics/client';
   import type { ReaderData } from '$lib/types';
   import { recordRead } from '$lib/works/progress';
+  import { getWork } from '$lib/works/repo';
+  import { toast } from '$lib/ui/toast.svelte';
   import { ReaderNavigation } from '$lib/reader/ReaderNavigation.svelte';
   import { ReaderSourceResolver } from '$lib/reader/ReaderSourceResolver.svelte';
   import { SvelteReaderTranslation } from '$lib/reader/translation.svelte';
@@ -25,10 +34,45 @@
   // Persist reading history: opening a chapter makes it the work's resume point
   // and marks it read. Keyed on workId+chapterRef so it fires once per chapter,
   // not on every page scroll or translation tick.
+  // Snapshot of the chapter currently on screen. Captured so that when the user
+  // leaves the reader entirely (onDestroy) we can offer a "continue reading"
+  // toast — chapter→chapter navigation reuses this component, so this only fires
+  // the toast on a real exit, not on every page turn.
+  let resumePoint:
+    | { workId: string; href: string; title: string; chapter: string; coverSrc: string | null; coverHeaders: Record<string, string> | null }
+    | null = null;
+
+  // Where the user is navigating to as they leave the reader. Used to suppress
+  // the resume toast when they're heading to this work's own page — the resume
+  // affordance already lives there, so a toast would be redundant.
+  let exitDest: string | null = null;
+  beforeNavigate((nav) => { exitDest = nav.to?.url.pathname ?? null; });
+
+  // The work cover, fetched once per work, so the toast can lead with the actual
+  // thumbnail (recognizable) instead of a generic icon.
+  let workCoverSrc = $state<string | null>(null);
+  $effect(() => {
+    const workId = data?.workId;
+    if (!workId) return;
+    let cancelled = false;
+    void getWork(workId).then((w) => { if (!cancelled) workCoverSrc = w?.cover_url ?? null; });
+    return () => { cancelled = true; };
+  });
+
   $effect(() => {
     const workId = data?.workId;
     const chapterRef = data?.chapterRef;
-    if (workId && chapterRef) void recordRead(workId, chapterRef);
+    if (workId && chapterRef) {
+      void recordRead(workId, chapterRef);
+      resumePoint = {
+        workId,
+        href: `/r/${workId}/${chapterRef}`,
+        title: data?.workTitle ?? 'Hội Mê Truyện',
+        chapter: shortChapterNumber(data?.chapterNumber, chapterRef),
+        coverSrc: workCoverSrc,
+        coverHeaders: (data?.sourceId ? getSource(data.sourceId)?.manifest.imageHeaders : null) ?? null,
+      };
+    }
   });
 
   let chapterPickerOpen = $state(false);
@@ -165,7 +209,31 @@
   const readerPageWidth = $derived(localSettings.state.reader_page_width);
 
   onMount(() => { localSettings.load(); });
-  onDestroy(() => { pages.destroy(); translation.dispose(); });
+  onDestroy(() => {
+    pages.destroy();
+    translation.dispose();
+    if (resumePoint) {
+      const { workId, href, title, chapter, coverSrc, coverHeaders } = resumePoint;
+      // Only nudge when the visit was a real read (turned a page or scrolled in),
+      // the user isn't heading to this work's own page, and we haven't just shown
+      // it for this work.
+      const engaged = nav.pageIndex >= 1 || nav.scrollProgress > 0.08;
+      const toOwnWork = !!exitDest && exitDest.startsWith(`/w/${workId}`);
+      const now = Date.now();
+      const onCooldown = now - (lastResumeToastAt.get(workId) ?? 0) < RESUME_TOAST_COOLDOWN_MS;
+      if (engaged && !toOwnWork && !onCooldown) {
+        lastResumeToastAt.set(workId, now);
+        toast.show({
+          key: 'continue-reading',
+          cover: { src: coverSrc, headers: coverHeaders, title },
+          title,
+          description: `Đang đọc · Ch. ${chapter}`,
+          action: { label: 'Đọc tiếp', href },
+          duration: 8000,
+        });
+      }
+    }
+  });
 
   $effect(() => {
     const host = contentOverlayEl;

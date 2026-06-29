@@ -7,13 +7,15 @@
   import EmptyState from './EmptyState.svelte';
   import WorkCard from './WorkCard.svelte';
 
-  let { title, icon: Icon, works, emptyTitle, emptyHint, href }: {
+  let { title, icon: Icon, works, emptyTitle, emptyHint, href, blurNsfw = false }: {
     title: string;
     icon: typeof Clock;
     works: Work[];
     emptyTitle: string;
     emptyHint: string;
     href?: string;
+    /** Blur 18+ covers in this shelf (on for home, off elsewhere). */
+    blurNsfw?: boolean;
   } = $props();
 
   // Embla gives mouse drag + momentum on desktop (native scroll can't), keeps
@@ -83,7 +85,7 @@
         <div class="flex gap-3 sm:gap-4">
           {#each works as work (work.id)}
             <div class="min-w-0 shrink-0 grow-0 basis-[calc((100%_-_1.5rem)/3)] sm:basis-[calc((100%_-_3rem)/4)] md:basis-[calc((100%_-_4rem)/5)] lg:basis-[calc((100%_-_5rem)/6)]">
-              <WorkCard work={cardData(work)} />
+              <WorkCard work={cardData(work)} {blurNsfw} />
             </div>
           {/each}
         </div>

@@ -9,6 +9,7 @@
   import { pwaInstall } from '$lib/pwa/installPrompt.svelte';
   import { pwaUpdate } from '$lib/pwa/updatePrompt.svelte';
   import UpdateBanner from '$lib/pwa/UpdateBanner.svelte';
+  import ToastHost from '$lib/ui/ToastHost.svelte';
   import { registerServiceWorker } from '$lib/pwa/serviceWorker';
   let { children }: { children: import('svelte').Snippet } = $props();
 
@@ -28,5 +29,6 @@
 
 <QueryClientProvider client={queryClient}>
   <UpdateBanner />
+  <ToastHost />
   {@render children()}
 </QueryClientProvider>

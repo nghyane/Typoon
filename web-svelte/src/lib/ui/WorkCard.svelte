@@ -31,6 +31,7 @@
     pending = false,
     disabled = false,
     dimmed = false,
+    blurNsfw = false,
     class: cls = '',
   }: {
     work: WorkCardData;
@@ -40,6 +41,9 @@
     pending?: boolean;
     disabled?: boolean;
     dimmed?: boolean;
+    /** Blur 18+ covers (revealed on hover/focus). Opt-in per surface: on for the
+     *  home shelves, off on Explore where users are browsing to discover. */
+    blurNsfw?: boolean;
     class?: string;
   } = $props();
 
@@ -66,7 +70,17 @@
 
 {#snippet inner()}
   <div class="relative aspect-[2/3] rounded-md overflow-hidden bg-surface-2 ring-1 ring-inset ring-white/5 transition duration-200 group-hover:ring-white/15 group-hover:shadow-lg group-hover:shadow-black/40">
-    <Cover src={work.cover_url} headers={coverHeaders} title={work.title} class="absolute inset-0 transition-transform duration-300 ease-out group-hover:scale-105" />
+    <Cover
+      src={work.cover_url}
+      headers={coverHeaders}
+      title={work.title}
+      class={cn(
+        'absolute inset-0 transition duration-300 ease-out',
+        work.nsfw && blurNsfw
+          ? 'scale-105 blur-xl group-hover:blur-0 group-focus-visible:blur-0'
+          : 'group-hover:scale-105',
+      )}
+    />
     {#if pending}
       <span class="absolute inset-0 grid place-items-center bg-bg/45"><Spinner size={20} /></span>
     {/if}
