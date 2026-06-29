@@ -30,7 +30,7 @@ export async function getWorkUpdatesMap(workIds: string[]): Promise<Record<strin
 	return map;
 }
 
-async function fetchMergedChapters(work: Work): Promise<MergedChapter[]> {
+async function fetchMergedChapters(work: Work, fresh: boolean): Promise<MergedChapter[]> {
 	const results = await Promise.allSettled(
 		work.sources.map(async (origin): Promise<SourceChapterDetail> => {
 			const source = getSource(origin.source);
@@ -38,7 +38,9 @@ async function fetchMergedChapters(work: Work): Promise<MergedChapter[]> {
 			const detail = await queryClient.fetchQuery({
 				queryKey: ['manga-detail', origin.source, origin.upstream_ref] as const,
 				queryFn: () => fetchMangaDetail(source.manifest, origin.upstream_ref),
-				staleTime: MANGA_DETAIL_STALE_MS,
+				// A forced check must hit the network even if a recent detail-page
+				// fetch is still cached; a background (TTL) check can reuse it.
+				staleTime: fresh ? 0 : MANGA_DETAIL_STALE_MS,
 			});
 			return { source, origin, refs: detail.chapters };
 		}),
@@ -56,8 +58,8 @@ function newestChapterDate(chapter: MergedChapter): string | null {
 /** Fetch the source's current chapter list, compare to the stored fingerprint,
  *  and persist. Returns whether a NEW chapter appeared (false on first seed and
  *  on no-change). Returns null on a fetch failure so we never clobber good data. */
-export async function refreshWorkUpdate(work: Work): Promise<{ record: WorkUpdate; hasNew: boolean } | null> {
-	const merged = await fetchMergedChapters(work);
+export async function refreshWorkUpdate(work: Work, opts: { fresh?: boolean } = {}): Promise<{ record: WorkUpdate; hasNew: boolean } | null> {
+	const merged = await fetchMergedChapters(work, !!opts.fresh);
 	if (!merged.length) return null;
 	const newest = sortMergedChapters(merged, true)[0];
 	if (!newest) return null;
@@ -100,7 +102,7 @@ export async function checkWorksUpdates(
 
 	let withNew = 0;
 	await pool(due, opts.concurrency ?? MAX_CONCURRENT, async (work) => {
-		const res = await refreshWorkUpdate(work).catch(() => null);
+		const res = await refreshWorkUpdate(work, { fresh: opts.force }).catch(() => null);
 		if (res?.hasNew) withNew += 1;
 	});
 	return { checked: due.length, withNew };
